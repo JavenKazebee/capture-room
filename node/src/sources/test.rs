@@ -60,7 +60,6 @@ fn build_bin(
     // ── Video branch: videotestsrc ! capsfilter ! videoconvert ──────────────
     let vsrc = gst::ElementFactory::make("videotestsrc")
         .name(format!("vsrc-{id}"))
-        .property("is-live", true)
         .build()
         .context("create videotestsrc")?;
 
@@ -88,7 +87,6 @@ fn build_bin(
     // ── Audio branch: audiotestsrc ! audioconvert ! capsfilter ──────────────
     let asrc = gst::ElementFactory::make("audiotestsrc")
         .name(format!("asrc-{id}"))
-        .property("is-live", true)
         .build()
         .context("create audiotestsrc")?;
 

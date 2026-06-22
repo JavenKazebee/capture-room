@@ -23,10 +23,12 @@ const REQUIRED: &[(&str, &str, &str)] = &[
     // ── gst-libav ────────────────────────────────────────────────────────────
     ("avenc_prores",  "gst-libav",         "pacman -S gst-libav  /  apt install gstreamer1.0-libav"),
     ("avenc_aac",     "gst-libav",         "pacman -S gst-libav  /  apt install gstreamer1.0-libav"),
+    // ── gst-plugins-good (continued) ─────────────────────────────────────────
+    ("jpegenc",       "gst-plugins-good",  "pacman -S gst-plugins-good  /  apt install gstreamer1.0-plugins-good"),
+    ("level",         "gst-plugins-good",  "pacman -S gst-plugins-good  /  apt install gstreamer1.0-plugins-good"),
+    ("videorate",     "gst-plugins-good",  "pacman -S gst-plugins-good  /  apt install gstreamer1.0-plugins-good"),
     // ── gst-plugins-bad ──────────────────────────────────────────────────────
     ("mxfmux",        "gst-plugins-bad",   "pacman -S gst-plugins-bad  /  apt install gstreamer1.0-plugins-bad"),
-    ("jpegenc",       "gst-plugins-bad",   "pacman -S gst-plugins-bad  /  apt install gstreamer1.0-plugins-bad"),
-    ("level",         "gst-plugins-bad",   "pacman -S gst-plugins-bad  /  apt install gstreamer1.0-plugins-bad"),
 ];
 
 /// Check that every required GStreamer element is registered on this machine.

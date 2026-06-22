@@ -1,6 +1,8 @@
+mod audio;
 mod pipeline;
 mod plugins;
 mod sources;
+mod thumbnail;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
@@ -56,16 +58,26 @@ async fn main() -> Result<()> {
         Mode::Controller => info!(port = args.port, "starting in controller mode"),
     }
 
-    // ── Dev smoke-test: record 3 seconds from test-1 ─────────────────────────
+    // ── Dev smoke-test: record 3 seconds, log thumbnail + audio level ─────────
     if let Some(source) = registry.get("test-1") {
         let profile = RecordingProfile::h264_mov("dev-test");
         let output = std::path::Path::new("/tmp/capture-room-test.mov");
 
         info!(path = %output.display(), "starting test recording");
-        let p = Pipeline::new(source, output, &profile)?;
+        let p = Pipeline::new(source, output, &profile, None)?;
         p.start()?;
 
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        if let Some(jpeg) = p.thumbnail.latest() {
+            info!(bytes = jpeg.len(), "thumbnail captured");
+        }
+        if let Some(levels) = p.audio_meter.latest() {
+            for (i, ch) in levels.channels.iter().enumerate() {
+                info!(channel = i, peak_db = ch.peak_db, rms_db = ch.rms_db, "audio level");
+            }
+        }
+
         info!("stopping test recording");
         p.stop(10).await?;
         info!(path = %output.display(), "recording complete");
