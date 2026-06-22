@@ -8,13 +8,13 @@ name = "capture-room"
 path = "src/main.rs"
 
 [features]
-export-types = ["ts-rs/export"]
+export-types = []
 
 [dependencies]
+anyhow = "1"
+chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
+gstreamer = "0.23"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-[dev-dependencies]
-ts-rs = { version = "10", optional = true }

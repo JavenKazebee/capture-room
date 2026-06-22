@@ -7,7 +7,10 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(npm list *)",
       "Bash(npx pnpm *)",
-      "Bash(fish -c 'type pnpm')"
+      "Bash(fish -c 'type pnpm')",
+      "Bash(fish -c 'cargo fetch --manifest-path node/Cargo.toml 2>&1 | tail -5')",
+      "Bash(sed -n '168,210p' ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gstreamer-0.23.7/src/ghost_pad.rs)",
+      "Bash(grep -n \"pub fn add_many\\\\|fn add_many\\\\|fn add\\\\b\" ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gstreamer-0.23.7/src/auto/bin.rs 2>/dev/null | head -10)"
     ]
   }
 }

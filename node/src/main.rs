@@ -1,5 +1,10 @@
+mod sources;
+
+use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use tracing::info;
+
+use sources::registry::SourceRegistry;
 
 #[derive(Debug, Clone, ValueEnum)]
 enum Mode {
@@ -18,7 +23,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -26,18 +31,28 @@ async fn main() {
         )
         .init();
 
+    gstreamer::init().expect("GStreamer init failed");
+
     let args = Args::parse();
 
-    match args.mode {
-        Mode::Node => {
-            info!(port = args.port, "starting in node mode");
-        }
-        Mode::Controller => {
-            info!(port = args.port, "starting in controller mode");
-        }
+    let mut registry = SourceRegistry::new();
+    registry.scan()?;
+
+    for source in registry.sources() {
+        info!(
+            id = source.id(),
+            name = source.display_name(),
+            available = source.is_available(),
+            "source"
+        );
     }
 
-    // TODO: initialise subsystems per mode
-    tokio::signal::ctrl_c().await.unwrap();
+    match args.mode {
+        Mode::Node => info!(port = args.port, "starting in node mode"),
+        Mode::Controller => info!(port = args.port, "starting in controller mode"),
+    }
+
+    tokio::signal::ctrl_c().await?;
     info!("shutting down");
+    Ok(())
 }
