@@ -19,7 +19,7 @@ Multi-feed video capture and recording platform. Single Rust binary (`capture-ro
 - [x] Step 1 — Monorepo scaffold
 - [x] Step 2 — UI scaffold
 - [x] Step 3 — Rust TestSource + InputSource trait
-- [ ] Step 4 — GStreamer pipeline (single source, single output)
+- [x] Step 4 — GStreamer pipeline (single source, single output)
 - [ ] Steps 5–16 — see ARCHITECTURE.md
 
 **Key decisions:**

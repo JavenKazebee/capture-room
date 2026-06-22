@@ -107,6 +107,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "futures-util",
  "gstreamer",
  "tokio",
  "tracing",

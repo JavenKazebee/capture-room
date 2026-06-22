@@ -1,9 +1,12 @@
+mod pipeline;
+mod plugins;
 mod sources;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use tracing::info;
 
+use pipeline::{profile::RecordingProfile, Pipeline};
 use sources::registry::SourceRegistry;
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -32,6 +35,7 @@ async fn main() -> Result<()> {
         .init();
 
     gstreamer::init().expect("GStreamer init failed");
+    plugins::check_required_plugins()?;
 
     let args = Args::parse();
 
@@ -50,6 +54,21 @@ async fn main() -> Result<()> {
     match args.mode {
         Mode::Node => info!(port = args.port, "starting in node mode"),
         Mode::Controller => info!(port = args.port, "starting in controller mode"),
+    }
+
+    // ── Dev smoke-test: record 3 seconds from test-1 ─────────────────────────
+    if let Some(source) = registry.get("test-1") {
+        let profile = RecordingProfile::h264_mov("dev-test");
+        let output = std::path::Path::new("/tmp/capture-room-test.mov");
+
+        info!(path = %output.display(), "starting test recording");
+        let p = Pipeline::new(source, output, &profile)?;
+        p.start()?;
+
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        info!("stopping test recording");
+        p.stop(10).await?;
+        info!(path = %output.display(), "recording complete");
     }
 
     tokio::signal::ctrl_c().await?;
