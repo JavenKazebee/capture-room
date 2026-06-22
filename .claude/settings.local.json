@@ -4,7 +4,10 @@
       "WebFetch(domain:www.shadcn-vue.com)",
       "WebFetch(domain:github.com)",
       "Bash(gh api *)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(npm list *)",
+      "Bash(npx pnpm *)",
+      "Bash(fish -c 'type pnpm')"
     ]
   }
 }

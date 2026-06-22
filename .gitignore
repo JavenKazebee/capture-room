@@ -1,0 +1,23 @@
+# Rust
+/target/
+node/target/
+
+# Node / pnpm
+node_modules/
+ui/node_modules/
+ui/dist/
+
+# SQLite
+*.db
+*.db-shm
+*.db-wal
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Env / secrets
+.env
+.env.local

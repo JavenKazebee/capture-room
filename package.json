@@ -1,0 +1,15 @@
+{
+  "name": "capture-room",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"pnpm dev:node\" \"pnpm dev:ui\"",
+    "dev:node": "cargo watch -x 'run -p capture-room -- --mode controller'",
+    "dev:ui": "pnpm --filter ui dev",
+    "build": "pnpm build:ui && cargo build --release",
+    "build:ui": "pnpm --filter ui build",
+    "types": "cargo test -p capture-room --features export-types"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}
