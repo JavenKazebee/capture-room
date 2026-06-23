@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::{
     body::Body,
-    extract::{ws::WebSocketUpgrade, Path as AxumPath, State},
+    extract::{ws::WebSocketUpgrade, Path as AxumPath, Query, State},
     http::{header, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{get, post, put},
@@ -15,8 +15,9 @@ use serde_json::{json, Value};
 use tracing::error;
 
 use crate::api::types::{
-    PatchRecordingRequest, PresetCreateRequest, PresetDto, PresetSyncRequest, RecordingSessionDto,
-    SourceCapabilitiesDto, SourceDto, StartRecordingRequest, TimecodeDto, WsEvent,
+    CreateTestSourceRequest, PatchRecordingRequest, PresetCreateRequest, PresetDto,
+    PresetSyncRequest, RecordingSessionDto, SourceCapabilitiesDto, SourceDto, StartRecordingRequest,
+    TestSourceConfigDto, TimecodeDto, UpdateTestSourceRequest, WsEvent,
 };
 use crate::controller::{proxy, sync};
 use crate::db::{self, PresetRow};
@@ -58,9 +59,15 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/v1/status", get(get_status))
         .route("/api/v1/settings", get(get_settings).put(put_settings))
         .route("/api/v1/nodes", get(get_nodes))
+        // Sources — static paths before dynamic {id}
         .route("/api/v1/sources", get(get_sources))
-        .route("/api/v1/sources/{id}", get(get_source))
         .route("/api/v1/sources/scan", post(post_scan))
+        .route("/api/v1/sources/test", get(get_test_configs).post(post_test_config))
+        .route(
+            "/api/v1/sources/test/{id}",
+            put(put_test_config).delete(delete_test_config),
+        )
+        .route("/api/v1/sources/{id}", get(get_source))
         .route("/api/v1/recordings", get(get_recordings).post(post_recording))
         .route(
             "/api/v1/recordings/{id}",
@@ -255,18 +262,203 @@ async fn get_source(
 }
 
 async fn post_scan(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let mut sources = state.sources.write().await;
-    match sources.scan() {
-        Ok(()) => {
-            let dtos: Vec<Value> = sources
+    let configs = match db::test_sources_list(&state.db).await {
+        Ok(rows) => rows.into_iter().map(db_row_to_config).collect::<Vec<_>>(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let local: Vec<Value> = {
+        let mut sources = state.sources.write().await;
+        match sources.scan(&configs) {
+            Ok(()) => sources
                 .sources()
                 .iter()
                 .map(|s| source_value(s.as_ref(), &state.node_id))
-                .collect();
-            Json(dtos).into_response()
+                .collect(),
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
+    };
+
+    let mut all = local;
+    if state.role.is_aggregator() {
+        all.extend(proxy::fan_out_sources(&state).await);
+    }
+    Json(all).into_response()
+}
+
+// ── /api/v1/sources/test — test source config authoring ──────────────────────
+
+async fn get_test_configs(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<TestSourceQuery>,
+) -> Response {
+    if let Some(target) = params.node_id.filter(|id| id != &state.node_id) {
+        return proxy::get_test_configs(&state, &target).await;
+    }
+    match db::test_sources_list(&state.db).await {
+        Ok(rows) => Json(rows.into_iter().map(row_to_config_dto).collect::<Vec<_>>()).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct TestSourceQuery {
+    node_id: Option<String>,
+}
+
+async fn post_test_config(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<TestSourceQuery>,
+    Json(req): Json<CreateTestSourceRequest>,
+) -> Response {
+    if let Some(target) = params.node_id.filter(|id| id != &state.node_id) {
+        return proxy::create_test_source(&state, &target, &req).await;
+    }
+    let row = db::TestSourceRow {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: req.name,
+        pattern: req.pattern,
+        width: req.width as i64,
+        height: req.height as i64,
+        fps_num: req.fps_num as i64,
+        fps_den: req.fps_den as i64,
+        audio_signal: req.audio_signal,
+        frequency: req.frequency,
+        channels: req.channels as i64,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    if let Err(e) = db::test_source_insert(&state.db, &row).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    // Rebuild the source registry so the new source is immediately available.
+    let _ = rebuild_registry(&state).await;
+    (StatusCode::CREATED, Json(row_to_config_dto(row))).into_response()
+}
+
+async fn put_test_config(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Query(params): Query<TestSourceQuery>,
+    Json(req): Json<UpdateTestSourceRequest>,
+) -> Response {
+    if let Some(target) = params.node_id.filter(|nid| nid != &state.node_id) {
+        return proxy::update_test_source(&state, &target, &id, &req).await;
+    }
+    let existing = match db::test_source_get(&state.db, &id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return (StatusCode::NOT_FOUND, "test source not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let row = db::TestSourceRow {
+        name: req.name,
+        pattern: req.pattern,
+        width: req.width as i64,
+        height: req.height as i64,
+        fps_num: req.fps_num as i64,
+        fps_den: req.fps_den as i64,
+        audio_signal: req.audio_signal,
+        frequency: req.frequency,
+        channels: req.channels as i64,
+        ..existing
+    };
+    match db::test_source_update(&state.db, &row).await {
+        Ok(true) => {}
+        Ok(false) => return (StatusCode::NOT_FOUND, "test source not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+    let _ = rebuild_registry(&state).await;
+    Json(row_to_config_dto(row)).into_response()
+}
+
+async fn delete_test_config(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Query(params): Query<TestSourceQuery>,
+) -> Response {
+    if let Some(target) = params.node_id.filter(|nid| nid != &state.node_id) {
+        return proxy::delete_test_source(&state, &target, &id).await;
+    }
+    match db::test_source_delete(&state.db, &id).await {
+        Ok(true) => {}
+        Ok(false) => return (StatusCode::NOT_FOUND, "test source not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+    let _ = rebuild_registry(&state).await;
+    StatusCode::NO_CONTENT.into_response()
+}
+
+// ── /api/v1/sources/{id}/connect|disconnect ───────────────────────────────────
+
+async fn post_connect(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let local = split_id(&id).1.to_string();
+    let mut sources = state.sources.write().await;
+    match sources.connect(&local) {
+        Ok(true) => {
+            let dto = sources.get(&local).map(|s| source_value(s, &state.node_id));
+            Json(dto).into_response()
+        }
+        Ok(false) => (StatusCode::NOT_FOUND, "source not found").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn post_disconnect(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let local = split_id(&id).1.to_string();
+    let mut sources = state.sources.write().await;
+    if sources.disconnect(&local) {
+        let dto = sources.get(&local).map(|s| source_value(s, &state.node_id));
+        Json(dto).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "source not found").into_response()
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn row_to_config_dto(row: db::TestSourceRow) -> TestSourceConfigDto {
+    TestSourceConfigDto {
+        id: row.id,
+        name: row.name,
+        pattern: row.pattern,
+        width: row.width as u32,
+        height: row.height as u32,
+        fps_num: row.fps_num as u32,
+        fps_den: row.fps_den as u32,
+        audio_signal: row.audio_signal,
+        frequency: row.frequency,
+        channels: row.channels as u32,
+        created_at: row.created_at,
+    }
+}
+
+fn db_row_to_config(row: db::TestSourceRow) -> crate::sources::test::TestSourceConfig {
+    use crate::sources::test::{AudioTestSignal, TestSourceConfig, VideoTestPattern};
+    TestSourceConfig {
+        id: row.id,
+        name: row.name,
+        pattern: VideoTestPattern::from_db(&row.pattern),
+        width: row.width as u32,
+        height: row.height as u32,
+        fps_num: row.fps_num as u32,
+        fps_den: row.fps_den as u32,
+        audio_signal: AudioTestSignal::from_db(&row.audio_signal),
+        frequency: row.frequency,
+        channels: row.channels as u32,
+    }
+}
+
+async fn rebuild_registry(state: &AppState) -> anyhow::Result<()> {
+    let configs = db::test_sources_list(&state.db)
+        .await?
+        .into_iter()
+        .map(db_row_to_config)
+        .collect::<Vec<_>>();
+    state.sources.write().await.scan(&configs)
 }
 
 fn source_to_dto(s: &dyn crate::sources::InputSource) -> SourceDto {
@@ -276,6 +468,7 @@ fn source_to_dto(s: &dyn crate::sources::InputSource) -> SourceDto {
         display_name: s.display_name().to_string(),
         source_type: format!("{:?}", s.source_type()).to_lowercase(),
         is_available: s.is_available(),
+        connected: s.is_connected(),
         timecode: s.timecode().map(timecode_to_dto),
         capabilities: SourceCapabilitiesDto {
             video_formats: caps.video_formats,

@@ -10,8 +10,9 @@ use futures_util::StreamExt;
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use tracing::{info, warn};
 
-use crate::api::types::NodeStatus;
+use crate::api::types::{NodeStatus, WsEvent};
 use crate::state::AppState;
+use crate::ws;
 use registry::NodeEntry;
 
 const SERVICE_TYPE: &str = "_capture-room._tcp.local.";
@@ -107,6 +108,7 @@ async fn on_node_discovered(state: Arc<AppState>, url: String) {
     let is_new = state.peers.write().await.upsert(entry);
     if is_new {
         info!(id = %status.id, url = %url, "peer added to registry");
+        ws::send(&state.ws_tx, &WsEvent::NodeOnline { node_id: status.id.clone() });
         // One relay task per node; it re-reads the URL from the registry on
         // every reconnect, so an IP change is picked up automatically, and it
         // exits once the node is pruned.
@@ -206,6 +208,8 @@ pub fn start_health_poller(state: Arc<AppState>) {
                         if failures >= PRUNE_AFTER_FAILURES {
                             peers.remove(&id);
                             info!(id = %id, "peer pruned after {failures} failed checks");
+                            drop(peers);
+                            ws::send(&state.ws_tx, &WsEvent::NodeOffline { node_id: id.clone() });
                         } else {
                             warn!(id = %id, failures, "peer health check failed");
                         }

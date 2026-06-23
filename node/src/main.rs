@@ -91,8 +91,28 @@ async fn main() -> Result<()> {
     db::sessions_mark_crashed(&pool).await?;
 
     // ── Source registry ───────────────────────────────────────────────────────
+    let test_configs: Vec<sources::test::TestSourceConfig> = db::test_sources_list(&pool)
+        .await?
+        .into_iter()
+        .map(|row| {
+            use sources::test::{AudioTestSignal, TestSourceConfig, VideoTestPattern};
+            TestSourceConfig {
+                id: row.id,
+                name: row.name,
+                pattern: VideoTestPattern::from_db(&row.pattern),
+                width: row.width as u32,
+                height: row.height as u32,
+                fps_num: row.fps_num as u32,
+                fps_den: row.fps_den as u32,
+                audio_signal: AudioTestSignal::from_db(&row.audio_signal),
+                frequency: row.frequency,
+                channels: row.channels as u32,
+            }
+        })
+        .collect();
+
     let mut registry = SourceRegistry::new();
-    registry.scan()?;
+    registry.scan(&test_configs)?;
     for source in registry.sources() {
         info!(id = source.id(), name = source.display_name(), "source ready");
     }

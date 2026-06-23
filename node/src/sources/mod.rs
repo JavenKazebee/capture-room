@@ -72,4 +72,8 @@ pub trait InputSource: Send + Sync {
 
     fn timecode(&self) -> Option<Timecode>;
     fn is_available(&self) -> bool;
+
+    fn is_connected(&self) -> bool {
+        false
+    }
 }

@@ -14,7 +14,9 @@ use axum::{
 use futures_util::future::join_all;
 use serde_json::Value;
 
-use crate::api::types::{PatchRecordingRequest, StartRecordingRequest};
+use crate::api::types::{
+    CreateTestSourceRequest, PatchRecordingRequest, StartRecordingRequest, UpdateTestSourceRequest,
+};
 use crate::state::AppState;
 
 const TIMEOUT: Duration = Duration::from_secs(3);
@@ -122,6 +124,101 @@ pub async fn stop_recording(
         }
     }
     None
+}
+
+pub async fn get_test_configs(state: &AppState, node_id: &str) -> Response {
+    let url = match peer_url(state, node_id).await {
+        Some(u) => u,
+        None => return (StatusCode::NOT_FOUND, "unknown node").into_response(),
+    };
+    match state
+        .http
+        .get(format!("{url}/api/v1/sources/test"))
+        .timeout(TIMEOUT)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => match r.json::<Value>().await {
+            Ok(body) => Json(body).into_response(),
+            Err(e) => (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+        },
+        Ok(r) => r.status().into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+    }
+}
+
+pub async fn create_test_source(
+    state: &AppState,
+    node_id: &str,
+    req: &CreateTestSourceRequest,
+) -> Response {
+    let url = match peer_url(state, node_id).await {
+        Some(u) => u,
+        None => return (StatusCode::NOT_FOUND, "unknown node").into_response(),
+    };
+    match state
+        .http
+        .post(format!("{url}/api/v1/sources/test"))
+        .json(req)
+        .timeout(TIMEOUT)
+        .send()
+        .await
+    {
+        Ok(r) => {
+            let status = r.status();
+            match r.json::<Value>().await {
+                Ok(body) => (status, Json(body)).into_response(),
+                Err(_) => status.into_response(),
+            }
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+    }
+}
+
+pub async fn update_test_source(
+    state: &AppState,
+    node_id: &str,
+    id: &str,
+    req: &UpdateTestSourceRequest,
+) -> Response {
+    let url = match peer_url(state, node_id).await {
+        Some(u) => u,
+        None => return (StatusCode::NOT_FOUND, "unknown node").into_response(),
+    };
+    match state
+        .http
+        .put(format!("{url}/api/v1/sources/test/{id}"))
+        .json(req)
+        .timeout(TIMEOUT)
+        .send()
+        .await
+    {
+        Ok(r) => {
+            let status = r.status();
+            match r.json::<Value>().await {
+                Ok(body) => (status, Json(body)).into_response(),
+                Err(_) => status.into_response(),
+            }
+        }
+        Err(e) => (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+    }
+}
+
+pub async fn delete_test_source(state: &AppState, node_id: &str, id: &str) -> Response {
+    let url = match peer_url(state, node_id).await {
+        Some(u) => u,
+        None => return (StatusCode::NOT_FOUND, "unknown node").into_response(),
+    };
+    match state
+        .http
+        .delete(format!("{url}/api/v1/sources/test/{id}"))
+        .timeout(TIMEOUT)
+        .send()
+        .await
+    {
+        Ok(r) => r.status().into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+    }
 }
 
 pub async fn thumbnail(state: &AppState, node_id: &str, local_source: &str) -> Response {

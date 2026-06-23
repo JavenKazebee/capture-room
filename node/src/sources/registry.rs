@@ -1,7 +1,7 @@
 use anyhow::Result;
 use tracing::info;
 
-use super::{test::TestSource, InputSource};
+use super::{test::{TestSource, TestSourceConfig}, InputSource};
 
 pub struct SourceRegistry {
     sources: Vec<Box<dyn InputSource>>,
@@ -12,21 +12,22 @@ impl SourceRegistry {
         Self { sources: Vec::new() }
     }
 
-    /// Discover available sources.
+    /// Rebuild the source list from the provided test source configs.
     ///
-    /// In the current implementation this populates two `TestSource` instances.
     /// Future implementations will also scan for NDI and Decklink devices.
-    pub fn scan(&mut self) -> Result<()> {
+    /// Calling scan replaces all existing source instances; connected state
+    /// is not preserved across a scan.
+    pub fn scan(&mut self, configs: &[TestSourceConfig]) -> Result<()> {
         self.sources.clear();
 
-        let test_sources: Vec<Box<dyn InputSource>> = vec![
-            Box::new(TestSource::default_config("test-1", "Test Source 1")?),
-            Box::new(TestSource::default_config("test-2", "Test Source 2")?),
-        ];
+        for cfg in configs {
+            match TestSource::new(cfg.clone()) {
+                Ok(src) => self.sources.push(Box::new(src)),
+                Err(e) => tracing::warn!(id = %cfg.id, error = %e, "failed to create test source"),
+            }
+        }
 
-        let count = test_sources.len();
-        self.sources.extend(test_sources);
-
+        let count = self.sources.len();
         info!(count, "source scan complete");
         Ok(())
     }
@@ -42,6 +43,26 @@ impl SourceRegistry {
     pub fn get_mut(&mut self, id: &str) -> Option<&mut dyn InputSource> {
         let pos = self.sources.iter().position(|s| s.id() == id)?;
         Some(self.sources[pos].as_mut())
+    }
+
+    pub fn connect(&mut self, id: &str) -> Result<bool> {
+        match self.get_mut(id) {
+            Some(src) => {
+                src.connect()?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    pub fn disconnect(&mut self, id: &str) -> bool {
+        match self.get_mut(id) {
+            Some(src) => {
+                src.disconnect();
+                true
+            }
+            None => false,
+        }
     }
 }
 

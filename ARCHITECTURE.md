@@ -64,8 +64,8 @@ The controller mode instance can also run local capture pipelines if hardware is
 Started with a mode flag:
 
 ```
-capture-room --mode node         # capture only (default)
-capture-room --mode controller   # capture + orchestration + UI
+capture-room --role node         # capture only (default)
+capture-room --role aggregator   # capture + orchestration + UI
 ```
 
 Both modes listen on the same configurable port (default `7700`). The mode determines which route groups are registered, not which port is used. The controller calls its own local capture subsystem in-process — no loopback HTTP.
@@ -93,9 +93,9 @@ pub trait InputSource: Send + Sync {
 ```
 
 Initial implementations:
-- `NdiSource` — NDI SDK via FFI
-- `DecklinkSource` — Decklink SDK via FFI
-- `TestSource` — `videotestsrc` + `audiotestsrc` for development without hardware
+- `TestSource` — ✅ implemented — `videotestsrc` + `audiotestsrc`, the reference pattern for all sources (`gst::Bin` with `"video"` / `"audio"` ghost pads)
+- `NdiSource` — ⬜ in progress — built on the `gst-plugin-ndi` GStreamer elements (`ndisrc` + `ndisrcdemux`), not the raw NDI SDK FFI. Discovery via `ndi-device-monitor`. Follows the same bin/ghost-pad contract as `TestSource`.
+- `DecklinkSource` — ⬜ deferred (no hardware) — Decklink SDK via FFI / `decklinkvideosrc`
 
 ---
 
@@ -492,19 +492,31 @@ capture-room/
 
 ## Build Order for v1
 
-1. **Monorepo scaffold** — workspace config, root scripts, `pnpm dev` wired up
-2. **UI scaffold** — shadcn-vue init, routing, empty views, Pinia stores, WebSocket composable
-3. **Rust — TestSource + InputSource trait** — unblocks all pipeline work without hardware
-4. **Rust — GStreamer pipeline** — single source, single output, no tee
-5. **Rust — multi-output tee, thumbnail, audio metering**
-6. **Rust — node-mode REST + WebSocket API**, `ts-rs` type export
-7. **UI — dashboard with live feed grid, manual recording controls**
-8. **Rust — controller mode** — node registry, health polling, unified API, UI serving
-9. **UI — nodes view, preset management, schedules**
-10. **Rust — NDI implementation**
-11. **Rust — Decklink implementation**
-12. **Rust — preset sync + scheduling engine**
-13. **Rust — benchmark runner**
-14. **Rust — timecode**
-15. **Rust — redundant recording path**
-16. **Cross-platform packaging + GitHub Actions**
+Status legend: ✅ done · 🟡 partial · ⬜ not started · _(as of 2026-06-23)_
+
+1. ✅ **Monorepo scaffold** — workspace config, root scripts, `pnpm dev` wired up
+2. ✅ **UI scaffold** — shadcn-vue init, routing, empty views, Pinia stores, WebSocket composable
+3. ✅ **Rust — TestSource + InputSource trait** — unblocks all pipeline work without hardware
+4. ✅ **Rust — GStreamer pipeline** — single source, single output, no tee
+5. ✅ **Rust — multi-output tee, thumbnail, audio metering**
+6. ✅ **Rust — node-mode REST + WebSocket API**, `ts-rs` type export
+   - _Note: `ts-rs` is wired but `ui/src/types/generated/` is currently empty — run `pnpm types` to populate._
+7. ✅ **UI — dashboard with live feed grid, manual recording controls** — `DashboardView.vue` built
+8. ✅ **Rust — controller mode** — node registry, health polling, unified API, UI serving
+9. 🟡 **UI — nodes view, preset management, schedules**
+   - ✅ `NodesView.vue`, ✅ `PresetsView.vue`
+   - ⬜ `SourcesView`, `RecordingsView`, `SchedulesView`, `LogsView` are still "coming soon" placeholders
+10. 🟡 **Rust — NDI implementation** (NDI hardware on hand)
+    - ⬜ Prereq: install `gst-plugin-ndi` (`ndisrc` / `ndisrcdemux`) — not present on dev machine
+    - ⬜ `NdiSource` impl + device discovery in `SourceRegistry::scan()`
+
+> **Sequencing note:** the v1 build order above is the original plan. Active work is now
+> sequenced in [ROADMAP.md](ROADMAP.md), which front-loads a generic TestSource, the Sources
+> view, and live source monitoring ahead of NDI capture.
+11. ⬜ **Rust — Decklink implementation** — deferred (no hardware)
+12. 🟡 **Rust — preset sync + scheduling engine**
+    - ✅ Preset sync (`controller/sync.rs`); ⬜ scheduler engine (`controller/scheduler.rs` is an empty stub)
+13. ⬜ **Rust — benchmark runner** — empty stub (`benchmark/mod.rs`)
+14. ⬜ **Rust — timecode** — empty stub (`timecode/mod.rs`); TestSource fakes a wall-clock TC
+15. ⬜ **Rust — redundant recording path**
+16. ⬜ **Cross-platform packaging + GitHub Actions**

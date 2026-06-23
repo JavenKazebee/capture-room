@@ -56,7 +56,9 @@ function handleEvent(event: Record<string, any>) {
 
   switch (event.type) {
     case 'source.available':
-      // A rescan happened; let the next poll refresh sources.
+    case 'node.online':
+    case 'node.offline':
+      sources.loadSources()
       break
 
     case 'source.lost':

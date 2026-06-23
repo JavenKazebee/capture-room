@@ -51,8 +51,58 @@ pub struct SourceDto {
     pub display_name: String,
     pub source_type: String,
     pub is_available: bool,
+    pub connected: bool,
     pub timecode: Option<TimecodeDto>,
     pub capabilities: SourceCapabilitiesDto,
+}
+
+// ── Test source config ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+pub struct TestSourceConfigDto {
+    pub id: String,
+    pub name: String,
+    pub pattern: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps_num: u32,
+    pub fps_den: u32,
+    pub audio_signal: String,
+    pub frequency: f64,
+    pub channels: u32,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+pub struct CreateTestSourceRequest {
+    pub name: String,
+    pub pattern: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps_num: u32,
+    pub fps_den: u32,
+    pub audio_signal: String,
+    pub frequency: f64,
+    pub channels: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+pub struct UpdateTestSourceRequest {
+    pub name: String,
+    pub pattern: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps_num: u32,
+    pub fps_den: u32,
+    pub audio_signal: String,
+    pub frequency: f64,
+    pub channels: u32,
 }
 
 // ── Recordings ────────────────────────────────────────────────────────────────
@@ -213,4 +263,8 @@ pub enum WsEvent {
         message: String,
         timestamp: String,
     },
+    #[serde(rename = "node.online")]
+    NodeOnline { node_id: String },
+    #[serde(rename = "node.offline")]
+    NodeOffline { node_id: String },
 }

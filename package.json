@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "concurrently \"pnpm dev:node\" \"pnpm dev:ui\"",
-    "dev:node": "cargo watch -x 'run -p capture-room -- --mode controller'",
+    "dev:node": "cargo watch -x 'run -p capture-room -- --role aggregator'",
     "dev:ui": "pnpm --filter ui dev",
     "build": "pnpm build:ui && cargo build --release",
     "build:ui": "pnpm --filter ui build",

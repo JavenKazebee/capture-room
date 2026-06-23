@@ -292,3 +292,97 @@ pub async fn presets_replace(pool: &SqlitePool, presets: &[PresetCacheRow]) -> R
     tx.commit().await?;
     Ok(())
 }
+
+// ── test_sources ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, FromRow)]
+pub struct TestSourceRow {
+    pub id: String,
+    pub name: String,
+    pub pattern: String,
+    pub width: i64,
+    pub height: i64,
+    pub fps_num: i64,
+    pub fps_den: i64,
+    pub audio_signal: String,
+    pub frequency: f64,
+    pub channels: i64,
+    pub created_at: String,
+}
+
+pub async fn test_sources_list(pool: &SqlitePool) -> Result<Vec<TestSourceRow>> {
+    let rows = sqlx::query_as::<_, TestSourceRow>(
+        "SELECT id, name, pattern, width, height, fps_num, fps_den,
+                audio_signal, frequency, channels, created_at
+         FROM test_sources ORDER BY created_at",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn test_source_get(pool: &SqlitePool, id: &str) -> Result<Option<TestSourceRow>> {
+    let row = sqlx::query_as::<_, TestSourceRow>(
+        "SELECT id, name, pattern, width, height, fps_num, fps_den,
+                audio_signal, frequency, channels, created_at
+         FROM test_sources WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+pub async fn test_source_insert(pool: &SqlitePool, row: &TestSourceRow) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO test_sources
+         (id, name, pattern, width, height, fps_num, fps_den,
+          audio_signal, frequency, channels, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&row.id)
+    .bind(&row.name)
+    .bind(&row.pattern)
+    .bind(row.width)
+    .bind(row.height)
+    .bind(row.fps_num)
+    .bind(row.fps_den)
+    .bind(&row.audio_signal)
+    .bind(row.frequency)
+    .bind(row.channels)
+    .bind(&row.created_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn test_source_update(pool: &SqlitePool, row: &TestSourceRow) -> Result<bool> {
+    let res = sqlx::query(
+        "UPDATE test_sources
+         SET name = ?, pattern = ?, width = ?, height = ?,
+             fps_num = ?, fps_den = ?, audio_signal = ?,
+             frequency = ?, channels = ?
+         WHERE id = ?",
+    )
+    .bind(&row.name)
+    .bind(&row.pattern)
+    .bind(row.width)
+    .bind(row.height)
+    .bind(row.fps_num)
+    .bind(row.fps_den)
+    .bind(&row.audio_signal)
+    .bind(row.frequency)
+    .bind(row.channels)
+    .bind(&row.id)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+pub async fn test_source_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
+    let res = sqlx::query("DELETE FROM test_sources WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
