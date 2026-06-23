@@ -7,7 +7,13 @@ use crate::api::types::WsEvent;
 
 /// Capacity of the broadcast channel.  Old messages are dropped when the
 /// channel is full and no receiver is fast enough.
-const CHANNEL_CAPACITY: usize = 128;
+///
+/// On an aggregator this single channel carries the local emitter's output
+/// plus every relayed peer event. Peak rate ≈ (total sources × 1/s) +
+/// (active recordings × ~11/s). 1024 slots buys ~2s of burst tolerance at a
+/// few hundred events/sec; the ring holds one copy of each message regardless
+/// of receiver count, so the memory cost is ~1024 × message size (trivial).
+const CHANNEL_CAPACITY: usize = 1024;
 
 pub fn channel() -> (broadcast::Sender<String>, broadcast::Receiver<String>) {
     broadcast::channel(CHANNEL_CAPACITY)

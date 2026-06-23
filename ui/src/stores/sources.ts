@@ -27,6 +27,7 @@ export interface Source {
   is_available: boolean
   timecode: TimecodeDto | null
   capabilities: SourceCapabilities
+  node_id?: string
 }
 
 export interface ChannelLevel {

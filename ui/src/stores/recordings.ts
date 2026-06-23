@@ -13,6 +13,7 @@ export interface RecordingSession {
   redundant_path: string | null
   status: 'active' | 'stopped' | 'error'
   error_message: string | null
+  node_id?: string
 }
 
 export const useRecordingsStore = defineStore('recordings', () => {

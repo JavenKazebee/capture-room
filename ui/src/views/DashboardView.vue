@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import { useSourcesStore } from '@/stores/sources'
+import { useSourcesStore, type Source } from '@/stores/sources'
 import { useRecordingsStore } from '@/stores/recordings'
 import { wsStatus } from '@/composables/useWebSocket'
 import { useApi } from '@/composables/useApi'
@@ -17,8 +17,8 @@ onMounted(async () => {
     api('/recordings').catch(() => []),
   ])
 
-  for (const s of fetchedSources as ReturnType<typeof sources.upsert>[]) {
-    sources.upsert(s as Parameters<typeof sources.upsert>[0])
+  for (const s of fetchedSources as Source[]) {
+    sources.upsert(s)
   }
 
   for (const r of fetchedRecordings as Parameters<typeof recordings.upsert>[0][]) {
