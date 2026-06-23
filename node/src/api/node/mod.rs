@@ -221,9 +221,37 @@ async fn patch_recording(
 
     let session = {
         let mut mgr = state.recordings.write().await;
-        match mgr.stop(&id).await {
-            Ok(s) => s,
-            Err(e) => return (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+        if mgr.is_active(&id) {
+            match mgr.stop(&id).await {
+                Ok(s) => s,
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            }
+        } else {
+            // Session exists in DB but has no live pipeline (e.g. after node restart).
+            // Mark it stopped directly.
+            drop(mgr);
+            match db::session_get(&state.db, &id).await {
+                Ok(Some(row)) => {
+                    let stopped_at = chrono::Utc::now().to_rfc3339();
+                    if let Err(e) = db::session_update_stop(&state.db, &id, &stopped_at, "stopped", None).await {
+                        error!(error = %e, "db stop orphaned session");
+                    }
+                    RecordingSessionDto {
+                        id: row.id,
+                        source_id: row.source_id,
+                        preset_id: row.preset_id,
+                        started_at: row.started_at,
+                        stopped_at: Some(stopped_at),
+                        primary_path: row.primary_path,
+                        secondary_path: row.secondary_path,
+                        redundant_path: row.redundant_path,
+                        status: "stopped".to_string(),
+                        error_message: None,
+                    }
+                }
+                Ok(None) => return (StatusCode::NOT_FOUND, "session not found").into_response(),
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            }
         }
     };
 

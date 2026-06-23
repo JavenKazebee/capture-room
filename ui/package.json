@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@lucide/vue": "^1.21.0",
+    "@vueuse/core": "^14.3.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "ofetch": "^1.5.1",

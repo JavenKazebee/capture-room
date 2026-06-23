@@ -61,6 +61,20 @@ pub struct SessionRow {
     pub error_message: Option<String>,
 }
 
+/// On startup, any session still marked 'active' has no running pipeline.
+pub async fn sessions_mark_crashed(pool: &SqlitePool) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE recording_sessions
+         SET status = 'error', stopped_at = ?, error_message = 'node restarted'
+         WHERE status = 'active'",
+    )
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn session_insert(pool: &SqlitePool, s: &SessionRow) -> Result<()> {
     sqlx::query(
         "INSERT INTO recording_sessions

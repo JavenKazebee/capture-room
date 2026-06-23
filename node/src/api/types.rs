@@ -123,44 +123,53 @@ pub struct ChannelLevelDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type")]
 #[cfg_attr(feature = "export-types", derive(TS))]
 #[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
 pub enum WsEvent {
+    #[serde(rename = "source.available")]
     SourceAvailable {
         source_id: String,
         name: String,
     },
+    #[serde(rename = "source.lost")]
     SourceLost {
         source_id: String,
         name: String,
     },
+    #[serde(rename = "recording.started")]
     RecordingStarted {
         session_id: String,
         source_id: String,
     },
+    #[serde(rename = "recording.stopped")]
     RecordingStopped {
         session_id: String,
         source_id: String,
     },
+    #[serde(rename = "recording.error")]
     RecordingError {
         session_id: String,
         source_id: String,
         error: String,
     },
+    #[serde(rename = "feed.status")]
     FeedStatus {
         source_id: String,
         timecode: Option<String>,
         duration_secs: f64,
     },
+    #[serde(rename = "audio.levels")]
     AudioLevels {
         source_id: String,
         channels: Vec<ChannelLevelDto>,
     },
+    #[serde(rename = "thumbnail.updated")]
     ThumbnailUpdated {
         source_id: String,
         url: String,
     },
+    #[serde(rename = "log")]
     Log {
         level: String,
         message: String,
