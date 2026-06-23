@@ -6,7 +6,7 @@ use axum::{
     extract::{ws::WebSocketUpgrade, Path as AxumPath, State},
     http::{header, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use rust_embed::RustEmbed;
@@ -15,11 +15,11 @@ use serde_json::{json, Value};
 use tracing::error;
 
 use crate::api::types::{
-    PatchRecordingRequest, PresetSyncRequest, RecordingSessionDto, SourceCapabilitiesDto,
-    SourceDto, StartRecordingRequest, TimecodeDto, WsEvent,
+    PatchRecordingRequest, PresetCreateRequest, PresetDto, PresetSyncRequest, RecordingSessionDto,
+    SourceCapabilitiesDto, SourceDto, StartRecordingRequest, TimecodeDto, WsEvent,
 };
-use crate::controller::proxy;
-use crate::db;
+use crate::controller::{proxy, sync};
+use crate::db::{self, PresetRow};
 use crate::pipeline::profile::RecordingProfile;
 use crate::recording;
 use crate::sources::Timecode;
@@ -67,7 +67,8 @@ pub fn router() -> Router<Arc<AppState>> {
             get(get_recording).patch(patch_recording),
         )
         .route("/api/v1/thumbnails/{source_id}", get(get_thumbnail))
-        .route("/api/v1/presets", get(get_presets))
+        .route("/api/v1/presets", get(get_presets).post(post_preset))
+        .route("/api/v1/presets/{id}", put(put_preset).delete(delete_preset))
         .route("/api/v1/presets/sync", post(post_presets_sync))
         .route("/ws", get(ws_handler))
         .fallback(serve_ui)
@@ -521,23 +522,115 @@ async fn get_thumbnail(
 
 // ── /api/v1/presets ───────────────────────────────────────────────────────────
 
+fn forbidden() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        "preset authoring requires the control station role",
+    )
+        .into_response()
+}
+
 async fn get_presets(State(state): State<Arc<AppState>>) -> Response {
-    match db::presets_list(&state.db).await {
+    match db::presets_full_list(&state.db).await {
         Ok(rows) => {
-            let dtos: Vec<crate::api::types::PresetCacheDto> = rows
-                .into_iter()
-                .map(|r| crate::api::types::PresetCacheDto {
-                    id: r.id,
-                    name: r.name,
-                    data: serde_json::from_str(&r.data).unwrap_or(Value::Null),
-                    version: r.version,
-                    synced_at: r.synced_at,
-                })
-                .collect();
+            let dtos: Vec<PresetDto> = rows.iter().map(sync::preset_row_to_dto).collect();
             Json(dtos).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+async fn post_preset(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<PresetCreateRequest>,
+) -> Response {
+    if !state.role.is_aggregator() {
+        return forbidden();
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    let row = PresetRow {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: req.name,
+        codec: req.codec,
+        container: req.container,
+        resolution: req.resolution,
+        framerate: req.framerate,
+        bitrate_kbps: req.bitrate_kbps,
+        quality: req.quality,
+        output_template: req.output_template,
+        secondary_output_template: req.secondary_output_template,
+        redundant_output_template: req.redundant_output_template,
+        created_at: now.clone(),
+        updated_at: now,
+        version: 1,
+    };
+
+    if let Err(e) = db::preset_insert(&state.db, &row).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    if let Err(e) = sync::sync_presets_to_nodes(&state).await {
+        error!(error = %e, "preset sync after create");
+    }
+    (StatusCode::CREATED, Json(sync::preset_row_to_dto(&row))).into_response()
+}
+
+async fn put_preset(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<PresetCreateRequest>,
+) -> Response {
+    if !state.role.is_aggregator() {
+        return forbidden();
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    // created_at/version are ignored by preset_update (it bumps version itself).
+    let row = PresetRow {
+        id: id.clone(),
+        name: req.name,
+        codec: req.codec,
+        container: req.container,
+        resolution: req.resolution,
+        framerate: req.framerate,
+        bitrate_kbps: req.bitrate_kbps,
+        quality: req.quality,
+        output_template: req.output_template,
+        secondary_output_template: req.secondary_output_template,
+        redundant_output_template: req.redundant_output_template,
+        created_at: String::new(),
+        updated_at: now,
+        version: 0,
+    };
+
+    match db::preset_update(&state.db, &row).await {
+        Ok(true) => {}
+        Ok(false) => return (StatusCode::NOT_FOUND, "preset not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+    if let Err(e) = sync::sync_presets_to_nodes(&state).await {
+        error!(error = %e, "preset sync after update");
+    }
+    match db::preset_get_full(&state.db, &id).await {
+        Ok(Some(updated)) => Json(sync::preset_row_to_dto(&updated)).into_response(),
+        _ => StatusCode::OK.into_response(),
+    }
+}
+
+async fn delete_preset(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    if !state.role.is_aggregator() {
+        return forbidden();
+    }
+    match db::preset_delete(&state.db, &id).await {
+        Ok(true) => {}
+        Ok(false) => return (StatusCode::NOT_FOUND, "preset not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+    if let Err(e) = sync::sync_presets_to_nodes(&state).await {
+        error!(error = %e, "preset sync after delete");
+    }
+    StatusCode::NO_CONTENT.into_response()
 }
 
 async fn post_presets_sync(
@@ -590,16 +683,25 @@ fn session_row_to_dto(r: db::SessionRow) -> RecordingSessionDto {
 }
 
 async fn build_profile_for_preset(state: &AppState, preset_id: &str) -> RecordingProfile {
+    // Recordings resolve presets from the synced cache (full preset JSON in `data`).
     if let Ok(rows) = db::presets_list(&state.db).await {
         if let Some(row) = rows.into_iter().find(|r| r.id == preset_id) {
-            if let Ok(v) = serde_json::from_str::<Value>(&row.data) {
-                let codec = v["codec"].as_str().unwrap_or("h264").to_lowercase();
-                return match codec.as_str() {
-                    "h264" => RecordingProfile::h264_mov(&row.id),
-                    _ => RecordingProfile::h264_mov(&row.id),
-                };
+            if let Ok(p) = serde_json::from_str::<PresetDto>(&row.data) {
+                return RecordingProfile::from_preset(
+                    p.id,
+                    p.name,
+                    &p.codec,
+                    &p.container,
+                    p.resolution.as_deref(),
+                    p.framerate.as_deref(),
+                    p.bitrate_kbps.map(|b| b as u32),
+                    p.quality,
+                    p.output_template,
+                );
             }
         }
     }
+    // Built-in fallback (the always-available "default" preset, or anything
+    // not yet synced).
     RecordingProfile::h264_mov(preset_id)
 }

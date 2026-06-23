@@ -112,6 +112,44 @@ pub struct PresetSyncRequest {
     pub presets: Vec<PresetCacheDto>,
 }
 
+/// Full preset as stored in the authoritative `presets` table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+pub struct PresetDto {
+    pub id: String,
+    pub name: String,
+    pub codec: String,
+    pub container: String,
+    pub resolution: Option<String>,
+    pub framerate: Option<String>,
+    pub bitrate_kbps: Option<i64>,
+    pub quality: Option<String>,
+    pub output_template: String,
+    pub secondary_output_template: Option<String>,
+    pub redundant_output_template: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub version: i64,
+}
+
+/// Create/update payload — server owns id, timestamps, and version.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+pub struct PresetCreateRequest {
+    pub name: String,
+    pub codec: String,
+    pub container: String,
+    pub resolution: Option<String>,
+    pub framerate: Option<String>,
+    pub bitrate_kbps: Option<i64>,
+    pub quality: Option<String>,
+    pub output_template: String,
+    pub secondary_output_template: Option<String>,
+    pub redundant_output_template: Option<String>,
+}
+
 // ── WebSocket events ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

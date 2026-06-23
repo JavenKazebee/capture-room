@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { audioLevels, thumbnailSeqs, type Source } from '@/stores/sources'
 import { useRecordingsStore, type RecordingSession } from '@/stores/recordings'
+import { usePresetsStore } from '@/stores/presets'
 import AudioMeter from './AudioMeter.vue'
 import { Button } from '@/components/ui/button'
 import {
@@ -18,12 +19,16 @@ const props = defineProps<{
 }>()
 
 const recordings = useRecordingsStore()
+const presets = usePresetsStore()
 
 // ── Preset selection ──────────────────────────────────────────────────────────
 
-const BUILTIN_PRESETS = [
+// The built-in "default" is always available and resolves to H.264/MOV
+// server-side even when no presets have been authored yet.
+const presetOptions = computed(() => [
   { id: 'default', label: 'H.264 (default)' },
-]
+  ...presets.presets.map((p) => ({ id: p.id, label: p.name })),
+])
 
 const selectedPreset = ref('default')
 
@@ -147,7 +152,7 @@ function formatDuration(startedAt: string): string {
           </SelectTrigger>
           <SelectContent>
             <SelectItem
-              v-for="preset in BUILTIN_PRESETS"
+              v-for="preset in presetOptions"
               :key="preset.id"
               :value="preset.id"
               class="text-xs"

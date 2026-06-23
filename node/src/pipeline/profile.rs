@@ -125,4 +125,71 @@ impl RecordingProfile {
             output_template: "/tmp/{source}_{datetime}.{ext}".into(),
         }
     }
+
+    /// Build a profile from stored preset fields (codec/container are free-text
+    /// in the DB). Unknown values fall back to sane defaults rather than failing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_preset(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        codec: &str,
+        container: &str,
+        resolution: Option<&str>,
+        framerate: Option<&str>,
+        bitrate_kbps: Option<u32>,
+        quality: Option<String>,
+        output_template: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            video_codec: parse_codec(codec),
+            container: parse_container(container),
+            resolution: resolution.and_then(parse_resolution),
+            framerate: framerate.and_then(parse_framerate),
+            bitrate_kbps,
+            quality,
+            output_template: output_template.into(),
+        }
+    }
+}
+
+fn parse_codec(s: &str) -> VideoCodec {
+    match s.trim().to_lowercase().as_str() {
+        "h265" | "hevc" => VideoCodec::H265,
+        "vp9" => VideoCodec::Vp9,
+        "prores" | "prores_422hq" => VideoCodec::ProRes(ProResVariant::P422Hq),
+        "prores_4444" => VideoCodec::ProRes(ProResVariant::P4444),
+        "prores_422" => VideoCodec::ProRes(ProResVariant::P422),
+        "prores_422lt" => VideoCodec::ProRes(ProResVariant::P422Lt),
+        "prores_422proxy" => VideoCodec::ProRes(ProResVariant::P422Proxy),
+        "dnxhd" => VideoCodec::DnxHd,
+        "uncompressed" | "raw" => VideoCodec::Uncompressed,
+        _ => VideoCodec::H264,
+    }
+}
+
+fn parse_container(s: &str) -> Container {
+    match s.trim().to_lowercase().as_str() {
+        "mp4" => Container::Mp4,
+        "mkv" => Container::Mkv,
+        "mxf" => Container::Mxf,
+        _ => Container::Mov,
+    }
+}
+
+/// "1920x1080" → (1920, 1080)
+fn parse_resolution(s: &str) -> Option<(u32, u32)> {
+    let (w, h) = s.trim().split_once(['x', 'X'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+}
+
+/// "30" → (30, 1); "30000/1001" → (30000, 1001)
+fn parse_framerate(s: &str) -> Option<(u32, u32)> {
+    let s = s.trim();
+    if let Some((n, d)) = s.split_once('/') {
+        Some((n.trim().parse().ok()?, d.trim().parse().ok()?))
+    } else {
+        Some((s.parse().ok()?, 1))
+    }
 }

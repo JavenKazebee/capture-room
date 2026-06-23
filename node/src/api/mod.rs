@@ -33,6 +33,8 @@ mod export_tests {
         PatchRecordingRequest::export_all().unwrap();
         PresetCacheDto::export_all().unwrap();
         PresetSyncRequest::export_all().unwrap();
+        PresetDto::export_all().unwrap();
+        PresetCreateRequest::export_all().unwrap();
         WsEvent::export_all().unwrap();
         ChannelLevelDto::export_all().unwrap();
     }

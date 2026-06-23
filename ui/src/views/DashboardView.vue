@@ -2,6 +2,7 @@
 import { onMounted } from 'vue'
 import { useSourcesStore, type Source } from '@/stores/sources'
 import { useRecordingsStore } from '@/stores/recordings'
+import { usePresetsStore } from '@/stores/presets'
 import { wsStatus } from '@/composables/useWebSocket'
 import { useApi } from '@/composables/useApi'
 import FeedCard from '@/components/FeedCard.vue'
@@ -9,9 +10,11 @@ import { WifiOff } from '@lucide/vue'
 
 const sources = useSourcesStore()
 const recordings = useRecordingsStore()
+const presets = usePresetsStore()
 const { api } = useApi()
 
 onMounted(async () => {
+  presets.load()
   const [fetchedSources, fetchedRecordings] = await Promise.all([
     api('/sources').catch(() => []),
     api('/recordings').catch(() => []),
