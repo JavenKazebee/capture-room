@@ -8,15 +8,22 @@ name = "capture-room"
 path = "src/main.rs"
 
 [features]
-export-types = []
+export-types = ["dep:ts-rs"]
 
 [dependencies]
 anyhow = "1"
-chrono = "0.4"
+axum = { version = "0.8", features = ["ws", "macros"] }
+chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
-futures-util = "0.3.32"
+futures-util = "0.3"
 gstreamer = "0.23"
 gstreamer-app = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"] }
 tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ts-rs = { version = "10", optional = true }
+uuid = { version = "1", features = ["v4", "serde"] }
