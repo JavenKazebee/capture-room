@@ -2,6 +2,7 @@ use anyhow::Result;
 use gstreamer as gst;
 
 pub mod manager;
+pub mod ndi;
 pub mod registry;
 pub mod test;
 

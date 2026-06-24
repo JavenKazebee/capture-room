@@ -3,6 +3,7 @@ use tracing::info;
 
 use super::{test::{TestSource, TestSourceConfig}, InputSource};
 
+
 pub struct SourceRegistry {
     sources: Vec<Box<dyn InputSource>>,
 }
@@ -12,12 +13,13 @@ impl SourceRegistry {
         Self { sources: Vec::new() }
     }
 
-    /// Rebuild the source list from the provided test source configs.
-    ///
-    /// Future implementations will also scan for NDI and Decklink devices.
-    /// Calling scan replaces all existing source instances; connected state
-    /// is not preserved across a scan.
-    pub fn scan(&mut self, configs: &[TestSourceConfig]) -> Result<()> {
+    /// Rebuild the source list from test configs and pre-discovered NDI sources.
+    /// Connected state is not preserved across a scan.
+    pub fn scan(
+        &mut self,
+        configs: &[TestSourceConfig],
+        ndi_sources: Vec<Box<dyn InputSource>>,
+    ) -> Result<()> {
         self.sources.clear();
 
         for cfg in configs {
@@ -26,6 +28,8 @@ impl SourceRegistry {
                 Err(e) => tracing::warn!(id = %cfg.id, error = %e, "failed to create test source"),
             }
         }
+
+        self.sources.extend(ndi_sources);
 
         let count = self.sources.len();
         info!(count, "source scan complete");

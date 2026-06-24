@@ -242,6 +242,11 @@ impl MonitorPipeline {
             .build()
             .context("create video recording queue")?;
         vq.set_property_from_str("leaky", "upstream");
+        // Format converter before the video encoder. Prevents RECONFIGURE events
+        // from x264enc propagating upstream to the source (e.g. ndisrc) and
+        // handles sources that provide a format the encoder can't accept directly
+        // (e.g. NDI UYVY → x264enc I420).
+        let vconv = make_el("videoconvert", &format!("vconv-{tag}"))?;
         let venc = build_video_encoder(profile, tag)?;
         // Large audio queue so the muxer can buffer audio while waiting for the
         // first video frames without blocking the atee.
@@ -252,6 +257,9 @@ impl MonitorPipeline {
             .property("max-size-buffers", 0u32)
             .build()
             .context("create audio recording queue")?;
+        // Format/rate converters before the audio encoder for the same reason.
+        let aconv = make_el("audioconvert", &format!("aconv-{tag}"))?;
+        let aresample = make_el("audioresample", &format!("aresample-{tag}"))?;
         let aenc = build_audio_encoder(profile, tag)?;
         let muxer = build_muxer(profile, tag)?;
         let filesink = gst::ElementFactory::make("filesink")
@@ -262,8 +270,11 @@ impl MonitorPipeline {
 
         let all_elements = vec![
             vq.clone(),
+            vconv.clone(),
             venc.clone(),
             aq.clone(),
+            aconv.clone(),
+            aresample.clone(),
             aenc.clone(),
             muxer.clone(),
             filesink.clone(),
@@ -277,13 +288,16 @@ impl MonitorPipeline {
         }
 
         // ── Link within branch (not to tees yet) ──────────────────────────────
-        vq.link(&venc).context("link vq → venc")?;
+        vq.link(&vconv).context("link vq → vconv")?;
+        vconv.link(&venc).context("link vconv → venc")?;
         venc.static_pad("src")
             .context("venc src pad")?
             .link(&muxer.request_pad_simple("video_%u").context("mux video pad")?)
             .context("link venc → mux video")?;
 
-        aq.link(&aenc).context("link aq → aenc")?;
+        aq.link(&aconv).context("link aq → aconv")?;
+        aconv.link(&aresample).context("link aconv → aresample")?;
+        aresample.link(&aenc).context("link aresample → aenc")?;
         aenc.static_pad("src")
             .context("aenc src pad")?
             .link(&muxer.request_pad_simple("audio_%u").context("mux audio pad")?)

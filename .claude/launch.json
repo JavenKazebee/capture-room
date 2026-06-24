@@ -5,7 +5,8 @@
       "name": "ui",
       "runtimeExecutable": "/home/javenk/.local/share/fnm/node-versions/v24.16.0/installation/lib/node_modules/corepack/shims/pnpm",
       "runtimeArgs": ["--filter", "ui", "dev"],
-      "port": 5173
+      "port": 5173,
+      "autoPort": true
     }
   ]
 }

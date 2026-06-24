@@ -29,6 +29,9 @@ const REQUIRED: &[(&str, &str, &str)] = &[
     ("videorate",     "gst-plugins-good",  "pacman -S gst-plugins-good  /  apt install gstreamer1.0-plugins-good"),
     // ── gst-plugins-bad ──────────────────────────────────────────────────────
     ("mxfmux",        "gst-plugins-bad",   "pacman -S gst-plugins-bad  /  apt install gstreamer1.0-plugins-bad"),
+    // ── NDI (statically linked) ───────────────────────────────────────────────
+    ("ndisrc",        "gst-plugin-ndi",    ""),
+    ("ndisrcdemux",   "gst-plugin-ndi",    ""),
 ];
 
 /// Check that every required GStreamer element is registered on this machine.

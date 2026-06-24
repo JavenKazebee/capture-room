@@ -59,10 +59,11 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    gstreamer::init().expect("GStreamer init failed");
-    plugins::check_required_plugins()?;
-
     let args = Args::parse();
+
+    gstreamer::init().expect("GStreamer init failed");
+    gstndi::plugin_register_static().expect("NDI plugin registration failed");
+    plugins::check_required_plugins()?;
     let pool = db::init(&args.db).await?;
 
     // ── Node identity ─────────────────────────────────────────────────────────
@@ -106,7 +107,10 @@ async fn main() -> Result<()> {
         .collect();
 
     let monitor_config = load_monitor_config(&pool).await;
-    let mut source_manager = SourceManager::new(monitor_config);
+    let ndi_monitor = tokio::task::spawn_blocking(sources::ndi::NdiMonitor::start)
+        .await
+        .expect("NDI monitor thread panicked");
+    let mut source_manager = SourceManager::new(monitor_config, ndi_monitor);
     source_manager.scan(&test_configs).await?;
 
     for source in source_manager.sources() {

@@ -4,7 +4,7 @@ Active sequencing of work, decisions, and rationale. This complements
 [ARCHITECTURE.md](ARCHITECTURE.md) (the design spec) — when the two disagree on
 *order*, this file wins; ARCHITECTURE.md remains the source of truth for *design*.
 
-_Last updated: 2026-06-23_
+_Last updated: 2026-06-24_
 
 ---
 
@@ -12,8 +12,8 @@ _Last updated: 2026-06-23_
 
 1. ✅ **Generic TestSource + Sources view**
 2. ✅ **Live source monitoring**
-3. **NDI capture** (+ plugin build/packaging) ← active
-4. **Multi-pipeline output per preset**
+3. ✅ **NDI capture** (+ plugin build/packaging)
+4. **Multi-pipeline output per preset** ← active
 5. **Benchmark + capacity estimator**
 6. **UI overhaul / dark mode** — woven through 1–5; design-token pass up front
 7. **Follow-on:** scheduler engine, timecode, packaging/CI, additional source types
@@ -55,36 +55,37 @@ live — no recording required.
 
 Touches: `node/src/pipeline/monitor.rs`, `node/src/pipeline/profile.rs`, `node/src/sources/manager.rs`, `node/src/sources/registry.rs`, `node/src/api/node/mod.rs`, `DashboardView.vue`.
 
-## 3. NDI capture
+## 3. ✅ NDI capture
 
-NDI hardware is on hand. Built on the `gst-plugin-ndi` GStreamer elements
-(`ndisrc` / `ndisrcdemux`), **not** raw NDI SDK FFI — keeps parity with TestSource's
-bin + `video`/`audio` ghost-pad contract.
+Built on `gst-plugin-ndi` GStreamer elements (`ndisrc` / `ndisrcdemux`), statically
+linked into the binary. Follows the same source bin + `video`/`audio` ghost-pad contract
+as `TestSource`. Decklink remains deferred (no hardware).
 
-- `NdiSource` impl + device discovery (`ndi-device-monitor`) wired into
-  `SourceRegistry::scan()`.
-- Decklink remains deferred (no hardware).
+### What shipped
 
-### Plugin build & packaging — licensing-driven
+- **`NdiSource`** (`node/src/sources/ndi.rs`) — bin with `ndisrc → ndisrcdemux`, dynamic
+  pad-added linking to `videoconvert`/`audioconvert`, ghost pads `video` and `audio`.
+- **`NdiMonitor`** — persistent `GstDeviceMonitor` started once at startup via
+  `spawn_blocking`. Avoids the NDI device provider singleton bug where `stop()`/`start()`
+  cycles silently no-op (the provider never clears its internal `FindInstance`).
+- **Static linking** — `gst-plugin-ndi` compiled as an rlib into the binary
+  (`plugin_register_static()` called at startup). No `libgstndi.so` to manage;
+  only `libndi.so` (the proprietary NDI runtime) remains as a user dependency.
+- **Recording fix** — added `videoconvert` (and `audioconvert` + `audioresample`) in the
+  recording branch of `MonitorPipeline::attach_recording`. NDI provides UYVY; x264enc
+  needs I420. Without the converter, x264enc's RECONFIGURE event propagated upstream to
+  ndisrc and caused an "Internal data stream error" immediately on recording start.
 
-`gst-plugin-ndi` is open source, but it links `libndi`, whose NDI SDK license restricts
-redistribution. Strategy:
+### Packaging / licensing
 
-- **Our plugin `.so`/`.dll`** — we build and ship it freely.
-- **`libndi` runtime** — loaded dynamically; the *user* installs the free NDI Runtime
-  redistributable. We never bundle `libndi` itself. (Same pattern OBS uses.)
+`gst-plugin-ndi` is MPL-licensed and may be bundled. It dlopen's `libndi.so` at runtime;
+users must install the NDI Runtime separately (same pattern as OBS). We never distribute
+`libndi` itself.
 
-| Platform | Approach |
-|----------|----------|
-| Linux | Ship `libgstndi.so` next to the binary; set `GST_PLUGIN_PATH` in the systemd unit. NDI Runtime documented/scripted as a dependency. |
-| macOS | Bundle the plugin; direct users to NDI Tools/Runtime for `libndi`. |
-| Windows | Bundle the plugin DLL; NDI Runtime installer is a documented prereq. |
-
-- Add a Cargo feature flag `ndi` so builds without the SDK still compile (TestSource-only).
-
-**Dev-machine setup (CachyOS / Arch):** install NDI SDK/runtime (AUR `ndi-sdk` / `libndi`)
-→ build `gst-plugin-ndi` (`cargo cbuild`) → place `.so` on `GST_PLUGIN_PATH` →
-verify `gst-inspect-1.0 ndisrc`.
+| Dependency | Who provides |
+|------------|-------------|
+| `gst-plugin-ndi` | compiled into binary (static) |
+| `libndi.so` | user installs NDI Runtime redistributable |
 
 ## 4. Multi-pipeline output per preset
 

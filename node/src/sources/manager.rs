@@ -11,6 +11,7 @@ use crate::api::types::{ChannelLevelDto, RecordingSessionDto};
 use crate::pipeline::monitor::{MonitorConfig, MonitorPipeline, RecordingBranch};
 use crate::pipeline::profile::RecordingProfile;
 
+use super::ndi::NdiMonitor;
 use super::registry::SourceRegistry;
 use super::test::TestSourceConfig;
 use super::{ConnectionMode, InputSource};
@@ -36,15 +37,17 @@ pub struct SourceManager {
     registry: SourceRegistry,
     monitors: HashMap<String, ActiveMonitor>,
     sessions: HashMap<String, ActiveSession>, // session_id → session
+    ndi_monitor: NdiMonitor,
 }
 
 impl SourceManager {
-    pub fn new(config: MonitorConfig) -> Self {
+    pub fn new(config: MonitorConfig, ndi_monitor: NdiMonitor) -> Self {
         Self {
             config,
             registry: SourceRegistry::new(),
             monitors: HashMap::new(),
             sessions: HashMap::new(),
+            ndi_monitor,
         }
     }
 
@@ -64,8 +67,8 @@ impl SourceManager {
 
     // ── Scan ──────────────────────────────────────────────────────────────────
 
-    /// Replace the source list from `configs`, start monitors for new Auto
-    /// sources, and tear down monitors for removed sources.
+    /// Replace the source list from test configs and a fresh NDI device scan,
+    /// start monitors for new Auto sources, and tear down monitors for removed sources.
     pub async fn scan(&mut self, configs: &[TestSourceConfig]) -> Result<()> {
         let old_ids: HashSet<String> = self
             .registry
@@ -74,7 +77,14 @@ impl SourceManager {
             .map(|s| s.id().to_string())
             .collect();
 
-        self.registry.scan(configs)?;
+        let ndi_sources: Vec<Box<dyn InputSource>> = self
+            .ndi_monitor
+            .current_sources()
+            .into_iter()
+            .map(|s| Box::new(s) as Box<dyn InputSource>)
+            .collect();
+
+        self.registry.scan(configs, ndi_sources)?;
 
         let new_ids: HashSet<String> = self
             .registry
