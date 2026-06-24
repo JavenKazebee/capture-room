@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { audioLevels, thumbnailSeqs, type Source } from '@/stores/sources'
 import { useRecordingsStore, type RecordingSession } from '@/stores/recordings'
 import { usePresetsStore } from '@/stores/presets'
@@ -35,17 +35,34 @@ const selectedPreset = ref('default')
 // ── Thumbnail ─────────────────────────────────────────────────────────────────
 
 const thumbError = ref(false)
+const fallbackSeq = ref(0)
 
 const thumbnailSrc = computed(() => {
-  const seq = thumbnailSeqs.get(props.source.id) ?? 0
+  const wsSeq = thumbnailSeqs.get(props.source.id) ?? 0
+  const seq = Math.max(wsSeq, fallbackSeq.value)
   return `/api/v1/thumbnails/${props.source.id}?t=${seq}`
 })
 
-// Reset the error flag whenever a new thumbnail seq arrives so the img retries
+// Reset error when a new thumbnail.updated WS event arrives
 watch(
   () => thumbnailSeqs.get(props.source.id) ?? 0,
   (seq) => { if (seq > 0) thumbError.value = false },
 )
+
+// Retry on a slow interval — if thumbError is set, bump fallbackSeq so the
+// URL changes and the browser doesn't serve a cached 404.
+let retryTimer: ReturnType<typeof setInterval> | null = null
+onMounted(() => {
+  retryTimer = setInterval(() => {
+    if (thumbError.value) {
+      fallbackSeq.value++
+      thumbError.value = false
+    }
+  }, 3000)
+})
+onUnmounted(() => {
+  if (retryTimer) clearInterval(retryTimer)
+})
 
 // ── Audio ─────────────────────────────────────────────────────────────────────
 

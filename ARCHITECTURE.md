@@ -101,22 +101,32 @@ Initial implementations:
 
 ## GStreamer Pipeline
 
-One pipeline per active source. Branches are enabled or disabled based on the recording profile.
+One pipeline per active source. The monitor branches (thumbnail, audio meter) are always
+running once a source is connected. Recording branches attach and detach at runtime.
 
 ```
 [InputSource gst src element]
     │
     ├─► [timecode extractor]
     │
-    └─► [tee]
-          ├─► [queue] → [primary encoder] → [tee] → [muxer] → [filesink: primary path]
-          │                                       └─► [muxer] → [filesink: redundant path]  (optional, same profile only)
-          ├─► [queue] → [secondary encoder] → [muxer] → [filesink: proxy path]
-          ├─► [queue] → [videoscale] → [jpegenc] → [thumbnail HTTP endpoint]
-          └─► [queue] → [audioconvert] → [level] → [audio meter WebSocket publisher]
+    ├─► [vtee]  ── always-on monitor ──────────────────────────────────────────────────
+    │      ├─► [queue] → [videoscale] → [capsfilter fps] → [capsfilter res]
+    │      │             → [jpegenc] → ThumbnailStore → GET /api/v1/thumbnails/{id}
+    │      │
+    │      └─► [queue, leaky=upstream] → [encoder] → [muxer] → [filesink]  (recording branch, detachable)
+    │
+    └─► [atee]  ── always-on monitor ──────────────────────────────────────────────────
+           ├─► [queue] → [audioconvert] → [level] → AudioMeter → WS audio.levels
+           │
+           └─► [queue] → [muxer] → [filesink]  (recording branch, detachable)
 ```
 
-If the redundant path uses a different profile than primary, it gets its own encoder branch (same topology as the secondary path). If the profiles are identical, the encoded bitstream is split via `tee` after a single encoder, saving a full re-encode.
+The video recording queue uses `leaky=upstream` so that a slow encoder drops frames
+rather than stalling vtee and backpressuring through the muxer's collect-pads (which
+would freeze audio monitoring). A separate large audio queue buffers up to 10 s so the
+muxer can interleave audio and video without blocking atee.
+
+If the redundant path uses a different profile than primary, it gets its own encoder branch (same topology). If the profiles are identical, the encoded bitstream is split via `tee` after a single encoder, saving a full re-encode.
 
 Supported encoder targets:
 - **Ingest:** ProRes (4444, 422 HQ, 422, LT, Proxy), DNxHD/DNxHR, uncompressed
@@ -446,17 +456,20 @@ capture-room/
 │   │   │   ├── scheduler.rs     # Schedule execution engine
 │   │   │   ├── proxy.rs         # HTTP proxy to node APIs
 │   │   │   └── sync.rs          # Preset + schedule sync to nodes
-│   │   ├── pipeline/            # GStreamer pipeline manager
+│   │   ├── pipeline/
+│   │   │   ├── monitor.rs       # MonitorPipeline, MonitorConfig, RecordingBranch, ThumbnailStore, AudioMeter
+│   │   │   ├── profile.rs       # RecordingProfile (codec, container, bitrate, …)
+│   │   │   └── mod.rs           # GStreamer element helpers
 │   │   ├── sources/
-│   │   │   ├── mod.rs           # InputSource trait + SourceType enum
-│   │   │   ├── ndi.rs
-│   │   │   ├── decklink.rs
-│   │   │   └── test.rs          # Synthetic test source
-│   │   ├── recording/           # Session lifecycle
-│   │   ├── timecode/            # LTC/VITC extraction
-│   │   ├── thumbnail/           # JPEG generation
-│   │   ├── audio/               # Level metering
-│   │   ├── benchmark/           # Benchmark runner
+│   │   │   ├── mod.rs           # InputSource trait + SourceType + ConnectionMode enums
+│   │   │   ├── manager.rs       # SourceManager — per-source monitors + recording sessions
+│   │   │   ├── registry.rs      # SourceRegistry — discovered sources indexed by id
+│   │   │   ├── test.rs          # TestSource + TestSourceConfig
+│   │   │   ├── ndi.rs           # ⬜ NdiSource (stub)
+│   │   │   └── decklink.rs      # ⬜ DecklinkSource (stub)
+│   │   ├── recording/           # DB persistence helpers for recording sessions
+│   │   ├── timecode/            # ⬜ LTC/VITC extraction (stub)
+│   │   ├── benchmark/           # ⬜ Benchmark runner (stub)
 │   │   └── db/                  # sqlx migrations and queries
 │   ├── migrations/
 │   └── Cargo.toml
@@ -504,19 +517,25 @@ Status legend: ✅ done · 🟡 partial · ⬜ not started · _(as of 2026-06-23
 7. ✅ **UI — dashboard with live feed grid, manual recording controls** — `DashboardView.vue` built
 8. ✅ **Rust — controller mode** — node registry, health polling, unified API, UI serving
 9. 🟡 **UI — nodes view, preset management, schedules**
-   - ✅ `NodesView.vue`, ✅ `PresetsView.vue`
-   - ⬜ `SourcesView`, `RecordingsView`, `SchedulesView`, `LogsView` are still "coming soon" placeholders
-10. 🟡 **Rust — NDI implementation** (NDI hardware on hand)
+   - ✅ `NodesView.vue`, ✅ `PresetsView.vue`, ✅ `SourcesView.vue`
+   - ⬜ `RecordingsView`, `SchedulesView`, `LogsView` are still "coming soon" placeholders
+10. ✅ **Rust — SourceManager + live source monitoring** (ROADMAP step 2)
+    - `MonitorPipeline` (`pipeline/monitor.rs`): always-on vtee/atee → thumbnail + audio meter; recording attaches as a detachable branch
+    - `SourceManager` (`sources/manager.rs`): owns per-source pipelines and recording sessions behind a single `RwLock`
+    - Live settings reconfiguration via `MonitorPipeline::reconfigure()` — no pipeline restart
+    - Two-phase `begin_stop_recording` + `Arc<MonitorPipeline>` keeps WS emitter unblocked during EOS drain
+    - Leaky video recording queue prevents encoder backpressure from freezing audio monitoring
+11. 🟡 **Rust — NDI implementation** (NDI hardware on hand) ← active
     - ⬜ Prereq: install `gst-plugin-ndi` (`ndisrc` / `ndisrcdemux`) — not present on dev machine
     - ⬜ `NdiSource` impl + device discovery in `SourceRegistry::scan()`
 
 > **Sequencing note:** the v1 build order above is the original plan. Active work is now
 > sequenced in [ROADMAP.md](ROADMAP.md), which front-loads a generic TestSource, the Sources
 > view, and live source monitoring ahead of NDI capture.
-11. ⬜ **Rust — Decklink implementation** — deferred (no hardware)
-12. 🟡 **Rust — preset sync + scheduling engine**
+12. ⬜ **Rust — Decklink implementation** — deferred (no hardware)
+13. 🟡 **Rust — preset sync + scheduling engine**
     - ✅ Preset sync (`controller/sync.rs`); ⬜ scheduler engine (`controller/scheduler.rs` is an empty stub)
-13. ⬜ **Rust — benchmark runner** — empty stub (`benchmark/mod.rs`)
-14. ⬜ **Rust — timecode** — empty stub (`timecode/mod.rs`); TestSource fakes a wall-clock TC
-15. ⬜ **Rust — redundant recording path**
-16. ⬜ **Cross-platform packaging + GitHub Actions**
+14. ⬜ **Rust — benchmark runner** — empty stub (`benchmark/mod.rs`)
+15. ⬜ **Rust — timecode** — empty stub (`timecode/mod.rs`); TestSource fakes a wall-clock TC
+16. ⬜ **Rust — redundant recording path**
+17. ⬜ **Cross-platform packaging + GitHub Actions**

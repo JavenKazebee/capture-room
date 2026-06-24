@@ -21,14 +21,13 @@ use tracing::info;
 
 use api::types::WsEvent;
 use controller::registry::NodeRegistry;
-use recording::RecordingManager;
-use sources::registry::SourceRegistry;
+use pipeline::monitor::MonitorConfig;
+use sources::manager::SourceManager;
 use state::{AppState, Role};
 
 #[derive(Parser, Debug)]
 #[command(name = "capture-room", version)]
 struct Args {
-    /// Override the persisted role: "node" or "aggregator". Highest priority.
     #[arg(long)]
     role: Option<String>,
 
@@ -39,7 +38,6 @@ struct Args {
     db: String,
 }
 
-/// Resolve the effective role: CLI flag > env var > persisted DB value > default.
 fn resolve_role(cli: Option<&str>, db_value: Option<&str>) -> Role {
     if let Some(r) = cli.and_then(Role::parse) {
         return r;
@@ -61,12 +59,10 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    // Every instance is a full capture node.
     gstreamer::init().expect("GStreamer init failed");
     plugins::check_required_plugins()?;
 
     let args = Args::parse();
-
     let pool = db::init(&args.db).await?;
 
     // ── Node identity ─────────────────────────────────────────────────────────
@@ -82,15 +78,13 @@ async fn main() -> Result<()> {
         std::env::var("HOSTNAME").unwrap_or_else(|_| "capture-room-node".to_string())
     });
 
-    // ── Role ──────────────────────────────────────────────────────────────────
     let db_role = db::config_get(&pool, "role").await?;
     let role = resolve_role(args.role.as_deref(), db_role.as_deref());
-
     info!(id = %node_id, name = %node_name, role = role.as_str(), "identity");
 
     db::sessions_mark_crashed(&pool).await?;
 
-    // ── Source registry ───────────────────────────────────────────────────────
+    // ── Source manager ────────────────────────────────────────────────────────
     let test_configs: Vec<sources::test::TestSourceConfig> = db::test_sources_list(&pool)
         .await?
         .into_iter()
@@ -111,10 +105,17 @@ async fn main() -> Result<()> {
         })
         .collect();
 
-    let mut registry = SourceRegistry::new();
-    registry.scan(&test_configs)?;
-    for source in registry.sources() {
-        info!(id = source.id(), name = source.display_name(), "source ready");
+    let monitor_config = load_monitor_config(&pool).await;
+    let mut source_manager = SourceManager::new(monitor_config);
+    source_manager.scan(&test_configs).await?;
+
+    for source in source_manager.sources() {
+        info!(
+            id = source.id(),
+            name = source.display_name(),
+            monitored = source_manager.is_monitored(source.id()),
+            "source ready"
+        );
     }
 
     let (ws_tx, _) = ws::channel();
@@ -124,15 +125,14 @@ async fn main() -> Result<()> {
         node_name: node_name.clone(),
         started_at: Instant::now(),
         role,
-        sources: Arc::new(RwLock::new(registry)),
-        recordings: Arc::new(RwLock::new(RecordingManager::new())),
+        source_manager: Arc::new(RwLock::new(source_manager)),
         db: pool,
         ws_tx,
         peers: Arc::new(RwLock::new(NodeRegistry::new())),
         http: reqwest::Client::new(),
     });
 
-    // ── Periodic local WS emitter (composite source IDs) ──────────────────────
+    // ── Periodic WS emitter ───────────────────────────────────────────────────
     {
         let state = Arc::clone(&state);
         tokio::spawn(async move {
@@ -142,67 +142,99 @@ async fn main() -> Result<()> {
                 interval.tick().await;
                 tick = tick.wrapping_add(1);
 
-                let mgr = state.recordings.read().await;
-                let active: Vec<_> = mgr.active_sessions().into_iter().cloned().collect();
+                let mgr = state.source_manager.read().await;
 
-                for session in &active {
-                    if let Some(channels) = mgr.audio_levels(&session.source_id) {
-                        ws::send(
-                            &state.ws_tx,
-                            &WsEvent::AudioLevels {
-                                source_id: format!("{}:{}", state.node_id, session.source_id),
-                                channels,
-                            },
-                        );
-                    }
+                // Audio levels for every monitored source (~10 fps).
+                for (source_id, channels) in mgr.all_audio_levels() {
+                    ws::send(
+                        &state.ws_tx,
+                        &WsEvent::AudioLevels {
+                            source_id: format!("{}:{}", state.node_id, source_id),
+                            channels,
+                        },
+                    );
                 }
-                drop(mgr);
 
+                // Timecode (feed.status) at 1 Hz — every 10 ticks.
                 if tick % 10 == 0 {
-                    let sources = state.sources.read().await;
-                    for source in sources.sources() {
-                        let timecode = source.timecode().map(|tc| tc.to_string());
+                    for source in mgr.sources() {
+                        let composite = format!("{}:{}", state.node_id, source.id());
                         ws::send(
                             &state.ws_tx,
                             &WsEvent::FeedStatus {
-                                source_id: format!("{}:{}", state.node_id, source.id()),
-                                timecode,
+                                source_id: composite,
+                                timecode: source.timecode().map(|tc| tc.to_string()),
                                 duration_secs: 0.0,
                             },
                         );
                     }
-                    for session in &active {
-                        let composite = format!("{}:{}", state.node_id, session.source_id);
-                        ws::send(
-                            &state.ws_tx,
-                            &WsEvent::ThumbnailUpdated {
-                                url: format!("/api/v1/thumbnails/{}", composite),
-                                source_id: composite,
-                            },
-                        );
+                }
+
+                // Thumbnail updates at the configured fps.
+                // Tick interval = 100 ms, so 10 ticks = 1 s.
+                // fps=1 → every 10 ticks, fps=2 → every 5, fps=10 → every 1.
+                let fps = mgr.monitor_config().thumb_fps_num.max(1) as u32;
+                let thumb_div = (10 / fps).max(1);
+                if tick % thumb_div == 0 {
+                    for source in mgr.sources() {
+                        if mgr.is_monitored(source.id()) {
+                            let composite = format!("{}:{}", state.node_id, source.id());
+                            ws::send(
+                                &state.ws_tx,
+                                &WsEvent::ThumbnailUpdated {
+                                    source_id: composite.clone(),
+                                    url: format!("/api/v1/thumbnails/{}", composite),
+                                },
+                            );
+                        }
                     }
                 }
             }
         });
     }
 
-    // ── Aggregation (control station) ─────────────────────────────────────────
+    // ── Aggregation ───────────────────────────────────────────────────────────
     if role.is_aggregator() {
         controller::start_mdns_browser(Arc::clone(&state));
         controller::start_health_poller(Arc::clone(&state));
         info!("aggregator: discovering peers via mDNS");
     }
 
-    // Advertise ourselves so aggregators can find us. Kept alive for process life.
     let _mdns = controller::register_mdns_service(&node_id, &node_name, args.port);
 
     // ── HTTP server ───────────────────────────────────────────────────────────
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let router = api::build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
-
     info!(addr = %addr, role = role.as_str(), "listening");
     axum::serve(listener, router).await?;
 
     Ok(())
+}
+
+async fn load_monitor_config(pool: &sqlx::SqlitePool) -> MonitorConfig {
+    let def = MonitorConfig::default();
+    let thumb_fps = db::config_get(pool, "monitor_thumb_fps")
+        .await.ok().flatten()
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(def.thumb_fps_num);
+    let thumb_width = db::config_get(pool, "monitor_thumb_width")
+        .await.ok().flatten()
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(def.thumb_width);
+    let thumb_height = db::config_get(pool, "monitor_thumb_height")
+        .await.ok().flatten()
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(def.thumb_height);
+    let level_ms = db::config_get(pool, "monitor_level_ms")
+        .await.ok().flatten()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(def.level_interval_ns / 1_000_000);
+    MonitorConfig {
+        thumb_fps_num: thumb_fps,
+        thumb_fps_den: 1,
+        thumb_width,
+        thumb_height,
+        level_interval_ns: level_ms * 1_000_000,
+    }
 }

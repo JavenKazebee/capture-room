@@ -10,9 +10,9 @@ _Last updated: 2026-06-23_
 
 ## Current sequence
 
-1. **Generic TestSource + Sources view**
-2. **Live source monitoring**
-3. **NDI capture** (+ plugin build/packaging)
+1. ✅ **Generic TestSource + Sources view**
+2. ✅ **Live source monitoring**
+3. **NDI capture** (+ plugin build/packaging) ← active
 4. **Multi-pipeline output per preset**
 5. **Benchmark + capacity estimator**
 6. **UI overhaul / dark mode** — woven through 1–5; design-token pass up front
@@ -25,7 +25,7 @@ capture depends on anyway.
 
 ---
 
-## 1. Generic TestSource + Sources view
+## 1. ✅ Generic TestSource + Sources view
 
 Turn `TestSource` from a fixed `videotestsrc`/`audiotestsrc` into a first-class,
 parameterized source.
@@ -41,23 +41,19 @@ parameterized source.
 
 Touches: `node/src/sources/test.rs`, `node/src/sources/registry.rs`, `ui/src/views/SourcesView.vue`.
 
-## 2. Live source monitoring
+## 2. ✅ Live source monitoring
 
-**Biggest architectural change.** Today `ThumbnailStore` and `AudioMeter` are owned by
-the recording `Pipeline` (`node/src/pipeline/mod.rs`), so thumbnails/meters only exist
-while recording. Idle-source monitoring needs an **always-on monitor pipeline per
-source**: `source bin → tee → [jpegenc thumbnail] + [level audio meter]`, independent
-of recording.
+**Biggest architectural change.** `ThumbnailStore` and `AudioMeter` are now owned by
+`MonitorPipeline` (`node/src/pipeline/monitor.rs`), so thumbnails and meters are always
+live — no recording required.
 
-- **Decision:** prefer a single shared pipeline per source with recording as an
-  attachable branch, rather than separate monitor + recording pipelines — some sources
-  (NDI/Decklink) don't allow opening the same input twice.
-- Connect sources on discovery, not on record. New `MonitorManager` owning per-source
-  monitor pipelines.
-- WS events already exist (`thumbnail.updated`, `audio.levels`), so the UI side is
-  mostly wiring.
+- **Single pipeline per source.** `source bin → vtee + atee → [thumbnail branch] + [audio meter branch]`. Recording attaches as an additional branch off vtee/atee and detaches cleanly on stop.
+- **`SourceManager`** (`node/src/sources/manager.rs`) owns per-source `MonitorPipeline`s, the `SourceRegistry`, and active `RecordingSession`s — single source of truth for all capture state.
+- **Live settings reconfiguration.** `MonitorPipeline::reconfigure()` updates GStreamer element properties in place (capsfilter caps, level interval) without stopping pipelines — applies immediately during recording.
+- **Non-blocking stop recording.** `begin_stop_recording` removes the session and clones `Arc<MonitorPipeline>`, releasing the write lock before awaiting EOS. The WS emitter (which holds a read lock every 100 ms) is never blocked during the multi-second EOS drain.
+- **Leaky video recording queue.** The video branch off vtee uses `leaky=upstream` so a slow encoder (e.g. x264enc on a complex ball-pattern source) drops frames instead of stalling the tee and backpressuring through the muxer's collect-pads to freeze audio monitoring.
 
-Touches: `node/src/pipeline/`, source lifecycle, new monitor manager, `DashboardView.vue`.
+Touches: `node/src/pipeline/monitor.rs`, `node/src/pipeline/profile.rs`, `node/src/sources/manager.rs`, `node/src/sources/registry.rs`, `node/src/api/node/mod.rs`, `DashboardView.vue`.
 
 ## 3. NDI capture
 

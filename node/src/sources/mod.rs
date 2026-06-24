@@ -1,8 +1,21 @@
 use anyhow::Result;
 use gstreamer as gst;
 
+pub mod manager;
 pub mod registry;
 pub mod test;
+
+/// Whether the source should be connected (monitor pipeline started) automatically
+/// on discovery, or only on an explicit user request.
+///
+/// Use `Auto` for sources that are cheap to open and harmless to hold open
+/// (TestSource, NDI). Use `Manual` for sources that reserve exclusive hardware
+/// (Decklink) or have significant connection cost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionMode {
+    Auto,
+    Manual,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceType {
@@ -75,5 +88,9 @@ pub trait InputSource: Send + Sync {
 
     fn is_connected(&self) -> bool {
         false
+    }
+
+    fn connection_mode(&self) -> ConnectionMode {
+        ConnectionMode::Auto
     }
 }

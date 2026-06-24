@@ -268,3 +268,13 @@ pub enum WsEvent {
     #[serde(rename = "node.offline")]
     NodeOffline { node_id: String },
 }
+
+// ── Monitor settings ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorSettingsDto {
+    pub thumb_fps: i32,
+    pub thumb_width: i32,
+    pub thumb_height: i32,
+    pub level_interval_ms: u64,
+}

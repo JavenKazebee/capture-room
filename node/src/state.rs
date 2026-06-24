@@ -5,12 +5,8 @@ use sqlx::SqlitePool;
 use tokio::sync::{broadcast, RwLock};
 
 use crate::controller::registry::NodeRegistry;
-use crate::recording::RecordingManager;
-use crate::sources::registry::SourceRegistry;
+use crate::sources::manager::SourceManager;
 
-/// Every instance is a full capture node. An `Aggregator` is a node that
-/// additionally discovers peers, polls their health, relays their events,
-/// and fans API requests out across them — the "control station".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Node,
@@ -32,7 +28,6 @@ impl Role {
     pub fn parse(s: &str) -> Option<Role> {
         match s.trim().to_lowercase().as_str() {
             "node" => Some(Role::Node),
-            // "controller" accepted as a legacy alias for "aggregator"
             "aggregator" | "controller" => Some(Role::Aggregator),
             _ => None,
         }
@@ -46,8 +41,7 @@ pub struct AppState {
     pub role: Role,
 
     // ── Local capture (present on every instance) ──────────────────────────
-    pub sources: Arc<RwLock<SourceRegistry>>,
-    pub recordings: Arc<RwLock<RecordingManager>>,
+    pub source_manager: Arc<RwLock<SourceManager>>,
     pub db: SqlitePool,
     pub ws_tx: broadcast::Sender<String>,
 

@@ -68,7 +68,7 @@ pub fn start_mdns_browser(state: Arc<AppState>) {
     });
 }
 
-async fn on_node_discovered(state: Arc<AppState>, url: String) {
+pub async fn on_node_discovered(state: Arc<AppState>, url: String) {
     let status = match state
         .http
         .get(format!("{}/api/v1/status", url))

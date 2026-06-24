@@ -150,6 +150,7 @@ fn build_bin(cfg: &TestSourceConfig) -> Result<gst::Bin> {
     // ── Video: videotestsrc → capsfilter → videoconvert ───────────────────────
     let vsrc = gst::ElementFactory::make("videotestsrc")
         .name(format!("vsrc-{id}"))
+        .property("is-live", true)
         .build()
         .context("create videotestsrc")?;
     vsrc.set_property_from_str("pattern", cfg.pattern.as_gst_str());
@@ -178,6 +179,7 @@ fn build_bin(cfg: &TestSourceConfig) -> Result<gst::Bin> {
     // ── Audio: audiotestsrc → audioconvert → capsfilter ───────────────────────
     let asrc = gst::ElementFactory::make("audiotestsrc")
         .name(format!("asrc-{id}"))
+        .property("is-live", true)
         .build()
         .context("create audiotestsrc")?;
     asrc.set_property_from_str("wave", cfg.audio_signal.as_gst_wave());

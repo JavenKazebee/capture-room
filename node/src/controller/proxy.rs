@@ -15,7 +15,8 @@ use futures_util::future::join_all;
 use serde_json::Value;
 
 use crate::api::types::{
-    CreateTestSourceRequest, PatchRecordingRequest, StartRecordingRequest, UpdateTestSourceRequest,
+    CreateTestSourceRequest, MonitorSettingsDto, PatchRecordingRequest, StartRecordingRequest,
+    UpdateTestSourceRequest,
 };
 use crate::state::AppState;
 
@@ -221,6 +222,19 @@ pub async fn delete_test_source(state: &AppState, node_id: &str, id: &str) -> Re
     }
 }
 
+pub async fn push_monitor_settings(state: &AppState, settings: &MonitorSettingsDto) {
+    let urls = all_urls(state).await;
+    for url in urls {
+        let _ = state
+            .http
+            .put(format!("{url}/api/v1/settings/monitor"))
+            .json(settings)
+            .timeout(TIMEOUT)
+            .send()
+            .await;
+    }
+}
+
 pub async fn thumbnail(state: &AppState, node_id: &str, local_source: &str) -> Response {
     let url = match peer_url(state, node_id).await {
         Some(u) => u,
@@ -241,7 +255,11 @@ pub async fn thumbnail(state: &AppState, node_id: &str, local_source: &str) -> R
                 .unwrap(),
             Err(e) => (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
         },
-        Ok(r) => r.status().into_response(),
+        Ok(r) => Response::builder()
+            .status(r.status())
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(Body::empty())
+            .unwrap(),
         Err(e) => (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
     }
 }

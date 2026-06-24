@@ -10,14 +10,14 @@ use axum::{
     Json, Router,
 };
 use rust_embed::RustEmbed;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
-use tracing::error;
+use tracing::{error, info};
 
 use crate::api::types::{
-    CreateTestSourceRequest, PatchRecordingRequest, PresetCreateRequest, PresetDto,
-    PresetSyncRequest, RecordingSessionDto, SourceCapabilitiesDto, SourceDto, StartRecordingRequest,
-    TestSourceConfigDto, TimecodeDto, UpdateTestSourceRequest, WsEvent,
+    CreateTestSourceRequest, MonitorSettingsDto, PatchRecordingRequest, PresetCreateRequest,
+    PresetDto, PresetSyncRequest, RecordingSessionDto, SourceCapabilitiesDto, SourceDto,
+    StartRecordingRequest, TestSourceConfigDto, TimecodeDto, UpdateTestSourceRequest, WsEvent,
 };
 use crate::controller::{proxy, sync};
 use crate::db::{self, PresetRow};
@@ -58,7 +58,8 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/v1/status", get(get_status))
         .route("/api/v1/settings", get(get_settings).put(put_settings))
-        .route("/api/v1/nodes", get(get_nodes))
+        .route("/api/v1/settings/monitor", put(put_monitor_settings))
+        .route("/api/v1/nodes", get(get_nodes).post(post_node))
         // Sources — static paths before dynamic {id}
         .route("/api/v1/sources", get(get_sources))
         .route("/api/v1/sources/scan", post(post_scan))
@@ -68,6 +69,8 @@ pub fn router() -> Router<Arc<AppState>> {
             put(put_test_config).delete(delete_test_config),
         )
         .route("/api/v1/sources/{id}", get(get_source))
+        .route("/api/v1/sources/{id}/connect", post(post_connect))
+        .route("/api/v1/sources/{id}/disconnect", post(post_disconnect))
         .route("/api/v1/recordings", get(get_recordings).post(post_recording))
         .route(
             "/api/v1/recordings/{id}",
@@ -81,16 +84,12 @@ pub fn router() -> Router<Arc<AppState>> {
         .fallback(serve_ui)
 }
 
-// ── Composite-ID helpers ─────────────────────────────────────────────────────
-//
-// Every instance presents IDs as `{node_id}:{local}` using its OWN node_id.
-// Inbound IDs are split back to their local part for handling.
+// ── Composite-ID helpers ──────────────────────────────────────────────────────
 
 fn composite(node_id: &str, local: &str) -> String {
     format!("{node_id}:{local}")
 }
 
-/// `(node_id, local)` — node_id is `None` for a bare (un-prefixed) id.
 fn split_id(id: &str) -> (Option<&str>, &str) {
     match id.split_once(':') {
         Some((node, local)) => (Some(node), local),
@@ -124,30 +123,39 @@ async fn get_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     })
 }
 
-// ── /api/v1/settings ──────────────────────────────────────────────────────────
+// ── /api/v1/settings ─────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct SettingsDto {
     node_id: String,
     node_name: String,
-    /// Role currently in effect (fixed at startup).
     role: String,
-    /// Role persisted in config; takes effect on next restart.
     persisted_role: Option<String>,
+    monitor: MonitorSettingsDto,
 }
 
 async fn get_settings(State(state): State<Arc<AppState>>) -> Response {
     let persisted = db::config_get(&state.db, "role").await.ok().flatten();
+    let cfg = state.source_manager.read().await;
+    let mc = cfg.monitor_config();
+    let monitor = MonitorSettingsDto {
+        thumb_fps: mc.thumb_fps_num,
+        thumb_width: mc.thumb_width,
+        thumb_height: mc.thumb_height,
+        level_interval_ms: mc.level_interval_ns / 1_000_000,
+    };
+    drop(cfg);
     Json(SettingsDto {
         node_id: state.node_id.clone(),
         node_name: state.node_name.clone(),
         role: state.role.as_str().to_string(),
         persisted_role: persisted,
+        monitor,
     })
     .into_response()
 }
 
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct RoleUpdate {
     role: String,
 }
@@ -173,7 +181,44 @@ async fn put_settings(
     .into_response()
 }
 
-// ── /api/v1/nodes (aggregator view of peers, plus self) ──────────────────────
+async fn put_monitor_settings(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<MonitorSettingsDto>,
+) -> Response {
+    use crate::pipeline::monitor::MonitorConfig;
+
+    // Clamp to reasonable ranges.
+    let thumb_fps = req.thumb_fps.clamp(1, 30);
+    let thumb_width = req.thumb_width.clamp(160, 1920);
+    let thumb_height = req.thumb_height.clamp(90, 1080);
+    let level_ms = req.level_interval_ms.clamp(50, 1000);
+
+    // Persist each value.
+    let _ = db::config_set(&state.db, "monitor_thumb_fps", &thumb_fps.to_string()).await;
+    let _ = db::config_set(&state.db, "monitor_thumb_width", &thumb_width.to_string()).await;
+    let _ = db::config_set(&state.db, "monitor_thumb_height", &thumb_height.to_string()).await;
+    let _ = db::config_set(&state.db, "monitor_level_ms", &level_ms.to_string()).await;
+
+    let config = MonitorConfig {
+        thumb_fps_num: thumb_fps,
+        thumb_fps_den: 1,
+        thumb_width,
+        thumb_height,
+        level_interval_ns: level_ms * 1_000_000,
+    };
+
+    state.source_manager.write().await.apply_monitor_config(config);
+
+    let dto = MonitorSettingsDto { thumb_fps, thumb_width, thumb_height, level_interval_ms: level_ms };
+
+    if state.role.is_aggregator() {
+        proxy::push_monitor_settings(&state, &dto).await;
+    }
+
+    Json(dto).into_response()
+}
+
+// ── /api/v1/nodes ─────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct NodeDto {
@@ -215,13 +260,29 @@ async fn get_nodes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(dtos)
 }
 
+#[derive(serde::Deserialize)]
+struct AddNodeRequest {
+    url: String,
+}
+
+async fn post_node(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AddNodeRequest>,
+) -> Response {
+    if !state.role.is_aggregator() {
+        return (StatusCode::FORBIDDEN, "only aggregators can register peers").into_response();
+    }
+    let url = req.url.trim_end_matches('/').to_string();
+    crate::controller::on_node_discovered(Arc::clone(&state), url).await;
+    StatusCode::NO_CONTENT.into_response()
+}
+
 // ── /api/v1/sources ───────────────────────────────────────────────────────────
 
 async fn get_sources(State(state): State<Arc<AppState>>) -> Response {
     let mut all: Vec<Value> = {
-        let sources = state.sources.read().await;
-        sources
-            .sources()
+        let mgr = state.source_manager.read().await;
+        mgr.sources()
             .iter()
             .map(|s| source_value(s.as_ref(), &state.node_id))
             .collect()
@@ -240,8 +301,6 @@ async fn get_source(
 ) -> Response {
     let (node, local) = split_id(&id);
 
-    // Remote source on an aggregator → can't fetch a single peer source cheaply
-    // without another endpoint; fall back to scanning the merged list.
     if let Some(n) = node {
         if n != state.node_id {
             if state.role.is_aggregator() {
@@ -254,8 +313,8 @@ async fn get_source(
         }
     }
 
-    let sources = state.sources.read().await;
-    match sources.get(local) {
+    let mgr = state.source_manager.read().await;
+    match mgr.get_source(local) {
         Some(s) => Json(source_value(s, &state.node_id)).into_response(),
         None => (StatusCode::NOT_FOUND, "source not found").into_response(),
     }
@@ -266,16 +325,16 @@ async fn post_scan(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         Ok(rows) => rows.into_iter().map(db_row_to_config).collect::<Vec<_>>(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
+
     let local: Vec<Value> = {
-        let mut sources = state.sources.write().await;
-        match sources.scan(&configs) {
-            Ok(()) => sources
-                .sources()
-                .iter()
-                .map(|s| source_value(s.as_ref(), &state.node_id))
-                .collect(),
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        let mut mgr = state.source_manager.write().await;
+        if let Err(e) = mgr.scan(&configs).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
+        mgr.sources()
+            .iter()
+            .map(|s| source_value(s.as_ref(), &state.node_id))
+            .collect()
     };
 
     let mut all = local;
@@ -285,7 +344,40 @@ async fn post_scan(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(all).into_response()
 }
 
-// ── /api/v1/sources/test — test source config authoring ──────────────────────
+// ── /api/v1/sources/{id}/connect|disconnect ───────────────────────────────────
+
+async fn post_connect(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let local = split_id(&id).1.to_string();
+    let mut mgr = state.source_manager.write().await;
+    match mgr.connect(&local) {
+        Ok(()) => {
+            let dto = mgr.get_source(&local).map(|s| source_value(s, &state.node_id));
+            Json(dto).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn post_disconnect(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let local = split_id(&id).1.to_string();
+    let mut mgr = state.source_manager.write().await;
+    mgr.disconnect(&local).await;
+    let dto = mgr.get_source(&local).map(|s| source_value(s, &state.node_id));
+    Json(dto).into_response()
+}
+
+// ── /api/v1/sources/test ─────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct TestSourceQuery {
+    node_id: Option<String>,
+}
 
 async fn get_test_configs(
     State(state): State<Arc<AppState>>,
@@ -295,14 +387,11 @@ async fn get_test_configs(
         return proxy::get_test_configs(&state, &target).await;
     }
     match db::test_sources_list(&state.db).await {
-        Ok(rows) => Json(rows.into_iter().map(row_to_config_dto).collect::<Vec<_>>()).into_response(),
+        Ok(rows) => {
+            Json(rows.into_iter().map(row_to_config_dto).collect::<Vec<_>>()).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
-}
-
-#[derive(serde::Deserialize)]
-struct TestSourceQuery {
-    node_id: Option<String>,
 }
 
 async fn post_test_config(
@@ -329,8 +418,9 @@ async fn post_test_config(
     if let Err(e) = db::test_source_insert(&state.db, &row).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
-    // Rebuild the source registry so the new source is immediately available.
-    let _ = rebuild_registry(&state).await;
+    if let Err(e) = rebuild_sources(&state).await {
+        error!(error = %e, "rebuild sources after create");
+    }
     (StatusCode::CREATED, Json(row_to_config_dto(row))).into_response()
 }
 
@@ -365,7 +455,9 @@ async fn put_test_config(
         Ok(false) => return (StatusCode::NOT_FOUND, "test source not found").into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
-    let _ = rebuild_registry(&state).await;
+    if let Err(e) = rebuild_sources(&state).await {
+        error!(error = %e, "rebuild sources after update");
+    }
     Json(row_to_config_dto(row)).into_response()
 }
 
@@ -382,122 +474,17 @@ async fn delete_test_config(
         Ok(false) => return (StatusCode::NOT_FOUND, "test source not found").into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
-    let _ = rebuild_registry(&state).await;
+    if let Err(e) = rebuild_sources(&state).await {
+        error!(error = %e, "rebuild sources after delete");
+    }
     StatusCode::NO_CONTENT.into_response()
 }
 
-// ── /api/v1/sources/{id}/connect|disconnect ───────────────────────────────────
-
-async fn post_connect(
-    State(state): State<Arc<AppState>>,
-    AxumPath(id): AxumPath<String>,
-) -> Response {
-    let local = split_id(&id).1.to_string();
-    let mut sources = state.sources.write().await;
-    match sources.connect(&local) {
-        Ok(true) => {
-            let dto = sources.get(&local).map(|s| source_value(s, &state.node_id));
-            Json(dto).into_response()
-        }
-        Ok(false) => (StatusCode::NOT_FOUND, "source not found").into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
-}
-
-async fn post_disconnect(
-    State(state): State<Arc<AppState>>,
-    AxumPath(id): AxumPath<String>,
-) -> Response {
-    let local = split_id(&id).1.to_string();
-    let mut sources = state.sources.write().await;
-    if sources.disconnect(&local) {
-        let dto = sources.get(&local).map(|s| source_value(s, &state.node_id));
-        Json(dto).into_response()
-    } else {
-        (StatusCode::NOT_FOUND, "source not found").into_response()
-    }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn row_to_config_dto(row: db::TestSourceRow) -> TestSourceConfigDto {
-    TestSourceConfigDto {
-        id: row.id,
-        name: row.name,
-        pattern: row.pattern,
-        width: row.width as u32,
-        height: row.height as u32,
-        fps_num: row.fps_num as u32,
-        fps_den: row.fps_den as u32,
-        audio_signal: row.audio_signal,
-        frequency: row.frequency,
-        channels: row.channels as u32,
-        created_at: row.created_at,
-    }
-}
-
-fn db_row_to_config(row: db::TestSourceRow) -> crate::sources::test::TestSourceConfig {
-    use crate::sources::test::{AudioTestSignal, TestSourceConfig, VideoTestPattern};
-    TestSourceConfig {
-        id: row.id,
-        name: row.name,
-        pattern: VideoTestPattern::from_db(&row.pattern),
-        width: row.width as u32,
-        height: row.height as u32,
-        fps_num: row.fps_num as u32,
-        fps_den: row.fps_den as u32,
-        audio_signal: AudioTestSignal::from_db(&row.audio_signal),
-        frequency: row.frequency,
-        channels: row.channels as u32,
-    }
-}
-
-async fn rebuild_registry(state: &AppState) -> anyhow::Result<()> {
-    let configs = db::test_sources_list(&state.db)
-        .await?
-        .into_iter()
-        .map(db_row_to_config)
-        .collect::<Vec<_>>();
-    state.sources.write().await.scan(&configs)
-}
-
-fn source_to_dto(s: &dyn crate::sources::InputSource) -> SourceDto {
-    let caps = s.capabilities();
-    SourceDto {
-        id: s.id().to_string(),
-        display_name: s.display_name().to_string(),
-        source_type: format!("{:?}", s.source_type()).to_lowercase(),
-        is_available: s.is_available(),
-        connected: s.is_connected(),
-        timecode: s.timecode().map(timecode_to_dto),
-        capabilities: SourceCapabilitiesDto {
-            video_formats: caps.video_formats,
-            max_width: caps.max_width,
-            max_height: caps.max_height,
-            max_framerate: [caps.max_framerate.0, caps.max_framerate.1],
-            audio_channels: caps.audio_channels,
-            audio_sample_rates: caps.audio_sample_rates,
-        },
-    }
-}
-
-fn timecode_to_dto(tc: Timecode) -> TimecodeDto {
-    TimecodeDto {
-        display: tc.to_string(),
-        hours: tc.hours,
-        minutes: tc.minutes,
-        seconds: tc.seconds,
-        frames: tc.frames,
-        drop_frame: tc.drop_frame,
-        framerate: [tc.framerate.0, tc.framerate.1],
-    }
-}
-
-// ── /api/v1/recordings ────────────────────────────────────────────────────────
+// ── /api/v1/recordings ───────────────────────────────────────────────────────
 
 async fn get_recordings(State(state): State<Arc<AppState>>) -> Response {
     let active: Vec<RecordingSessionDto> = {
-        let mgr = state.recordings.read().await;
+        let mgr = state.source_manager.read().await;
         mgr.active_sessions().into_iter().cloned().collect()
     };
 
@@ -531,7 +518,7 @@ async fn get_recording(
     AxumPath(id): AxumPath<String>,
 ) -> Response {
     {
-        let mgr = state.recordings.read().await;
+        let mgr = state.source_manager.read().await;
         if let Some(s) = mgr.active_sessions().into_iter().find(|s| s.id == id) {
             return Json(session_value(s, &state.node_id)).into_response();
         }
@@ -557,7 +544,6 @@ async fn post_recording(
     State(state): State<Arc<AppState>>,
     Json(req): Json<StartRecordingRequest>,
 ) -> Response {
-    // Route by the node prefix on the source id.
     if let Some(node) = split_id(&req.source_id).0 {
         if node != state.node_id {
             if state.role.is_aggregator() {
@@ -582,9 +568,8 @@ async fn post_recording(
     }
 
     let session = {
-        let sources = state.sources.read().await;
-        let mut mgr = state.recordings.write().await;
-        match mgr.start(&sources, &local_source, &profile, Path::new(&primary_path)) {
+        let mut mgr = state.source_manager.write().await;
+        match mgr.start_recording(&local_source, &profile, Path::new(&primary_path)).await {
             Ok(s) => s,
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
@@ -614,18 +599,42 @@ async fn patch_recording(
         return (StatusCode::BAD_REQUEST, "unknown action").into_response();
     }
 
-    // Try to stop locally (live pipeline or orphaned DB row).
+    // Try to stop locally.
     let local = {
-        let mut mgr = state.recordings.write().await;
-        if mgr.is_active(&id) {
-            match mgr.stop(&id).await {
-                Ok(s) => Some(s),
+        let is_active = state.source_manager.read().await.is_active(&id);
+        if is_active {
+            // Phase 1: remove session and grab Arc<pipeline> while holding write lock.
+            let (mut dto, pending) = {
+                let mut mgr = state.source_manager.write().await;
+                match mgr.begin_stop_recording(&id) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                    }
+                }
+            };
+            // Phase 2: await EOS without holding any lock so the WS emitter
+            // and other readers are not blocked.
+            let result = if let Some((pipeline, branch)) = pending {
+                pipeline.detach_recording(branch, 10).await
+            } else {
+                Ok(())
+            };
+            match result {
+                Ok(()) => {
+                    dto.status = "stopped".to_string();
+                    dto.stopped_at = Some(chrono::Utc::now().to_rfc3339());
+                    info!(id = %dto.id, "recording stopped");
+                }
                 Err(e) => {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+                    dto.status = "error".to_string();
+                    dto.stopped_at = Some(chrono::Utc::now().to_rfc3339());
+                    dto.error_message = Some(e.to_string());
                 }
             }
+            Some(dto)
         } else {
-            drop(mgr);
+            // Orphaned DB row — mark stopped directly.
             match db::session_get(&state.db, &id).await {
                 Ok(Some(row)) => {
                     let stopped_at = chrono::Utc::now().to_rfc3339();
@@ -675,7 +684,6 @@ async fn patch_recording(
         return Json(session_value(&session, &state.node_id)).into_response();
     }
 
-    // Not ours — fan out to peers if we aggregate.
     if state.role.is_aggregator() {
         if let Some(body) = proxy::stop_recording(&state, &id, &req).await {
             return Json(body).into_response();
@@ -702,14 +710,18 @@ async fn get_thumbnail(
         }
     }
 
-    let bytes = state.recordings.read().await.thumbnail_bytes(local);
+    let bytes = state.source_manager.read().await.thumbnail_bytes(local);
     match bytes {
         Some(jpeg) => Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "image/jpeg")
             .body(Body::from(jpeg))
             .unwrap(),
-        None => (StatusCode::NOT_FOUND, "no thumbnail yet").into_response(),
+        None => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(Body::from("no thumbnail yet"))
+            .unwrap(),
     }
 }
 
@@ -757,7 +769,6 @@ async fn post_preset(
         updated_at: now,
         version: 1,
     };
-
     if let Err(e) = db::preset_insert(&state.db, &row).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
@@ -776,7 +787,6 @@ async fn put_preset(
         return forbidden();
     }
     let now = chrono::Utc::now().to_rfc3339();
-    // created_at/version are ignored by preset_update (it bumps version itself).
     let row = PresetRow {
         id: id.clone(),
         name: req.name,
@@ -793,7 +803,6 @@ async fn put_preset(
         updated_at: now,
         version: 0,
     };
-
     match db::preset_update(&state.db, &row).await {
         Ok(true) => {}
         Ok(false) => return (StatusCode::NOT_FOUND, "preset not found").into_response(),
@@ -860,6 +869,38 @@ async fn ws_handler(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+fn source_to_dto(s: &dyn crate::sources::InputSource) -> SourceDto {
+    let caps = s.capabilities();
+    SourceDto {
+        id: s.id().to_string(),
+        display_name: s.display_name().to_string(),
+        source_type: format!("{:?}", s.source_type()).to_lowercase(),
+        is_available: s.is_available(),
+        connected: s.is_connected(),
+        timecode: s.timecode().map(timecode_to_dto),
+        capabilities: SourceCapabilitiesDto {
+            video_formats: caps.video_formats,
+            max_width: caps.max_width,
+            max_height: caps.max_height,
+            max_framerate: [caps.max_framerate.0, caps.max_framerate.1],
+            audio_channels: caps.audio_channels,
+            audio_sample_rates: caps.audio_sample_rates,
+        },
+    }
+}
+
+fn timecode_to_dto(tc: Timecode) -> TimecodeDto {
+    TimecodeDto {
+        display: tc.to_string(),
+        hours: tc.hours,
+        minutes: tc.minutes,
+        seconds: tc.seconds,
+        frames: tc.frames,
+        drop_frame: tc.drop_frame,
+        framerate: [tc.framerate.0, tc.framerate.1],
+    }
+}
+
 fn session_row_to_dto(r: db::SessionRow) -> RecordingSessionDto {
     RecordingSessionDto {
         id: r.id,
@@ -875,8 +916,48 @@ fn session_row_to_dto(r: db::SessionRow) -> RecordingSessionDto {
     }
 }
 
+fn row_to_config_dto(row: db::TestSourceRow) -> TestSourceConfigDto {
+    TestSourceConfigDto {
+        id: row.id,
+        name: row.name,
+        pattern: row.pattern,
+        width: row.width as u32,
+        height: row.height as u32,
+        fps_num: row.fps_num as u32,
+        fps_den: row.fps_den as u32,
+        audio_signal: row.audio_signal,
+        frequency: row.frequency,
+        channels: row.channels as u32,
+        created_at: row.created_at,
+    }
+}
+
+fn db_row_to_config(row: db::TestSourceRow) -> crate::sources::test::TestSourceConfig {
+    use crate::sources::test::{AudioTestSignal, TestSourceConfig, VideoTestPattern};
+    TestSourceConfig {
+        id: row.id,
+        name: row.name,
+        pattern: VideoTestPattern::from_db(&row.pattern),
+        width: row.width as u32,
+        height: row.height as u32,
+        fps_num: row.fps_num as u32,
+        fps_den: row.fps_den as u32,
+        audio_signal: AudioTestSignal::from_db(&row.audio_signal),
+        frequency: row.frequency,
+        channels: row.channels as u32,
+    }
+}
+
+async fn rebuild_sources(state: &AppState) -> anyhow::Result<()> {
+    let configs = db::test_sources_list(&state.db)
+        .await?
+        .into_iter()
+        .map(db_row_to_config)
+        .collect::<Vec<_>>();
+    state.source_manager.write().await.scan(&configs).await
+}
+
 async fn build_profile_for_preset(state: &AppState, preset_id: &str) -> RecordingProfile {
-    // Recordings resolve presets from the synced cache (full preset JSON in `data`).
     if let Ok(rows) = db::presets_list(&state.db).await {
         if let Some(row) = rows.into_iter().find(|r| r.id == preset_id) {
             if let Ok(p) = serde_json::from_str::<PresetDto>(&row.data) {
@@ -894,7 +975,5 @@ async fn build_profile_for_preset(state: &AppState, preset_id: &str) -> Recordin
             }
         }
     }
-    // Built-in fallback (the always-available "default" preset, or anything
-    // not yet synced).
     RecordingProfile::h264_mov(preset_id)
 }

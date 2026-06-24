@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useApi } from '@/composables/useApi'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 
 interface NodeDto {
   id: string
@@ -27,6 +28,9 @@ const settings = ref<Settings | null>(null)
 const nodes = ref<NodeDto[]>([])
 const saving = ref(false)
 const restartRequired = ref(false)
+const addNodeUrl = ref('')
+const addNodeError = ref('')
+const addNodeLoading = ref(false)
 
 const isAggregator = computed(() => settings.value?.role === 'aggregator')
 
@@ -63,6 +67,21 @@ function formatUptime(secs: number): string {
   const m = Math.floor((secs % 3600) / 60)
   if (h > 0) return `${h}h ${m}m`
   return `${m}m`
+}
+
+async function addNode() {
+  if (!addNodeUrl.value.trim() || addNodeLoading.value) return
+  addNodeError.value = ''
+  addNodeLoading.value = true
+  try {
+    await api('/nodes', { method: 'POST', body: { url: addNodeUrl.value.trim() } })
+    addNodeUrl.value = ''
+    await load()
+  } catch (e: any) {
+    addNodeError.value = e?.data ?? e?.message ?? 'Failed to add node'
+  } finally {
+    addNodeLoading.value = false
+  }
 }
 
 onMounted(load)
@@ -121,7 +140,22 @@ onMounted(load)
 
     <!-- Discovered nodes -->
     <section v-if="isAggregator">
-      <h2 class="text-sm font-semibold mb-3">Discovered nodes</h2>
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-semibold">Discovered nodes</h2>
+      </div>
+      <!-- Manual add -->
+      <div class="flex gap-2 mb-4">
+        <Input
+          v-model="addNodeUrl"
+          placeholder="http://192.168.1.x:7700"
+          class="font-mono text-xs"
+          @keydown.enter="addNode"
+        />
+        <Button size="sm" :disabled="addNodeLoading || !addNodeUrl.trim()" @click="addNode">
+          {{ addNodeLoading ? 'Adding…' : 'Add node' }}
+        </Button>
+      </div>
+      <p v-if="addNodeError" class="text-xs text-red-500 mb-3">{{ addNodeError }}</p>
       <div class="rounded-lg border border-border bg-card divide-y divide-border">
         <div
           v-for="node in nodes"
