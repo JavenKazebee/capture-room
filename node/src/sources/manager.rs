@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use chrono::Utc;
+use futures_util::future::join_all;
+use tokio::sync::watch;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -24,8 +26,30 @@ struct ActiveMonitor {
 
 struct ActiveSession {
     source_id: String,
-    branch: RecordingBranch,
+    branches: Vec<RecordingBranch>,
     pub dto: RecordingSessionDto,
+}
+
+/// Result of attempting to stop a session. The caller is responsible for
+/// actually detaching branches (see `begin_stop_recording`'s doc comment)
+/// so that work happens outside any lock and, critically, outside the
+/// lifetime of the HTTP request that triggered it.
+pub enum StopOutcome {
+    /// This call is the one that gets to do the work. Detach `pending`'s
+    /// branches (if any), then report the result via `tx` and call
+    /// `finish_stop` once done.
+    Start {
+        dto: RecordingSessionDto,
+        pending: Option<(Arc<MonitorPipeline>, Vec<RecordingBranch>)>,
+        tx: watch::Sender<Option<RecordingSessionDto>>,
+    },
+    /// A stop for this session is already in flight (started by another
+    /// request). Await `changed()`/`borrow()` on this receiver for the
+    /// final DTO instead of doing any work.
+    Join(watch::Receiver<Option<RecordingSessionDto>>),
+    /// No in-memory record at all — not active, not stopping. Caller should
+    /// fall back to checking the DB for an orphaned row (e.g. after a crash).
+    NotFound,
 }
 
 // ── SourceManager ─────────────────────────────────────────────────────────────
@@ -37,6 +61,11 @@ pub struct SourceManager {
     registry: SourceRegistry,
     monitors: HashMap<String, ActiveMonitor>,
     sessions: HashMap<String, ActiveSession>, // session_id → session
+    /// Sessions whose branches are being detached by a task spawned outside
+    /// any lock. Lets a duplicate/retried stop request join the in-flight
+    /// result instead of being treated as "already fully stopped" — see
+    /// `begin_stop_recording`.
+    stopping: HashMap<String, watch::Receiver<Option<RecordingSessionDto>>>,
     ndi_monitor: NdiMonitor,
 }
 
@@ -47,6 +76,7 @@ impl SourceManager {
             registry: SourceRegistry::new(),
             monitors: HashMap::new(),
             sessions: HashMap::new(),
+            stopping: HashMap::new(),
             ndi_monitor,
         }
     }
@@ -162,11 +192,13 @@ impl SourceManager {
 
     // ── Recording ─────────────────────────────────────────────────────────────
 
+    /// Start a multi-leg recording session.
+    /// `legs` is an ordered list of `(output_path, profile)` pairs, one per output leg.
     pub async fn start_recording(
         &mut self,
         source_id: &str,
-        profile: &RecordingProfile,
-        primary_path: &Path,
+        preset_id: &str,
+        legs: &[(String, RecordingProfile)],
     ) -> Result<RecordingSessionDto> {
         if self
             .sessions
@@ -181,27 +213,32 @@ impl SourceManager {
             .get(source_id)
             .ok_or_else(|| anyhow::anyhow!("no monitor running for source {source_id}"))?;
 
-        let branch = monitor.pipeline.attach_recording(primary_path, profile).await?;
+        let leg_refs: Vec<(&Path, &RecordingProfile)> = legs
+            .iter()
+            .map(|(p, prof)| (Path::new(p.as_str()), prof))
+            .collect();
+
+        let branches = monitor.pipeline.attach_recording_legs(&leg_refs).await?;
+
+        let output_paths: Vec<String> = legs.iter().map(|(p, _)| p.clone()).collect();
 
         let dto = RecordingSessionDto {
             id: Uuid::new_v4().to_string(),
             source_id: source_id.to_string(),
-            preset_id: profile.id.clone(),
+            preset_id: preset_id.to_string(),
             started_at: Utc::now().to_rfc3339(),
             stopped_at: None,
-            primary_path: primary_path.to_string_lossy().into_owned(),
-            secondary_path: None,
-            redundant_path: None,
+            output_paths,
             status: "active".to_string(),
             error_message: None,
         };
 
-        info!(id = %dto.id, source = source_id, "recording started");
+        info!(id = %dto.id, source = source_id, legs = legs.len(), "recording started");
         self.sessions.insert(
             dto.id.clone(),
             ActiveSession {
                 source_id: source_id.to_string(),
-                branch,
+                branches,
                 dto: dto.clone(),
             },
         );
@@ -218,21 +255,32 @@ impl SourceManager {
         let mut dto = session.dto;
 
         let monitor = self.monitors.get(&session.source_id);
-        let result = if let Some(m) = monitor {
-            m.pipeline.detach_recording(session.branch, 10).await
+        // Detach every leg concurrently: unlinking a branch's tee pad is what
+        // actually stops it recording, and detach_recording() blocks on that
+        // leg's EOS before returning. Doing this sequentially left later legs
+        // linked (and still recording) for the entire time earlier legs spent
+        // finalizing.
+        let last_err: Option<anyhow::Error> = if let Some(m) = monitor {
+            let pipeline = Arc::clone(&m.pipeline);
+            join_all(session.branches.into_iter().map(|branch| {
+                let pipeline = Arc::clone(&pipeline);
+                async move { pipeline.detach_recording(branch, 10).await }
+            }))
+            .await
+            .into_iter()
+            .find_map(|r| r.err())
         } else {
-            // Monitor was torn down while recording — branch elements are already
-            // in NULL state from stop_monitor, so nothing more to do.
-            Ok(())
+            // Monitor was torn down — branch elements are already NULL, nothing to do.
+            None
         };
 
-        match result {
-            Ok(()) => {
+        match last_err {
+            None => {
                 dto.status = "stopped".to_string();
                 dto.stopped_at = Some(Utc::now().to_rfc3339());
                 info!(id = %dto.id, "recording stopped");
             }
-            Err(e) => {
+            Some(e) => {
                 dto.status = "error".to_string();
                 dto.stopped_at = Some(Utc::now().to_rfc3339());
                 dto.error_message = Some(e.to_string());
@@ -244,10 +292,6 @@ impl SourceManager {
 
     pub fn active_sessions(&self) -> Vec<&RecordingSessionDto> {
         self.sessions.values().map(|s| &s.dto).collect()
-    }
-
-    pub fn is_active(&self, session_id: &str) -> bool {
-        self.sessions.contains_key(session_id)
     }
 
     // ── Monitor config ────────────────────────────────────────────────────────
@@ -289,22 +333,41 @@ impl SourceManager {
         Ok(())
     }
 
-    /// Remove the session from the active map and return the info needed to
-    /// await EOS. The caller must call `pipeline.detach_recording(branch, 10)`
-    /// outside of any write lock so the WS emitter stays unblocked.
-    pub fn begin_stop_recording(
-        &mut self,
-        session_id: &str,
-    ) -> Result<(RecordingSessionDto, Option<(Arc<MonitorPipeline>, RecordingBranch)>)> {
-        let session = self
-            .sessions
-            .remove(session_id)
-            .ok_or_else(|| anyhow::anyhow!("session {session_id} not active"))?;
-        let pending = self
-            .monitors
-            .get(&session.source_id)
-            .map(|m| (Arc::clone(&m.pipeline), session.branch));
-        Ok((session.dto, pending))
+    /// Remove the session from the active map and hand back what's needed to
+    /// detach its branches. The caller must run that detach work — and the
+    /// persist/notify that follows it — on a task spawned independently of
+    /// the triggering HTTP request (e.g. via `tokio::spawn`), NOT inline in
+    /// the request handler. If the handler awaits it inline, dropping the
+    /// handler's future (which happens if the client disconnects — a page
+    /// refresh, a retried request) silently cancels whatever branch detach
+    /// was still in flight, orphaning that branch: still linked to the tee,
+    /// still recording, and — since the session was already removed here —
+    /// unreachable by any future stop call.
+    ///
+    /// A second call for the same `session_id` while the first is still
+    /// running returns `StopOutcome::Join` with a receiver for the same
+    /// result, instead of falling through to a DB-only path that would
+    /// report "stopped" without the pipeline actually having stopped.
+    pub fn begin_stop_recording(&mut self, session_id: &str) -> StopOutcome {
+        if let Some(session) = self.sessions.remove(session_id) {
+            let pending = self
+                .monitors
+                .get(&session.source_id)
+                .map(|m| (Arc::clone(&m.pipeline), session.branches));
+            let (tx, rx) = watch::channel(None);
+            self.stopping.insert(session_id.to_string(), rx);
+            StopOutcome::Start { dto: session.dto, pending, tx }
+        } else if let Some(rx) = self.stopping.get(session_id) {
+            StopOutcome::Join(rx.clone())
+        } else {
+            StopOutcome::NotFound
+        }
+    }
+
+    /// Clear the "stopping" marker once the detach task has reported its
+    /// final result through the `tx` handed out by `begin_stop_recording`.
+    pub fn finish_stop(&mut self, session_id: &str) {
+        self.stopping.remove(session_id);
     }
 
     async fn stop_monitor(&mut self, source_id: &str) {

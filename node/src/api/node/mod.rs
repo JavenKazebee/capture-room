@@ -20,9 +20,10 @@ use crate::api::types::{
     StartRecordingRequest, TestSourceConfigDto, TimecodeDto, UpdateTestSourceRequest, WsEvent,
 };
 use crate::controller::{proxy, sync};
-use crate::db::{self, PresetRow};
+use crate::db::{self, PresetOutputRow, PresetRow};
 use crate::pipeline::profile::RecordingProfile;
 use crate::recording;
+use crate::sources::manager::StopOutcome;
 use crate::sources::Timecode;
 use crate::state::{AppState, Role};
 use crate::ws;
@@ -554,22 +555,23 @@ async fn post_recording(
     }
 
     let local_source = split_id(&req.source_id).1.to_string();
-    let profile = build_profile_for_preset(&state, &req.preset_id).await;
+    let legs = build_legs_for_preset(&state, &req.preset_id, &local_source).await;
 
-    let primary_path = req.primary_path.clone().unwrap_or_else(|| {
-        let dt = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-        format!("/tmp/capture-room/{}_{}_{}.mov", local_source, dt, req.preset_id)
-    });
+    if legs.is_empty() {
+        return (StatusCode::BAD_REQUEST, "preset has no output legs").into_response();
+    }
 
-    if let Some(parent) = Path::new(&primary_path).parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    for (path, _) in &legs {
+        if let Some(parent) = Path::new(path).parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            }
         }
     }
 
     let session = {
         let mut mgr = state.source_manager.write().await;
-        match mgr.start_recording(&local_source, &profile, Path::new(&primary_path)).await {
+        match mgr.start_recording(&local_source, &req.preset_id, &legs).await {
             Ok(s) => s,
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
@@ -590,6 +592,81 @@ async fn post_recording(
     (StatusCode::CREATED, Json(session_value(&session, &state.node_id))).into_response()
 }
 
+/// Detach `pending`'s branches (if any) concurrently, persist the result, and
+/// broadcast it. Spawned via `tokio::spawn` independently of the HTTP request
+/// that triggered the stop — see `SourceManager::begin_stop_recording` for
+/// why that decoupling matters.
+async fn run_stop_recording(
+    state: Arc<AppState>,
+    mut dto: RecordingSessionDto,
+    pending: Option<(
+        Arc<crate::pipeline::monitor::MonitorPipeline>,
+        Vec<crate::pipeline::monitor::RecordingBranch>,
+    )>,
+    tx: tokio::sync::watch::Sender<Option<RecordingSessionDto>>,
+) {
+    let result = if let Some((pipeline, branches)) = pending {
+        let outcomes = futures_util::future::join_all(branches.into_iter().map(|branch| {
+            let pipeline = Arc::clone(&pipeline);
+            async move { pipeline.detach_recording(branch, 10).await }
+        }))
+        .await;
+        outcomes.into_iter().find_map(|r| r.err()).map(Err).unwrap_or(Ok(()))
+    } else {
+        Ok(())
+    };
+
+    match result {
+        Ok(()) => {
+            dto.status = "stopped".to_string();
+            dto.stopped_at = Some(chrono::Utc::now().to_rfc3339());
+            info!(id = %dto.id, "recording stopped");
+        }
+        Err(e) => {
+            dto.status = "error".to_string();
+            dto.stopped_at = Some(chrono::Utc::now().to_rfc3339());
+            dto.error_message = Some(e.to_string());
+        }
+    }
+
+    if let Err(e) = recording::persist_stop(&state.db, &dto).await {
+        error!(error = %e, "persist session stop");
+    }
+
+    let event = if dto.status == "error" {
+        WsEvent::RecordingError {
+            session_id: dto.id.clone(),
+            source_id: composite(&state.node_id, &dto.source_id),
+            error: dto.error_message.clone().unwrap_or_default(),
+        }
+    } else {
+        WsEvent::RecordingStopped {
+            session_id: dto.id.clone(),
+            source_id: composite(&state.node_id, &dto.source_id),
+        }
+    };
+    ws::send(&state.ws_tx, &event);
+
+    let session_id = dto.id.clone();
+    let _ = tx.send(Some(dto));
+    state.source_manager.write().await.finish_stop(&session_id);
+}
+
+/// Wait for a stop's final DTO on `rx`, whether this request started the
+/// stop or is joining one already in flight.
+async fn await_stop_result(
+    mut rx: tokio::sync::watch::Receiver<Option<RecordingSessionDto>>,
+) -> Option<RecordingSessionDto> {
+    loop {
+        if let Some(dto) = rx.borrow_and_update().clone() {
+            return Some(dto);
+        }
+        if rx.changed().await.is_err() {
+            return None;
+        }
+    }
+}
+
 async fn patch_recording(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -599,63 +676,38 @@ async fn patch_recording(
         return (StatusCode::BAD_REQUEST, "unknown action").into_response();
     }
 
-    // Try to stop locally.
-    let local = {
-        let is_active = state.source_manager.read().await.is_active(&id);
-        if is_active {
-            // Phase 1: remove session and grab Arc<pipeline> while holding write lock.
-            let (mut dto, pending) = {
-                let mut mgr = state.source_manager.write().await;
-                match mgr.begin_stop_recording(&id) {
-                    Ok(pair) => pair,
-                    Err(e) => {
-                        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-                    }
-                }
-            };
-            // Phase 2: await EOS without holding any lock so the WS emitter
-            // and other readers are not blocked.
-            let result = if let Some((pipeline, branch)) = pending {
-                pipeline.detach_recording(branch, 10).await
-            } else {
-                Ok(())
-            };
-            match result {
-                Ok(()) => {
-                    dto.status = "stopped".to_string();
-                    dto.stopped_at = Some(chrono::Utc::now().to_rfc3339());
-                    info!(id = %dto.id, "recording stopped");
-                }
-                Err(e) => {
-                    dto.status = "error".to_string();
-                    dto.stopped_at = Some(chrono::Utc::now().to_rfc3339());
-                    dto.error_message = Some(e.to_string());
-                }
-            }
-            Some(dto)
-        } else {
-            // Orphaned DB row — mark stopped directly.
+    let outcome = state.source_manager.write().await.begin_stop_recording(&id);
+
+    let local = match outcome {
+        StopOutcome::Start { dto, pending, tx } => {
+            let rx = tx.subscribe();
+            // Spawned independently: if the caller's connection drops while
+            // we're awaiting below, only this request's response is affected
+            // — the detach work keeps running to completion regardless.
+            tokio::spawn(run_stop_recording(Arc::clone(&state), dto, pending, tx));
+            await_stop_result(rx).await
+        }
+        StopOutcome::Join(rx) => await_stop_result(rx).await,
+        StopOutcome::NotFound => {
+            // Orphaned DB row (e.g. after a crash/restart) — mark stopped
+            // directly, but only if it isn't already; a stray retry landing
+            // here after everything settled shouldn't stomp stopped_at.
             match db::session_get(&state.db, &id).await {
-                Ok(Some(row)) => {
+                Ok(Some(row)) if row.status == "active" => {
                     let stopped_at = chrono::Utc::now().to_rfc3339();
                     if let Err(e) =
                         db::session_update_stop(&state.db, &id, &stopped_at, "stopped", None).await
                     {
                         error!(error = %e, "db stop orphaned session");
                     }
-                    Some(RecordingSessionDto {
-                        id: row.id,
-                        source_id: row.source_id,
-                        preset_id: row.preset_id,
-                        started_at: row.started_at,
+                    Some(session_row_to_dto(db::SessionRow {
                         stopped_at: Some(stopped_at),
-                        primary_path: row.primary_path,
-                        secondary_path: row.secondary_path,
-                        redundant_path: row.redundant_path,
                         status: "stopped".to_string(),
                         error_message: None,
-                    })
+                        ..row
+                    }))
                 }
+                Ok(Some(row)) => Some(session_row_to_dto(row)),
                 Ok(None) => None,
                 Err(e) => {
                     return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
@@ -665,22 +717,6 @@ async fn patch_recording(
     };
 
     if let Some(session) = local {
-        if let Err(e) = recording::persist_stop(&state.db, &session).await {
-            error!(error = %e, "persist session stop");
-        }
-        let event = if session.status == "error" {
-            WsEvent::RecordingError {
-                session_id: session.id.clone(),
-                source_id: composite(&state.node_id, &session.source_id),
-                error: session.error_message.clone().unwrap_or_default(),
-            }
-        } else {
-            WsEvent::RecordingStopped {
-                session_id: session.id.clone(),
-                source_id: composite(&state.node_id, &session.source_id),
-            }
-        };
-        ws::send(&state.ws_tx, &event);
         return Json(session_value(&session, &state.node_id)).into_response();
     }
 
@@ -736,13 +772,26 @@ fn forbidden() -> Response {
 }
 
 async fn get_presets(State(state): State<Arc<AppState>>) -> Response {
-    match db::presets_full_list(&state.db).await {
-        Ok(rows) => {
-            let dtos: Vec<PresetDto> = rows.iter().map(sync::preset_row_to_dto).collect();
-            Json(dtos).into_response()
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+    let rows = match db::presets_list(&state.db).await {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let all_outputs = match db::preset_outputs_list_all(&state.db).await {
+        Ok(o) => o,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let dtos: Vec<PresetDto> = rows
+        .iter()
+        .map(|r| {
+            let outputs: Vec<PresetOutputRow> = all_outputs
+                .iter()
+                .filter(|o| o.preset_id == r.id)
+                .cloned()
+                .collect();
+            sync::preset_to_dto(r, &outputs)
+        })
+        .collect();
+    Json(dtos).into_response()
 }
 
 async fn post_preset(
@@ -753,18 +802,10 @@ async fn post_preset(
         return forbidden();
     }
     let now = chrono::Utc::now().to_rfc3339();
+    let preset_id = uuid::Uuid::new_v4().to_string();
     let row = PresetRow {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: preset_id.clone(),
         name: req.name,
-        codec: req.codec,
-        container: req.container,
-        resolution: req.resolution,
-        framerate: req.framerate,
-        bitrate_kbps: req.bitrate_kbps,
-        quality: req.quality,
-        output_template: req.output_template,
-        secondary_output_template: req.secondary_output_template,
-        redundant_output_template: req.redundant_output_template,
         created_at: now.clone(),
         updated_at: now,
         version: 1,
@@ -772,10 +813,14 @@ async fn post_preset(
     if let Err(e) = db::preset_insert(&state.db, &row).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
+    let output_rows = build_output_rows(&preset_id, &req.outputs);
+    if let Err(e) = db::preset_outputs_replace(&state.db, &preset_id, &output_rows).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
     if let Err(e) = sync::sync_presets_to_nodes(&state).await {
         error!(error = %e, "preset sync after create");
     }
-    (StatusCode::CREATED, Json(sync::preset_row_to_dto(&row))).into_response()
+    (StatusCode::CREATED, Json(sync::preset_to_dto(&row, &output_rows))).into_response()
 }
 
 async fn put_preset(
@@ -790,15 +835,6 @@ async fn put_preset(
     let row = PresetRow {
         id: id.clone(),
         name: req.name,
-        codec: req.codec,
-        container: req.container,
-        resolution: req.resolution,
-        framerate: req.framerate,
-        bitrate_kbps: req.bitrate_kbps,
-        quality: req.quality,
-        output_template: req.output_template,
-        secondary_output_template: req.secondary_output_template,
-        redundant_output_template: req.redundant_output_template,
         created_at: String::new(),
         updated_at: now,
         version: 0,
@@ -808,11 +844,15 @@ async fn put_preset(
         Ok(false) => return (StatusCode::NOT_FOUND, "preset not found").into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+    let output_rows = build_output_rows(&id, &req.outputs);
+    if let Err(e) = db::preset_outputs_replace(&state.db, &id, &output_rows).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
     if let Err(e) = sync::sync_presets_to_nodes(&state).await {
         error!(error = %e, "preset sync after update");
     }
-    match db::preset_get_full(&state.db, &id).await {
-        Ok(Some(updated)) => Json(sync::preset_row_to_dto(&updated)).into_response(),
+    match db::preset_get(&state.db, &id).await {
+        Ok(Some(updated)) => Json(sync::preset_to_dto(&updated, &output_rows)).into_response(),
         _ => StatusCode::OK.into_response(),
     }
 }
@@ -902,15 +942,15 @@ fn timecode_to_dto(tc: Timecode) -> TimecodeDto {
 }
 
 fn session_row_to_dto(r: db::SessionRow) -> RecordingSessionDto {
+    let output_paths: Vec<String> =
+        serde_json::from_str(&r.output_paths).unwrap_or_default();
     RecordingSessionDto {
         id: r.id,
         source_id: r.source_id,
         preset_id: r.preset_id,
         started_at: r.started_at,
         stopped_at: r.stopped_at,
-        primary_path: r.primary_path,
-        secondary_path: r.secondary_path,
-        redundant_path: r.redundant_path,
+        output_paths,
         status: r.status,
         error_message: r.error_message,
     }
@@ -957,23 +997,76 @@ async fn rebuild_sources(state: &AppState) -> anyhow::Result<()> {
     state.source_manager.write().await.scan(&configs).await
 }
 
-async fn build_profile_for_preset(state: &AppState, preset_id: &str) -> RecordingProfile {
-    if let Ok(rows) = db::presets_list(&state.db).await {
-        if let Some(row) = rows.into_iter().find(|r| r.id == preset_id) {
-            if let Ok(p) = serde_json::from_str::<PresetDto>(&row.data) {
-                return RecordingProfile::from_preset(
-                    p.id,
-                    p.name,
-                    &p.codec,
-                    &p.container,
-                    p.resolution.as_deref(),
-                    p.framerate.as_deref(),
-                    p.bitrate_kbps.map(|b| b as u32),
-                    p.quality,
-                    p.output_template,
-                );
+/// Build `(resolved_path, RecordingProfile)` for every output leg of a preset.
+/// Falls back to a single default H.264/MOV leg if the preset can't be resolved.
+async fn build_legs_for_preset(
+    state: &AppState,
+    preset_id: &str,
+    source_id: &str,
+) -> Vec<(String, RecordingProfile)> {
+    let cache_rows = db::presets_cache_list(&state.db).await.unwrap_or_default();
+    if let Some(row) = cache_rows.into_iter().find(|r| r.id == preset_id) {
+        if let Ok(dto) = serde_json::from_str::<PresetDto>(&row.data) {
+            if !dto.outputs.is_empty() {
+                let dt = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
+                return dto
+                    .outputs
+                    .iter()
+                    .map(|o| {
+                        let profile = RecordingProfile::from_preset(
+                            &o.id,
+                            &o.name,
+                            &o.codec,
+                            &o.container,
+                            o.resolution.as_deref(),
+                            o.framerate.as_deref(),
+                            o.bitrate_kbps.map(|b| b as u32),
+                            o.quality.clone(),
+                            &o.path_template,
+                        );
+                        let ext = profile.file_extension();
+                        let path = expand_path_template(&o.path_template, source_id, &dt, ext);
+                        (path, profile)
+                    })
+                    .collect();
             }
         }
     }
-    RecordingProfile::h264_mov(preset_id)
+    // Fallback: one default leg.
+    let profile = RecordingProfile::h264_mov(preset_id);
+    let dt = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
+    let path = format!("/tmp/capture-room/{}_{}.mov", source_id, dt);
+    vec![(path, profile)]
+}
+
+/// Expand `{source}`, `{datetime}`, `{ext}` tokens in a path template.
+fn expand_path_template(template: &str, source_id: &str, datetime: &str, ext: &str) -> String {
+    template
+        .replace("{source}", source_id)
+        .replace("{datetime}", datetime)
+        .replace("{ext}", ext)
+}
+
+/// Convert `PresetOutputInput` list into `PresetOutputRow` list for DB insertion.
+fn build_output_rows(
+    preset_id: &str,
+    inputs: &[crate::api::types::PresetOutputInput],
+) -> Vec<PresetOutputRow> {
+    inputs
+        .iter()
+        .enumerate()
+        .map(|(i, o)| PresetOutputRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            preset_id: preset_id.to_string(),
+            name: o.name.clone(),
+            codec: o.codec.clone(),
+            container: o.container.clone(),
+            resolution: o.resolution.clone(),
+            framerate: o.framerate.clone(),
+            bitrate_kbps: o.bitrate_kbps,
+            quality: o.quality.clone(),
+            path_template: o.path_template.clone(),
+            sort_order: i as i64,
+        })
+        .collect()
 }

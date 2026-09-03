@@ -157,7 +157,7 @@ async function save() {
   }
 }
 
-async function destroy(localSrcId: string, name: string, nodeId: string) {
+async function destroy(localSrcId: string, _name: string, nodeId: string) {
   try {
     await store.deleteTestSource(localSrcId, nodeId)
   } catch (e) {

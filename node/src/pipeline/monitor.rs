@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -62,8 +63,9 @@ pub struct MonitorPipeline {
     atee: gst::Element,
     pub thumbnail: ThumbnailStore,
     pub audio_meter: AudioMeter,
-    /// The bus task writes here when the recording filesink posts EOS.
-    recording_eos: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    /// Keyed by filesink element name (e.g. "sink-r0", "sink-r1").
+    /// The bus task fires the sender when the corresponding filesink posts EOS.
+    recording_eos: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
     _bus_task: tokio::task::JoinHandle<()>,
     // Live-reconfigurable elements.
     thumb_rate_caps: gst::Element,
@@ -79,8 +81,8 @@ impl MonitorPipeline {
     pub fn new(source: &dyn InputSource, config: &MonitorConfig) -> Result<Self> {
         let thumbnail = ThumbnailStore::new();
         let audio_meter = AudioMeter::new();
-        let recording_eos: Arc<Mutex<Option<oneshot::Sender<()>>>> =
-            Arc::new(Mutex::new(None));
+        let recording_eos: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
         let pipeline = gst::Pipeline::new();
         let src_bin = source.gst_src_element();
@@ -136,13 +138,9 @@ impl MonitorPipeline {
                     // bus after processing EOS — i.e. after the file is closed.
                     gst::MessageView::Eos(_) => {
                         if let Some(src) = msg.src() {
-                            // The recording filesink is always named "sink-r".
-                            if src.name() == "sink-r" {
-                                if let Some(tx) =
-                                    recording_eos_ref.lock().unwrap().take()
-                                {
-                                    let _ = tx.send(());
-                                }
+                            let name = src.name().to_string();
+                            if let Some(tx) = recording_eos_ref.lock().unwrap().remove(&name) {
+                                let _ = tx.send(());
                             }
                         }
                     }
@@ -220,13 +218,27 @@ impl MonitorPipeline {
     ///
     /// Uses blocking pad probes on both tee src pads so the link happens
     /// atomically with respect to data flow — no frames are lost or duplicated.
+    /// Attach N recording legs at once, one per `(path, profile)` pair.
+    /// Each leg gets a unique tag ("r0", "r1", …) so element names don't collide.
+    pub async fn attach_recording_legs(
+        &self,
+        legs: &[(impl AsRef<Path>, &RecordingProfile)],
+    ) -> Result<Vec<RecordingBranch>> {
+        let mut branches = Vec::with_capacity(legs.len());
+        for (i, (path, profile)) in legs.iter().enumerate() {
+            let tag = format!("r{i}");
+            branches.push(self.attach_recording(path.as_ref(), profile, &tag).await?);
+        }
+        Ok(branches)
+    }
+
     pub async fn attach_recording(
         &self,
         path: &Path,
         profile: &RecordingProfile,
+        tag: &str,
     ) -> Result<RecordingBranch> {
         let location = path.to_str().context("output path not valid UTF-8")?;
-        let tag = "r";
 
         // ── Build branch elements ─────────────────────────────────────────────
         // Leaky video queue: if x264enc can't keep up (complex content like moving
@@ -313,8 +325,9 @@ impl MonitorPipeline {
         }
 
         // ── Register EOS receiver before attaching (avoids race with fast EOS) ─
+        let sink_name = format!("sink-{tag}");
         let (eos_tx, eos_rx) = oneshot::channel::<()>();
-        *self.recording_eos.lock().unwrap() = Some(eos_tx);
+        self.recording_eos.lock().unwrap().insert(sink_name, eos_tx);
 
         // ── Request tee src pads ──────────────────────────────────────────────
         let vtee_pad = self

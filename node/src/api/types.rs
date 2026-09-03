@@ -116,9 +116,8 @@ pub struct RecordingSessionDto {
     pub preset_id: String,
     pub started_at: String,
     pub stopped_at: Option<String>,
-    pub primary_path: String,
-    pub secondary_path: Option<String>,
-    pub redundant_path: Option<String>,
+    /// Ordered list of output file paths, one per preset output leg.
+    pub output_paths: Vec<String>,
     pub status: String,
     pub error_message: Option<String>,
 }
@@ -129,9 +128,6 @@ pub struct RecordingSessionDto {
 pub struct StartRecordingRequest {
     pub source_id: String,
     pub preset_id: String,
-    /// Optional explicit output path. If omitted, the preset's template is used.
-    pub primary_path: Option<String>,
-    pub secondary_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +139,57 @@ pub struct PatchRecordingRequest {
 }
 
 // ── Presets ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+pub struct PresetOutputDto {
+    pub id: String,
+    pub preset_id: String,
+    pub name: String,
+    pub codec: String,
+    pub container: String,
+    pub resolution: Option<String>,
+    pub framerate: Option<String>,
+    pub bitrate_kbps: Option<i64>,
+    pub quality: Option<String>,
+    pub path_template: String,
+    pub sort_order: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+pub struct PresetOutputInput {
+    pub name: String,
+    pub codec: String,
+    pub container: String,
+    pub resolution: Option<String>,
+    pub framerate: Option<String>,
+    pub bitrate_kbps: Option<i64>,
+    pub quality: Option<String>,
+    pub path_template: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+pub struct PresetDto {
+    pub id: String,
+    pub name: String,
+    pub outputs: Vec<PresetOutputDto>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub version: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+pub struct PresetCreateRequest {
+    pub name: String,
+    pub outputs: Vec<PresetOutputInput>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
@@ -160,44 +207,6 @@ pub struct PresetCacheDto {
 #[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
 pub struct PresetSyncRequest {
     pub presets: Vec<PresetCacheDto>,
-}
-
-/// Full preset as stored in the authoritative `presets` table.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
-pub struct PresetDto {
-    pub id: String,
-    pub name: String,
-    pub codec: String,
-    pub container: String,
-    pub resolution: Option<String>,
-    pub framerate: Option<String>,
-    pub bitrate_kbps: Option<i64>,
-    pub quality: Option<String>,
-    pub output_template: String,
-    pub secondary_output_template: Option<String>,
-    pub redundant_output_template: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-    pub version: i64,
-}
-
-/// Create/update payload — server owns id, timestamps, and version.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
-pub struct PresetCreateRequest {
-    pub name: String,
-    pub codec: String,
-    pub container: String,
-    pub resolution: Option<String>,
-    pub framerate: Option<String>,
-    pub bitrate_kbps: Option<i64>,
-    pub quality: Option<String>,
-    pub output_template: String,
-    pub secondary_output_template: Option<String>,
-    pub redundant_output_template: Option<String>,
 }
 
 // ── WebSocket events ──────────────────────────────────────────────────────────

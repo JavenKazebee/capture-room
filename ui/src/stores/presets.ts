@@ -2,8 +2,9 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useApi } from '@/composables/useApi'
 
-export interface Preset {
+export interface OutputLeg {
   id: string
+  preset_id: string
   name: string
   codec: string
   container: string
@@ -11,23 +12,50 @@ export interface Preset {
   framerate: string | null
   bitrate_kbps: number | null
   quality: string | null
-  output_template: string
-  secondary_output_template: string | null
-  redundant_output_template: string | null
+  path_template: string
+  sort_order: number
+}
+
+export interface Preset {
+  id: string
+  name: string
+  outputs: OutputLeg[]
   created_at: string
   updated_at: string
   version: number
 }
 
-/** Editable fields — the server owns id, timestamps, and version. */
-export type PresetInput = Omit<Preset, 'id' | 'created_at' | 'updated_at' | 'version'>
+export interface OutputLegInput {
+  name: string
+  codec: string
+  container: string
+  resolution: string | null
+  framerate: string | null
+  bitrate_kbps: number | null
+  quality: string | null
+  path_template: string
+}
+
+export interface PresetInput {
+  name: string
+  outputs: OutputLegInput[]
+}
+
+export function blankLeg(): OutputLegInput {
+  return {
+    name: 'Output',
+    codec: 'h264',
+    container: 'mov',
+    resolution: null,
+    framerate: null,
+    bitrate_kbps: 8000,
+    quality: null,
+    path_template: '/tmp/capture-room/{source}_{datetime}.{ext}',
+  }
+}
 
 export const usePresetsStore = defineStore('presets', () => {
   const presets = ref<Preset[]>([])
-
-  function set(list: Preset[]) {
-    presets.value = list
-  }
 
   function upsert(preset: Preset) {
     const idx = presets.value.findIndex((p) => p.id === preset.id)
@@ -60,5 +88,5 @@ export const usePresetsStore = defineStore('presets', () => {
     presets.value = presets.value.filter((p) => p.id !== id)
   }
 
-  return { presets, set, upsert, load, create, update, remove }
+  return { presets, upsert, load, create, update, remove }
 })

@@ -130,6 +130,7 @@ shadcn-vue is already in place, so dark mode is mostly CSS-variable theming + a 
 - **Scheduler engine** — `controller/scheduler.rs` is an empty stub; schedules table specced.
 - **Timecode** — real LTC/VITC extraction; `timecode/mod.rs` is a stub (TestSource fakes wall-clock TC).
 - **Packaging + GitHub Actions** — cross-platform builds; folds in the NDI packaging strategy above.
+- **Node registry persistence** — `NodeRegistry` (`controller/registry.rs`) is in-memory only; mDNS-discovered peers self-heal on restart, but manually-registered peers (no mDNS, e.g. a different subnet) are lost on controller restart. Add a `nodes` table (the `discovered` flag is already specced in ARCHITECTURE.md) so manual registrations are durable.
 - **Additional source types** (each is a new `InputSource` impl, additive):
   - **RTSP** (`rtspsrc`) — IP cameras; easy, high value.
   - **SRT** (`srtsrc`) — contribution feeds over unreliable networks.

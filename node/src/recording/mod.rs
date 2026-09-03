@@ -7,6 +7,9 @@ pub async fn persist_start(
     pool: &sqlx::SqlitePool,
     session: &RecordingSessionDto,
 ) -> Result<()> {
+    let output_paths_json = serde_json::to_string(&session.output_paths)
+        .unwrap_or_else(|_| "[]".to_string());
+
     db::session_insert(
         pool,
         &SessionRow {
@@ -15,9 +18,7 @@ pub async fn persist_start(
             preset_id: session.preset_id.clone(),
             started_at: session.started_at.clone(),
             stopped_at: session.stopped_at.clone(),
-            primary_path: session.primary_path.clone(),
-            secondary_path: session.secondary_path.clone(),
-            redundant_path: session.redundant_path.clone(),
+            output_paths: output_paths_json,
             status: session.status.clone(),
             error_message: session.error_message.clone(),
         },

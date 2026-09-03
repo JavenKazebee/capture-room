@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useApi } from '@/composables/useApi'
-import { usePresetsStore, type Preset, type PresetInput } from '@/stores/presets'
+import { usePresetsStore, blankLeg, type Preset, type OutputLegInput } from '@/stores/presets'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 
@@ -14,49 +14,51 @@ const showForm = ref(false)
 const saving = ref(false)
 const error = ref<string | null>(null)
 
-const CODECS = ['h264', 'h265', 'vp9', 'prores', 'dnxhd', 'uncompressed']
+const CODECS = ['h264', 'h265', 'vp9', 'prores', 'prores_4444', 'prores_422hq', 'prores_422lt', 'prores_422proxy', 'dnxhd', 'uncompressed']
 const CONTAINERS = ['mov', 'mp4', 'mkv', 'mxf']
 
 const fieldClass =
   'h-8 rounded-md border border-border bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring/30'
 
-function blankForm(): PresetInput {
-  return {
-    name: '',
-    codec: 'h264',
-    container: 'mov',
-    resolution: null,
-    framerate: null,
-    bitrate_kbps: 8000,
-    quality: null,
-    output_template: '/tmp/capture-room/{source}_{datetime}.{ext}',
-    secondary_output_template: null,
-    redundant_output_template: null,
-  }
+const formName = ref('')
+const formLegs = ref<OutputLegInput[]>([blankLeg()])
+
+function blankToNull(v: string | null | undefined): string | null {
+  return v && String(v).trim() !== '' ? String(v) : null
 }
 
-const form = reactive<PresetInput>(blankForm())
-
-function stripMeta(p: Preset): PresetInput {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { id, created_at, updated_at, version, ...rest } = p
-  return rest
-}
-
-function resetForm(p?: Preset) {
-  Object.assign(form, p ? { ...blankForm(), ...stripMeta(p) } : blankForm())
+function normalizedLegs(): OutputLegInput[] {
+  return formLegs.value.map((leg) => ({
+    ...leg,
+    resolution: blankToNull(leg.resolution),
+    framerate: blankToNull(leg.framerate),
+    quality: blankToNull(leg.quality),
+    bitrate_kbps: leg.bitrate_kbps ? Number(leg.bitrate_kbps) : null,
+  }))
 }
 
 function openCreate() {
   editingId.value = null
-  resetForm()
+  formName.value = ''
+  formLegs.value = [blankLeg()]
   error.value = null
   showForm.value = true
 }
 
 function openEdit(p: Preset) {
   editingId.value = p.id
-  resetForm(p)
+  formName.value = p.name
+  formLegs.value = p.outputs.map((o) => ({
+    name: o.name,
+    codec: o.codec,
+    container: o.container,
+    resolution: o.resolution,
+    framerate: o.framerate,
+    bitrate_kbps: o.bitrate_kbps,
+    quality: o.quality,
+    path_template: o.path_template,
+  }))
+  if (formLegs.value.length === 0) formLegs.value = [blankLeg()]
   error.value = null
   showForm.value = true
 }
@@ -65,31 +67,30 @@ function closeForm() {
   showForm.value = false
 }
 
-// Empty strings in optional fields should be sent as null.
-function normalized(): PresetInput {
-  const blankToNull = (v: string | null) => (v && String(v).trim() !== '' ? v : null)
-  return {
-    ...form,
-    resolution: blankToNull(form.resolution),
-    framerate: blankToNull(form.framerate),
-    quality: blankToNull(form.quality),
-    secondary_output_template: blankToNull(form.secondary_output_template),
-    redundant_output_template: blankToNull(form.redundant_output_template),
-    bitrate_kbps: form.bitrate_kbps ? Number(form.bitrate_kbps) : null,
-  }
+function addLeg() {
+  formLegs.value.push(blankLeg())
+}
+
+function removeLeg(i: number) {
+  formLegs.value.splice(i, 1)
 }
 
 async function save() {
   if (saving.value) return
-  if (!form.name.trim()) {
+  if (!formName.value.trim()) {
     error.value = 'Name is required.'
+    return
+  }
+  if (formLegs.value.length === 0) {
+    error.value = 'At least one output leg is required.'
     return
   }
   saving.value = true
   error.value = null
   try {
-    if (editingId.value) await store.update(editingId.value, normalized())
-    else await store.create(normalized())
+    const payload = { name: formName.value.trim(), outputs: normalizedLegs() }
+    if (editingId.value) await store.update(editingId.value, payload)
+    else await store.create(payload)
     showForm.value = false
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Save failed.'
@@ -133,25 +134,33 @@ onMounted(async () => {
       No presets yet.<span v-if="isAggregator"> Create one to configure recording output.</span>
     </div>
 
-    <!-- List -->
+    <!-- Preset list -->
     <div v-else class="rounded-lg border border-border bg-card divide-y divide-border">
-      <div v-for="p in store.presets" :key="p.id" class="flex items-center gap-3 px-4 py-3">
-        <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-2">
-            <span class="text-sm font-medium truncate">{{ p.name }}</span>
-            <Badge variant="secondary">{{ p.codec }}</Badge>
-            <Badge variant="outline">.{{ p.container }}</Badge>
+      <div v-for="p in store.presets" :key="p.id" class="px-4 py-3">
+        <div class="flex items-start gap-3">
+          <div class="flex-1 min-w-0">
+            <span class="text-sm font-medium">{{ p.name }}</span>
+            <!-- Per-leg summary -->
+            <div
+              v-for="(leg, i) in p.outputs"
+              :key="i"
+              class="flex items-center gap-2 mt-1 text-xs text-muted-foreground"
+            >
+              <Badge variant="secondary" class="text-xs">{{ leg.codec }}</Badge>
+              <Badge variant="outline" class="text-xs">.{{ leg.container }}</Badge>
+              <span>{{ leg.resolution ?? 'source res' }} · {{ leg.framerate ?? 'source fps' }}</span>
+              <span>·</span>
+              <span>{{ leg.bitrate_kbps ? `${leg.bitrate_kbps} kbps` : (leg.quality ?? 'quality-based') }}</span>
+              <span class="font-mono truncate">{{ leg.path_template }}</span>
+            </div>
+            <p v-if="p.outputs.length === 0" class="text-xs text-muted-foreground mt-1 italic">
+              No output legs configured.
+            </p>
           </div>
-          <div class="text-xs text-muted-foreground truncate mt-0.5">
-            {{ p.resolution ?? 'match source' }} ·
-            {{ p.framerate ?? 'source fps' }} ·
-            {{ p.bitrate_kbps ? `${p.bitrate_kbps} kbps` : (p.quality ?? 'quality-based') }} ·
-            <span class="font-mono">{{ p.output_template }}</span>
+          <div v-if="isAggregator" class="flex gap-2 shrink-0">
+            <Button variant="outline" size="default" @click="openEdit(p)">Edit</Button>
+            <Button variant="destructive" size="default" @click="destroy(p)">Delete</Button>
           </div>
-        </div>
-        <div v-if="isAggregator" class="flex gap-2 shrink-0">
-          <Button variant="outline" size="default" @click="openEdit(p)">Edit</Button>
-          <Button variant="destructive" size="default" @click="destroy(p)">Delete</Button>
         </div>
       </div>
     </div>
@@ -162,63 +171,90 @@ onMounted(async () => {
       class="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50"
       @click.self="closeForm"
     >
-      <div class="bg-card border border-border rounded-lg w-full max-w-lg max-h-[90vh] overflow-y-auto p-5">
+      <div class="bg-card border border-border rounded-lg w-full max-w-2xl max-h-[90vh] overflow-y-auto p-5">
         <h2 class="text-lg font-semibold mb-4">{{ editingId ? 'Edit preset' : 'New preset' }}</h2>
 
-        <div class="grid grid-cols-2 gap-3">
-          <label class="col-span-2 flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">Name</span>
-            <input v-model="form.name" :class="fieldClass" placeholder="e.g. Broadcast H.264" />
-          </label>
+        <!-- Preset name -->
+        <label class="flex flex-col gap-1 mb-5">
+          <span class="text-xs text-muted-foreground">Preset name</span>
+          <input v-model="formName" :class="fieldClass" placeholder="e.g. Broadcast H.264" />
+        </label>
 
-          <label class="flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">Codec</span>
-            <select v-model="form.codec" :class="fieldClass">
-              <option v-for="c in CODECS" :key="c" :value="c">{{ c }}</option>
-            </select>
-          </label>
+        <!-- Output legs -->
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-medium">Output legs</span>
+          <Button variant="outline" size="sm" @click="addLeg">+ Add leg</Button>
+        </div>
 
-          <label class="flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">Container</span>
-            <select v-model="form.container" :class="fieldClass">
-              <option v-for="c in CONTAINERS" :key="c" :value="c">.{{ c }}</option>
-            </select>
-          </label>
+        <div class="space-y-4">
+          <div
+            v-for="(leg, i) in formLegs"
+            :key="i"
+            class="rounded-md border border-border p-3 relative"
+          >
+            <!-- Leg header -->
+            <div class="flex items-center justify-between mb-3">
+              <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                Leg {{ i + 1 }}
+              </span>
+              <button
+                v-if="formLegs.length > 1"
+                class="text-xs text-destructive hover:underline"
+                @click="removeLeg(i)"
+              >
+                Remove
+              </button>
+            </div>
 
-          <label class="flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">Resolution</span>
-            <input v-model="form.resolution" :class="fieldClass" placeholder="match source / 1920x1080" />
-          </label>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="col-span-2 flex flex-col gap-1">
+                <span class="text-xs text-muted-foreground">Leg name</span>
+                <input v-model="leg.name" :class="fieldClass" placeholder="e.g. Primary H.264" />
+              </label>
 
-          <label class="flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">Framerate</span>
-            <input v-model="form.framerate" :class="fieldClass" placeholder="source / 30 / 30000/1001" />
-          </label>
+              <label class="flex flex-col gap-1">
+                <span class="text-xs text-muted-foreground">Codec</span>
+                <select v-model="leg.codec" :class="fieldClass">
+                  <option v-for="c in CODECS" :key="c" :value="c">{{ c }}</option>
+                </select>
+              </label>
 
-          <label class="flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">Bitrate (kbps)</span>
-            <input v-model.number="form.bitrate_kbps" type="number" :class="fieldClass" placeholder="8000" />
-          </label>
+              <label class="flex flex-col gap-1">
+                <span class="text-xs text-muted-foreground">Container</span>
+                <select v-model="leg.container" :class="fieldClass">
+                  <option v-for="c in CONTAINERS" :key="c" :value="c">.{{ c }}</option>
+                </select>
+              </label>
 
-          <label class="flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">Quality</span>
-            <input v-model="form.quality" :class="fieldClass" placeholder="optional" />
-          </label>
+              <label class="flex flex-col gap-1">
+                <span class="text-xs text-muted-foreground">Resolution</span>
+                <input v-model="leg.resolution" :class="fieldClass" placeholder="match source / 1920x1080" />
+              </label>
 
-          <label class="col-span-2 flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">Output template</span>
-            <input v-model="form.output_template" :class="[fieldClass, 'font-mono']" />
-          </label>
+              <label class="flex flex-col gap-1">
+                <span class="text-xs text-muted-foreground">Framerate</span>
+                <input v-model="leg.framerate" :class="fieldClass" placeholder="source / 30 / 30000/1001" />
+              </label>
 
-          <label class="col-span-2 flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">Secondary output (optional)</span>
-            <input v-model="form.secondary_output_template" :class="[fieldClass, 'font-mono']" placeholder="none" />
-          </label>
+              <label class="flex flex-col gap-1">
+                <span class="text-xs text-muted-foreground">Bitrate (kbps)</span>
+                <input v-model.number="leg.bitrate_kbps" type="number" :class="fieldClass" placeholder="8000" />
+              </label>
 
-          <label class="col-span-2 flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">Redundant output (optional)</span>
-            <input v-model="form.redundant_output_template" :class="[fieldClass, 'font-mono']" placeholder="none" />
-          </label>
+              <label class="flex flex-col gap-1">
+                <span class="text-xs text-muted-foreground">Quality</span>
+                <input v-model="leg.quality" :class="fieldClass" placeholder="optional" />
+              </label>
+
+              <label class="col-span-2 flex flex-col gap-1">
+                <span class="text-xs text-muted-foreground">
+                  Path template
+                  <span class="text-muted-foreground/60 ml-1">{source} {datetime} {ext}</span>
+                </span>
+                <input v-model="leg.path_template" :class="[fieldClass, 'font-mono']" />
+              </label>
+            </div>
+          </div>
         </div>
 
         <p v-if="error" class="text-xs text-destructive mt-3">{{ error }}</p>

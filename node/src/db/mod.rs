@@ -54,14 +54,11 @@ pub struct SessionRow {
     pub preset_id: String,
     pub started_at: String,
     pub stopped_at: Option<String>,
-    pub primary_path: String,
-    pub secondary_path: Option<String>,
-    pub redundant_path: Option<String>,
+    pub output_paths: String, // JSON array
     pub status: String,
     pub error_message: Option<String>,
 }
 
-/// On startup, any session still marked 'active' has no running pipeline.
 pub async fn sessions_mark_crashed(pool: &SqlitePool) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
@@ -78,18 +75,15 @@ pub async fn sessions_mark_crashed(pool: &SqlitePool) -> Result<()> {
 pub async fn session_insert(pool: &SqlitePool, s: &SessionRow) -> Result<()> {
     sqlx::query(
         "INSERT INTO recording_sessions
-         (id, source_id, preset_id, started_at, stopped_at, primary_path,
-          secondary_path, redundant_path, status, error_message)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, source_id, preset_id, started_at, stopped_at, output_paths, status, error_message)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.id)
     .bind(&s.source_id)
     .bind(&s.preset_id)
     .bind(&s.started_at)
     .bind(&s.stopped_at)
-    .bind(&s.primary_path)
-    .bind(&s.secondary_path)
-    .bind(&s.redundant_path)
+    .bind(&s.output_paths)
     .bind(&s.status)
     .bind(&s.error_message)
     .execute(pool)
@@ -121,8 +115,7 @@ pub async fn session_update_stop(
 pub async fn sessions_list(pool: &SqlitePool) -> Result<Vec<SessionRow>> {
     let rows = sqlx::query_as::<_, SessionRow>(
         "SELECT id, source_id, preset_id, started_at, stopped_at,
-                primary_path, secondary_path, redundant_path,
-                status, error_message
+                output_paths, status, error_message
          FROM recording_sessions
          ORDER BY started_at DESC
          LIMIT 100",
@@ -135,8 +128,7 @@ pub async fn sessions_list(pool: &SqlitePool) -> Result<Vec<SessionRow>> {
 pub async fn session_get(pool: &SqlitePool, id: &str) -> Result<Option<SessionRow>> {
     let row = sqlx::query_as::<_, SessionRow>(
         "SELECT id, source_id, preset_id, started_at, stopped_at,
-                primary_path, secondary_path, redundant_path,
-                status, error_message
+                output_paths, status, error_message
          FROM recording_sessions WHERE id = ?",
     )
     .bind(id)
@@ -145,11 +137,21 @@ pub async fn session_get(pool: &SqlitePool, id: &str) -> Result<Option<SessionRo
     Ok(row)
 }
 
-// ── presets (authoritative store) ─────────────────────────────────────────────
+// ── presets ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, FromRow)]
 pub struct PresetRow {
     pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub version: i64,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub struct PresetOutputRow {
+    pub id: String,
+    pub preset_id: String,
     pub name: String,
     pub codec: String,
     pub container: String,
@@ -157,32 +159,22 @@ pub struct PresetRow {
     pub framerate: Option<String>,
     pub bitrate_kbps: Option<i64>,
     pub quality: Option<String>,
-    pub output_template: String,
-    pub secondary_output_template: Option<String>,
-    pub redundant_output_template: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-    pub version: i64,
+    pub path_template: String,
+    pub sort_order: i64,
 }
 
-pub async fn presets_full_list(pool: &SqlitePool) -> Result<Vec<PresetRow>> {
+pub async fn presets_list(pool: &SqlitePool) -> Result<Vec<PresetRow>> {
     let rows = sqlx::query_as::<_, PresetRow>(
-        "SELECT id, name, codec, container, resolution, framerate, bitrate_kbps,
-                quality, output_template, secondary_output_template,
-                redundant_output_template, created_at, updated_at, version
-         FROM presets ORDER BY name",
+        "SELECT id, name, created_at, updated_at, version FROM presets ORDER BY name",
     )
     .fetch_all(pool)
     .await?;
     Ok(rows)
 }
 
-pub async fn preset_get_full(pool: &SqlitePool, id: &str) -> Result<Option<PresetRow>> {
+pub async fn preset_get(pool: &SqlitePool, id: &str) -> Result<Option<PresetRow>> {
     let row = sqlx::query_as::<_, PresetRow>(
-        "SELECT id, name, codec, container, resolution, framerate, bitrate_kbps,
-                quality, output_template, secondary_output_template,
-                redundant_output_template, created_at, updated_at, version
-         FROM presets WHERE id = ?",
+        "SELECT id, name, created_at, updated_at, version FROM presets WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -192,23 +184,11 @@ pub async fn preset_get_full(pool: &SqlitePool, id: &str) -> Result<Option<Prese
 
 pub async fn preset_insert(pool: &SqlitePool, p: &PresetRow) -> Result<()> {
     sqlx::query(
-        "INSERT INTO presets
-         (id, name, codec, container, resolution, framerate, bitrate_kbps,
-          quality, output_template, secondary_output_template,
-          redundant_output_template, created_at, updated_at, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO presets (id, name, created_at, updated_at, version)
+         VALUES (?, ?, ?, ?, ?)",
     )
     .bind(&p.id)
     .bind(&p.name)
-    .bind(&p.codec)
-    .bind(&p.container)
-    .bind(&p.resolution)
-    .bind(&p.framerate)
-    .bind(p.bitrate_kbps)
-    .bind(&p.quality)
-    .bind(&p.output_template)
-    .bind(&p.secondary_output_template)
-    .bind(&p.redundant_output_template)
     .bind(&p.created_at)
     .bind(&p.updated_at)
     .bind(p.version)
@@ -219,23 +199,9 @@ pub async fn preset_insert(pool: &SqlitePool, p: &PresetRow) -> Result<()> {
 
 pub async fn preset_update(pool: &SqlitePool, p: &PresetRow) -> Result<bool> {
     let res = sqlx::query(
-        "UPDATE presets SET
-            name = ?, codec = ?, container = ?, resolution = ?, framerate = ?,
-            bitrate_kbps = ?, quality = ?, output_template = ?,
-            secondary_output_template = ?, redundant_output_template = ?,
-            updated_at = ?, version = version + 1
-         WHERE id = ?",
+        "UPDATE presets SET name = ?, updated_at = ?, version = version + 1 WHERE id = ?",
     )
     .bind(&p.name)
-    .bind(&p.codec)
-    .bind(&p.container)
-    .bind(&p.resolution)
-    .bind(&p.framerate)
-    .bind(p.bitrate_kbps)
-    .bind(&p.quality)
-    .bind(&p.output_template)
-    .bind(&p.secondary_output_template)
-    .bind(&p.redundant_output_template)
     .bind(&p.updated_at)
     .bind(&p.id)
     .execute(pool)
@@ -244,11 +210,80 @@ pub async fn preset_update(pool: &SqlitePool, p: &PresetRow) -> Result<bool> {
 }
 
 pub async fn preset_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
+    // Delete outputs first (no FK cascade enforcement in SQLite without PRAGMA).
+    sqlx::query("DELETE FROM preset_outputs WHERE preset_id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
     let res = sqlx::query("DELETE FROM presets WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await?;
     Ok(res.rows_affected() > 0)
+}
+
+// ── preset_outputs ────────────────────────────────────────────────────────────
+
+pub async fn preset_outputs_list_all(pool: &SqlitePool) -> Result<Vec<PresetOutputRow>> {
+    let rows = sqlx::query_as::<_, PresetOutputRow>(
+        "SELECT id, preset_id, name, codec, container, resolution, framerate,
+                bitrate_kbps, quality, path_template, sort_order
+         FROM preset_outputs ORDER BY preset_id, sort_order",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn preset_outputs_for_preset(
+    pool: &SqlitePool,
+    preset_id: &str,
+) -> Result<Vec<PresetOutputRow>> {
+    let rows = sqlx::query_as::<_, PresetOutputRow>(
+        "SELECT id, preset_id, name, codec, container, resolution, framerate,
+                bitrate_kbps, quality, path_template, sort_order
+         FROM preset_outputs WHERE preset_id = ? ORDER BY sort_order",
+    )
+    .bind(preset_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Replace all output legs for a preset atomically.
+pub async fn preset_outputs_replace(
+    pool: &SqlitePool,
+    preset_id: &str,
+    outputs: &[PresetOutputRow],
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM preset_outputs WHERE preset_id = ?")
+        .bind(preset_id)
+        .execute(&mut *tx)
+        .await?;
+    for o in outputs {
+        sqlx::query(
+            "INSERT INTO preset_outputs
+             (id, preset_id, name, codec, container, resolution, framerate,
+              bitrate_kbps, quality, path_template, sort_order)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&o.id)
+        .bind(&o.preset_id)
+        .bind(&o.name)
+        .bind(&o.codec)
+        .bind(&o.container)
+        .bind(&o.resolution)
+        .bind(&o.framerate)
+        .bind(o.bitrate_kbps)
+        .bind(&o.quality)
+        .bind(&o.path_template)
+        .bind(o.sort_order)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 // ── presets_cache ─────────────────────────────────────────────────────────────
@@ -262,7 +297,7 @@ pub struct PresetCacheRow {
     pub synced_at: String,
 }
 
-pub async fn presets_list(pool: &SqlitePool) -> Result<Vec<PresetCacheRow>> {
+pub async fn presets_cache_list(pool: &SqlitePool) -> Result<Vec<PresetCacheRow>> {
     let rows = sqlx::query_as::<_, PresetCacheRow>(
         "SELECT id, name, data, version, synced_at FROM presets_cache ORDER BY name",
     )
