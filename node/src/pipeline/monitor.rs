@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -51,8 +51,20 @@ pub struct RecordingBranch {
     aq: gst::Element,
     elements: Vec<gst::Element>,
     sink_name: String,
+    location: PathBuf,
     /// Fires when the filesink posts its EOS bus message (file fully written).
     eos_rx: oneshot::Receiver<()>,
+}
+
+/// A branch added to the pipeline and linked internally, but not yet playing
+/// or fed by the tees. Its filesink is still NULL, so the output file hasn't
+/// been opened.
+struct BuiltBranch {
+    vq: gst::Element,
+    aq: gst::Element,
+    elements: Vec<gst::Element>,
+    sink_name: String,
+    location: PathBuf,
 }
 
 // ── MonitorPipeline ───────────────────────────────────────────────────────────
@@ -223,42 +235,62 @@ impl MonitorPipeline {
     /// Attach one recording branch per `(path, profile)` leg. Element names are
     /// suffixed with `"{tag}-{i}"`, so `tag` must be unique among branches that
     /// can coexist in this pipeline — a stopped session may still be draining
-    /// when the next one starts. If any leg fails, the legs already attached
-    /// are discarded.
+    /// when the next one starts.
+    ///
+    /// Every leg is built before any is started, so configuration errors
+    /// (missing encoder, a codec the container can't carry) fail without
+    /// opening a file. If starting a leg fails, every leg of this attempt is
+    /// rolled back and its partial file deleted.
     pub fn attach_recording_legs(
         &self,
         tag: &str,
         legs: &[(impl AsRef<Path>, &RecordingProfile)],
     ) -> Result<Vec<RecordingBranch>> {
-        let mut branches = Vec::with_capacity(legs.len());
+        let mut built = Vec::with_capacity(legs.len());
         for (i, (path, profile)) in legs.iter().enumerate() {
-            match self.attach_recording(path.as_ref(), profile, &format!("{tag}-{i}")) {
-                Ok(branch) => branches.push(branch),
+            match self.build_recording(path.as_ref(), profile, &format!("{tag}-{i}")) {
+                Ok(branch) => built.push(branch),
                 Err(e) => {
-                    for branch in branches {
-                        self.discard_recording(branch);
+                    for b in built {
+                        self.remove_branch(Vec::new(), &b.elements, &b.sink_name);
                     }
                     return Err(e);
                 }
             }
         }
-        Ok(branches)
+
+        let mut started = Vec::with_capacity(built.len());
+        let mut pending = built.into_iter();
+        while let Some(b) = pending.next() {
+            match self.start_recording_branch(b) {
+                Ok(branch) => started.push(branch),
+                Err(e) => {
+                    for branch in started {
+                        self.discard_recording(branch);
+                    }
+                    for b in pending {
+                        self.remove_branch(Vec::new(), &b.elements, &b.sink_name);
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        Ok(started)
     }
 
     /// vq → [videorate → caps] → [videoscale → caps] → videoconvert → venc ─┐
     ///                                                                     mux → filesink
     /// aq → audioconvert → audioresample → aenc ───────────────────────────┘
     ///
-    /// The branch is built, linked and set playing before the tee pads are
-    /// linked to it. A freshly requested tee pad carries no data until it is
-    /// linked, so no blocking probe is needed — and none can hang waiting for
-    /// a stalled source.
-    fn attach_recording(
+    ///
+    /// Adds and links the branch without changing its state; see
+    /// [`Self::start_recording_branch`].
+    fn build_recording(
         &self,
         path: &Path,
         profile: &RecordingProfile,
         tag: &str,
-    ) -> Result<RecordingBranch> {
+    ) -> Result<BuiltBranch> {
         let location = path.to_str().context("output path not valid UTF-8")?;
 
         // Leaky video queue: if the encoder can't keep up (complex content like
@@ -339,15 +371,30 @@ impl MonitorPipeline {
         let elements: Vec<gst::Element> =
             video.iter().chain(&audio).chain([&muxer, &filesink]).cloned().collect();
 
-        let mut tee_pads: Vec<(gst::Element, gst::Pad)> = Vec::new();
-        let linked = (|| -> Result<oneshot::Receiver<()>> {
+        let linked = (|| -> Result<()> {
             self.pipeline.add_many(&elements).context("add recording branch")?;
             gst::Element::link_many(&video).context("link video chain")?;
             gst::Element::link_many(&audio).context("link audio chain")?;
             link_to_muxer(video.last().unwrap(), &muxer, "video", profile)?;
             link_to_muxer(audio.last().unwrap(), &muxer, "audio", profile)?;
             muxer.link(&filesink).context("link mux → filesink")?;
+            Ok(())
+        })();
+        if let Err(e) = linked {
+            self.remove_branch(Vec::new(), &elements, &sink_name);
+            return Err(e);
+        }
+        Ok(BuiltBranch { vq, aq, elements, sink_name, location: path.to_path_buf() })
+    }
 
+    /// Set a built branch playing, then link the tee pads to it. A freshly
+    /// requested tee pad carries no data until it is linked, so no blocking
+    /// probe is needed — and none can hang waiting for a stalled source.
+    fn start_recording_branch(&self, built: BuiltBranch) -> Result<RecordingBranch> {
+        let BuiltBranch { vq, aq, elements, sink_name, location } = built;
+
+        let mut tee_pads: Vec<(gst::Element, gst::Pad)> = Vec::new();
+        let started = (|| -> Result<oneshot::Receiver<()>> {
             for el in &elements {
                 el.sync_state_with_parent()
                     .map_err(|_| anyhow::anyhow!("sync_state_with_parent failed for {}", el.name()))?;
@@ -366,24 +413,26 @@ impl MonitorPipeline {
             Ok(eos_rx)
         })();
 
-        match linked {
+        match started {
             Ok(eos_rx) => {
-                info!(path = ?path, "recording branch attached");
+                info!(path = ?location, "recording branch attached");
                 let [(_, vtee_pad), (_, atee_pad)]: [_; 2] = tee_pads.try_into().unwrap();
-                Ok(RecordingBranch { vtee_pad, atee_pad, vq, aq, elements, sink_name, eos_rx })
+                Ok(RecordingBranch { vtee_pad, atee_pad, vq, aq, elements, sink_name, location, eos_rx })
             }
             Err(e) => {
                 self.remove_branch(tee_pads, &elements, &sink_name);
+                remove_partial_file(&location);
                 Err(e)
             }
         }
     }
 
-    /// Tear a branch down immediately, without finalizing its file. Only for
-    /// rolling back a start that failed part-way.
+    /// Tear a started branch down immediately and delete its partial file.
+    /// Only for rolling back a start that failed part-way.
     fn discard_recording(&self, branch: RecordingBranch) {
         let tee_pads = vec![(self.vtee.clone(), branch.vtee_pad), (self.atee.clone(), branch.atee_pad)];
         self.remove_branch(tee_pads, &branch.elements, &branch.sink_name);
+        remove_partial_file(&branch.location);
     }
 
     fn remove_branch(
@@ -412,7 +461,7 @@ impl MonitorPipeline {
     /// filesink to post EOS before removing the elements. A timeout at either
     /// step is an error: the file is probably missing its index.
     pub async fn detach_recording(&self, branch: RecordingBranch, timeout: Duration) -> Result<()> {
-        let RecordingBranch { vtee_pad, atee_pad, vq, aq, elements, sink_name, eos_rx } = branch;
+        let RecordingBranch { vtee_pad, atee_pad, vq, aq, elements, sink_name, eos_rx, .. } = branch;
 
         let v_unlinked = unlink_when_idle(&vtee_pad, &vq);
         let a_unlinked = unlink_when_idle(&atee_pad, &aq);
@@ -453,6 +502,16 @@ impl MonitorPipeline {
         self.remove_branch(Vec::new(), &elements, &sink_name);
         info!(sink = %sink_name, "recording branch removed");
         result
+    }
+}
+
+/// Delete the output of a start that was rolled back. Call only once the
+/// branch's filesink is NULL (file closed).
+fn remove_partial_file(location: &Path) {
+    match std::fs::remove_file(location) {
+        Ok(()) => info!(path = ?location, "removed partial recording"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => warn!(path = ?location, error = %e, "could not remove partial recording"),
     }
 }
 

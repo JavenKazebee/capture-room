@@ -158,7 +158,6 @@ pub struct PresetOutputRow {
     pub resolution: Option<String>,
     pub framerate: Option<String>,
     pub bitrate_kbps: Option<i64>,
-    pub quality: Option<String>,
     pub path_template: String,
     pub sort_order: i64,
 }
@@ -227,7 +226,7 @@ pub async fn preset_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
 pub async fn preset_outputs_list_all(pool: &SqlitePool) -> Result<Vec<PresetOutputRow>> {
     let rows = sqlx::query_as::<_, PresetOutputRow>(
         "SELECT id, preset_id, name, codec, container, resolution, framerate,
-                bitrate_kbps, quality, path_template, sort_order
+                bitrate_kbps, path_template, sort_order
          FROM preset_outputs ORDER BY preset_id, sort_order",
     )
     .fetch_all(pool)
@@ -241,7 +240,7 @@ pub async fn preset_outputs_for_preset(
 ) -> Result<Vec<PresetOutputRow>> {
     let rows = sqlx::query_as::<_, PresetOutputRow>(
         "SELECT id, preset_id, name, codec, container, resolution, framerate,
-                bitrate_kbps, quality, path_template, sort_order
+                bitrate_kbps, path_template, sort_order
          FROM preset_outputs WHERE preset_id = ? ORDER BY sort_order",
     )
     .bind(preset_id)
@@ -265,8 +264,8 @@ pub async fn preset_outputs_replace(
         sqlx::query(
             "INSERT INTO preset_outputs
              (id, preset_id, name, codec, container, resolution, framerate,
-              bitrate_kbps, quality, path_template, sort_order)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              bitrate_kbps, path_template, sort_order)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&o.id)
         .bind(&o.preset_id)
@@ -276,7 +275,6 @@ pub async fn preset_outputs_replace(
         .bind(&o.resolution)
         .bind(&o.framerate)
         .bind(o.bitrate_kbps)
-        .bind(&o.quality)
         .bind(&o.path_template)
         .bind(o.sort_order)
         .execute(&mut *tx)

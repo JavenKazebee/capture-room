@@ -29,7 +29,6 @@ function normalizedLegs(): OutputLegInput[] {
     ...leg,
     resolution: blankToNull(leg.resolution),
     framerate: blankToNull(leg.framerate),
-    quality: blankToNull(leg.quality),
     bitrate_kbps: leg.bitrate_kbps ? Number(leg.bitrate_kbps) : null,
   }))
 }
@@ -52,7 +51,6 @@ function openEdit(p: Preset) {
     resolution: o.resolution,
     framerate: o.framerate,
     bitrate_kbps: o.bitrate_kbps,
-    quality: o.quality,
     path_template: o.path_template,
   }))
   if (formLegs.value.length === 0) formLegs.value = [blankLeg()]
@@ -139,7 +137,7 @@ onMounted(() => store.load())
               <Badge variant="outline" class="text-xs">.{{ leg.container }}</Badge>
               <span>{{ leg.resolution ?? 'source res' }} · {{ leg.framerate ?? 'source fps' }}</span>
               <span>·</span>
-              <span>{{ leg.bitrate_kbps ? `${leg.bitrate_kbps} kbps` : (leg.quality ?? 'quality-based') }}</span>
+              <span>{{ leg.bitrate_kbps ? `${leg.bitrate_kbps} kbps` : 'encoder default' }}</span>
               <span class="font-mono truncate">{{ leg.path_template }}</span>
             </div>
             <p v-if="p.outputs.length === 0" class="text-xs text-muted-foreground mt-1 italic">
@@ -228,11 +226,6 @@ onMounted(() => store.load())
               <label class="flex flex-col gap-1">
                 <span class="text-xs text-muted-foreground">Bitrate (kbps)</span>
                 <input v-model.number="leg.bitrate_kbps" type="number" :class="fieldClass" placeholder="8000" />
-              </label>
-
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-muted-foreground">Quality</span>
-                <input v-model="leg.quality" :class="fieldClass" placeholder="optional" />
               </label>
 
               <label class="col-span-2 flex flex-col gap-1">

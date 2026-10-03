@@ -149,7 +149,6 @@ pub struct PresetOutputDto {
     pub framerate: Option<String>,
     #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
     pub bitrate_kbps: Option<i64>,
-    pub quality: Option<String>,
     pub path_template: String,
     #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub sort_order: i64,
@@ -166,7 +165,6 @@ pub struct PresetOutputInput {
     pub framerate: Option<String>,
     #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
     pub bitrate_kbps: Option<i64>,
-    pub quality: Option<String>,
     pub path_template: String,
 }
 

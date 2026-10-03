@@ -102,7 +102,7 @@ Replace the fixed `output_template` / `secondary_output_template` /
 ProRes MOV to another). Absorbs the old "redundant path" concept.
 
 - **Schema:** new `preset_outputs` table (preset_id, codec, container, resolution, fps,
-  bitrate/quality, path_template, role) — migration `0003`. `presets` keeps source-level
+  bitrate, path_template, role) — migration `0003`. `presets` keeps source-level
   settings.
 - **Pipeline:** `Pipeline::new`'s `secondary: Option<(...)>` becomes `legs: Vec<(path,
   profile)>`, fanning out from the existing `tee`. Generalize the encode-sharing

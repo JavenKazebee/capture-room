@@ -247,7 +247,6 @@ fn output_row_to_dto(o: &PresetOutputRow) -> PresetOutputDto {
         resolution: o.resolution.clone(),
         framerate: o.framerate.clone(),
         bitrate_kbps: o.bitrate_kbps,
-        quality: o.quality.clone(),
         path_template: o.path_template.clone(),
         sort_order: o.sort_order,
     }
@@ -266,7 +265,6 @@ fn build_output_rows(preset_id: &str, inputs: &[PresetOutputInput]) -> Vec<Prese
             resolution: o.resolution.clone(),
             framerate: o.framerate.clone(),
             bitrate_kbps: o.bitrate_kbps,
-            quality: o.quality.clone(),
             path_template: o.path_template.clone(),
             sort_order: i as i64,
         })

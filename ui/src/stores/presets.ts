@@ -19,7 +19,6 @@ export function blankLeg(): OutputLegInput {
     resolution: null,
     framerate: null,
     bitrate_kbps: 8000,
-    quality: null,
     path_template: '/tmp/capture-room/{source}_{datetime}.{ext}',
   }
 }
