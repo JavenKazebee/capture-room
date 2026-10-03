@@ -28,7 +28,9 @@ pub struct MonitorPipeline {
     /// The first error the pipeline posted. An errored pipeline has stopped
     /// producing, so this is shown on the source until its monitor restarts.
     error: Arc<Mutex<Option<String>>>,
-    _bus_task: tokio::task::JoinHandle<()>,
+    /// Reads the bus until aborted on drop: the bus stream never ends by
+    /// itself, since the stream keeps the bus alive.
+    bus_task: tokio::task::JoinHandle<()>,
     // Live-reconfigurable elements.
     thumb_rate_caps: gst::Element,
     thumb_scale_caps: gst::Element,
@@ -111,7 +113,7 @@ impl MonitorPipeline {
             video,
             audio,
             error,
-            _bus_task: bus_task,
+            bus_task,
             thumb_rate_caps,
             thumb_scale_caps,
             level_el,
@@ -150,6 +152,7 @@ impl MonitorPipeline {
 impl Drop for MonitorPipeline {
     fn drop(&mut self) {
         let _ = self.stop();
+        self.bus_task.abort();
     }
 }
 

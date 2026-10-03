@@ -2,6 +2,8 @@
 //! that converts to `anyhow::Error` becomes a 500 carrying its full context
 //! chain; the other variants map to their status codes.
 
+use std::borrow::Cow;
+
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -12,7 +14,7 @@ pub type ApiResult<T> = Result<T, ApiError>;
 #[derive(Debug)]
 pub enum ApiError {
     NotFound(&'static str),
-    BadRequest(&'static str),
+    BadRequest(Cow<'static, str>),
     Conflict(&'static str),
     BadGateway(String),
     Internal(anyhow::Error),

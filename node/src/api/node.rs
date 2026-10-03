@@ -207,7 +207,7 @@ async fn post_recording(
     Json(req): Json<StartRecordingRequest>,
 ) -> ApiResult<(StatusCode, Json<RecordingSessionDto>)> {
     if req.outputs.is_empty() {
-        return Err(ApiError::BadRequest("at least one output is required"));
+        return Err(ApiError::BadRequest("at least one output is required".into()));
     }
     let legs = build_legs(&state, &req)?;
     for (path, _) in &legs {
@@ -341,5 +341,5 @@ fn build_legs(state: &AppState, req: &StartRecordingRequest) -> ApiResult<Vec<(P
         date: now.format("%Y-%m-%d").to_string(),
         datetime: now.format("%Y%m%d_%H%M%S").to_string(),
     };
-    plan_legs(&req.outputs, Some(&vars)).map_err(ApiError::BadRequest)
+    plan_legs(&req.outputs, Some(&vars)).map_err(|e| ApiError::BadRequest(e.into()))
 }

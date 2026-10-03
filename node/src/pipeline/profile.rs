@@ -74,6 +74,9 @@ impl RecordingProfile {
     /// text: blank means "match the source", anything else must parse — a
     /// typo is rejected rather than silently recording at the source format.
     pub fn from_output(o: &PresetOutputInput) -> Result<Self, &'static str> {
+        if let Some(reason) = incompatible(o.codec, o.container) {
+            return Err(reason);
+        }
         Ok(Self {
             video_codec: o.codec,
             container: o.container,
@@ -132,7 +135,6 @@ impl RecordingProfile {
             Container::Mov => "qtmux",
             Container::Mp4 => "mp4mux",
             Container::Mkv => "matroskamux",
-            Container::Mxf => "mxfmux",
         }
     }
 
@@ -141,7 +143,6 @@ impl RecordingProfile {
         match self.container {
             Container::Mov | Container::Mp4 => "avenc_aac",
             Container::Mkv => "opusenc",
-            Container::Mxf => "identity", // PCM passthrough; mxfmux accepts raw audio
         }
     }
 
@@ -151,7 +152,6 @@ impl RecordingProfile {
             Container::Mov => "mov",
             Container::Mp4 => "mp4",
             Container::Mkv => "mkv",
-            Container::Mxf => "mxf",
         }
     }
 
@@ -165,6 +165,22 @@ impl RecordingProfile {
             VideoCodec::ProRes422Proxy => Some("proxy"),
             _ => None,
         }
+    }
+}
+
+/// Why `codec` can't be recorded in `container`, if it can't. Found by
+/// recording every combination: these fail when the muxer is linked, or (VP9
+/// in MOV/MP4) at caps negotiation once frames flow. The preset editor offers
+/// the same choices (`CONTAINERS_FOR` in `PresetsView.vue`).
+fn incompatible(codec: VideoCodec, container: Container) -> Option<&'static str> {
+    use VideoCodec::*;
+    match (codec, container) {
+        (Vp9, Container::Mov | Container::Mp4) => Some("VP9 can only be recorded to .mkv"),
+        (ProRes4444 | ProRes422Hq | ProRes422 | ProRes422Lt | ProRes422Proxy, Container::Mp4) => {
+            Some("ProRes can only be recorded to .mov or .mkv")
+        }
+        (Uncompressed, Container::Mp4) => Some("uncompressed video can only be recorded to .mov or .mkv"),
+        _ => None,
     }
 }
 
@@ -229,6 +245,19 @@ mod tests {
             chroma: ChromaSubsampling::Yuv420,
             path_template: template.into(),
         }
+    }
+
+    #[test]
+    fn rejects_unrecordable_combinations() {
+        assert!(RecordingProfile::from_output(&leg("a", Container::Mov, "x")).is_ok());
+        let mut vp9 = leg("a", Container::Mp4, "x");
+        vp9.codec = VideoCodec::Vp9;
+        assert!(RecordingProfile::from_output(&vp9).is_err());
+        vp9.container = Container::Mkv;
+        assert!(RecordingProfile::from_output(&vp9).is_ok());
+        let mut prores = leg("a", Container::Mp4, "x");
+        prores.codec = VideoCodec::ProRes422Hq;
+        assert!(RecordingProfile::from_output(&prores).is_err());
     }
 
     #[test]

@@ -2,5 +2,6 @@
 
 /**
  * Container format of an output leg. Stored as text in `preset_outputs`.
+ * Not every codec fits every container: see `RecordingProfile::from_output`.
  */
-export type Container = "mov" | "mp4" | "mkv" | "mxf";
+export type Container = "mov" | "mp4" | "mkv";

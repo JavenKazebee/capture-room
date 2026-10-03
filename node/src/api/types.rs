@@ -179,6 +179,7 @@ pub enum VideoCodec {
 }
 
 /// Container format of an output leg. Stored as text in `preset_outputs`.
+/// Not every codec fits every container: see `RecordingProfile::from_output`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "lowercase")]
 #[sqlx(rename_all = "lowercase")]
@@ -187,7 +188,6 @@ pub enum Container {
     Mov,
     Mp4,
     Mkv,
-    Mxf,
 }
 
 /// Chroma subsampling for H.264/H.265 outputs. Other codecs ignore it

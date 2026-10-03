@@ -20,6 +20,7 @@ use crate::api::types::{
 };
 use crate::db;
 use crate::pipeline::profile::plan_legs;
+use crate::pipeline::recording;
 use crate::state::AppState;
 use crate::ws;
 
@@ -162,7 +163,8 @@ async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<String
 
 /// Store blank resolution/framerate as `None` ("match the source"), and reject
 /// outputs a recording couldn't start with — at save time rather than when
-/// someone presses Record.
+/// someone presses Record. Each leg's pipeline is built (not started), which
+/// catches a codec its container can't carry.
 fn validate_outputs(mut outputs: Vec<PresetOutputInput>) -> ApiResult<Vec<PresetOutputInput>> {
     fn blank_to_none(v: Option<String>) -> Option<String> {
         v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
@@ -171,7 +173,8 @@ fn validate_outputs(mut outputs: Vec<PresetOutputInput>) -> ApiResult<Vec<Preset
         output.resolution = blank_to_none(output.resolution.take());
         output.framerate = blank_to_none(output.framerate.take());
     }
-    plan_legs(&outputs, None).map_err(ApiError::BadRequest)?;
+    let legs = plan_legs(&outputs, None).map_err(|e| ApiError::BadRequest(e.into()))?;
+    recording::check_legs(&legs).map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
     Ok(outputs)
 }
 

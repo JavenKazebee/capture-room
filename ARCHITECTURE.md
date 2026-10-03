@@ -151,7 +151,9 @@ Legs with identical profiles currently each run their own encoder.
 Supported encoder targets:
 - **Ingest:** ProRes (4444, 422 HQ, 422, LT, Proxy), uncompressed
 - **Delivery/proxy:** H.264, H.265/HEVC, VP9
-- **Containers:** MOV, MXF, MP4, MKV
+- **Containers:** MOV, MP4, MKV. VP9 records to MKV only; ProRes and uncompressed to MOV
+  or MKV (`incompatible()` in `pipeline/profile.rs`; the preset editor offers the same
+  choices). MXF is not supported yet: `mxfmux` rejected every codec as wired.
 
 Codecs and containers are closed enums (`VideoCodec`, `Container` in `api/types.rs`), so the API rejects anything else and the UI's choices are generated from Rust. A redundant copy is just another leg with the same profile and a different path.
 
@@ -169,7 +171,7 @@ The latest JPEG is held in memory and served from `GET /api/v1/node/thumbnails/{
 
 - Reads LTC from a designated audio channel or VITC from the video signal via GStreamer timecode elements and the Decklink SDK timecode API
 - Exposed per-source via the status WebSocket and REST
-- Written into output file metadata where the container supports it (MOV, MXF)
+- Written into output file metadata where the container supports it (MOV)
 
 ---
 

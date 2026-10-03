@@ -24,7 +24,7 @@ const REQUIRED: &[Package] = &[
     Package {
         name: "gst-plugins-bad",
         hint: "pacman -S gst-plugins-bad  /  apt install gstreamer1.0-plugins-bad",
-        elements: &["mxfmux", "h264parse", "h265parse", "x265enc"],
+        elements: &["h264parse", "h265parse", "x265enc"],
     },
     Package {
         name: "gst-libav",

@@ -77,6 +77,17 @@ pub fn start_legs(
     Ok(started)
 }
 
+/// Build every leg without starting it, so a codec the container can't carry
+/// or a missing encoder is caught without recording anything. Building opens
+/// no files; the pipelines are dropped in NULL.
+pub fn check_legs(legs: &[(PathBuf, RecordingProfile)]) -> Result<()> {
+    let on_error: OnLegError = Arc::new(|_, _| {});
+    for (i, (path, profile)) in legs.iter().enumerate() {
+        RecordingLeg::build(path, profile, &format!("check-{i}"), Arc::clone(&on_error))?;
+    }
+    Ok(())
+}
+
 impl RecordingLeg {
     /// Build and link the leg's pipeline, leaving it in NULL: the output file
     /// isn't opened until [`Self::start`].

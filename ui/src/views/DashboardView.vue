@@ -3,22 +3,19 @@ import { onMounted } from 'vue'
 import { useSourcesStore } from '@/stores/sources'
 import { useRecordingsStore } from '@/stores/recordings'
 import { usePresetsStore } from '@/stores/presets'
-import { useNodesStore } from '@/stores/nodes'
-import { wsStatus } from '@/composables/useWebSocket'
+import { reloadAll, wsStatus } from '@/composables/useWebSocket'
 import FeedCard from '@/components/FeedCard.vue'
 import { WifiOff } from '@lucide/vue'
 
 const sources = useSourcesStore()
 const recordings = useRecordingsStore()
 const presets = usePresetsStore()
-const nodes = useNodesStore()
 
 // ── Load ──────────────────────────────────────────────────────────────────────
 
-onMounted(async () => {
+onMounted(() => {
   presets.load()
-  await nodes.load()
-  await Promise.all([sources.loadSources(), recordings.load()])
+  reloadAll()
 })
 </script>
 
@@ -56,7 +53,7 @@ onMounted(async () => {
       <div
         v-else
         class="grid gap-4 grid-cols-[repeat(auto-fill,minmax(min(100%,320px),1fr))]"
-        :class="wsStatus !== 'connected' ? 'opacity-60 pointer-events-none' : ''"
+        :class="wsStatus !== 'connected' ? 'opacity-60' : ''"
       >
         <FeedCard
           v-for="source in sources.sources"

@@ -34,9 +34,35 @@ const CODECS: Record<VideoCodec, string> = {
   prores_422proxy: 'ProRes 422 Proxy',
   uncompressed: 'Uncompressed',
 }
-const CONTAINERS: Record<Container, string> = { mov: '.mov', mp4: '.mp4', mkv: '.mkv', mxf: '.mxf' }
+const CONTAINERS: Record<Container, string> = { mov: '.mov', mp4: '.mp4', mkv: '.mkv' }
 const CODEC_OPTIONS = optionsOf(CODECS)
-const CONTAINER_OPTIONS = optionsOf(CONTAINERS)
+
+// Containers each codec can actually be recorded to. Mirrors `incompatible()`
+// in `pipeline/profile.rs`, which rejects the rest when a preset is saved.
+const ALL: Container[] = ['mov', 'mp4', 'mkv']
+const MOV_MKV: Container[] = ['mov', 'mkv']
+const CONTAINERS_FOR: Record<VideoCodec, Container[]> = {
+  h264: ALL,
+  h265: ALL,
+  vp9: ['mkv'],
+  prores_4444: MOV_MKV,
+  prores_422hq: MOV_MKV,
+  prores_422: MOV_MKV,
+  prores_422lt: MOV_MKV,
+  prores_422proxy: MOV_MKV,
+  uncompressed: MOV_MKV,
+}
+
+function containerOptions(codec: VideoCodec) {
+  return CONTAINERS_FOR[codec].map((value) => ({ value, label: CONTAINERS[value] }))
+}
+
+/** Switching codec moves the leg to a container that codec can record to. */
+function setCodec(leg: PresetOutputInput, codec: VideoCodec) {
+  leg.codec = codec
+  const allowed = CONTAINERS_FOR[codec]
+  if (!allowed.includes(leg.container)) leg.container = allowed[0]!
+}
 const CHROMA: { value: ChromaSubsampling; label: string }[] = [
   { value: '420', label: '4:2:0 — plays everywhere' },
   { value: '422', label: '4:2:2' },
@@ -225,11 +251,15 @@ onMounted(() => store.load())
             </FormField>
 
             <FormField label="Codec">
-              <OptionSelect v-model="leg.codec" :options="CODEC_OPTIONS" />
+              <OptionSelect
+                :model-value="leg.codec"
+                :options="CODEC_OPTIONS"
+                @update:model-value="setCodec(leg, $event)"
+              />
             </FormField>
 
             <FormField label="Container">
-              <OptionSelect v-model="leg.container" :options="CONTAINER_OPTIONS" />
+              <OptionSelect v-model="leg.container" :options="containerOptions(leg.codec)" />
             </FormField>
 
             <FormField label="Resolution">

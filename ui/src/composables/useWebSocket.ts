@@ -13,6 +13,8 @@ const MAX_DELAY = 16_000
 let socket: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let attempt = 0
+/** Set once the first connection opens; any later open is a reconnect. */
+let connectedBefore = false
 
 export const wsStatus = ref<WsStatus>('disconnected')
 
@@ -30,6 +32,10 @@ function connect() {
       clearTimeout(reconnectTimer)
       reconnectTimer = null
     }
+    // Events sent while disconnected are lost (a recording that stopped or
+    // failed, a node that went away), so reload rather than show stale state.
+    if (connectedBefore) reloadAll()
+    connectedBefore = true
   })
 
   socket.addEventListener('message', (ev) => {
@@ -52,6 +58,13 @@ function connect() {
   })
 }
 
+/** Reload nodes, then every reachable node's sources and recordings. */
+export async function reloadAll() {
+  const nodes = useNodesStore()
+  await nodes.load()
+  await Promise.all([useSourcesStore().loadSources(), useRecordingsStore().load()])
+}
+
 // Every event carries the `node_id` it describes; source and session ids
 // inside it are local to that node.
 type NodeEvent = WsEvent & { node_id: string }
@@ -59,13 +72,12 @@ type NodeEvent = WsEvent & { node_id: string }
 function handleEvent(event: NodeEvent) {
   const sources = useSourcesStore()
   const recordings = useRecordingsStore()
-  const nodes = useNodesStore()
   const nodeId = event.node_id
 
   switch (event.type) {
     case 'node.online':
     case 'node.offline':
-      nodes.load().then(() => Promise.all([sources.loadSources(), recordings.load()]))
+      reloadAll()
       break
 
     case 'recording.started':
