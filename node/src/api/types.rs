@@ -7,11 +7,12 @@ use ts_rs::TS;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct NodeStatus {
     pub id: String,
     pub name: String,
     pub version: String,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub uptime_secs: u64,
     pub mode: String,
 }
@@ -20,7 +21,7 @@ pub struct NodeStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct TimecodeDto {
     pub hours: u8,
     pub minutes: u8,
@@ -33,7 +34,7 @@ pub struct TimecodeDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct SourceCapabilitiesDto {
     pub video_formats: Vec<String>,
     pub max_width: u32,
@@ -45,7 +46,7 @@ pub struct SourceCapabilitiesDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct SourceDto {
     pub id: String,
     pub display_name: String,
@@ -60,7 +61,7 @@ pub struct SourceDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct TestSourceConfigDto {
     pub id: String,
     pub name: String,
@@ -77,7 +78,7 @@ pub struct TestSourceConfigDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct CreateTestSourceRequest {
     pub name: String,
     pub pattern: String,
@@ -92,7 +93,7 @@ pub struct CreateTestSourceRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct UpdateTestSourceRequest {
     pub name: String,
     pub pattern: String,
@@ -109,7 +110,7 @@ pub struct UpdateTestSourceRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct RecordingSessionDto {
     pub id: String,
     pub source_id: String,
@@ -124,7 +125,7 @@ pub struct RecordingSessionDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct StartRecordingRequest {
     pub source_id: String,
     pub preset_id: String,
@@ -132,7 +133,7 @@ pub struct StartRecordingRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct PatchRecordingRequest {
     /// Only valid value currently: "stop"
     pub action: String,
@@ -142,7 +143,7 @@ pub struct PatchRecordingRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct PresetOutputDto {
     pub id: String,
     pub preset_id: String,
@@ -151,21 +152,24 @@ pub struct PresetOutputDto {
     pub container: String,
     pub resolution: Option<String>,
     pub framerate: Option<String>,
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
     pub bitrate_kbps: Option<i64>,
     pub quality: Option<String>,
     pub path_template: String,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub sort_order: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct PresetOutputInput {
     pub name: String,
     pub codec: String,
     pub container: String,
     pub resolution: Option<String>,
     pub framerate: Option<String>,
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
     pub bitrate_kbps: Option<i64>,
     pub quality: Option<String>,
     pub path_template: String,
@@ -173,19 +177,20 @@ pub struct PresetOutputInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct PresetDto {
     pub id: String,
     pub name: String,
     pub outputs: Vec<PresetOutputDto>,
     pub created_at: String,
     pub updated_at: String,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub version: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct PresetCreateRequest {
     pub name: String,
     pub outputs: Vec<PresetOutputInput>,
@@ -193,18 +198,19 @@ pub struct PresetCreateRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct PresetCacheDto {
     pub id: String,
     pub name: String,
     pub data: serde_json::Value,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub version: i64,
     pub synced_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct PresetSyncRequest {
     pub presets: Vec<PresetCacheDto>,
 }
@@ -213,7 +219,7 @@ pub struct PresetSyncRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct ChannelLevelDto {
     pub peak_db: f64,
     pub rms_db: f64,
@@ -222,7 +228,7 @@ pub struct ChannelLevelDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub enum WsEvent {
     #[serde(rename = "source.available")]
     SourceAvailable {

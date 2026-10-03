@@ -1,0 +1,4 @@
+[env]
+# ts-rs resolves `#[ts(export)]` paths against this directory. `relative = true`
+# anchors it to the workspace root, so `pnpm types` writes into the UI package.
+TS_RS_EXPORT_DIR = { value = "ui/src/types/generated", relative = true }

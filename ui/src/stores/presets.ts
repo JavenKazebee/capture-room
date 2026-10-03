@@ -1,45 +1,15 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useApi } from '@/composables/useApi'
+import type { PresetCreateRequest } from '@/types/generated/PresetCreateRequest'
+import type { PresetDto } from '@/types/generated/PresetDto'
+import type { PresetOutputDto } from '@/types/generated/PresetOutputDto'
+import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 
-export interface OutputLeg {
-  id: string
-  preset_id: string
-  name: string
-  codec: string
-  container: string
-  resolution: string | null
-  framerate: string | null
-  bitrate_kbps: number | null
-  quality: string | null
-  path_template: string
-  sort_order: number
-}
-
-export interface Preset {
-  id: string
-  name: string
-  outputs: OutputLeg[]
-  created_at: string
-  updated_at: string
-  version: number
-}
-
-export interface OutputLegInput {
-  name: string
-  codec: string
-  container: string
-  resolution: string | null
-  framerate: string | null
-  bitrate_kbps: number | null
-  quality: string | null
-  path_template: string
-}
-
-export interface PresetInput {
-  name: string
-  outputs: OutputLegInput[]
-}
+export type OutputLeg = PresetOutputDto
+export type Preset = PresetDto
+export type OutputLegInput = PresetOutputInput
+export type PresetInput = PresetCreateRequest
 
 export function blankLeg(): OutputLegInput {
   return {

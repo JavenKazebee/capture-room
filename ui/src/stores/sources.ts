@@ -1,57 +1,19 @@
 import { defineStore } from 'pinia'
 import { ref, shallowReactive } from 'vue'
 import { useApi } from '@/composables/useApi'
+import type { ChannelLevelDto } from '@/types/generated/ChannelLevelDto'
+import type { CreateTestSourceRequest } from '@/types/generated/CreateTestSourceRequest'
+import type { SourceCapabilitiesDto } from '@/types/generated/SourceCapabilitiesDto'
+import type { SourceDto } from '@/types/generated/SourceDto'
+import type { TestSourceConfigDto } from '@/types/generated/TestSourceConfigDto'
 
-export interface TimecodeDto {
-  hours: number
-  minutes: number
-  seconds: number
-  frames: number
-  drop_frame: boolean
-  framerate: [number, number]
-  display: string
-}
-
-export interface SourceCapabilities {
-  video_formats: string[]
-  max_width: number
-  max_height: number
-  max_framerate: [number, number]
-  audio_channels: number
-  audio_sample_rates: number[]
-}
-
-export interface Source {
-  id: string
-  display_name: string
-  source_type: string
-  is_available: boolean
-  connected: boolean
-  timecode: TimecodeDto | null
-  capabilities: SourceCapabilities
-  node_id?: string
-}
-
-export interface ChannelLevel {
-  peak_db: number
-  rms_db: number
-}
-
-export interface TestSourceConfig {
-  id: string
-  name: string
-  pattern: string
-  width: number
-  height: number
-  fps_num: number
-  fps_den: number
-  audio_signal: string
-  frequency: number
-  channels: number
-  created_at: string
-}
-
-export type TestSourceInput = Omit<TestSourceConfig, 'id' | 'created_at'>
+export type { TimecodeDto } from '@/types/generated/TimecodeDto'
+export type SourceCapabilities = SourceCapabilitiesDto
+// node_id is added by the aggregator when proxying a remote node's sources
+export type Source = SourceDto & { node_id?: string }
+export type ChannelLevel = ChannelLevelDto
+export type TestSourceConfig = TestSourceConfigDto
+export type TestSourceInput = CreateTestSourceRequest
 
 // Audio levels updated ~10fps — shallow to avoid deep reactivity overhead
 export const audioLevels = shallowReactive(new Map<string, ChannelLevel[]>())
