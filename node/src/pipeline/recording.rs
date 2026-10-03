@@ -9,9 +9,12 @@
 //!
 //! Whatever goes wrong in a leg — a codec the container rejects at runtime, a
 //! full disk — fails only that leg's pipeline. The monitor and the other legs
-//! keep running.
+//! keep running, and the failure is reported the moment it happens through the
+//! leg's [`OnLegError`] callback.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -25,6 +28,10 @@ use super::{capsfilter, make_el};
 use super::profile::RecordingProfile;
 use crate::api::types::{Container, VideoCodec};
 
+/// Called with the leg's output path and error message the first time a leg
+/// fails. Runs on a GStreamer streaming thread, so it must not block.
+pub type OnLegError = Arc<dyn Fn(&Path, String) + Send + Sync>;
+
 /// One running output leg.
 pub struct RecordingLeg {
     pipeline: gst::Pipeline,
@@ -36,7 +43,7 @@ pub struct RecordingLeg {
 }
 
 /// Start one leg per `(path, profile)`, consuming `monitor`'s output. `tag`
-/// names the pipelines in logs.
+/// names the pipelines in logs; `on_error` hears about any leg that fails.
 ///
 /// Every leg is built before any is started, so configuration errors
 /// (missing encoder, a codec the container can't carry) fail without opening
@@ -45,12 +52,15 @@ pub struct RecordingLeg {
 pub fn start_legs(
     monitor: &MonitorPipeline,
     tag: &str,
-    legs: &[(PathBuf, &RecordingProfile)],
+    legs: &[(PathBuf, RecordingProfile)],
+    on_error: &OnLegError,
 ) -> Result<Vec<RecordingLeg>> {
     let built = legs
         .iter()
         .enumerate()
-        .map(|(i, (path, profile))| RecordingLeg::build(path, profile, &format!("rec-{tag}-{i}")))
+        .map(|(i, (path, profile))| {
+            RecordingLeg::build(path, profile, &format!("rec-{tag}-{i}"), Arc::clone(on_error))
+        })
         .collect::<Result<Vec<_>>>()?;
 
     let mut started: Vec<RecordingLeg> = Vec::with_capacity(built.len());
@@ -70,14 +80,24 @@ pub fn start_legs(
 impl RecordingLeg {
     /// Build and link the leg's pipeline, leaving it in NULL: the output file
     /// isn't opened until [`Self::start`].
-    fn build(path: &Path, profile: &RecordingProfile, name: &str) -> Result<Self> {
+    fn build(path: &Path, profile: &RecordingProfile, name: &str, on_error: OnLegError) -> Result<Self> {
         let location = path.to_str().context("output path not valid UTF-8")?;
         let pipeline = gst::Pipeline::with_name(name);
         // Only errors and EOS are ever read from this bus; drop the rest so a
-        // long recording doesn't accumulate messages nobody pops.
-        pipeline.bus().context("recording pipeline has no bus")?.set_sync_handler(|_, msg| {
-            match msg.type_() {
-                gst::MessageType::Error | gst::MessageType::Eos => gst::BusSyncReply::Pass,
+        // long recording doesn't accumulate messages nobody pops. Errors are
+        // also reported straight away (once per leg) — they still pass, so
+        // `stop` finds them too.
+        let reported = AtomicBool::new(false);
+        let error_path = path.to_path_buf();
+        pipeline.bus().context("recording pipeline has no bus")?.set_sync_handler(move |_, msg| {
+            match msg.view() {
+                gst::MessageView::Error(err) => {
+                    if !reported.swap(true, Ordering::Relaxed) {
+                        on_error(&error_path, leg_error(err));
+                    }
+                    gst::BusSyncReply::Pass
+                }
+                gst::MessageView::Eos(_) => gst::BusSyncReply::Pass,
                 _ => gst::BusSyncReply::Drop,
             }
         });
@@ -228,15 +248,8 @@ impl RecordingLeg {
                 Ok(())
             }
             Some(gst::MessageView::Error(err)) => {
-                let element = err.src().map(|s| s.name().to_string()).unwrap_or_default();
-                warn!(
-                    path = ?self.location,
-                    element = %element,
-                    error = %err.error(),
-                    debug = ?err.debug(),
-                    "recording leg failed"
-                );
-                Err(anyhow!("recording failed in {element}: {}", describe_error(err)))
+                warn!(path = ?self.location, error = %err.error(), debug = ?err.debug(), "recording leg failed");
+                Err(anyhow!("{}: {}", self.location.display(), leg_error(err)))
             }
             _ => {
                 warn!(path = ?self.location, "recording leg EOS timed out after {timeout:?}");
@@ -270,6 +283,12 @@ fn remove_file(location: &Path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => warn!(path = ?location, error = %e, "could not remove recording file"),
     }
+}
+
+/// A leg's error message, naming the element that failed.
+fn leg_error(err: &gst::message::Error) -> String {
+    let element = err.src().map(|s| s.name().to_string()).unwrap_or_default();
+    format!("recording failed in {element}: {}", describe_error(err))
 }
 
 /// GStreamer's streaming errors are a generic "Internal data stream error"

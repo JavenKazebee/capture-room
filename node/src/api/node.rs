@@ -3,7 +3,7 @@
 //! other nodes. Mounted at `/api/v1/node`; controllers reach a peer's copy
 //! through `/api/v1/nodes/{id}/…`.
 
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -119,7 +119,7 @@ async fn get_source(
 }
 
 async fn post_scan(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<SourceDto>>> {
-    rebuild_sources(&state).await?;
+    session::rebuild_sources(&state).await?;
     Ok(Json(sources_list(&*state.source_manager.read().await)))
 }
 
@@ -233,7 +233,7 @@ async fn post_recording(
     }
     let legs = build_legs(&state, &req)?;
     for (path, _) in &legs {
-        if let Some(parent) = Path::new(path).parent() {
+        if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
         }
     }
@@ -275,7 +275,7 @@ async fn post_stop_recording(
             // Spawned independently: if the caller's connection drops while
             // we're awaiting below, only this request's response is affected
             // — the stop keeps running to completion regardless.
-            tokio::spawn(session::run_stop(Arc::clone(&state), *job));
+            tokio::spawn(session::run_stop(Arc::clone(&state), *job, None));
             await_stop_result(rx).await
         }
         StopOutcome::Join(rx) => await_stop_result(rx).await,
@@ -346,23 +346,16 @@ fn source_to_dto(mgr: &SourceManager, s: &dyn InputSource) -> SourceDto {
     }
 }
 
-async fn rebuild_sources(state: &Arc<AppState>) -> anyhow::Result<()> {
-    let configs = db::test_sources_list(&state.db).await?;
-    let teardowns = state.source_manager.write().await.scan(&configs);
-    session::spawn_teardowns(state, teardowns);
-    Ok(())
-}
-
 /// After a test-source change: the change itself is saved, so a failed
 /// rescan is logged rather than failing the request.
 async fn rescan_after(state: &Arc<AppState>, change: &str) {
-    if let Err(e) = rebuild_sources(state).await {
+    if let Err(e) = session::rebuild_sources(state).await {
         error!(error = %e, "rebuild sources after {change}");
     }
 }
 
 /// Build `(resolved_path, RecordingProfile)` for every requested output leg.
-fn build_legs(state: &AppState, req: &StartRecordingRequest) -> ApiResult<Vec<(String, RecordingProfile)>> {
+fn build_legs(state: &AppState, req: &StartRecordingRequest) -> ApiResult<Vec<(PathBuf, RecordingProfile)>> {
     let now = chrono::Local::now();
     let date = now.format("%Y-%m-%d").to_string();
     let datetime = now.format("%Y%m%d_%H%M%S").to_string();
@@ -380,7 +373,7 @@ fn build_legs(state: &AppState, req: &StartRecordingRequest) -> ApiResult<Vec<(S
                 .replace("{datetime}", &datetime)
                 .replace("{output}", &o.name)
                 .replace("{ext}", profile.file_extension());
-            Ok((path, profile))
+            Ok((PathBuf::from(path), profile))
         })
         .collect()
 }

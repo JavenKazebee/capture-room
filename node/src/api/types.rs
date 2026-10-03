@@ -308,6 +308,14 @@ pub enum WsEvent {
         source_id: String,
         error: String,
     },
+    /// A leg failed while the session keeps recording on its other legs.
+    /// `error` is the session's accumulated error message.
+    #[serde(rename = "recording.leg_failed")]
+    RecordingLegFailed {
+        session_id: String,
+        source_id: String,
+        error: String,
+    },
     #[serde(rename = "feed.status")]
     FeedStatus {
         source_id: String,

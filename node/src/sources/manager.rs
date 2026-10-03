@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::{bail, Result};
 use chrono::Utc;
 use gstreamer::prelude::*;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -14,7 +14,7 @@ use crate::api::types::{
 };
 use crate::pipeline::monitor::MonitorPipeline;
 use crate::pipeline::profile::RecordingProfile;
-use crate::pipeline::recording::{self, RecordingLeg};
+use crate::pipeline::recording::{self, OnLegError, RecordingLeg};
 
 use super::ndi::NdiMonitor;
 use super::test::TestSource;
@@ -48,6 +48,14 @@ pub struct Teardown {
     pub stops: Vec<StopJob>,
 }
 
+/// A recording leg that failed while its session was running. Sent the moment
+/// it happens; the receiver applies it with [`SourceManager::note_leg_failure`].
+pub struct LegFailure {
+    pub session_id: String,
+    pub path: PathBuf,
+    pub error: String,
+}
+
 pub enum StopOutcome {
     /// This call gets to do the work.
     Start(Box<StopJob>),
@@ -76,10 +84,15 @@ pub struct SourceManager {
     /// stop join the in-flight result instead of reporting "already stopped".
     stopping: HashMap<String, StopResult>,
     ndi_monitor: NdiMonitor,
+    leg_failures: mpsc::UnboundedSender<LegFailure>,
 }
 
 impl SourceManager {
-    pub fn new(config: MonitorSettingsDto, ndi_monitor: NdiMonitor) -> Self {
+    pub fn new(
+        config: MonitorSettingsDto,
+        ndi_monitor: NdiMonitor,
+        leg_failures: mpsc::UnboundedSender<LegFailure>,
+    ) -> Self {
         Self {
             config,
             sources: Vec::new(),
@@ -87,6 +100,7 @@ impl SourceManager {
             sessions: HashMap::new(),
             stopping: HashMap::new(),
             ndi_monitor,
+            leg_failures,
         }
     }
 
@@ -109,13 +123,18 @@ impl SourceManager {
         self.monitors.get(source_id)?.error()
     }
 
+    /// Whether any monitor has failed and is waiting for a rescan to restart it.
+    pub fn has_failed_monitor(&self) -> bool {
+        self.monitors.values().any(|m| m.error().is_some())
+    }
+
     // ── Scan ──────────────────────────────────────────────────────────────────
 
     /// Rebuild the source list from test configs and the NDI sources currently
     /// on the network. A source whose id and fingerprint are unchanged is kept
-    /// as-is, monitor and recordings included. Removed or changed sources are
-    /// torn down (returned for the caller to run); new or changed sources
-    /// get a monitor.
+    /// as-is, monitor and recordings included — unless its monitor has failed.
+    /// Removed, changed or failed sources are torn down (returned for the
+    /// caller to run); new, changed or failed sources get a fresh monitor.
     pub fn scan(&mut self, configs: &[TestSourceConfigDto]) -> Vec<Teardown> {
         let mut candidates: Vec<Box<dyn InputSource>> = Vec::new();
         for cfg in configs {
@@ -142,7 +161,9 @@ impl SourceManager {
                 continue;
             }
             match old.remove(&id) {
-                Some(existing) if existing.fingerprint() == candidate.fingerprint() => {
+                Some(existing)
+                    if existing.fingerprint() == candidate.fingerprint() && self.monitor_error(&id).is_none() =>
+                {
                     self.sources.push(existing);
                     continue;
                 }
@@ -198,7 +219,7 @@ impl SourceManager {
         &mut self,
         source_id: &str,
         preset_id: &str,
-        legs: &[(String, RecordingProfile)],
+        legs: &[(PathBuf, RecordingProfile)],
     ) -> Result<RecordingSessionDto> {
         if self.sessions.values().any(|s| s.dto.source_id == source_id) {
             bail!("source {source_id} already has an active recording");
@@ -209,9 +230,12 @@ impl SourceManager {
             .ok_or_else(|| anyhow::anyhow!("no monitor running for source {source_id}"))?;
 
         let id = Uuid::new_v4().to_string();
-        let leg_refs: Vec<(PathBuf, &RecordingProfile)> =
-            legs.iter().map(|(p, prof)| (PathBuf::from(p), prof)).collect();
-        let recording_legs = recording::start_legs(monitor, &id[..8], &leg_refs)?;
+        let failures = self.leg_failures.clone();
+        let session_id = id.clone();
+        let on_error: OnLegError = Arc::new(move |path, error| {
+            let _ = failures.send(LegFailure { session_id: session_id.clone(), path: path.to_path_buf(), error });
+        });
+        let recording_legs = recording::start_legs(monitor, &id[..8], legs, &on_error)?;
 
         let dto = RecordingSessionDto {
             id,
@@ -219,7 +243,7 @@ impl SourceManager {
             preset_id: preset_id.to_string(),
             started_at: Utc::now().to_rfc3339(),
             stopped_at: None,
-            output_paths: legs.iter().map(|(p, _)| p.clone()).collect(),
+            output_paths: legs.iter().map(|(p, _)| p.display().to_string()).collect(),
             status: RecordingStatus::Active,
             error_message: None,
         };
@@ -256,6 +280,21 @@ impl SourceManager {
         } else {
             StopOutcome::NotFound
         }
+    }
+
+    /// Record a leg failure on its still-running session (the session's other
+    /// legs keep recording). Returns the session's source id and its updated
+    /// error message, or `None` if the session is no longer active — a failed
+    /// start or a stop already in progress reports the error itself.
+    pub fn note_leg_failure(&mut self, failure: &LegFailure) -> Option<(String, String)> {
+        let dto = &mut self.sessions.get_mut(&failure.session_id)?.dto;
+        let msg = format!("{}: {}", failure.path.display(), failure.error);
+        let full = match dto.error_message.take() {
+            Some(prev) => format!("{prev}; {msg}"),
+            None => msg,
+        };
+        dto.error_message = Some(full.clone());
+        Some((dto.source_id.clone(), full))
     }
 
     /// Clear the "stopping" marker once a [`StopJob`] has published its result.

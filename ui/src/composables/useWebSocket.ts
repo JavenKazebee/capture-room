@@ -80,6 +80,10 @@ function handleEvent(event: NodeEvent) {
       recordings.markStopped(nodeId, event.session_id)
       break
 
+    case 'recording.leg_failed':
+      recordings.markLegFailed(nodeId, event.session_id, event.error)
+      break
+
     case 'recording.error':
       recordings.markError(nodeId, event.session_id, event.error)
       break

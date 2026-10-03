@@ -77,7 +77,8 @@ async function toggleRecording() {
   actionError.value = null
   try {
     if (props.session) {
-      await recordings.stop(props.source.node_id, props.session.id)
+      const result = await recordings.stop(props.source.node_id, props.session.id)
+      if (result.status === 'error') actionError.value = result.error_message
     } else {
       const preset = presets.presets.find((p) => p.id === selectedPreset.value) ?? null
       await recordings.start(props.source.node_id, props.source.id, preset)
@@ -193,6 +194,9 @@ function formatDuration(ms: number): string {
         </Button>
       </div>
 
+      <p v-if="session?.error_message" class="text-xs text-destructive break-words">
+        Output failed: {{ session.error_message }}
+      </p>
       <p v-if="actionError" class="text-xs text-destructive break-words">{{ actionError }}</p>
     </div>
   </div>

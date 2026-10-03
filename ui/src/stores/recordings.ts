@@ -36,6 +36,12 @@ export const useRecordingsStore = defineStore('recordings', () => {
     if (session) session.status = 'stopped'
   }
 
+  /** A leg failed but the session is still recording on its other legs. */
+  function markLegFailed(nodeId: string, sessionId: string, error: string) {
+    const session = find(nodeId, sessionId)
+    if (session) session.error_message = error
+  }
+
   function markError(nodeId: string, sessionId: string, error: string) {
     const session = find(nodeId, sessionId)
     if (session) {
@@ -91,6 +97,7 @@ export const useRecordingsStore = defineStore('recordings', () => {
     activeSessions,
     upsert,
     markStopped,
+    markLegFailed,
     markError,
     load,
     loadForNode,
