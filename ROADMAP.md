@@ -16,7 +16,7 @@ _Last updated: 2026-10-02_
 4. **Multi-pipeline output per preset** ← active
 5. **Benchmark + capacity estimator**
 6. **UI overhaul / dark mode** — woven through 1–5; design-token pass up front
-7. **Follow-on:** scheduler engine, timecode, packaging/CI, additional source types
+7. **Follow-on:** scheduler engine, higher-fps thumbnails, timecode, packaging/CI, additional source types
 
 Rationale for front-loading 1–2 ahead of NDI: a configurable TestSource plus the
 Sources view gives a real authoring/verification surface, and live monitoring forces
@@ -136,6 +136,24 @@ shadcn-vue is already in place, so dark mode is mostly CSS-variable theming + a 
 ## 7. Follow-on
 
 - **Scheduler engine** — runs on the controller and sends ordinary start/stop commands (with inline outputs) at the scheduled times. Nodes stay stateless about schedules.
+- **Higher-fps thumbnails via a subscription WebSocket** — today each thumbnail is a
+  `thumbnail.updated` event plus an HTTP GET (forwarded and buffered by the controller
+  for peers), capped at 10 fps by the 100 ms emitter tick. Request-per-frame doesn't
+  scale past ~10–15 fps with more than a handful of feeds (browsers allow 6 HTTP/1.1
+  connections per host, and every frame is a round trip through the controller).
+  Replace it with a dedicated thumbnail WebSocket:
+  - The client sends a subscription: which sources are on screen and at what fps.
+    Frames are pushed as binary messages (source key + JPEG), driven by the appsink
+    callback rather than the emitter tick. Unsubscribed or off-screen feeds cost nothing.
+  - On a controller, subscriptions are relayed to each peer for only the sources someone
+    is watching; peer frames are forwarded as they arrive.
+  - Makes ~25–30 fps practical (source-rate thumbnails, 29.97 included) and removes
+    `thumbnail.updated`, the UI's `thumbnailSeqs` cache-busting, and the thumbnail part
+    of the periodic emitter. Keep `GET /thumbnails/{id}` for one-off snapshots.
+  - Not MJPEG (`multipart/x-mixed-replace`): each open stream holds one of the
+    browser's 6 connections, so 7+ feeds would stall the page.
+  - Possible later complement: a click-to-watch full-size monitor for one feed using
+    real video (WebRTC, or H.264 over this WebSocket decoded with WebCodecs), with audio.
 - **Timecode** — real LTC/VITC extraction; not started (TestSource fakes wall-clock TC).
 - **Packaging + GitHub Actions** — cross-platform builds; folds in the NDI packaging strategy above.
 - ✅ **Node registry persistence** — peers added by URL are stored in the `nodes` table and restored when the controller starts.

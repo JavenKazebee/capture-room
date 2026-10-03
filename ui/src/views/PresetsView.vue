@@ -12,7 +12,7 @@ const showForm = ref(false)
 const saving = ref(false)
 const error = ref<string | null>(null)
 
-const CODECS = ['h264', 'h265', 'vp9', 'prores', 'prores_4444', 'prores_422hq', 'prores_422lt', 'prores_422proxy', 'dnxhd', 'uncompressed']
+const CODECS = ['h264', 'h265', 'vp9', 'prores', 'prores_4444', 'prores_422hq', 'prores_422lt', 'prores_422proxy', 'uncompressed']
 const CONTAINERS = ['mov', 'mp4', 'mkv', 'mxf']
 const CHROMA: { value: ChromaSubsampling; label: string }[] = [
   { value: '420', label: '4:2:0 — plays everywhere' },

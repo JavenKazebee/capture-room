@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use sqlx::{sqlite::SqliteConnectOptions, types::Json, FromRow, SqlitePool};
+use sqlx::{sqlite::SqliteConnectOptions, types::Json, FromRow, Sqlite, SqlitePool, Transaction};
 use std::str::FromStr;
 use tracing::info;
 
@@ -55,12 +55,14 @@ pub async fn monitor_settings_get(pool: &SqlitePool) -> Result<MonitorSettingsDt
         Ok(config_get(pool, key).await?.and_then(|v| v.parse().ok()))
     }
     let def = MonitorSettingsDto::default();
+    // Clamped so values stored under older, looser limits are brought in range.
     Ok(MonitorSettingsDto {
         thumb_fps: get(pool, "monitor_thumb_fps").await?.unwrap_or(def.thumb_fps),
         thumb_width: get(pool, "monitor_thumb_width").await?.unwrap_or(def.thumb_width),
         thumb_height: get(pool, "monitor_thumb_height").await?.unwrap_or(def.thumb_height),
         level_interval_ms: get(pool, "monitor_level_ms").await?.unwrap_or(def.level_interval_ms),
-    })
+    }
+    .clamped())
 }
 
 pub async fn monitor_settings_set(pool: &SqlitePool, m: &MonitorSettingsDto) -> Result<()> {
@@ -186,17 +188,9 @@ pub async fn presets_list(pool: &SqlitePool) -> Result<Vec<PresetRow>> {
     Ok(rows)
 }
 
-pub async fn preset_get(pool: &SqlitePool, id: &str) -> Result<Option<PresetRow>> {
-    let row = sqlx::query_as::<_, PresetRow>(
-        "SELECT id, name, created_at, updated_at, version FROM presets WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row)
-}
-
-pub async fn preset_insert(pool: &SqlitePool, p: &PresetRow) -> Result<()> {
+/// Insert a preset and its output legs atomically.
+pub async fn preset_insert(pool: &SqlitePool, p: &PresetRow, outputs: &[PresetOutputRow]) -> Result<()> {
+    let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO presets (id, name, created_at, updated_at, version)
          VALUES (?, ?, ?, ?, ?)",
@@ -206,33 +200,51 @@ pub async fn preset_insert(pool: &SqlitePool, p: &PresetRow) -> Result<()> {
     .bind(&p.created_at)
     .bind(&p.updated_at)
     .bind(p.version)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    preset_outputs_replace(&mut tx, &p.id, outputs).await?;
+    tx.commit().await?;
     Ok(())
 }
 
-pub async fn preset_update(pool: &SqlitePool, p: &PresetRow) -> Result<bool> {
-    let res = sqlx::query(
-        "UPDATE presets SET name = ?, updated_at = ?, version = version + 1 WHERE id = ?",
+/// Rename a preset and replace its output legs atomically. Returns the
+/// updated row, or `None` if the preset doesn't exist.
+pub async fn preset_update(
+    pool: &SqlitePool,
+    id: &str,
+    name: &str,
+    updated_at: &str,
+    outputs: &[PresetOutputRow],
+) -> Result<Option<PresetRow>> {
+    let mut tx = pool.begin().await?;
+    let row = sqlx::query_as::<_, PresetRow>(
+        "UPDATE presets SET name = ?, updated_at = ?, version = version + 1 WHERE id = ?
+         RETURNING id, name, created_at, updated_at, version",
     )
-    .bind(&p.name)
-    .bind(&p.updated_at)
-    .bind(&p.id)
-    .execute(pool)
+    .bind(name)
+    .bind(updated_at)
+    .bind(id)
+    .fetch_optional(&mut *tx)
     .await?;
-    Ok(res.rows_affected() > 0)
+    if row.is_some() {
+        preset_outputs_replace(&mut tx, id, outputs).await?;
+        tx.commit().await?;
+    }
+    Ok(row)
 }
 
 pub async fn preset_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
+    let mut tx = pool.begin().await?;
     // Delete outputs first (no FK cascade enforcement in SQLite without PRAGMA).
     sqlx::query("DELETE FROM preset_outputs WHERE preset_id = ?")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     let res = sqlx::query("DELETE FROM presets WHERE id = ?")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(res.rows_affected() > 0)
 }
 
@@ -249,16 +261,15 @@ pub async fn preset_outputs_list_all(pool: &SqlitePool) -> Result<Vec<PresetOutp
     Ok(rows)
 }
 
-/// Replace all output legs for a preset atomically.
-pub async fn preset_outputs_replace(
-    pool: &SqlitePool,
+/// Replace all output legs for a preset, inside the caller's transaction.
+async fn preset_outputs_replace(
+    tx: &mut Transaction<'_, Sqlite>,
     preset_id: &str,
     outputs: &[PresetOutputRow],
 ) -> Result<()> {
-    let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM preset_outputs WHERE preset_id = ?")
         .bind(preset_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     for o in outputs {
         sqlx::query(
@@ -278,10 +289,9 @@ pub async fn preset_outputs_replace(
         .bind(&o.chroma)
         .bind(&o.path_template)
         .bind(o.sort_order)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     }
-    tx.commit().await?;
     Ok(())
 }
 

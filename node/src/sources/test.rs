@@ -139,8 +139,10 @@ impl InputSource for TestSource {
 
     fn timecode(&self) -> Option<Timecode> {
         let now = chrono::Utc::now();
-        let fps = self.config.fps_num;
-        let frames = ((now.nanosecond() as f64 / 1_000_000_000.0) * fps as f64) as u8;
+        let fps = self.config.fps_num as f64 / self.config.fps_den.max(1) as f64;
+        // nanosecond() exceeds 1e9 during a leap second; keep frames in range.
+        let frac = (now.nanosecond() as f64 / 1_000_000_000.0).min(0.999_999);
+        let frames = (frac * fps) as u8;
         Some(Timecode {
             hours: now.hour() as u8,
             minutes: now.minute() as u8,

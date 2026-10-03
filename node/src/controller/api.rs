@@ -158,9 +158,8 @@ async fn post_preset(
         updated_at: now,
         version: 1,
     };
-    db::preset_insert(&state.db, &row).await?;
     let output_rows = build_output_rows(&preset_id, &req.outputs);
-    db::preset_outputs_replace(&state.db, &preset_id, &output_rows).await?;
+    db::preset_insert(&state.db, &row, &output_rows).await?;
     Ok((StatusCode::CREATED, Json(preset_to_dto(&row, &output_rows))))
 }
 
@@ -169,19 +168,10 @@ async fn put_preset(
     Path(id): Path<String>,
     Json(req): Json<PresetCreateRequest>,
 ) -> ApiResult<Json<PresetDto>> {
-    let row = PresetRow {
-        id: id.clone(),
-        name: req.name,
-        created_at: String::new(),
-        updated_at: chrono::Utc::now().to_rfc3339(),
-        version: 0,
-    };
-    if !db::preset_update(&state.db, &row).await? {
-        return Err(PRESET_NOT_FOUND);
-    }
     let output_rows = build_output_rows(&id, &req.outputs);
-    db::preset_outputs_replace(&state.db, &id, &output_rows).await?;
-    let updated = db::preset_get(&state.db, &id).await?.ok_or(PRESET_NOT_FOUND)?;
+    let updated = db::preset_update(&state.db, &id, &req.name, &chrono::Utc::now().to_rfc3339(), &output_rows)
+        .await?
+        .ok_or(PRESET_NOT_FOUND)?;
     Ok(Json(preset_to_dto(&updated, &output_rows)))
 }
 

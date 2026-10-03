@@ -366,10 +366,12 @@ impl Default for MonitorSettingsDto {
 }
 
 impl MonitorSettingsDto {
-    /// Limit every field to a range the pipelines handle well.
+    /// Limit every field to a range the pipelines handle well. Thumbnail
+    /// notifications go out on the emitter's 100 ms tick, so 10 fps is the
+    /// most a client can actually see.
     pub fn clamped(self) -> Self {
         Self {
-            thumb_fps: self.thumb_fps.clamp(1, 30),
+            thumb_fps: self.thumb_fps.clamp(1, 10),
             thumb_width: self.thumb_width.clamp(160, 1920),
             thumb_height: self.thumb_height.clamp(90, 1080),
             level_interval_ms: self.level_interval_ms.clamp(50, 1000),
