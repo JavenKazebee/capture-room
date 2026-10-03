@@ -164,8 +164,12 @@ TanStack Table, whose v9 API is brand new and more than these tables need.
   Ctrl/Shift multi-select with bulk Record/Stop behind a confirm, per-feed preset
   remembered per browser, resizable inspector with outputs, session and history) →
   ✅ Sources (DataTable grouped by node, column chooser, status incl. recording, edit in a
-  side sheet, confirmed delete, scan results as a toast, jump to Record) → Presets
-  (master-detail editor, path-template preview) → Nodes (cards, room for capacity
+  side sheet, confirmed delete, scan results as a toast, jump to Record) → ✅ Presets
+  (master-detail: list with usage counts + read-only built-in default; editor with
+  dirty tracking, revert, Ctrl+S, unsaved-changes guard; collapsible outputs with
+  reorder/duplicate; container options explain incompatibilities; path token chips
+  and a live resolved-path preview; client-side copies of the server's format and
+  same-file checks) → Nodes (cards, room for capacity
   panel) → Settings (appearance, monitoring).
 - Recordings, Schedules and Logs views are kept out of the nav until they exist.
 

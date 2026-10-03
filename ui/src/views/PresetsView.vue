@@ -1,272 +1,336 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
+import { useEventListener } from '@vueuse/core'
+import { toast } from 'vue-sonner'
+import { Copy, Loader2, Lock, Plus, RotateCcw, Search, Trash2 } from '@lucide/vue'
 import { usePresetsStore, blankLeg, presetLegs } from '@/stores/presets'
+import { useSourcesStore } from '@/stores/sources'
+import { useNodesStore } from '@/stores/nodes'
+import { useRecordDeskStore } from '@/stores/recordDesk'
 import { errorMessage } from '@/composables/useApi'
+import { notifyError } from '@/lib/notify'
+import { CODECS, clashingLegs, legProblems } from '@/lib/codecs'
 import type { PresetDto } from '@/types/generated/PresetDto'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import FormField from '@/components/FormField.vue'
-import FormModal from '@/components/FormModal.vue'
-import OptionSelect from '@/components/OptionSelect.vue'
-import type { ChromaSubsampling } from '@/types/generated/ChromaSubsampling'
-import type { Container } from '@/types/generated/Container'
-import type { VideoCodec } from '@/types/generated/VideoCodec'
-import { CODECS, CONTAINERS, chromaLabel, hasChroma } from '@/lib/codecs'
+import PageHeader from '@/components/common/PageHeader.vue'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import OutputCard from '@/components/presets/OutputCard.vue'
 
 const store = usePresetsStore()
+const sources = useSourcesStore()
+const nodes = useNodesStore()
+const desk = useRecordDeskStore()
 
-const editingId = ref<string | null>(null)
-const showForm = ref(false)
+// ── List ──────────────────────────────────────────────────────────────────────
+
+const query = ref('')
+const listed = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  return [...store.presets]
+    .filter((p) => !q || p.name.toLowerCase().includes(q))
+    .sort((a, b) => a.name.localeCompare(b.name))
+})
+
+function codecsOf(outputs: PresetOutputInput[]) {
+  return [...new Set(outputs.map((o) => CODECS[o.codec]))].join(' + ')
+}
+
+/** How many feeds in Record currently have this preset chosen. */
+function usedBy(id: string) {
+  return sources.sources.filter((s) => desk.presetIdOf(s.key) === id).length
+}
+
+// ── Selection + draft ─────────────────────────────────────────────────────────
+
+/** A preset id, `default` (the built-in, read-only), or `new`. */
+const selectedId = ref<string | null>(null)
+const draftName = ref('')
+const draftLegs = ref<PresetOutputInput[]>([])
+const original = ref('')
 const saving = ref(false)
-const error = ref<string | null>(null)
+const serverError = ref<string | null>(null)
 
-const CODEC_OPTIONS = optionsOf(CODECS)
+const selected = computed(() => store.presets.find((p) => p.id === selectedId.value) ?? null)
+const isBuiltIn = computed(() => selectedId.value === 'default')
+const snapshot = () => JSON.stringify({ name: draftName.value, legs: draftLegs.value })
+const dirty = computed(() => !isBuiltIn.value && selectedId.value !== null && snapshot() !== original.value)
 
-// Containers each codec can actually be recorded to. Mirrors `incompatible()`
-// in `pipeline/profile.rs`, which rejects the rest when a preset is saved.
-const ALL: Container[] = ['mov', 'mp4', 'mkv']
-const MOV_MKV: Container[] = ['mov', 'mkv']
-const CONTAINERS_FOR: Record<VideoCodec, Container[]> = {
-  h264: ALL,
-  h265: ALL,
-  vp9: ['mkv'],
-  prores_4444: MOV_MKV,
-  prores_422hq: MOV_MKV,
-  prores_422: MOV_MKV,
-  prores_422lt: MOV_MKV,
-  prores_422proxy: MOV_MKV,
-  uncompressed: MOV_MKV,
+function load(id: string, name: string, legs: PresetOutputInput[]) {
+  selectedId.value = id
+  draftName.value = name
+  draftLegs.value = legs.map((l) => ({ ...l }))
+  original.value = id === 'new' ? '' : snapshot()
+  serverError.value = null
 }
 
-function containerOptions(codec: VideoCodec) {
-  return CONTAINERS_FOR[codec].map((value) => ({ value, label: CONTAINERS[value] }))
+function loadPreset(p: PresetDto) {
+  load(p.id, p.name, presetLegs(p).length ? presetLegs(p) : [blankLeg()])
 }
 
-/** Switching codec moves the leg to a container that codec can record to. */
-function setCodec(leg: PresetOutputInput, codec: VideoCodec) {
-  leg.codec = codec
-  const allowed = CONTAINERS_FOR[codec]
-  if (!allowed.includes(leg.container)) leg.container = allowed[0]!
-}
-const CHROMA: { value: ChromaSubsampling; label: string }[] = [
-  { value: '420', label: '4:2:0 — plays everywhere' },
-  { value: '422', label: '4:2:2' },
-  { value: '444', label: '4:4:4' },
-]
-
-function optionsOf<T extends string>(labels: Record<T, string>) {
-  return (Object.entries(labels) as [T, string][]).map(([value, label]) => ({ value, label }))
+// Switching away from unsaved changes asks first.
+const pendingSwitch = ref<(() => void) | null>(null)
+function guarded(fn: () => void) {
+  if (dirty.value) pendingSwitch.value = fn
+  else fn()
 }
 
-
-const formName = ref('')
-const formLegs = ref<PresetOutputInput[]>([blankLeg()])
-
-// The server stores blank resolution/framerate as "match source"; only the
-// bitrate needs fixing up, since an emptied number input yields "".
-function normalizedLegs(): PresetOutputInput[] {
-  return formLegs.value.map((leg) => ({
-    ...leg,
-    bitrate_kbps: leg.bitrate_kbps ? Number(leg.bitrate_kbps) : null,
-  }))
+function select(id: string) {
+  if (id === selectedId.value) return
+  guarded(() => {
+    if (id === 'default') load('default', 'H.264 (default)', [blankLeg()])
+    else {
+      const p = store.presets.find((p) => p.id === id)
+      if (p) loadPreset(p)
+    }
+  })
 }
 
-function openCreate() {
-  editingId.value = null
-  formName.value = ''
-  formLegs.value = [blankLeg()]
-  error.value = null
-  showForm.value = true
+function create() {
+  guarded(() => load('new', '', [blankLeg()]))
 }
 
-function openEdit(p: PresetDto) {
-  editingId.value = p.id
-  formName.value = p.name
-  formLegs.value = presetLegs(p)
-  if (formLegs.value.length === 0) formLegs.value = [blankLeg()]
-  error.value = null
-  showForm.value = true
+function duplicate() {
+  const name = `${draftName.value || 'Preset'} copy`
+  const legs = draftLegs.value
+  guarded(() => load('new', name, legs))
+  draftName.value = name
 }
 
-function closeForm() {
-  showForm.value = false
+function revert() {
+  if (selected.value) loadPreset(selected.value)
+  else if (selectedId.value === 'new') load('new', '', [blankLeg()])
 }
 
-function addLeg() {
-  formLegs.value.push(blankLeg())
+onBeforeRouteLeave(() => !dirty.value || confirm('Discard unsaved preset changes?'))
+
+// ── Outputs ───────────────────────────────────────────────────────────────────
+
+function addOutput() {
+  const n = draftLegs.value.length + 1
+  // {output} keeps a second output from writing the first one's file.
+  draftLegs.value.push({ ...blankLeg(), name: `Output ${n}`, path_template: '~/capture-room/{date}/{source}_{output}_{datetime}.{ext}' })
 }
 
-function removeLeg(i: number) {
-  formLegs.value.splice(i, 1)
+function duplicateOutput(i: number) {
+  const leg = draftLegs.value[i]!
+  draftLegs.value.splice(i + 1, 0, { ...leg, name: `${leg.name} copy` })
 }
+
+function moveOutput(i: number, dir: -1 | 1) {
+  const legs = draftLegs.value
+  ;[legs[i], legs[i + dir]] = [legs[i + dir]!, legs[i]!]
+}
+
+const clashes = computed(() => clashingLegs(draftLegs.value))
+const problemCount = computed(
+  () => draftLegs.value.filter((l, i) => clashes.value.has(i) || Object.keys(legProblems(l)).length).length + (draftName.value.trim() ? 0 : 1),
+)
+
+const preview = computed(() => ({
+  source: sources.sources[0]?.id ?? 'cam1',
+  node: nodes.self?.node_name ?? 'node',
+}))
+
+// ── Save / delete ─────────────────────────────────────────────────────────────
 
 async function save() {
-  if (saving.value) return
-  if (!formName.value.trim()) {
-    error.value = 'Name is required.'
-    return
-  }
-  if (formLegs.value.length === 0) {
-    error.value = 'At least one output leg is required.'
-    return
-  }
+  if (saving.value || !dirty.value || problemCount.value) return
   saving.value = true
-  error.value = null
+  serverError.value = null
   try {
-    const payload = { name: formName.value.trim(), outputs: normalizedLegs() }
-    if (editingId.value) await store.update(editingId.value, payload)
-    else await store.create(payload)
-    showForm.value = false
+    const payload = { name: draftName.value.trim(), outputs: draftLegs.value }
+    const p = selectedId.value === 'new' ? await store.create(payload) : await store.update(selectedId.value!, payload)
+    loadPreset(p)
+    toast.success(`Saved ${p.name}`)
   } catch (e) {
-    error.value = errorMessage(e, 'Save failed.')
+    serverError.value = errorMessage(e, 'Save failed.')
   } finally {
     saving.value = false
   }
 }
 
-async function destroy(p: PresetDto) {
-  if (!confirm(`Delete preset "${p.name}"?`)) return
+useEventListener('keydown', (e: KeyboardEvent) => {
+  if (e.key.toLowerCase() === 's' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault()
+    save()
+  }
+})
+
+const confirmDelete = ref(false)
+async function destroy() {
+  const p = selected.value
+  if (!p) return
   try {
     await store.remove(p.id)
+    toast.success(`Deleted ${p.name}`)
+    selectedId.value = null
+    pickInitial()
   } catch (e) {
-    error.value = errorMessage(e, 'Delete failed.')
+    notifyError(`Delete failed: ${p.name}`, e)
   }
 }
 
-onMounted(() => store.load())
-import PageHeader from '@/components/common/PageHeader.vue'
+function pickInitial() {
+  const first = listed.value[0]
+  if (first) loadPreset(first)
+  else load('default', 'H.264 (default)', [blankLeg()])
+}
+
+onMounted(async () => {
+  if (!store.presets.length) await store.load()
+  pickInitial()
+})
+
+// A preset updated elsewhere refreshes the editor unless there are local edits.
+watch(selected, (p) => p && !dirty.value && p.id === selectedId.value && loadPreset(p))
 </script>
 
 <template>
-  <PageHeader title="Presets" :count="store.presets.length">
-    <Button size="default" @click="openCreate">New preset</Button>
-  </PageHeader>
-  <div class="p-4 max-w-4xl">
+  <div class="h-full flex flex-col min-h-0">
+    <PageHeader title="Presets" :count="store.presets.length">
+      <Button size="sm" class="h-7 gap-1.5 text-xs" @click="create"><Plus class="size-3.5" /> New preset</Button>
+    </PageHeader>
 
-    <!-- Empty state -->
-    <div
-      v-if="store.presets.length === 0"
-      class="text-center text-muted-foreground py-16 rounded-lg border border-dashed border-border"
-    >
-      No presets yet. Create one to configure recording output.
-    </div>
-
-    <!-- Preset list -->
-    <div v-else class="rounded-lg border border-border bg-card divide-y divide-border">
-      <div v-for="p in store.presets" :key="p.id" class="px-4 py-3">
-        <div class="flex items-start gap-3">
-          <div class="flex-1 min-w-0">
-            <span class="text-sm font-medium">{{ p.name }}</span>
-            <!-- Per-leg summary -->
-            <div
-              v-for="(leg, i) in p.outputs"
-              :key="i"
-              class="flex items-center gap-2 mt-1 text-xs text-muted-foreground"
-            >
-              <Badge variant="secondary" class="text-xs">{{ CODECS[leg.codec] }}</Badge>
-              <Badge variant="outline" class="text-xs">{{ CONTAINERS[leg.container] }}</Badge>
-              <span>{{ leg.resolution ?? 'source res' }} · {{ leg.framerate ?? 'source fps' }}</span>
-              <span>·</span>
-              <span>{{ leg.bitrate_kbps ? `${leg.bitrate_kbps} kbps` : 'encoder default' }}</span>
-              <template v-if="hasChroma(leg.codec)">
-                <span>·</span>
-                <span>{{ chromaLabel(leg.chroma) }}</span>
-              </template>
-              <span class="font-mono truncate">{{ leg.path_template }}</span>
-            </div>
-            <p v-if="p.outputs.length === 0" class="text-xs text-muted-foreground mt-1 italic">
-              No output legs configured.
-            </p>
-          </div>
-          <div class="flex gap-2 shrink-0">
-            <Button variant="outline" size="default" @click="openEdit(p)">Edit</Button>
-            <Button variant="destructive" size="default" @click="destroy(p)">Delete</Button>
-          </div>
+    <div class="flex-1 min-h-0 flex">
+      <!-- List -->
+      <aside class="w-64 shrink-0 border-r border-border flex flex-col min-h-0">
+        <div class="p-2 border-b border-border relative">
+          <Search class="absolute left-4 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+          <Input v-model="query" placeholder="Filter presets…" class="h-7 pl-7 text-xs" />
         </div>
-      </div>
-    </div>
-
-    <!-- Create / edit form -->
-    <FormModal
-      v-if="showForm"
-      :title="editingId ? 'Edit preset' : 'New preset'"
-      :error="error"
-      :saving="saving"
-      wide
-      @close="closeForm"
-      @save="save"
-    >
-      <FormField label="Preset name" class="mb-5">
-        <Input v-model="formName" placeholder="e.g. Broadcast H.264" />
-      </FormField>
-
-      <!-- Output legs -->
-      <div class="flex items-center justify-between mb-2">
-        <span class="text-sm font-medium">Output legs</span>
-        <Button variant="outline" size="sm" @click="addLeg">+ Add leg</Button>
-      </div>
-
-      <div class="space-y-4">
-        <div v-for="(leg, i) in formLegs" :key="i" class="rounded-md border border-border p-3">
-          <!-- Leg header -->
-          <div class="flex items-center justify-between mb-3">
-            <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-              Leg {{ i + 1 }}
+        <nav class="flex-1 overflow-y-auto p-1.5 space-y-0.5">
+          <button
+            class="preset-item"
+            :data-active="selectedId === 'default' || undefined"
+            @click="select('default')"
+          >
+            <span class="flex items-center gap-1.5 text-sm font-medium"><Lock class="size-3 text-muted-foreground" /> H.264 (default)</span>
+            <span class="text-[11px] text-muted-foreground">Built in · 1 output · H.264</span>
+          </button>
+          <button
+            v-if="selectedId === 'new'"
+            class="preset-item"
+            data-active
+          >
+            <span class="text-sm font-medium italic">{{ draftName || 'New preset' }}</span>
+            <span class="text-[11px] text-muted-foreground">Unsaved</span>
+          </button>
+          <button
+            v-for="p in listed"
+            :key="p.id"
+            class="preset-item"
+            :data-active="selectedId === p.id || undefined"
+            @click="select(p.id)"
+          >
+            <span class="text-sm font-medium truncate w-full">
+              {{ p.name }}
+              <span v-if="selectedId === p.id && dirty" class="text-primary" title="Unsaved changes">•</span>
             </span>
-            <button
-              v-if="formLegs.length > 1"
-              class="text-xs text-destructive hover:underline"
-              @click="removeLeg(i)"
-            >
-              Remove
-            </button>
-          </div>
+            <span class="text-[11px] text-muted-foreground truncate w-full">
+              {{ p.outputs.length }} output{{ p.outputs.length === 1 ? '' : 's' }} · {{ codecsOf(p.outputs) }}
+              <template v-if="usedBy(p.id)"> · on {{ usedBy(p.id) }} feed{{ usedBy(p.id) === 1 ? '' : 's' }}</template>
+            </span>
+          </button>
+          <p v-if="!listed.length && query" class="px-2 py-3 text-xs text-muted-foreground">No presets match.</p>
+        </nav>
+      </aside>
 
-          <div class="grid grid-cols-2 gap-3">
-            <FormField label="Leg name" class="col-span-2">
-              <Input v-model="leg.name" placeholder="e.g. Primary H.264" />
-            </FormField>
-
-            <FormField label="Codec">
-              <OptionSelect
-                :model-value="leg.codec"
-                :options="CODEC_OPTIONS"
-                @update:model-value="setCodec(leg, $event)"
-              />
-            </FormField>
-
-            <FormField label="Container">
-              <OptionSelect v-model="leg.container" :options="containerOptions(leg.codec)" />
-            </FormField>
-
-            <FormField label="Resolution">
-              <Input v-model="leg.resolution" placeholder="match source / 1920x1080" />
-            </FormField>
-
-            <FormField label="Framerate">
-              <Input v-model="leg.framerate" placeholder="source / 30 / 30000/1001" />
-            </FormField>
-
-            <FormField label="Bitrate (kbps)">
-              <Input v-model.number="leg.bitrate_kbps" type="number" placeholder="encoder default" />
-            </FormField>
-
-            <FormField v-if="hasChroma(leg.codec)" label="Chroma">
-              <OptionSelect v-model="leg.chroma" :options="CHROMA" />
-            </FormField>
-
-            <FormField class="col-span-2">
-              <template #label>
-                Path template
-                <span class="text-muted-foreground/60 ml-1">~ {source} {node} {date} {datetime} {output} {ext}</span>
-              </template>
-              <Input v-model="leg.path_template" class="font-mono" />
-            </FormField>
-          </div>
+      <!-- Editor -->
+      <section v-if="selectedId" class="flex-1 min-w-0 flex flex-col min-h-0">
+        <div class="shrink-0 flex flex-wrap items-center gap-3 px-4 py-2.5 border-b border-border">
+          <Input
+            v-model="draftName"
+            placeholder="Preset name"
+            class="h-8 max-w-sm text-sm font-semibold"
+            :disabled="isBuiltIn"
+            :aria-invalid="!isBuiltIn && !draftName.trim()"
+          />
+          <span v-if="selected" class="text-[11px] text-muted-foreground">
+            v{{ selected.version }} · updated {{ new Date(selected.updated_at).toLocaleString([], { hour12: false }) }}
+          </span>
+          <div class="flex-1" />
+          <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" @click="duplicate">
+            <Copy class="size-3.5" /> {{ isBuiltIn ? 'Copy as new preset' : 'Duplicate' }}
+          </Button>
+          <template v-if="!isBuiltIn">
+            <Button v-if="selected" variant="destructive" size="sm" class="h-7 gap-1.5 text-xs" @click="confirmDelete = true">
+              <Trash2 class="size-3.5" /> Delete
+            </Button>
+            <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" :disabled="!dirty" @click="revert">
+              <RotateCcw class="size-3.5" /> Revert
+            </Button>
+            <span v-if="problemCount" class="text-xs text-destructive">{{ problemCount }} to fix</span>
+            <Button size="sm" class="h-7 gap-1.5 text-xs" :disabled="!dirty || !!problemCount || saving" :title="problemCount ? 'Fix the highlighted fields first' : 'Save (Ctrl+S)'" @click="save">
+              <Loader2 v-if="saving" class="size-3.5 animate-spin" /> Save
+            </Button>
+          </template>
         </div>
-      </div>
-    </FormModal>
+
+        <div class="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-3">
+          <p v-if="isBuiltIn" class="text-xs text-muted-foreground rounded-md border border-border bg-muted/30 px-3 py-2">
+            Used when a feed has no preset chosen. It can't be edited — copy it to make your own.
+          </p>
+          <p v-if="serverError" class="text-xs text-destructive rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2">
+            {{ serverError }}
+          </p>
+
+          <div class="flex items-center justify-between">
+            <h2 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Outputs <span class="num font-normal">{{ draftLegs.length }}</span>
+            </h2>
+            <Button v-if="!isBuiltIn" variant="outline" size="sm" class="h-7 gap-1.5 text-xs" @click="addOutput">
+              <Plus class="size-3.5" /> Add output
+            </Button>
+          </div>
+
+          <fieldset :disabled="isBuiltIn" class="space-y-2" :class="isBuiltIn && 'opacity-80'">
+            <OutputCard
+              v-for="(_, i) in draftLegs"
+              :key="i"
+              v-model="draftLegs[i]!"
+              :index="i"
+              :count="draftLegs.length"
+              :clash="clashes.has(i)"
+              :preview="preview"
+              @remove="draftLegs.splice(i, 1)"
+              @duplicate="duplicateOutput(i)"
+              @move="(d) => moveOutput(i, d)"
+            />
+          </fieldset>
+          <p class="text-[11px] text-muted-foreground">
+            Path previews use <span class="num">{{ preview.source }}</span> on
+            <span class="num">{{ preview.node }}</span> at the current time. Every output records the same feed at once.
+          </p>
+        </div>
+      </section>
+    </div>
+
+    <ConfirmDialog
+      v-model:open="confirmDelete"
+      :title="`Delete ${selected?.name}?`"
+      :description="`Recordings already made are kept.${selected && usedBy(selected.id) ? ` ${usedBy(selected.id)} feed(s) using it will fall back to the default preset.` : ''}`"
+      @confirm="destroy"
+    />
+    <ConfirmDialog
+      :open="!!pendingSwitch"
+      title="Discard unsaved changes?"
+      description="Your edits to this preset haven't been saved."
+      confirm-label="Discard"
+      @update:open="(v) => !v && (pendingSwitch = null)"
+      @confirm="() => { const fn = pendingSwitch; pendingSwitch = null; fn?.() }"
+    />
   </div>
 </template>
+
+<style scoped>
+@reference "@/style.css";
+.preset-item {
+  @apply w-full flex flex-col items-start gap-0.5 rounded-md px-2.5 py-1.5 text-left hover:bg-accent/60;
+}
+.preset-item[data-active] {
+  @apply bg-primary/10 ring-1 ring-inset ring-primary/40;
+}
+</style>
