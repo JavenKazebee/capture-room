@@ -143,17 +143,23 @@ useEventListener('keydown', (e: KeyboardEvent) => {
       </Button>
     </PageHeader>
 
-    <!-- Selection bar -->
+    <!-- Selection bar: always present so selecting never shifts the grid -->
     <div
-      v-if="desk.selected.size || live"
-      class="h-9 shrink-0 flex items-center gap-2 px-4 border-b border-border text-xs"
+      class="h-10 shrink-0 flex items-center gap-2 px-4 border-b border-border text-xs transition-colors"
       :class="desk.selected.size ? 'bg-primary/10' : 'bg-card'"
     >
       <template v-if="desk.selected.size">
-        <span class="font-medium">{{ desk.selected.size }} selected</span>
-        <button class="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline" @click="desk.clearSelection()">Clear</button>
-        <button class="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline" @click="desk.selectAll()">Select all visible</button>
+        <span class="font-medium text-primary">{{ desk.selected.size }} selected</span>
+        <button class="text-muted-foreground hover:text-foreground hover:underline underline-offset-2" @click="desk.clearSelection()">Clear</button>
+        <button class="text-muted-foreground hover:text-foreground hover:underline underline-offset-2" @click="desk.selectAll()">Select all visible</button>
         <div class="flex-1" />
+        <span class="text-muted-foreground">Preset</span>
+        <OptionSelect
+          :model-value="desk.selectedPresetId"
+          :options="desk.selectionPresetOptions"
+          class="h-7 w-44 text-xs"
+          @update:model-value="desk.setSelectionPreset"
+        />
         <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" :disabled="!selectedIdle.length" @click="desk.bulk('start', selectedIdle)">
           <span class="size-2 rounded-full bg-tally" /> Record {{ selectedIdle.length }}
         </Button>
@@ -162,9 +168,9 @@ useEventListener('keydown', (e: KeyboardEvent) => {
         </Button>
       </template>
       <template v-else>
-        <span class="text-muted-foreground">Click a tile to inspect it · Ctrl/⌘ or Shift to select several</span>
+        <span class="text-muted-foreground">Click a tile to inspect it · Ctrl/⌘-click or Shift-click to select several · Ctrl+A for all</span>
         <div class="flex-1" />
-        <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" @click="confirmStop = 'all'">
+        <Button v-if="live" variant="outline" size="sm" class="h-7 gap-1.5 text-xs" @click="confirmStop = 'all'">
           <span class="size-2 rounded-[1px] bg-tally" /> Stop all ({{ live }})
         </Button>
       </template>

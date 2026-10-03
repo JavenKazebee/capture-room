@@ -107,6 +107,32 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     presetFor.value = { ...presetFor.value, [key]: id }
   }
 
+  /** Set the preset for several feeds at once (used for their next recording). */
+  function setPresetMany(keys: string[], id: string) {
+    const next = { ...presetFor.value }
+    for (const k of keys) next[k] = id
+    presetFor.value = next
+  }
+
+  const MIXED = '__mixed'
+
+  /** The selection's shared preset id, or `MIXED` when they differ. */
+  const selectedPresetId = computed(() => {
+    const ids = new Set(selectedSources.value.map((s) => presetIdOf(s.key)))
+    return ids.size === 1 ? [...ids][0]! : MIXED
+  })
+
+  /** Preset options for the selection's picker, with a "Mixed" entry when they differ. */
+  const selectionPresetOptions = computed(() =>
+    selectedPresetId.value === MIXED
+      ? [{ value: MIXED, label: 'Mixed presets' }, ...presetOptions.value]
+      : presetOptions.value,
+  )
+
+  function setSelectionPreset(id: string) {
+    if (id !== MIXED) setPresetMany([...selected.value], id)
+  }
+
   const presetOptions = computed(() => [
     { value: 'default', label: 'H.264 (default)' },
     ...presets.presets.map((p) => ({ value: p.id, label: p.name })),
@@ -178,6 +204,9 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     presetIdOf,
     setPreset,
     presetOptions,
+    selectedPresetId,
+    selectionPresetOptions,
+    setSelectionPreset,
     busy,
     isLive,
     toggle,

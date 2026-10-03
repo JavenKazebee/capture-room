@@ -121,7 +121,18 @@ const confirmStop = ref(false)
           </span>
         </li>
       </ul>
-      <p class="text-xs text-muted-foreground">Each feed records with the preset chosen on its tile.</p>
+      <div class="space-y-1.5">
+        <h3 class="section-title">Preset for all selected</h3>
+        <OptionSelect
+          :model-value="desk.selectedPresetId"
+          :options="desk.selectionPresetOptions"
+          class="h-8"
+          @update:model-value="desk.setSelectionPreset"
+        />
+        <p class="text-xs text-muted-foreground">
+          Applies to each feed's next recording; feeds already recording keep their current outputs.
+        </p>
+      </div>
       <ConfirmDialog
         v-model:open="confirmStop"
         :title="`Stop ${liveSelected.length} recording${liveSelected.length > 1 ? 's' : ''}?`"
