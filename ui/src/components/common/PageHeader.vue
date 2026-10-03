@@ -1,13 +1,14 @@
 <script setup lang="ts">
-/** A view's title row: title, optional count/description, toolbar on the right. */
+/** A view's toolbar row: title, optional count/meta, controls on the right. */
 defineProps<{ title: string; count?: number; description?: string }>()
 </script>
 
 <template>
-  <div class="flex flex-wrap items-center gap-x-4 gap-y-2 min-h-10 px-4 py-1.5 border-b border-border">
+  <div class="flex flex-wrap items-center gap-x-4 gap-y-2 min-h-10 px-4 py-1.5 border-b border-border shrink-0">
     <div class="flex items-baseline gap-2 min-w-0">
       <h1 class="text-sm font-semibold tracking-tight">{{ title }}</h1>
       <span v-if="count !== undefined" class="num text-xs text-muted-foreground">{{ count }}</span>
+      <slot name="meta" />
       <span v-if="description" class="text-xs text-muted-foreground truncate">{{ description }}</span>
     </div>
     <div class="flex-1" />

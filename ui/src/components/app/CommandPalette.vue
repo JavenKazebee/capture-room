@@ -7,6 +7,7 @@ import { notifyError } from '@/lib/notify'
 import { usePreferences, type Density } from '@/composables/usePreferences'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordingsStore } from '@/stores/recordings'
+import { useRecordDeskStore } from '@/stores/recordDesk'
 import { useSourcesStore, type Source } from '@/stores/sources'
 import {
   CommandDialog,
@@ -26,6 +27,7 @@ const open = defineModel<boolean>('open', { required: true })
 const router = useRouter()
 const sources = useSourcesStore()
 const recordings = useRecordingsStore()
+const desk = useRecordDeskStore()
 const nodes = useNodesStore()
 const { colorMode, density } = usePreferences()
 
@@ -45,19 +47,8 @@ function sourceLabel(s: Source) {
   return nodes.nodes.length > 1 ? `${s.display_name} — ${nodes.nameOf(s.node_id)}` : s.display_name
 }
 
-async function toggleRecording(s: Source) {
-  const session = recordings.activeForSource(s.node_id, s.id)
-  try {
-    if (session) {
-      await recordings.stop(s.node_id, session.id)
-      toast.success(`Stopped ${s.display_name}`)
-    } else {
-      await recordings.start(s.node_id, s.id, null)
-      toast.success(`Recording ${s.display_name}`, { description: 'Default H.264 preset' })
-    }
-  } catch (e) {
-    notifyError(`${session ? 'Stop' : 'Record'} failed: ${s.display_name}`, e, s.node_id)
-  }
+function toggleRecording(s: Source) {
+  return desk.toggle(s)
 }
 
 async function scan() {
@@ -108,7 +99,9 @@ const DENSITIES: Density[] = ['compact', 'default', 'comfortable']
           <template v-else>
             <Circle class="text-tally!" />
             <span class="flex-1">Record {{ sourceLabel(s) }}</span>
-            <span class="text-muted-foreground">default preset</span>
+            <span class="text-muted-foreground">
+              {{ desk.presetOptions.find((o) => o.value === desk.presetIdOf(s.key))?.label }}
+            </span>
           </template>
         </CommandItem>
       </CommandGroup>

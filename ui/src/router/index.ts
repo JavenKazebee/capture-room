@@ -7,7 +7,7 @@ export const router = createRouter({
     {
       path: '/record',
       name: 'record',
-      component: () => import('@/views/DashboardView.vue'),
+      component: () => import('@/views/RecordView.vue'),
     },
     {
       path: '/setup',

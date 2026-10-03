@@ -13,6 +13,7 @@ import OptionSelect from '@/components/OptionSelect.vue'
 import type { ChromaSubsampling } from '@/types/generated/ChromaSubsampling'
 import type { Container } from '@/types/generated/Container'
 import type { VideoCodec } from '@/types/generated/VideoCodec'
+import { CODECS, CONTAINERS, chromaLabel, hasChroma } from '@/lib/codecs'
 
 const store = usePresetsStore()
 
@@ -21,20 +22,6 @@ const showForm = ref(false)
 const saving = ref(false)
 const error = ref<string | null>(null)
 
-// Records keyed by the generated unions, so a codec or container added in Rust
-// fails the type check here until it gets a label.
-const CODECS: Record<VideoCodec, string> = {
-  h264: 'H.264',
-  h265: 'H.265 / HEVC',
-  vp9: 'VP9',
-  prores_4444: 'ProRes 4444',
-  prores_422hq: 'ProRes 422 HQ',
-  prores_422: 'ProRes 422',
-  prores_422lt: 'ProRes 422 LT',
-  prores_422proxy: 'ProRes 422 Proxy',
-  uncompressed: 'Uncompressed',
-}
-const CONTAINERS: Record<Container, string> = { mov: '.mov', mp4: '.mp4', mkv: '.mkv' }
 const CODEC_OPTIONS = optionsOf(CODECS)
 
 // Containers each codec can actually be recorded to. Mirrors `incompatible()`
@@ -73,14 +60,6 @@ function optionsOf<T extends string>(labels: Record<T, string>) {
   return (Object.entries(labels) as [T, string][]).map(([value, label]) => ({ value, label }))
 }
 
-/** Codecs whose chroma subsampling is configurable (ProRes picks it via the codec). */
-function hasChroma(codec: VideoCodec) {
-  return codec === 'h264' || codec === 'h265'
-}
-
-function chromaLabel(chroma: ChromaSubsampling) {
-  return `${chroma[0]}:${chroma[1]}:${chroma[2]}`
-}
 
 const formName = ref('')
 const formLegs = ref<PresetOutputInput[]>([blankLeg()])

@@ -159,8 +159,10 @@ tables and `vue-sonner` for toasts.
 - **Shared patterns** (done): `PageHeader`, `ConfirmDialog`, `EditSheet` (replaces
   `FormModal`), `StatusDot`, `TallyBadge`, `KeyValueList`, `CopyButton`; `DataTable`
   lands with Sources.
-- **Views, one per pass:** Record workspace (multiview toolbar, multi-select record
-  with a confirm on Stop all, resizable inspector) → Sources (DataTable) → Presets
+- **Views, one per pass:** ✅ Record workspace (filters, overlay toggles, tile size,
+  Ctrl/Shift multi-select with bulk Record/Stop behind a confirm, per-feed preset
+  remembered per browser, resizable inspector with outputs, session and history) →
+  Sources (DataTable) → Presets
   (master-detail editor, path-template preview) → Nodes (cards, room for capacity
   panel) → Settings (appearance, monitoring).
 - Recordings, Schedules and Logs views are kept out of the nav until they exist.
