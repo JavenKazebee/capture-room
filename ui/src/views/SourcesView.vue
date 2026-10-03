@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { Pencil, Radio, Trash2 } from '@lucide/vue'
+import { Pencil, Radio, RefreshCw, Trash2 } from '@lucide/vue'
 import { useSourcesStore, type Source } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordingsStore } from '@/stores/recordings'
@@ -233,6 +233,7 @@ async function scan() {
     await store.scanAll()
     const added = store.sources.filter((s) => !before.has(s.key)).length
     toast.success(`Scan complete — ${store.sources.length} sources`, {
+      id: 'scan',
       description: added ? `${added} new` : 'No new sources found',
     })
   } catch (e) {
@@ -262,8 +263,8 @@ onMounted(async () => {
     </label>
     <ColumnsMenu table-id="sources" :columns="columns" />
     <div class="w-px h-5 bg-border mx-1" />
-    <Button variant="outline" size="sm" class="h-7 text-xs" :disabled="scanning" @click="scan">
-      {{ scanning ? 'Scanning…' : 'Scan' }}
+    <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" :disabled="scanning" @click="scan">
+      <RefreshCw class="size-3.5" :class="scanning && 'animate-spin'" /> Scan
     </Button>
     <Button size="sm" class="h-7 text-xs" @click="openCreate">Add test source</Button>
   </PageHeader>

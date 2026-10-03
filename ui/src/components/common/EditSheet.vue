@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Loader2 } from '@lucide/vue'
 import { Button } from '@/components/ui/button'
 import {
   Sheet,
@@ -43,8 +44,9 @@ const emit = defineEmits<{ close: []; save: [] }>()
       <SheetFooter class="border-t border-border flex-row items-center justify-end gap-2">
         <p v-if="error" class="mr-auto text-xs text-destructive">{{ error }}</p>
         <Button variant="outline" :disabled="saving" @click="emit('close')">Cancel</Button>
-        <Button :disabled="saving" @click="emit('save')">
-          {{ saving ? 'Saving…' : 'Save' }}
+        <Button :disabled="saving" class="gap-1.5" @click="emit('save')">
+          <Loader2 v-if="saving" class="size-3.5 animate-spin" />
+          Save
         </Button>
       </SheetFooter>
     </SheetContent>

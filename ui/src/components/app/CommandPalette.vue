@@ -52,7 +52,7 @@ function toggleRecording(s: Source) {
 }
 
 async function scan() {
-  const id = toast.loading('Scanning for sources…')
+  const id = toast.loading('Scanning for sources…', { id: 'scan' })
   try {
     await sources.scanAll()
     toast.success(`Scan complete — ${sources.sources.length} sources`, { id })
