@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, shallowReactive } from 'vue'
+<<<<<<< HEAD
 import { nodeApi, sourceKey } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
 
@@ -59,6 +60,22 @@ export interface TestSourceConfig {
 }
 
 export type TestSourceInput = Omit<TestSourceConfig, 'id' | 'created_at'>
+=======
+import { useApi } from '@/composables/useApi'
+import type { ChannelLevelDto } from '@/types/generated/ChannelLevelDto'
+import type { CreateTestSourceRequest } from '@/types/generated/CreateTestSourceRequest'
+import type { SourceCapabilitiesDto } from '@/types/generated/SourceCapabilitiesDto'
+import type { SourceDto } from '@/types/generated/SourceDto'
+import type { TestSourceConfigDto } from '@/types/generated/TestSourceConfigDto'
+
+export type { TimecodeDto } from '@/types/generated/TimecodeDto'
+export type SourceCapabilities = SourceCapabilitiesDto
+// node_id is added by the aggregator when proxying a remote node's sources
+export type Source = SourceDto & { node_id?: string }
+export type ChannelLevel = ChannelLevelDto
+export type TestSourceConfig = TestSourceConfigDto
+export type TestSourceInput = CreateTestSourceRequest
+>>>>>>> claude/lucid-bun-9f1bf1
 
 // Audio levels updated ~10fps — shallow to avoid deep reactivity overhead.
 // Both maps are keyed by sourceKey(node_id, source_id).

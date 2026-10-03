@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+<<<<<<< HEAD
 import { nodeApi } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
 import { blankLeg, type OutputLegInput, type Preset } from '@/stores/presets'
@@ -18,6 +19,16 @@ export interface RecordingSessionDto {
 
 export interface RecordingSession extends RecordingSessionDto {
   node_id: string
+=======
+import { useApi } from '@/composables/useApi'
+import type { RecordingSessionDto } from '@/types/generated/RecordingSessionDto'
+
+// status is a plain string on the wire; narrow it to the values the node emits.
+// node_id is added by the aggregator when proxying a remote node's sessions.
+export type RecordingSession = Omit<RecordingSessionDto, 'status'> & {
+  status: 'active' | 'stopped' | 'error'
+  node_id?: string
+>>>>>>> claude/lucid-bun-9f1bf1
 }
 
 export const useRecordingsStore = defineStore('recordings', () => {

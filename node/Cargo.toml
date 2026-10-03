@@ -34,5 +34,5 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-ts-rs = { version = "10", optional = true }
+ts-rs = { version = "10", optional = true, features = ["serde-json-impl"] }
 uuid = { version = "1", features = ["v4", "serde"] }
