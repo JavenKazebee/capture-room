@@ -1,68 +1,107 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { useApi } from '@/composables/useApi'
+import { nodeApi } from '@/composables/useApi'
+import { useNodesStore } from '@/stores/nodes'
+import { blankLeg, type OutputLegInput, type Preset } from '@/stores/presets'
 
-export interface RecordingSession {
+/** As returned by a node: `source_id` is local to that node. */
+export interface RecordingSessionDto {
   id: string
   source_id: string
   preset_id: string
   started_at: string
   stopped_at: string | null
-  primary_path: string
-  secondary_path: string | null
-  redundant_path: string | null
+  output_paths: string[]
   status: 'active' | 'stopped' | 'error'
   error_message: string | null
-  node_id?: string
+}
+
+export interface RecordingSession extends RecordingSessionDto {
+  node_id: string
 }
 
 export const useRecordingsStore = defineStore('recordings', () => {
+  const nodes = useNodesStore()
   const sessions = ref<RecordingSession[]>([])
 
   const activeSessions = computed(() => sessions.value.filter((s) => s.status === 'active'))
 
-  function upsert(session: RecordingSession) {
-    const idx = sessions.value.findIndex((s) => s.id === session.id)
+  function upsert(nodeId: string, dto: RecordingSessionDto) {
+    const session = { ...dto, node_id: nodeId }
+    const idx = sessions.value.findIndex((s) => s.node_id === nodeId && s.id === dto.id)
     if (idx === -1) sessions.value.push(session)
     else sessions.value[idx] = session
   }
 
-  function markStopped(sessionId: string) {
-    const session = sessions.value.find((s) => s.id === sessionId)
+  function find(nodeId: string, sessionId: string) {
+    return sessions.value.find((s) => s.node_id === nodeId && s.id === sessionId)
+  }
+
+  function markStopped(nodeId: string, sessionId: string) {
+    const session = find(nodeId, sessionId)
     if (session) session.status = 'stopped'
   }
 
-  function markError(sessionId: string, error: string) {
-    const session = sessions.value.find((s) => s.id === sessionId)
+  function markError(nodeId: string, sessionId: string, error: string) {
+    const session = find(nodeId, sessionId)
     if (session) {
       session.status = 'error'
       session.error_message = error
     }
   }
 
-  async function start(sourceId: string, presetId: string): Promise<RecordingSession> {
-    const { api } = useApi()
-    const session = await api<RecordingSession>('/recordings', {
+  async function loadForNode(nodeId: string) {
+    const list = await nodeApi(nodeId)<RecordingSessionDto[]>('/recordings').catch(() => [])
+    sessions.value = sessions.value.filter((s) => s.node_id !== nodeId)
+    for (const dto of list) upsert(nodeId, dto)
+  }
+
+  async function load() {
+    if (nodes.nodes.length === 0) await nodes.load()
+    await Promise.all(nodes.reachable.map((n) => loadForNode(n.id)))
+  }
+
+  /**
+   * Start recording `sourceId` on `nodeId`. The preset's outputs are sent
+   * inline — nodes keep no preset store. With no preset, a single default
+   * H.264/MOV output is used.
+   */
+  async function start(nodeId: string, sourceId: string, preset: Preset | null) {
+    const outputs: OutputLegInput[] = preset
+      ? preset.outputs.map(({ id: _id, preset_id: _p, sort_order: _s, ...leg }) => leg)
+      : [blankLeg()]
+    const dto = await nodeApi(nodeId)<RecordingSessionDto>('/recordings', {
       method: 'POST',
-      body: { source_id: sourceId, preset_id: presetId },
+      body: { source_id: sourceId, preset_id: preset?.id ?? null, outputs },
     })
-    upsert(session)
-    return session
+    upsert(nodeId, dto)
+    return dto
   }
 
-  async function stop(sessionId: string): Promise<RecordingSession> {
-    const { api } = useApi()
-    const session = await api<RecordingSession>(`/recordings/${sessionId}`, {
-      method: 'PATCH',
-      body: { action: 'stop' },
+  async function stop(nodeId: string, sessionId: string) {
+    const dto = await nodeApi(nodeId)<RecordingSessionDto>(`/recordings/${sessionId}/stop`, {
+      method: 'POST',
     })
-    upsert(session)
-    return session
+    upsert(nodeId, dto)
+    return dto
   }
 
-  function activeForSource(sourceId: string): RecordingSession | null {
-    return activeSessions.value.find((s) => s.source_id === sourceId) ?? null
+  function activeForSource(nodeId: string, sourceId: string): RecordingSession | null {
+    return (
+      activeSessions.value.find((s) => s.node_id === nodeId && s.source_id === sourceId) ?? null
+    )
   }
 
-  return { sessions, activeSessions, upsert, markStopped, markError, start, stop, activeForSource }
+  return {
+    sessions,
+    activeSessions,
+    upsert,
+    markStopped,
+    markError,
+    load,
+    loadForNode,
+    start,
+    stop,
+    activeForSource,
+  }
 })

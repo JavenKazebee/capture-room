@@ -1,20 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useSourcesStore, type TestSourceConfig, type TestSourceInput } from '@/stores/sources'
-import { useApi } from '@/composables/useApi'
+import { useSourcesStore, type Source, type TestSourceInput } from '@/stores/sources'
+import { useNodesStore } from '@/stores/nodes'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 
 const store = useSourcesStore()
-const { api } = useApi()
+const nodesStore = useNodesStore()
+const nodes = computed(() => nodesStore.reachable)
 
 const loading = ref(false)
 const scanning = ref(false)
 const error = ref<string | null>(null)
-const localNodeId = ref<string | null>(null)
-
-interface NodeOption { id: string; name: string; is_self: boolean }
-const nodes = ref<NodeOption[]>([])
 
 // ── Test source form ──────────────────────────────────────────────────────────
 
@@ -91,31 +88,24 @@ const framerateKey = computed({
 
 function openCreate() {
   editingId.value = null
-  formNodeId.value = localNodeId.value ?? ''
+  formNodeId.value = nodes.value.find((n) => n.is_self)?.id ?? nodes.value[0]?.id ?? ''
   Object.assign(form, blankForm())
   formError.value = null
   showForm.value = true
 }
 
-async function openEdit(localSrcId: string, nodeId: string) {
+async function openEdit(src: Source) {
   formError.value = null
   let cfg
-  if (nodeId === localNodeId.value) {
-    cfg = store.testConfigs.find((c) => c.id === localSrcId)
-  } else {
-    try {
-      const remoteConfigs = await api<TestSourceConfig[]>(
-        `/sources/test?node_id=${encodeURIComponent(nodeId)}`,
-      )
-      cfg = remoteConfigs.find((c) => c.id === localSrcId)
-    } catch {
-      error.value = 'Could not load config from remote node.'
-      return
-    }
+  try {
+    cfg = (await store.testConfigs(src.node_id)).find((c) => c.id === src.id)
+  } catch {
+    error.value = 'Could not load test source config from node.'
+    return
   }
   if (!cfg) return
-  editingId.value = localSrcId
-  formNodeId.value = nodeId
+  editingId.value = src.id
+  formNodeId.value = src.node_id
   Object.assign(form, {
     name: cfg.name,
     pattern: cfg.pattern,
@@ -143,11 +133,10 @@ async function save() {
   saving.value = true
   formError.value = null
   try {
-    const targetNode = formNodeId.value || undefined
     if (editingId.value) {
-      await store.updateTestSource(editingId.value, { ...form }, targetNode)
+      await store.updateTestSource(formNodeId.value, editingId.value, { ...form })
     } else {
-      await store.createTestSource({ ...form }, targetNode)
+      await store.createTestSource(formNodeId.value, { ...form })
     }
     showForm.value = false
   } catch (e) {
@@ -157,16 +146,12 @@ async function save() {
   }
 }
 
-async function destroy(localSrcId: string, _name: string, nodeId: string) {
+async function destroy(src: Source) {
   try {
-    await store.deleteTestSource(localSrcId, nodeId)
+    await store.deleteTestSource(src.node_id, src.id)
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Delete failed.'
   }
-}
-
-function localId(compositeId: string) {
-  return compositeId.includes(':') ? compositeId.split(':')[1] : compositeId
 }
 
 // ── Scan ──────────────────────────────────────────────────────────────────────
@@ -175,7 +160,7 @@ async function scan() {
   scanning.value = true
   error.value = null
   try {
-    await store.scan()
+    await store.scanAll()
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Scan failed.'
   } finally {
@@ -190,16 +175,15 @@ function fpsLabel(n: number, d: number) {
 }
 
 function nodeName(nodeId: string) {
-  const n = nodes.value.find((nd) => nd.id === nodeId)
+  const n = nodesStore.nodes.find((nd) => nd.id === nodeId)
   return n ? (n.is_self ? `${n.name} (this node)` : n.name) : nodeId
 }
 
 const sourcesByNode = computed(() => {
-  const map = new Map<string, typeof store.sources>()
+  const map = new Map<string, Source[]>()
   for (const s of store.sources) {
-    const nodeId = s.node_id ?? 'local'
-    if (!map.has(nodeId)) map.set(nodeId, [])
-    map.get(nodeId)!.push(s)
+    if (!map.has(s.node_id)) map.set(s.node_id, [])
+    map.get(s.node_id)!.push(s)
   }
   return map
 })
@@ -210,14 +194,8 @@ const fieldClass =
 onMounted(async () => {
   loading.value = true
   try {
-    const [, nodeList, status] = await Promise.all([
-      Promise.all([store.loadSources(), store.loadTestConfigs()]),
-      api<NodeOption[]>('/nodes').catch(() => [] as NodeOption[]),
-      api<{ id: string }>('/status').catch(() => null),
-    ])
-    nodes.value = nodeList
-    localNodeId.value = status?.id ?? null
-    formNodeId.value = localNodeId.value ?? ''
+    await nodesStore.load()
+    await store.loadSources()
   } finally {
     loading.value = false
   }
@@ -259,7 +237,7 @@ onMounted(async () => {
         </h2>
 
         <div class="rounded-lg border border-border bg-card divide-y divide-border">
-          <div v-for="src in nodeSources" :key="src.id" class="p-4">
+          <div v-for="src in nodeSources" :key="src.key" class="p-4">
             <div class="flex items-start gap-4">
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2 mb-1">
@@ -276,13 +254,13 @@ onMounted(async () => {
 
               <!-- Edit / Delete for all test sources -->
               <div v-if="src.source_type === 'test'" class="flex gap-2 shrink-0">
-                <Button variant="outline" size="default" @click="openEdit(localId(src.id), src.node_id ?? localNodeId ?? '')">
+                <Button variant="outline" size="default" @click="openEdit(src)">
                   Edit
                 </Button>
                 <Button
                   variant="destructive"
                   size="default"
-                  @click="destroy(localId(src.id), src.display_name, src.node_id ?? localNodeId ?? '')"
+                  @click="destroy(src)"
                 >
                   Delete
                 </Button>

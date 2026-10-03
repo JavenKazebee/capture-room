@@ -85,6 +85,11 @@ impl MonitorPipeline {
             Arc::new(Mutex::new(HashMap::new()));
 
         let pipeline = gst::Pipeline::new();
+        // A bin only posts EOS once *every* sink is EOS, and the thumbnail and
+        // level sinks never are — so a recording filesink's EOS would be
+        // swallowed. With message-forward the bin re-posts each child's EOS
+        // wrapped in a "GstBinForwarded" element message (handled below).
+        pipeline.set_property("message-forward", true);
         let src_bin = source.gst_src_element();
         pipeline.add(&src_bin).context("add source bin")?;
 
@@ -128,19 +133,19 @@ impl MonitorPipeline {
                         warn!(msg = %w.error(), "monitor pipeline warning");
                     }
                     gst::MessageView::Element(el) => {
-                        if let Some(s) = el.structure() {
-                            if s.name() == "level" {
-                                handle_level_message(s, &audio_meter_ref);
-                            }
-                        }
-                    }
-                    // GstBaseSink (including filesink) posts an EOS message on the
-                    // bus after processing EOS — i.e. after the file is closed.
-                    gst::MessageView::Eos(_) => {
-                        if let Some(src) = msg.src() {
-                            let name = src.name().to_string();
-                            if let Some(tx) = recording_eos_ref.lock().unwrap().remove(&name) {
-                                let _ = tx.send(());
+                        let Some(s) = el.structure() else { continue };
+                        if s.name() == "level" {
+                            handle_level_message(s, &audio_meter_ref);
+                        } else if s.name() == "GstBinForwarded" {
+                            // GstBaseSink (including filesink) posts EOS after it
+                            // has processed EOS — i.e. once the muxer's final
+                            // index has been written to the file.
+                            let Ok(inner) = s.get::<gst::Message>("message") else { continue };
+                            if let (gst::MessageView::Eos(_), Some(src)) = (inner.view(), inner.src()) {
+                                let name = src.name().to_string();
+                                if let Some(tx) = recording_eos_ref.lock().unwrap().remove(&name) {
+                                    let _ = tx.send(());
+                                }
                             }
                         }
                     }

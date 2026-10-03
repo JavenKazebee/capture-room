@@ -7,6 +7,7 @@ mod plugins;
 mod recording;
 mod sources;
 mod state;
+mod storage;
 mod thumbnail;
 mod ws;
 
@@ -20,34 +21,23 @@ use tokio::sync::RwLock;
 use tracing::info;
 
 use api::types::WsEvent;
-use controller::registry::NodeRegistry;
+use controller::Controller;
 use pipeline::monitor::MonitorConfig;
 use sources::manager::SourceManager;
-use state::{AppState, Role};
+use state::AppState;
 
 #[derive(Parser, Debug)]
 #[command(name = "capture-room", version)]
 struct Args {
+    /// Act as a controller (also persisted, so later runs don't need the flag).
     #[arg(long)]
-    role: Option<String>,
+    controller: bool,
 
     #[arg(long, default_value_t = 7700)]
     port: u16,
 
     #[arg(long, default_value = "capture-room.db")]
     db: String,
-}
-
-fn resolve_role(cli: Option<&str>, db_value: Option<&str>) -> Role {
-    if let Some(r) = cli.and_then(Role::parse) {
-        return r;
-    }
-    if let Ok(v) = std::env::var("CAPTURE_ROOM_ROLE") {
-        if let Some(r) = Role::parse(&v) {
-            return r;
-        }
-    }
-    db_value.and_then(Role::parse).unwrap_or(Role::Node)
 }
 
 #[tokio::main]
@@ -79,9 +69,11 @@ async fn main() -> Result<()> {
         std::env::var("HOSTNAME").unwrap_or_else(|_| "capture-room-node".to_string())
     });
 
-    let db_role = db::config_get(&pool, "role").await?;
-    let role = resolve_role(args.role.as_deref(), db_role.as_deref());
-    info!(id = %node_id, name = %node_name, role = role.as_str(), "identity");
+    if args.controller {
+        db::config_set(&pool, controller::CONFIG_KEY, "true").await?;
+    }
+    let controller_enabled = db::config_get(&pool, controller::CONFIG_KEY).await?.as_deref() == Some("true");
+    info!(id = %node_id, name = %node_name, controller = controller_enabled, "identity");
 
     db::sessions_mark_crashed(&pool).await?;
 
@@ -122,19 +114,22 @@ async fn main() -> Result<()> {
         );
     }
 
+    let (node_tx, _) = ws::channel();
     let (ws_tx, _) = ws::channel();
 
     let state = Arc::new(AppState {
         node_id: node_id.clone(),
-        node_name: node_name.clone(),
+        node_name: std::sync::RwLock::new(node_name.clone()),
         started_at: Instant::now(),
-        role,
         source_manager: Arc::new(RwLock::new(source_manager)),
         db: pool,
+        node_tx,
         ws_tx,
-        peers: Arc::new(RwLock::new(NodeRegistry::new())),
+        controller: RwLock::new(None),
         http: reqwest::Client::new(),
+        node_router: std::sync::OnceLock::new(),
     });
+    let _ = state.node_router.set(api::node_router(Arc::clone(&state)));
 
     // ── Periodic WS emitter ───────────────────────────────────────────────────
     {
@@ -150,27 +145,17 @@ async fn main() -> Result<()> {
 
                 // Audio levels for every monitored source (~10 fps).
                 for (source_id, channels) in mgr.all_audio_levels() {
-                    ws::send(
-                        &state.ws_tx,
-                        &WsEvent::AudioLevels {
-                            source_id: format!("{}:{}", state.node_id, source_id),
-                            channels,
-                        },
-                    );
+                    state.emit(&WsEvent::AudioLevels { source_id, channels });
                 }
 
                 // Timecode (feed.status) at 1 Hz — every 10 ticks.
                 if tick % 10 == 0 {
                     for source in mgr.sources() {
-                        let composite = format!("{}:{}", state.node_id, source.id());
-                        ws::send(
-                            &state.ws_tx,
-                            &WsEvent::FeedStatus {
-                                source_id: composite,
-                                timecode: source.timecode().map(|tc| tc.to_string()),
-                                duration_secs: 0.0,
-                            },
-                        );
+                        state.emit(&WsEvent::FeedStatus {
+                            source_id: source.id().to_string(),
+                            timecode: source.timecode().map(|tc| tc.to_string()),
+                            duration_secs: 0.0,
+                        });
                     }
                 }
 
@@ -182,14 +167,10 @@ async fn main() -> Result<()> {
                 if tick % thumb_div == 0 {
                     for source in mgr.sources() {
                         if mgr.is_monitored(source.id()) {
-                            let composite = format!("{}:{}", state.node_id, source.id());
-                            ws::send(
-                                &state.ws_tx,
-                                &WsEvent::ThumbnailUpdated {
-                                    source_id: composite.clone(),
-                                    url: format!("/api/v1/thumbnails/{}", composite),
-                                },
-                            );
+                            state.emit(&WsEvent::ThumbnailUpdated {
+                                source_id: source.id().to_string(),
+                                url: format!("/api/v1/node/thumbnails/{}", source.id()),
+                            });
                         }
                     }
                 }
@@ -197,20 +178,18 @@ async fn main() -> Result<()> {
         });
     }
 
-    // ── Aggregation ───────────────────────────────────────────────────────────
-    if role.is_aggregator() {
-        controller::start_mdns_browser(Arc::clone(&state));
-        controller::start_health_poller(Arc::clone(&state));
-        info!("aggregator: discovering peers via mDNS");
+    // ── Controller (optional, toggleable at runtime) ──────────────────────────
+    if controller_enabled {
+        Controller::enable(&state).await?;
     }
 
-    let _mdns = controller::register_mdns_service(&node_id, &node_name, args.port);
+    let _mdns = controller::discovery::register_mdns_service(&node_id, &node_name, args.port);
 
     // ── HTTP server ───────────────────────────────────────────────────────────
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let router = api::build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!(addr = %addr, role = role.as_str(), "listening");
+    info!(addr = %addr, "listening");
     axum::serve(listener, router).await?;
 
     Ok(())

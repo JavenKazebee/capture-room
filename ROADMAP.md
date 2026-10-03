@@ -4,7 +4,7 @@ Active sequencing of work, decisions, and rationale. This complements
 [ARCHITECTURE.md](ARCHITECTURE.md) (the design spec) — when the two disagree on
 *order*, this file wins; ARCHITECTURE.md remains the source of truth for *design*.
 
-_Last updated: 2026-06-24_
+_Last updated: 2026-10-02_
 
 ---
 
@@ -24,6 +24,14 @@ the source-lifecycle design (connect-on-discovery, not connect-on-record) that N
 capture depends on anyway.
 
 ---
+
+## ✅ Node / controller simplification (2026-10-02)
+
+Replaced the node/aggregator role split. Every instance is a node with a local-only
+API (`/api/v1/node/…`); the controller is a live toggle that adds discovery, a generic
+`/api/v1/nodes/{id}/…` forwarder and a merged event stream. Presets are sent inline
+with start commands, so preset sync and composite source ids are gone. Nodes also
+report their storage volumes.
 
 ## 1. ✅ Generic TestSource + Sources view
 
@@ -127,10 +135,10 @@ shadcn-vue is already in place, so dark mode is mostly CSS-variable theming + a 
 
 ## 7. Follow-on
 
-- **Scheduler engine** — `controller/scheduler.rs` is an empty stub; schedules table specced.
+- **Scheduler engine** — runs on the controller and sends ordinary start/stop commands (with inline outputs) at the scheduled times. Nodes stay stateless about schedules.
 - **Timecode** — real LTC/VITC extraction; `timecode/mod.rs` is a stub (TestSource fakes wall-clock TC).
 - **Packaging + GitHub Actions** — cross-platform builds; folds in the NDI packaging strategy above.
-- **Node registry persistence** — `NodeRegistry` (`controller/registry.rs`) is in-memory only; mDNS-discovered peers self-heal on restart, but manually-registered peers (no mDNS, e.g. a different subnet) are lost on controller restart. Add a `nodes` table (the `discovered` flag is already specced in ARCHITECTURE.md) so manual registrations are durable.
+- ✅ **Node registry persistence** — peers added by URL are stored in the `nodes` table and restored when the controller starts.
 - **Additional source types** (each is a new `InputSource` impl, additive):
   - **RTSP** (`rtspsrc`) — IP cameras; easy, high value.
   - **SRT** (`srtsrc`) — contribution feeds over unreliable networks.

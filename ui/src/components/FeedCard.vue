@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { audioLevels, thumbnailSeqs, type Source } from '@/stores/sources'
 import { useRecordingsStore, type RecordingSession } from '@/stores/recordings'
 import { usePresetsStore } from '@/stores/presets'
+import { thumbnailUrl } from '@/composables/useApi'
+import { useNodesStore } from '@/stores/nodes'
 import AudioMeter from './AudioMeter.vue'
 import { Button } from '@/components/ui/button'
 import {
@@ -20,11 +22,12 @@ const props = defineProps<{
 
 const recordings = useRecordingsStore()
 const presets = usePresetsStore()
+const nodes = useNodesStore()
 
 // ── Preset selection ──────────────────────────────────────────────────────────
 
-// The built-in "default" is always available and resolves to H.264/MOV
-// server-side even when no presets have been authored yet.
+// The built-in "default" is always available: a single H.264/MOV output,
+// usable even when no presets have been authored yet.
 const presetOptions = computed(() => [
   { id: 'default', label: 'H.264 (default)' },
   ...presets.presets.map((p) => ({ id: p.id, label: p.name })),
@@ -38,14 +41,14 @@ const thumbError = ref(false)
 const fallbackSeq = ref(0)
 
 const thumbnailSrc = computed(() => {
-  const wsSeq = thumbnailSeqs.get(props.source.id) ?? 0
+  const wsSeq = thumbnailSeqs.get(props.source.key) ?? 0
   const seq = Math.max(wsSeq, fallbackSeq.value)
-  return `/api/v1/thumbnails/${props.source.id}?t=${seq}`
+  return `${thumbnailUrl(props.source.node_id, props.source.id)}?t=${seq}`
 })
 
 // Reset error when a new thumbnail.updated WS event arrives
 watch(
-  () => thumbnailSeqs.get(props.source.id) ?? 0,
+  () => thumbnailSeqs.get(props.source.key) ?? 0,
   (seq) => { if (seq > 0) thumbError.value = false },
 )
 
@@ -66,7 +69,7 @@ onUnmounted(() => {
 
 // ── Audio ─────────────────────────────────────────────────────────────────────
 
-const channels = computed(() => audioLevels.get(props.source.id) ?? [])
+const channels = computed(() => audioLevels.get(props.source.key) ?? [])
 
 // ── Recording controls ────────────────────────────────────────────────────────
 
@@ -77,9 +80,10 @@ async function toggleRecording() {
   busy.value = true
   try {
     if (props.session) {
-      await recordings.stop(props.session.id)
+      await recordings.stop(props.source.node_id, props.session.id)
     } else {
-      await recordings.start(props.source.id, selectedPreset.value)
+      const preset = presets.presets.find((p) => p.id === selectedPreset.value) ?? null
+      await recordings.start(props.source.node_id, props.source.id, preset)
     }
   } finally {
     busy.value = false
@@ -154,7 +158,7 @@ function formatDuration(startedAt: string): string {
       <div class="flex items-center justify-between">
         <span class="text-sm font-medium truncate">{{ source.display_name }}</span>
         <span class="text-[10px] text-muted-foreground uppercase tracking-wide shrink-0 ml-2">
-          {{ source.source_type }}
+          <template v-if="nodes.nodes.length > 1">{{ nodes.nameOf(source.node_id) }} · </template>{{ source.source_type }}
         </span>
       </div>
 

@@ -1,6 +1,8 @@
 import { ref } from 'vue'
 import { useSourcesStore, audioLevels, thumbnailSeqs } from '@/stores/sources'
 import { useRecordingsStore } from '@/stores/recordings'
+import { useNodesStore } from '@/stores/nodes'
+import { sourceKey } from '@/composables/useApi'
 
 export type WsStatus = 'connecting' | 'connected' | 'disconnected'
 
@@ -49,50 +51,58 @@ function connect() {
   })
 }
 
+// Every event carries the `node_id` it describes; source and session ids
+// inside it are local to that node.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function handleEvent(event: Record<string, any>) {
   const sources = useSourcesStore()
   const recordings = useRecordingsStore()
+  const nodes = useNodesStore()
+  const nodeId = event.node_id as string
 
   switch (event.type) {
-    case 'source.available':
     case 'node.online':
     case 'node.offline':
+      nodes.load().then(() => Promise.all([sources.loadSources(), recordings.load()]))
+      break
+
+    case 'source.available':
       sources.loadSources()
       break
 
     case 'source.lost':
-      sources.remove(event.source_id as string)
+      sources.remove(nodeId, event.source_id as string)
       break
 
     case 'recording.started':
-      // The session was already added to the store via the POST response.
-      // If it arrived from a different client, reload recordings.
+      // Usually already in the store via the POST response; reload in case it
+      // came from another client or a schedule.
+      if (!recordings.activeForSource(nodeId, event.source_id as string)) {
+        recordings.loadForNode(nodeId)
+      }
       break
 
     case 'recording.stopped':
-      recordings.markStopped(event.session_id as string)
+      recordings.markStopped(nodeId, event.session_id as string)
       break
 
     case 'recording.error':
-      recordings.markError(event.session_id as string, event.error as string)
+      recordings.markError(nodeId, event.session_id as string, event.error as string)
       break
 
-    case 'feed.status': {
-      sources.updateTimecode(event.source_id as string, event.timecode as string | null)
+    case 'feed.status':
+      sources.updateTimecode(nodeId, event.source_id as string, event.timecode as string | null)
       break
-    }
 
     case 'audio.levels': {
-      const sourceId = event.source_id as string
       const channels = event.channels as { peak_db: number; rms_db: number }[]
-      audioLevels.set(sourceId, channels)
+      audioLevels.set(sourceKey(nodeId, event.source_id as string), channels)
       break
     }
 
     case 'thumbnail.updated': {
-      const sourceId = event.source_id as string
-      thumbnailSeqs.set(sourceId, (thumbnailSeqs.get(sourceId) ?? 0) + 1)
+      const key = sourceKey(nodeId, event.source_id as string)
+      thumbnailSeqs.set(key, (thumbnailSeqs.get(key) ?? 0) + 1)
       break
     }
   }

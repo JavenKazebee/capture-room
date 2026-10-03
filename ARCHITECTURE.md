@@ -6,12 +6,12 @@ A multi-feed video capture and recording platform for live broadcast environment
 
 ## Design Principles
 
-- **One binary, two modes.** The same Rust executable runs as a capture-only node or as a controller. No separate runtime to install or manage.
-- **Nodes are autonomous.** A node records without a controller present. The controller is an orchestration layer, not a dependency.
-- **Controller is source of truth for config.** Presets and schedules live on the controller and sync down to nodes, which cache them locally for offline operation.
+- **One binary, every instance is a node.** A node exposes everything its own machine has: sources, storage volumes, recordings, thumbnails, monitor settings. It knows nothing about other nodes.
+- **Controller is a toggle, not a mode.** Any node can be promoted to controller (live, no restart). A controller keeps every node capability and additionally discovers other nodes, forwards commands to them, and merges their event streams.
+- **Controllers send plain commands.** Settings changes and start/stop. A start command carries the full output settings inline, so nodes keep no preset store and nothing needs syncing.
+- **One addressing scheme.** The UI always talks to `/api/v1/nodes/{node_id}/…`; on a non-controller that list contains only the node itself.
 - **Input sources are pluggable from day one.** NDI and Decklink are the first implementations of a formal trait; adding a new source type is additive, not a refactor.
-- **Types flow from Rust outward.** API types are defined once as Rust structs and exported to TypeScript via `ts-rs`. No hand-maintained type mirrors.
-- **API-first.** Every action the UI can take is available via the REST + WebSocket API.
+- **Types flow from Rust outward.** API types are defined once as Rust structs and exported to TypeScript via `ts-rs`.
 
 ---
 
@@ -19,36 +19,30 @@ A multi-feed video capture and recording platform for live broadcast environment
 
 ```
 Browser (Vue 3 UI)
-      │
       │  HTTP / WebSocket (:7700)
       ▼
-┌──────────────────────────────────┐
-│  Rust binary — controller mode   │
-│  ─ Serves embedded Vue UI        │
-│  ─ Node registry + health polls  │
-│  ─ Unified API (proxies nodes)   │
-│  ─ Preset management             │
-│  ─ Scheduling engine             │
-│  ─ WebSocket aggregation         │
-│  ─ Log aggregation               │
-│  ─ Local capture (if hw present) │
-└──────────────┬───────────────────┘
-               │  HTTP / WebSocket (:7700) per node
+┌──────────────────────────────────────────────┐
+│  capture-room (controller enabled)           │
+│  ─ Node API  /api/v1/node/…   (local only)   │
+│  ─ /api/v1/nodes/{id}/…  → in-process (self) │
+│                          → HTTP (peers)      │
+│  ─ Node registry, mDNS browse, health polls  │
+│  ─ Presets                                   │
+│  ─ /ws: own events + relayed peer events     │
+└──────────────┬───────────────────────────────┘
+               │  HTTP /api/v1/node/… + WS /api/v1/node/ws
                ▼
 ┌─────────────────────────┐     ┌─────────────────────────┐
-│  Rust binary — node mode │     │  Rust binary — node mode │  ...
-│  ─ Input plugin system   │     │  ─ Input plugin system   │
-│  ─ GStreamer pipelines   │     │  ─ GStreamer pipelines   │
+│  capture-room (node)     │     │  capture-room (node)     │  ...
+│  ─ Sources + pipelines   │     │  ─ Sources + pipelines   │
 │  ─ Recording sessions    │     │  ─ Recording sessions    │
-│  ─ Timecode reader       │     │  ─ Timecode reader       │
-│  ─ Thumbnail generator   │     │  ─ Thumbnail generator   │
-│  ─ Audio metering        │     │  ─ Audio metering        │
-│  ─ Benchmark runner      │     │  ─ Benchmark runner      │
+│  ─ Storage volumes       │     │  ─ Storage volumes       │
+│  ─ Thumbnails / meters   │     │  ─ Thumbnails / meters   │
 │  ─ Local SQLite          │     │  ─ Local SQLite          │
 └─────────────────────────┘     └─────────────────────────┘
 ```
 
-The controller mode instance can also run local capture pipelines if hardware is present on that machine — it registers itself as a node in its own registry.
+Every instance serves the UI. Pointed at a plain node, the UI shows that node; pointed at a controller, it shows every node the controller knows.
 
 ---
 
@@ -61,16 +55,14 @@ The controller mode instance can also run local capture pipelines if hardware is
 **UI embedding:** `rust-embed` (release builds) / served from `ui/dist/` (debug builds)  
 **Type export:** `ts-rs` — derives TypeScript types from Rust structs  
 
-Started with a mode flag:
-
 ```
-capture-room --role node         # capture only (default)
-capture-room --role aggregator   # capture + orchestration + UI
+capture-room                  # node
+capture-room --controller     # node + controller (persisted; later runs don't need the flag)
 ```
 
-Both modes listen on the same configurable port (default `7700`). The mode determines which route groups are registered, not which port is used. The controller calls its own local capture subsystem in-process — no loopback HTTP.
+The controller can also be toggled at runtime with `PUT /api/v1/controller`. The setting is stored as `controller_enabled` in `node_config`.
 
-On first run with no config file, generates a UUID, writes defaults, and starts mDNS announcement.
+On first run with no config, generates a UUID and starts mDNS announcement.
 
 ---
 
@@ -165,80 +157,59 @@ Determines sustainable recording capacity for a given machine on demand:
 
 ---
 
-## Node API — REST (port 7700)
+## Node API — `/api/v1/node/…`
+
+Local only. Never forwards, never knows about other nodes. Source and session ids are local to the node.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/status` | Node health, UUID, version, uptime, mode |
-| GET | `/api/v1/sources` | List all discovered input sources |
-| GET | `/api/v1/sources/{id}` | Source details and capabilities |
-| POST | `/api/v1/sources/scan` | Rescan for available sources |
-| GET | `/api/v1/recordings` | Active and recent recording sessions |
-| POST | `/api/v1/recordings` | Start a recording session |
-| GET | `/api/v1/recordings/{id}` | Session details |
-| PATCH | `/api/v1/recordings/{id}` | Stop or update a session |
-| GET | `/api/v1/thumbnails/{source_id}` | Latest thumbnail JPEG |
-| GET | `/api/v1/presets` | Locally cached presets |
-| POST | `/api/v1/presets/sync` | Receive preset sync push from controller |
-| POST | `/api/v1/schedules/sync` | Receive schedule sync from controller |
-| GET | `/api/v1/benchmark` | Most recent benchmark results |
-| POST | `/api/v1/benchmark` | Start a benchmark run |
+| GET | `/status` | id, name, version, uptime, `is_controller` |
+| GET / PUT | `/settings` | node name, monitor settings (thumbnail fps/size, meter interval) |
+| GET | `/storage` | writable volumes: mount point, total/free bytes, removable |
+| GET | `/sources` | sources on this machine |
+| POST | `/sources/scan` | rescan |
+| GET | `/sources/{id}` | source details |
+| POST | `/sources/{id}/connect` · `/disconnect` | |
+| GET / POST | `/test-sources` | test source configs |
+| PUT / DELETE | `/test-sources/{id}` | |
+| GET / POST | `/recordings` | list / start. Start body: `{ source_id, preset_id?, outputs: [...] }` |
+| GET | `/recordings/{id}` | session details |
+| POST | `/recordings/{id}/stop` | stop (waits for EOS drain) |
+| GET | `/thumbnails/{source_id}` | latest JPEG |
+| WS | `/ws` | this node's events only |
 
-## Controller API — REST (port 7700)
+## Controller API — `/api/v1/…`
 
-All `/api/v1/nodes/{id}/*` routes proxy to the target node and return the result directly.
+Mounted on every instance; peer-related routes only do anything while the controller is enabled.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/nodes` | All nodes, status, source counts |
-| POST | `/api/v1/nodes` | Register a node manually |
-| DELETE | `/api/v1/nodes/{id}` | Remove a node |
-| GET | `/api/v1/nodes/{id}/sources` | → proxied to node |
-| POST | `/api/v1/nodes/{id}/sources/scan` | → proxied to node |
-| GET | `/api/v1/nodes/{id}/recordings` | → proxied to node |
-| POST | `/api/v1/nodes/{id}/recordings` | → proxied to node |
-| PATCH | `/api/v1/nodes/{id}/recordings/{rid}` | → proxied to node |
-| GET | `/api/v1/nodes/{id}/thumbnails/{sid}` | → proxied to node |
-| GET | `/api/v1/nodes/{id}/benchmark` | → proxied to node |
-| POST | `/api/v1/nodes/{id}/benchmark` | → proxied to node |
-| GET | `/api/v1/presets` | List all presets |
-| POST | `/api/v1/presets` | Create preset (syncs to all nodes) |
-| PUT | `/api/v1/presets/{id}` | Update preset (syncs to all nodes) |
-| DELETE | `/api/v1/presets/{id}` | Delete preset |
-| GET | `/api/v1/schedules` | List schedules |
-| POST | `/api/v1/schedules` | Create schedule |
-| PUT | `/api/v1/schedules/{id}` | Update schedule |
-| DELETE | `/api/v1/schedules/{id}` | Delete schedule |
-| GET | `/api/v1/logs` | Aggregated logs (query: node, level, since) |
-| GET | `/api/v1/overview` | All nodes + active recordings snapshot |
+| PUT | `/controller` | `{ enabled }` — promote/demote live |
+| GET | `/nodes` | self + registered peers |
+| POST | `/nodes` | add a node by URL (persisted) — 409 if not a controller |
+| DELETE | `/nodes/{id}` | remove a node |
+| ANY | `/nodes/{id}/{*path}` | forwarded to that node's `/api/v1/node/{path}`. Self is served in-process; peers over HTTP. |
+| GET / POST | `/presets` | presets stored on this instance |
+| PUT / DELETE | `/presets/{id}` | |
+| WS | `/ws` | this node's events + every peer's (relayed) |
 
 ---
 
 ## WebSocket Events
 
-### Node (`ws://node:7700/ws`)
-
-All events are JSON with a `type` field.
+All events are JSON with a `type` and the `node_id` they describe. `source_id` / `session_id` are local to that node.
 
 | Event type | Payload |
 |------------|---------|
 | `source.available` / `source.lost` | source id, name |
 | `recording.started` / `recording.stopped` / `recording.error` | session id, source id |
-| `feed.status` | source id, timecode, bitrate, dropped frames, duration (periodic) |
+| `feed.status` | source id, timecode, duration (1 Hz) |
 | `audio.levels` | source id, channel peak/RMS values (~10fps) |
 | `thumbnail.updated` | source id, URL |
-| `benchmark.progress` | step, feeds, metrics |
-| `benchmark.complete` | result summary |
 | `log` | level, message, timestamp |
+| `node.online` / `node.offline` | `peer_id` (controller only) |
 
-### Controller (`ws://controller:7700/ws`)
-
-Re-emits all node events with `node_id` added, plus controller-level events:
-
-| Event type | Description |
-|------------|-------------|
-| `node.online` / `node.offline` | Node connectivity change |
-| `schedule.triggered` / `schedule.completed` | Schedule lifecycle |
+The controller's relay subscribes to each peer's `/api/v1/node/ws` — local events only — so a peer that is itself a controller is never echoed, and two controllers can watch the same nodes without duplicates.
 
 ---
 
@@ -250,101 +221,14 @@ Rust structs used in API responses are annotated with `#[derive(TS)]` from the `
 
 ## SQLite Schemas
 
-### Node mode (every instance)
+Every instance has the same schema (see `node/migrations/`):
 
-```sql
-CREATE TABLE node_config (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-    -- keys: uuid, name, mode, controller_url
-);
-
-CREATE TABLE recording_sessions (
-    id              TEXT PRIMARY KEY,
-    source_id       TEXT NOT NULL,
-    preset_id       TEXT NOT NULL,
-    started_at      TEXT NOT NULL,
-    stopped_at      TEXT,
-    primary_path    TEXT NOT NULL,
-    secondary_path  TEXT,
-    redundant_path  TEXT,
-    status          TEXT NOT NULL,  -- active | stopped | error
-    error_message   TEXT
-);
-
-CREATE TABLE presets_cache (
-    id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL,
-    data        TEXT NOT NULL,  -- JSON blob
-    version     INTEGER NOT NULL,
-    synced_at   TEXT NOT NULL
-);
-
-CREATE TABLE schedules_cache (
-    id        TEXT PRIMARY KEY,
-    data      TEXT NOT NULL,  -- JSON blob
-    synced_at TEXT NOT NULL
-);
-
-CREATE TABLE benchmark_results (
-    id        TEXT PRIMARY KEY,
-    run_at    TEXT NOT NULL,
-    profile   TEXT NOT NULL,  -- JSON blob
-    max_feeds INTEGER NOT NULL,
-    metrics   TEXT NOT NULL   -- JSON blob
-);
-```
-
-### Controller mode (additional tables)
-
-```sql
-CREATE TABLE nodes (
-    id         TEXT PRIMARY KEY,  -- UUID from node
-    name       TEXT NOT NULL,
-    ip         TEXT NOT NULL,
-    port       INTEGER NOT NULL DEFAULT 7700,
-    discovered INTEGER NOT NULL DEFAULT 0,  -- 1 = mDNS, 0 = manual
-    last_seen  TEXT,
-    status     TEXT NOT NULL DEFAULT 'unknown'  -- online | offline | unknown
-);
-
-CREATE TABLE presets (
-    id                        TEXT PRIMARY KEY,
-    name                      TEXT NOT NULL,
-    codec                     TEXT NOT NULL,
-    container                 TEXT NOT NULL,
-    resolution                TEXT,           -- null = match source
-    framerate                 TEXT,           -- null = match source
-    bitrate_kbps              INTEGER,        -- null = quality-based
-    quality                   TEXT,
-    output_template           TEXT NOT NULL,
-    secondary_output_template TEXT,
-    redundant_output_template TEXT,
-    created_at                TEXT NOT NULL,
-    updated_at                TEXT NOT NULL,
-    version                   INTEGER NOT NULL DEFAULT 1
-);
-
-CREATE TABLE schedules (
-    id         TEXT PRIMARY KEY,
-    node_id    TEXT NOT NULL REFERENCES nodes(id),
-    source_id  TEXT NOT NULL,
-    preset_id  TEXT NOT NULL REFERENCES presets(id),
-    start_at   TEXT NOT NULL,  -- ISO 8601
-    stop_at    TEXT NOT NULL,
-    recurrence TEXT,           -- cron expression, null = one-shot
-    status     TEXT NOT NULL DEFAULT 'pending',
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE logs (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    node_id     TEXT NOT NULL,
-    level       TEXT NOT NULL,
-    message     TEXT NOT NULL,
-    recorded_at TEXT NOT NULL
-);
-```
+- `node_config` — key/value: `uuid`, `name`, `controller_enabled`, `monitor_*`
+- `recording_sessions` — one row per session, `output_paths` as a JSON array
+- `test_sources` — test source configs
+- `presets` + `preset_outputs` — used while acting as controller (or from the UI on a lone node)
+- `nodes` — peers added by URL on a controller (mDNS peers are not persisted)
+- `benchmark_results` — reserved
 
 ---
 
@@ -357,7 +241,7 @@ CREATE TABLE logs (
 **HTTP:** `ofetch`  
 **Components:** shadcn-vue — `npx shadcn-vue@latest init --preset ae2ZjdI` from `ui/`  
 
-In production, the compiled UI is embedded into the Rust binary via `rust-embed` and served by the controller. In development, Vite runs its own dev server and proxies `/api` and `/ws` to the Rust controller.
+In production, the compiled UI is embedded into the Rust binary via `rust-embed` and served by every instance. In development, Vite runs its own dev server and proxies `/api` and `/ws` to the Rust controller.
 
 ### Views
 
@@ -373,7 +257,7 @@ In production, the compiled UI is embedded into the Rust binary via `rust-embed`
 
 ### Real-time State
 
-A single WebSocket connection to the controller feeds all reactive UI state via Pinia stores. Components subscribe to store slices; they don't manage WebSocket connections directly.
+A single WebSocket connection (`/ws`) feeds all reactive UI state via Pinia stores. Sources and sessions are keyed by `(node_id, id)`. Components subscribe to store slices; they don't manage WebSocket connections directly.
 
 ---
 
@@ -403,13 +287,9 @@ Example:
 
 ## Node Discovery
 
-Nodes register an mDNS service on startup:
-- Service type: `_captureroom._tcp.local`
-- TXT records: `uuid`, `name`, `version`, `mode`
+Every instance registers an mDNS service (`_capture-room._tcp.local.`). A controller browses for it, identifies each service via `GET /api/v1/node/status`, and adds it to its registry. mDNS peers are pruned after ~15 s of failed health checks and re-added when they re-announce. Peers added by URL are persisted and never pruned — they're just shown as unreachable.
 
-The controller listens for announcements and adds discovered nodes automatically. Manual IP registration is always available as a fallback.
-
-Discovery is **asymmetric** — the controller initiates all connections to nodes; nodes never need to know the controller's address. On first contact and on every reconnect after a health-poll gap, the controller immediately pushes a full preset and schedule sync to the node. This is the recovery path for offline nodes: no pull handshake required.
+Discovery is asymmetric: the controller initiates all connections; nodes never need to know a controller exists. Nothing is pushed on connect because nodes hold no controller state.
 
 ---
 
@@ -449,13 +329,16 @@ capture-room/
 │   ├── src/
 │   │   ├── main.rs
 │   │   ├── api/
-│   │   │   ├── node/            # Node-mode routes (sources, recordings, etc.)
-│   │   │   └── controller/      # Controller-mode routes (nodes, presets, schedules)
+│   │   │   ├── node.rs          # Node API (/api/v1/node/…, local only)
+│   │   │   └── types.rs         # DTOs (exported to TS)
 │   │   ├── controller/
-│   │   │   ├── registry.rs      # Node registry + health polling
-│   │   │   ├── scheduler.rs     # Schedule execution engine
-│   │   │   ├── proxy.rs         # HTTP proxy to node APIs
-│   │   │   └── sync.rs          # Preset + schedule sync to nodes
+│   │   │   ├── mod.rs           # Controller enable/disable (live toggle)
+│   │   │   ├── api.rs           # /nodes, /controller, /presets, merged /ws
+│   │   │   ├── forward.rs       # /nodes/{id}/… → node API (in-process or HTTP)
+│   │   │   ├── discovery.rs     # mDNS advertise/browse + health polling
+│   │   │   ├── relay.rs         # peer WS → merged /ws
+│   │   │   └── registry.rs      # NodeRegistry
+│   │   ├── storage.rs           # Storage volume listing
 │   │   ├── pipeline/
 │   │   │   ├── monitor.rs       # MonitorPipeline, MonitorConfig, RecordingBranch, ThumbnailStore, AudioMeter
 │   │   │   ├── profile.rs       # RecordingProfile (codec, container, bitrate, …)
@@ -492,7 +375,7 @@ capture-room/
 {
   "scripts": {
     "dev": "concurrently \"pnpm dev:node\" \"pnpm dev:ui\"",
-    "dev:node": "cargo watch -x 'run -p capture-room -- --mode controller'",
+    "dev:node": "cargo watch -x 'run -p capture-room -- --controller'",
     "dev:ui": "pnpm --filter ui dev",
     "build": "pnpm build:ui && cargo build --release",
     "build:ui": "pnpm --filter ui build",

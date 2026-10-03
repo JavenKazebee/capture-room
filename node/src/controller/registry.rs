@@ -12,6 +12,9 @@ pub struct NodeEntry {
     pub uptime_secs: u64,
     /// Consecutive failed health checks. Reset to 0 on success.
     pub fail_count: u32,
+    /// Added by URL and persisted in the `nodes` table. Manual nodes are never
+    /// pruned for being unreachable; mDNS ones are (they re-announce).
+    pub manual: bool,
 }
 
 #[derive(Default)]
@@ -20,29 +23,29 @@ pub struct NodeRegistry {
 }
 
 impl NodeRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Insert or update. Returns `true` if the node was newly added.
     /// An update refreshes the URL (e.g. after an IP change) and clears
-    /// the failure state.
-    pub fn upsert(&mut self, entry: NodeEntry) -> bool {
-        let is_new = !self.entries.contains_key(&entry.id);
-        self.entries.insert(entry.id.clone(), entry);
-        is_new
+    /// the failure state, but never downgrades a manual entry to mDNS.
+    pub fn upsert(&mut self, mut entry: NodeEntry) -> bool {
+        match self.entries.get(&entry.id) {
+            Some(existing) => {
+                entry.manual |= existing.manual;
+                self.entries.insert(entry.id.clone(), entry);
+                false
+            }
+            None => {
+                self.entries.insert(entry.id.clone(), entry);
+                true
+            }
+        }
     }
 
-    pub fn remove(&mut self, id: &str) {
-        self.entries.remove(id);
+    pub fn remove(&mut self, id: &str) -> Option<NodeEntry> {
+        self.entries.remove(id)
     }
 
     pub fn all(&self) -> Vec<&NodeEntry> {
         self.entries.values().collect()
-    }
-
-    pub fn healthy(&self) -> Vec<&NodeEntry> {
-        self.entries.values().filter(|n| n.healthy).collect()
     }
 
     /// Current URL for a node, or `None` if it's no longer registered.
@@ -50,24 +53,27 @@ impl NodeRegistry {
         self.entries.get(id).map(|n| n.url.clone())
     }
 
-    pub fn record_success(&mut self, id: &str, uptime_secs: u64, version: &str) {
+    pub fn record_success(&mut self, id: &str, name: &str, uptime_secs: u64, version: &str) {
         if let Some(e) = self.entries.get_mut(id) {
             e.healthy = true;
             e.fail_count = 0;
             e.last_seen = Instant::now();
+            e.name = name.to_string();
             e.uptime_secs = uptime_secs;
             e.version = version.to_string();
         }
     }
 
-    /// Record a failed health check. Returns the new consecutive failure count.
-    pub fn record_failure(&mut self, id: &str) -> u32 {
-        if let Some(e) = self.entries.get_mut(id) {
-            e.healthy = false;
-            e.fail_count += 1;
-            e.fail_count
-        } else {
-            0
+    /// Record a failed health check. Returns the new consecutive failure count
+    /// and whether the entry is manual.
+    pub fn record_failure(&mut self, id: &str) -> (u32, bool) {
+        match self.entries.get_mut(id) {
+            Some(e) => {
+                e.healthy = false;
+                e.fail_count += 1;
+                (e.fail_count, e.manual)
+            }
+            None => (0, false),
         }
     }
 }

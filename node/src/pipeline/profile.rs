@@ -111,21 +111,6 @@ impl RecordingProfile {
 }
 
 impl RecordingProfile {
-    /// A sensible default for development: H.264 in a MOV container.
-    pub fn h264_mov(id: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            name: "H.264 MOV".into(),
-            video_codec: VideoCodec::H264,
-            container: Container::Mov,
-            resolution: None,
-            framerate: None,
-            bitrate_kbps: Some(8_000),
-            quality: None,
-            output_template: "/tmp/{source}_{datetime}.{ext}".into(),
-        }
-    }
-
     /// Build a profile from stored preset fields (codec/container are free-text
     /// in the DB). Unknown values fall back to sane defaults rather than failing.
     #[allow(clippy::too_many_arguments)]

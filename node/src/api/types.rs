@@ -13,7 +13,7 @@ pub struct NodeStatus {
     pub name: String,
     pub version: String,
     pub uptime_secs: u64,
-    pub mode: String,
+    pub is_controller: bool,
 }
 
 // ── Sources ───────────────────────────────────────────────────────────────────
@@ -127,15 +127,10 @@ pub struct RecordingSessionDto {
 #[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
 pub struct StartRecordingRequest {
     pub source_id: String,
-    pub preset_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
-pub struct PatchRecordingRequest {
-    /// Only valid value currently: "stop"
-    pub action: String,
+    /// Informational: the controller-side preset these outputs came from.
+    pub preset_id: Option<String>,
+    /// The output legs to record. Sent inline so nodes keep no preset store.
+    pub outputs: Vec<PresetOutputInput>,
 }
 
 // ── Presets ───────────────────────────────────────────────────────────────────
@@ -189,24 +184,6 @@ pub struct PresetDto {
 pub struct PresetCreateRequest {
     pub name: String,
     pub outputs: Vec<PresetOutputInput>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
-pub struct PresetCacheDto {
-    pub id: String,
-    pub name: String,
-    pub data: serde_json::Value,
-    pub version: i64,
-    pub synced_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
-pub struct PresetSyncRequest {
-    pub presets: Vec<PresetCacheDto>,
 }
 
 // ── WebSocket events ──────────────────────────────────────────────────────────
@@ -273,17 +250,83 @@ pub enum WsEvent {
         timestamp: String,
     },
     #[serde(rename = "node.online")]
-    NodeOnline { node_id: String },
+    NodeOnline { peer_id: String },
     #[serde(rename = "node.offline")]
-    NodeOffline { node_id: String },
+    NodeOffline { peer_id: String },
 }
 
-// ── Monitor settings ──────────────────────────────────────────────────────────
+// ── Settings ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
 pub struct MonitorSettingsDto {
     pub thumb_fps: i32,
     pub thumb_width: i32,
     pub thumb_height: i32,
     pub level_interval_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+pub struct NodeSettingsDto {
+    pub node_id: String,
+    pub node_name: String,
+    pub is_controller: bool,
+    pub monitor: MonitorSettingsDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+pub struct UpdateNodeSettingsRequest {
+    pub name: Option<String>,
+    pub monitor: Option<MonitorSettingsDto>,
+}
+
+// ── Storage ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+pub struct StorageVolumeDto {
+    pub name: String,
+    pub mount_point: String,
+    pub file_system: String,
+    pub total_bytes: u64,
+    pub available_bytes: u64,
+    pub removable: bool,
+}
+
+// ── Controller ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+pub struct NodeDto {
+    pub id: String,
+    pub name: String,
+    /// Empty for this instance.
+    pub url: String,
+    pub version: String,
+    pub healthy: bool,
+    pub uptime_secs: u64,
+    pub is_self: bool,
+    /// Whether this node was added by URL (persisted) rather than via mDNS.
+    pub manual: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+pub struct AddNodeRequest {
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+pub struct ControllerToggleRequest {
+    pub enabled: bool,
 }

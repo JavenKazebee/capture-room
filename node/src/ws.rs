@@ -8,7 +8,7 @@ use crate::api::types::WsEvent;
 /// Capacity of the broadcast channel.  Old messages are dropped when the
 /// channel is full and no receiver is fast enough.
 ///
-/// On an aggregator this single channel carries the local emitter's output
+/// On a controller this single channel carries the local emitter's output
 /// plus every relayed peer event. Peak rate ≈ (total sources × 1/s) +
 /// (active recordings × ~11/s). 1024 slots buys ~2s of burst tolerance at a
 /// few hundred events/sec; the ring holds one copy of each message regardless
@@ -19,12 +19,24 @@ pub fn channel() -> (broadcast::Sender<String>, broadcast::Receiver<String>) {
     broadcast::channel(CHANNEL_CAPACITY)
 }
 
-pub fn send(tx: &broadcast::Sender<String>, event: &WsEvent) {
-    match serde_json::to_string(event) {
-        Ok(json) => {
-            let _ = tx.send(json);
+/// Broadcast `event`, stamped with the `node_id` of the node it describes.
+/// Source and session ids inside events are always local to that node.
+pub fn send(tx: &broadcast::Sender<String>, node_id: &str, event: &WsEvent) {
+    if let Some(json) = encode(node_id, event) {
+        let _ = tx.send(json);
+    }
+}
+
+pub fn encode(node_id: &str, event: &WsEvent) -> Option<String> {
+    match serde_json::to_value(event) {
+        Ok(mut value) => {
+            value["node_id"] = node_id.into();
+            Some(value.to_string())
         }
-        Err(e) => warn!(error = %e, "failed to serialize WsEvent"),
+        Err(e) => {
+            warn!(error = %e, "failed to serialize WsEvent");
+            None
+        }
     }
 }
 

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { useSourcesStore, type Source } from '@/stores/sources'
+import { useSourcesStore } from '@/stores/sources'
 import { useRecordingsStore } from '@/stores/recordings'
 import { usePresetsStore } from '@/stores/presets'
+import { useNodesStore, type MonitorSettings } from '@/stores/nodes'
 import { wsStatus } from '@/composables/useWebSocket'
-import { useApi } from '@/composables/useApi'
+import { nodeApi } from '@/composables/useApi'
 import FeedCard from '@/components/FeedCard.vue'
 import { Button } from '@/components/ui/button'
 import {
@@ -19,16 +20,9 @@ import { WifiOff } from '@lucide/vue'
 const sources = useSourcesStore()
 const recordings = useRecordingsStore()
 const presets = usePresetsStore()
-const { api } = useApi()
+const nodes = useNodesStore()
 
-// ── Monitor settings ──────────────────────────────────────────────────────────
-
-interface MonitorSettings {
-  thumb_fps: number
-  thumb_width: number
-  thumb_height: number
-  level_interval_ms: number
-}
+// ── Monitor settings (applied to every reachable node) ───────────────────────
 
 const monitor = ref<MonitorSettings>({
   thumb_fps: 1,
@@ -70,17 +64,22 @@ async function saveMonitorSettings() {
   if (monitorSaving.value) return
   monitorSaving.value = true
   const size = thumbSizeOptions.find(o => thumbSizeKey(o.width, o.height) === thumbSizeValue.value)
+  const body = {
+    monitor: {
+      thumb_fps: Number(thumbFpsValue.value),
+      thumb_width: size?.width ?? monitor.value.thumb_width,
+      thumb_height: size?.height ?? monitor.value.thumb_height,
+      level_interval_ms: Number(levelIntervalValue.value),
+    },
+  }
   try {
-    const updated = await api<MonitorSettings>('/settings/monitor', {
-      method: 'PUT',
-      body: {
-        thumb_fps: Number(thumbFpsValue.value),
-        thumb_width: size?.width ?? monitor.value.thumb_width,
-        thumb_height: size?.height ?? monitor.value.thumb_height,
-        level_interval_ms: Number(levelIntervalValue.value),
-      },
-    })
-    monitor.value = updated
+    const results = await Promise.allSettled(
+      nodes.reachable.map((n) =>
+        nodeApi(n.id)<{ monitor: MonitorSettings }>('/settings', { method: 'PUT', body }),
+      ),
+    )
+    const first = results.find((r) => r.status === 'fulfilled')
+    if (first) monitor.value = first.value.monitor
   } finally {
     monitorSaving.value = false
   }
@@ -90,20 +89,10 @@ async function saveMonitorSettings() {
 
 onMounted(async () => {
   presets.load()
-  const [fetchedSources, fetchedRecordings, settings] = await Promise.all([
-    api('/sources').catch(() => []),
-    api('/recordings').catch(() => []),
-    api<{ monitor: MonitorSettings }>('/settings').catch(() => null),
-  ])
+  await nodes.load()
+  await Promise.all([sources.loadSources(), recordings.load()])
 
-  for (const s of fetchedSources as Source[]) {
-    sources.upsert(s)
-  }
-
-  for (const r of fetchedRecordings as Parameters<typeof recordings.upsert>[0][]) {
-    recordings.upsert(r)
-  }
-
+  const settings = nodes.self
   if (settings?.monitor) {
     monitor.value = settings.monitor
     thumbSizeValue.value = thumbSizeKey(settings.monitor.thumb_width, settings.monitor.thumb_height)
@@ -212,9 +201,9 @@ onMounted(async () => {
       >
         <FeedCard
           v-for="source in sources.sources"
-          :key="source.id"
+          :key="source.key"
           :source="source"
-          :session="recordings.activeForSource(source.id)"
+          :session="recordings.activeForSource(source.node_id, source.id)"
         />
       </div>
     </div>

@@ -1,14 +1,11 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { useApi } from '@/composables/useApi'
 import { usePresetsStore, blankLeg, type Preset, type OutputLegInput } from '@/stores/presets'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 
-const { api } = useApi()
 const store = usePresetsStore()
 
-const isAggregator = ref(false)
 const editingId = ref<string | null>(null)
 const showForm = ref(false)
 const saving = ref(false)
@@ -108,30 +105,22 @@ async function destroy(p: Preset) {
   }
 }
 
-onMounted(async () => {
-  const settings = await api<{ role: string }>('/settings').catch(() => null)
-  isAggregator.value = settings?.role === 'aggregator'
-  await store.load()
-})
+onMounted(() => store.load())
 </script>
 
 <template>
   <div class="p-6 max-w-4xl">
     <div class="flex items-center justify-between mb-6">
       <h1 class="text-2xl font-semibold">Presets</h1>
-      <Button v-if="isAggregator" size="default" @click="openCreate">New preset</Button>
+      <Button size="default" @click="openCreate">New preset</Button>
     </div>
-
-    <p v-if="!isAggregator" class="text-sm text-muted-foreground mb-4">
-      Presets are managed on the control station. This machine shows the synced set read-only.
-    </p>
 
     <!-- Empty state -->
     <div
       v-if="store.presets.length === 0"
       class="text-center text-muted-foreground py-16 rounded-lg border border-dashed border-border"
     >
-      No presets yet.<span v-if="isAggregator"> Create one to configure recording output.</span>
+      No presets yet. Create one to configure recording output.
     </div>
 
     <!-- Preset list -->
@@ -157,7 +146,7 @@ onMounted(async () => {
               No output legs configured.
             </p>
           </div>
-          <div v-if="isAggregator" class="flex gap-2 shrink-0">
+          <div class="flex gap-2 shrink-0">
             <Button variant="outline" size="default" @click="openEdit(p)">Edit</Button>
             <Button variant="destructive" size="default" @click="destroy(p)">Delete</Button>
           </div>

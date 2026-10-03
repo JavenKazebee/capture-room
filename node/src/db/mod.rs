@@ -286,45 +286,42 @@ pub async fn preset_outputs_replace(
     Ok(())
 }
 
-// ── presets_cache ─────────────────────────────────────────────────────────────
+// ── nodes (manual registrations on a controller) ─────────────────────────────
 
-#[derive(Debug, FromRow)]
-pub struct PresetCacheRow {
+#[derive(Debug, Clone, FromRow)]
+pub struct NodeRow {
     pub id: String,
     pub name: String,
-    pub data: String,
-    pub version: i64,
-    pub synced_at: String,
+    pub url: String,
+    pub added_at: String,
 }
 
-pub async fn presets_cache_list(pool: &SqlitePool) -> Result<Vec<PresetCacheRow>> {
-    let rows = sqlx::query_as::<_, PresetCacheRow>(
-        "SELECT id, name, data, version, synced_at FROM presets_cache ORDER BY name",
-    )
-    .fetch_all(pool)
-    .await?;
+pub async fn nodes_list(pool: &SqlitePool) -> Result<Vec<NodeRow>> {
+    let rows = sqlx::query_as::<_, NodeRow>("SELECT id, name, url, added_at FROM nodes")
+        .fetch_all(pool)
+        .await?;
     Ok(rows)
 }
 
-pub async fn presets_replace(pool: &SqlitePool, presets: &[PresetCacheRow]) -> Result<()> {
-    let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM presets_cache")
-        .execute(&mut *tx)
+pub async fn node_upsert(pool: &SqlitePool, row: &NodeRow) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO nodes (id, name, url, added_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, url = excluded.url",
+    )
+    .bind(&row.id)
+    .bind(&row.name)
+    .bind(&row.url)
+    .bind(&row.added_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn node_delete(pool: &SqlitePool, id: &str) -> Result<()> {
+    sqlx::query("DELETE FROM nodes WHERE id = ?")
+        .bind(id)
+        .execute(pool)
         .await?;
-    for p in presets {
-        sqlx::query(
-            "INSERT INTO presets_cache (id, name, data, version, synced_at)
-             VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(&p.id)
-        .bind(&p.name)
-        .bind(&p.data)
-        .bind(p.version)
-        .bind(&p.synced_at)
-        .execute(&mut *tx)
-        .await?;
-    }
-    tx.commit().await?;
     Ok(())
 }
 
