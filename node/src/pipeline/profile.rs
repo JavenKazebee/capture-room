@@ -1,4 +1,59 @@
+use std::path::PathBuf;
+
 use crate::api::types::{ChromaSubsampling, Container, PresetOutputInput, VideoCodec};
+
+/// Values for the per-recording tokens of a path template.
+pub struct PathVars {
+    pub source: String,
+    pub node: String,
+    pub date: String,
+    pub datetime: String,
+}
+
+/// Build every leg's profile and output path, rejecting a format that doesn't
+/// parse or two legs that would write the same file.
+///
+/// With `vars` as `None` the per-recording tokens are left unexpanded, so the
+/// check covers every future recording — what a preset save wants. `{output}`
+/// and `{ext}` come from the leg itself; a leading `~` is this node's home.
+pub fn plan_legs(
+    outputs: &[PresetOutputInput],
+    vars: Option<&PathVars>,
+) -> Result<Vec<(PathBuf, RecordingProfile)>, &'static str> {
+    let mut legs: Vec<(PathBuf, RecordingProfile)> = Vec::with_capacity(outputs.len());
+    for o in outputs {
+        let profile = RecordingProfile::from_output(o)?;
+        let mut path = o.path_template.replace("{output}", &o.name).replace("{ext}", profile.file_extension());
+        if let Some(v) = vars {
+            path = path
+                .replace("{source}", &v.source)
+                .replace("{node}", &v.node)
+                .replace("{date}", &v.date)
+                .replace("{datetime}", &v.datetime);
+        }
+        let path = expand_home(&path);
+        if legs.iter().any(|(p, _)| *p == path) {
+            return Err("two outputs would write the same file; give each its own path template, \
+                        container, or {output} name");
+        }
+        legs.push((path, profile));
+    }
+    Ok(legs)
+}
+
+/// `~` or `~/…` → this node's home directory. Paths are resolved on the node,
+/// so the UI can't know it.
+fn expand_home(path: &str) -> PathBuf {
+    let rest = match path.strip_prefix('~') {
+        Some("") => "",
+        Some(rest) if rest.starts_with('/') => rest.trim_start_matches('/'),
+        _ => return PathBuf::from(path),
+    };
+    match std::env::home_dir() {
+        Some(home) => home.join(rest),
+        None => PathBuf::from(path),
+    }
+}
 
 /// Configures a single recording output leg.
 #[derive(Debug, Clone)]
@@ -161,6 +216,38 @@ mod tests {
         assert_eq!(parse_framerate("30000/1001"), Some((30000, 1001)));
         assert_eq!(parse_framerate("29.97"), None);
         assert_eq!(parse_framerate("30/0"), None);
+    }
+
+    fn leg(name: &str, container: Container, template: &str) -> PresetOutputInput {
+        PresetOutputInput {
+            name: name.into(),
+            codec: VideoCodec::H264,
+            container,
+            resolution: None,
+            framerate: None,
+            bitrate_kbps: None,
+            chroma: ChromaSubsampling::Yuv420,
+            path_template: template.into(),
+        }
+    }
+
+    #[test]
+    fn rejects_colliding_paths() {
+        let t = "/rec/{source}_{datetime}.{ext}";
+        assert!(plan_legs(&[leg("a", Container::Mov, t), leg("b", Container::Mov, t)], None).is_err());
+        // Different extensions or output names keep them apart.
+        assert!(plan_legs(&[leg("a", Container::Mov, t), leg("b", Container::Mkv, t)], None).is_ok());
+        let named = "/rec/{source}_{output}.{ext}";
+        assert!(plan_legs(&[leg("a", Container::Mov, named), leg("b", Container::Mov, named)], None).is_ok());
+    }
+
+    #[test]
+    fn expands_tokens_and_home() {
+        let vars = PathVars { source: "cam1".into(), node: "n".into(), date: "d".into(), datetime: "dt".into() };
+        let legs = plan_legs(&[leg("a", Container::Mp4, "~/rec/{source}_{datetime}.{ext}")], Some(&vars)).unwrap();
+        assert_eq!(legs[0].0, std::env::home_dir().unwrap().join("rec/cam1_dt.mp4"));
+        assert_eq!(expand_home("/abs/~x"), PathBuf::from("/abs/~x"));
+        assert_eq!(expand_home("~user/x"), PathBuf::from("~user/x"));
     }
 
     #[test]

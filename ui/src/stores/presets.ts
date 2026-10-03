@@ -14,7 +14,8 @@ export function blankLeg(): PresetOutputInput {
     framerate: null,
     bitrate_kbps: 8000,
     chroma: '420',
-    path_template: '/tmp/capture-room/{source}_{datetime}.{ext}',
+    // `~` is the recording node's home directory, expanded on the node.
+    path_template: '~/capture-room/{date}/{source}_{datetime}.{ext}',
   }
 }
 

@@ -23,7 +23,7 @@ use crate::api::types::{
     StorageVolumeDto, TestSourceConfigDto, TestSourceRequest, UpdateNodeSettingsRequest, WsEvent,
 };
 use crate::db;
-use crate::pipeline::profile::RecordingProfile;
+use crate::pipeline::profile::{plan_legs, PathVars, RecordingProfile};
 use crate::session;
 use crate::sources::manager::{SourceManager, StopOutcome, StopResult};
 use crate::sources::InputSource;
@@ -335,23 +335,11 @@ async fn rescan_after(state: &Arc<AppState>, change: &str) {
 /// Build `(resolved_path, RecordingProfile)` for every requested output leg.
 fn build_legs(state: &AppState, req: &StartRecordingRequest) -> ApiResult<Vec<(PathBuf, RecordingProfile)>> {
     let now = chrono::Local::now();
-    let date = now.format("%Y-%m-%d").to_string();
-    let datetime = now.format("%Y%m%d_%H%M%S").to_string();
-    let node = state.node_name();
-
-    req.outputs
-        .iter()
-        .map(|o| {
-            let profile = RecordingProfile::from_output(o).map_err(ApiError::BadRequest)?;
-            let path = o
-                .path_template
-                .replace("{source}", &req.source_id)
-                .replace("{node}", &node)
-                .replace("{date}", &date)
-                .replace("{datetime}", &datetime)
-                .replace("{output}", &o.name)
-                .replace("{ext}", profile.file_extension());
-            Ok((PathBuf::from(path), profile))
-        })
-        .collect()
+    let vars = PathVars {
+        source: req.source_id.clone(),
+        node: state.node_name(),
+        date: now.format("%Y-%m-%d").to_string(),
+        datetime: now.format("%Y%m%d_%H%M%S").to_string(),
+    };
+    plan_legs(&req.outputs, Some(&vars)).map_err(ApiError::BadRequest)
 }

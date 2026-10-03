@@ -11,7 +11,6 @@ use axum::{
     Router,
 };
 use rust_embed::RustEmbed;
-use tower_http::cors::CorsLayer;
 
 use crate::state::AppState;
 
@@ -21,12 +20,14 @@ pub fn node_router(state: Arc<AppState>) -> Router {
     node::router().with_state(state)
 }
 
+/// No CORS layer: the UI is served from this origin (or proxied by Vite in
+/// development), and allowing other origins would let any page the operator
+/// has open start recordings or add nodes.
 pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .nest("/api/v1/node", node::router())
         .merge(crate::controller::api::router())
         .fallback(serve_ui)
-        .layer(CorsLayer::permissive())
         .with_state(state)
 }
 

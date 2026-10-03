@@ -251,7 +251,7 @@ onMounted(() => store.load())
             <FormField class="col-span-2">
               <template #label>
                 Path template
-                <span class="text-muted-foreground/60 ml-1">{source} {datetime} {ext}</span>
+                <span class="text-muted-foreground/60 ml-1">~ {source} {node} {date} {datetime} {output} {ext}</span>
               </template>
               <Input v-model="leg.path_template" class="font-mono" />
             </FormField>

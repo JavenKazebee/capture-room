@@ -30,6 +30,12 @@ const presetOptions = computed(() => [
 
 const selectedPreset = ref('default')
 
+// A deleted preset falls back to the default visibly, rather than Record
+// quietly using the default while the old name is still shown.
+watch(presetOptions, (opts) => {
+  if (!opts.some((o) => o.value === selectedPreset.value)) selectedPreset.value = 'default'
+})
+
 // ── Thumbnail ─────────────────────────────────────────────────────────────────
 
 // Bumped by every `thumbnail.updated` event, which only monitored sources get

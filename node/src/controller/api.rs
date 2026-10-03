@@ -19,7 +19,7 @@ use crate::api::types::{
     PresetOutputInput,
 };
 use crate::db;
-use crate::pipeline::profile::RecordingProfile;
+use crate::pipeline::profile::plan_legs;
 use crate::state::AppState;
 use crate::ws;
 
@@ -163,19 +163,16 @@ async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<String
 /// Store blank resolution/framerate as `None` ("match the source"), and reject
 /// outputs a recording couldn't start with — at save time rather than when
 /// someone presses Record.
-fn validate_outputs(outputs: Vec<PresetOutputInput>) -> ApiResult<Vec<PresetOutputInput>> {
+fn validate_outputs(mut outputs: Vec<PresetOutputInput>) -> ApiResult<Vec<PresetOutputInput>> {
     fn blank_to_none(v: Option<String>) -> Option<String> {
         v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     }
-    outputs
-        .into_iter()
-        .map(|mut output| {
-            output.resolution = blank_to_none(output.resolution);
-            output.framerate = blank_to_none(output.framerate);
-            RecordingProfile::from_output(&output).map_err(ApiError::BadRequest)?;
-            Ok(output)
-        })
-        .collect()
+    for output in &mut outputs {
+        output.resolution = blank_to_none(output.resolution.take());
+        output.framerate = blank_to_none(output.framerate.take());
+    }
+    plan_legs(&outputs, None).map_err(ApiError::BadRequest)?;
+    Ok(outputs)
 }
 
 fn output_dtos(preset_id: &str, outputs: Vec<PresetOutputInput>) -> Vec<PresetOutputDto> {

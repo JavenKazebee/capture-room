@@ -294,22 +294,27 @@ A single WebSocket connection (`/ws`) feeds all reactive UI state via Pinia stor
 
 | Token | Value |
 |-------|-------|
+| `~` | Leading only: the recording node's home directory |
 | `{date}` | `YYYY-MM-DD` |
 | `{node}` | Node name |
-| `{source}` | Source name |
+| `{source}` | Source id |
 | `{datetime}` | `YYYYMMDD_HHMMSS` |
-| `{preset}` | Preset name |
+| `{output}` | Output leg name |
 | `{ext}` | Container file extension |
 
-Default template:
+Default template (the built-in default output, and new legs in the preset editor):
 ```
-/media/recordings/{date}/{node}/{source}_{datetime}_{preset}.{ext}
+~/capture-room/{date}/{source}_{datetime}.{ext}
 ```
 
-Example:
+Templates are resolved on the node (`profile::plan_legs`). Two legs of one
+preset that would resolve to the same file are rejected when the preset is
+saved, and again when recording starts.
+
+Example (`/media/recordings/{date}/{node}/{source}_{datetime}_{output}.{ext}`):
 ```
-/media/recordings/2026-06-21/node-01/cam3_20260621_143022_prores_hq.mov
-/media/recordings/2026-06-21/node-01/cam3_20260621_143022_h264_proxy.mp4
+/media/recordings/2026-06-21/node-01/cam3_20260621_143022_master.mov
+/media/recordings/2026-06-21/node-01/cam3_20260621_143022_proxy.mp4
 ```
 
 ---
