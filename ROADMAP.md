@@ -137,8 +137,9 @@ Not started (the empty `benchmark/` stub was removed).
 
 ## 6. UI overhaul / dark mode
 
-Staying on shadcn-vue (reka-ui, Tailwind v4), plus `@tanstack/vue-table` for dense
-tables and `vue-sonner` for toasts.
+Staying on shadcn-vue (reka-ui, Tailwind v4), plus `vue-sonner` for toasts. Tables use a
+small in-house `DataTable` (sort, filter, column visibility, grouping) rather than
+TanStack Table, whose v9 API is brand new and more than these tables need.
 
 - **Design system** (done): dark-first OKLCH tokens in `ui/src/style.css`, light kept
   in step, on slightly blue-gray tinted surfaces. `--primary` is sky-cyan (actions,
@@ -157,12 +158,13 @@ tables and `vue-sonner` for toasts.
   Settings behind a labeled side list). **Replay** and **Playback** join when the
   backend supports them — not before. ⌘K palette and toasts throughout.
 - **Shared patterns** (done): `PageHeader`, `ConfirmDialog`, `EditSheet` (replaces
-  `FormModal`), `StatusDot`, `TallyBadge`, `KeyValueList`, `CopyButton`; `DataTable`
-  lands with Sources.
+  `FormModal`), `StatusDot`, `TallyBadge`, `KeyValueList`, `CopyButton`, `DataTable` +
+  `ColumnsMenu`.
 - **Views, one per pass:** ✅ Record workspace (filters, overlay toggles, tile size,
   Ctrl/Shift multi-select with bulk Record/Stop behind a confirm, per-feed preset
   remembered per browser, resizable inspector with outputs, session and history) →
-  Sources (DataTable) → Presets
+  ✅ Sources (DataTable grouped by node, column chooser, status incl. recording, edit in a
+  side sheet, confirmed delete, scan results as a toast, jump to Record) → Presets
   (master-detail editor, path-template preview) → Nodes (cards, room for capacity
   panel) → Settings (appearance, monitoring).
 - Recordings, Schedules and Logs views are kept out of the nav until they exist.

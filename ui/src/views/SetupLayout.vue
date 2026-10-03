@@ -5,7 +5,7 @@ import { setupPages } from '@/components/app/workspaces'
 
 <template>
   <div class="h-full flex min-h-0">
-    <nav class="w-48 shrink-0 border-r border-border bg-sidebar p-2 space-y-0.5 overflow-y-auto">
+    <nav class="w-44 shrink-0 border-r border-border bg-sidebar p-2 space-y-0.5 overflow-y-auto">
       <RouterLink
         v-for="p in setupPages"
         :key="p.to"

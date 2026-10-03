@@ -1,25 +1,79 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { toast } from 'vue-sonner'
+import { Pencil, Radio, Trash2 } from '@lucide/vue'
 import { useSourcesStore, type Source } from '@/stores/sources'
-import { errorMessage } from '@/composables/useApi'
-import type { TestSourceRequest } from '@/types/generated/TestSourceRequest'
 import { useNodesStore } from '@/stores/nodes'
+import { useRecordingsStore } from '@/stores/recordings'
+import { useRecordDeskStore } from '@/stores/recordDesk'
+import { notifyError } from '@/lib/notify'
+import { errorMessage } from '@/composables/useApi'
+import { fpsLabel, resolutionLabel } from '@/lib/sourceFormat'
+import type { TestSourceRequest } from '@/types/generated/TestSourceRequest'
+import type { AudioTestSignal } from '@/types/generated/AudioTestSignal'
+import type { VideoTestPattern } from '@/types/generated/VideoTestPattern'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import FormField from '@/components/FormField.vue'
-import FormModal from '@/components/FormModal.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
-import type { AudioTestSignal } from '@/types/generated/AudioTestSignal'
-import type { VideoTestPattern } from '@/types/generated/VideoTestPattern'
+import PageHeader from '@/components/common/PageHeader.vue'
+import DataTable from '@/components/common/DataTable.vue'
+import ColumnsMenu from '@/components/common/ColumnsMenu.vue'
+import type { Column } from '@/components/common/dataTable'
+import EditSheet from '@/components/common/EditSheet.vue'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import CopyButton from '@/components/common/CopyButton.vue'
+import StatusDot from '@/components/common/StatusDot.vue'
+import { useStorage } from '@vueuse/core'
 
 const store = useSourcesStore()
 const nodesStore = useNodesStore()
+const recordings = useRecordingsStore()
+const desk = useRecordDeskStore()
+const router = useRouter()
 const nodes = computed(() => nodesStore.reachable)
 
 const loading = ref(false)
 const scanning = ref(false)
-const error = ref<string | null>(null)
+const filter = ref('')
+const groupByNode = useStorage('cr.sources.groupByNode', true)
+
+// ── Table ─────────────────────────────────────────────────────────────────────
+
+type Status = { key: 'live' | 'failed' | 'ok' | 'off'; label: string; dot: 'tally' | 'error' | 'ok' | 'off' }
+
+function status(s: Source): Status {
+  if (recordings.activeForSource(s.node_id, s.id)) return { key: 'live', label: 'Recording', dot: 'tally' }
+  if (s.error) return { key: 'failed', label: 'Failed', dot: 'error' }
+  if (s.connected) return { key: 'ok', label: 'Connected', dot: 'ok' }
+  return { key: 'off', label: 'Not connected', dot: 'off' }
+}
+
+const STATUS_ORDER = { live: 0, failed: 1, ok: 2, off: 3 }
+
+const columns: Column<Source>[] = [
+  { id: 'status', label: 'Status', value: (s) => STATUS_ORDER[status(s).key], class: 'w-px' },
+  { id: 'name', label: 'Name', value: (s) => s.display_name, alwaysVisible: true, class: 'min-w-40' },
+  { id: 'type', label: 'Type', value: (s) => s.source_type, class: 'w-px' },
+  { id: 'node', label: 'Node', value: (s) => nodesStore.nameOf(s.node_id), hiddenByDefault: true },
+  { id: 'resolution', label: 'Resolution', value: (s) => (s.capabilities ? s.capabilities.max_width * s.capabilities.max_height : null), class: 'num whitespace-nowrap' },
+  { id: 'fps', label: 'FPS', value: (s) => (s.capabilities ? s.capabilities.max_framerate[0] / s.capabilities.max_framerate[1] : null), class: 'num whitespace-nowrap' },
+  { id: 'audio', label: 'Audio', value: (s) => s.capabilities?.audio_channels ?? null, class: 'num whitespace-nowrap' },
+  { id: 'timecode', label: 'Timecode', value: (s) => s.timecode, hiddenByDefault: true, class: 'num whitespace-nowrap' },
+  { id: 'id', label: 'ID', value: (s) => s.id, class: 'num' },
+  { id: 'actions', label: '', alwaysVisible: true, align: 'right', class: 'w-px whitespace-nowrap' },
+]
+
+const grouped = computed(() => groupByNode.value && nodesStore.nodes.length > 1)
+
+function openInRecord(s: Source) {
+  desk.select(s.key)
+  router.push('/record')
+}
 
 // ── Test source form ──────────────────────────────────────────────────────────
 
@@ -121,8 +175,8 @@ async function openEdit(src: Source) {
   let cfg
   try {
     cfg = (await store.testConfigs(src.node_id)).find((c) => c.id === src.id)
-  } catch {
-    error.value = 'Could not load test source config from node.'
+  } catch (e) {
+    notifyError('Could not load test source config from node', e, src.node_id)
     return
   }
   if (!cfg) return
@@ -131,10 +185,6 @@ async function openEdit(src: Source) {
   const { id: _id, created_at: _created, ...config } = cfg
   Object.assign(form, config)
   showForm.value = true
-}
-
-function closeForm() {
-  showForm.value = false
 }
 
 async function save() {
@@ -148,8 +198,10 @@ async function save() {
   try {
     if (editingId.value) {
       await store.updateTestSource(formNodeId.value, editingId.value, { ...form })
+      toast.success(`Saved ${form.name}`)
     } else {
       await store.createTestSource(formNodeId.value, { ...form })
+      toast.success(`Added ${form.name}`)
     }
     showForm.value = false
   } catch (e) {
@@ -159,11 +211,16 @@ async function save() {
   }
 }
 
+// ── Delete ────────────────────────────────────────────────────────────────────
+
+const deleting = ref<Source | null>(null)
+
 async function destroy(src: Source) {
   try {
     await store.deleteTestSource(src.node_id, src.id)
+    toast.success(`Deleted ${src.display_name}`)
   } catch (e) {
-    error.value = errorMessage(e, 'Delete failed.')
+    notifyError(`Delete failed: ${src.display_name}`, e, src.node_id)
   }
 }
 
@@ -171,32 +228,22 @@ async function destroy(src: Source) {
 
 async function scan() {
   scanning.value = true
-  error.value = null
+  const before = new Set(store.sources.map((s) => s.key))
   try {
     await store.scanAll()
+    const added = store.sources.filter((s) => !before.has(s.key)).length
+    toast.success(`Scan complete — ${store.sources.length} sources`, {
+      description: added ? `${added} new` : 'No new sources found',
+    })
   } catch (e) {
-    error.value = errorMessage(e, 'Scan failed.')
+    notifyError('Scan failed', e)
   } finally {
     scanning.value = false
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function fpsLabel(n: number, d: number) {
-  return d === 1 ? `${n} fps` : `${(n / d).toFixed(3)} fps`
-}
-
-const sourcesByNode = computed(() => {
-  const map = new Map<string, Source[]>()
-  for (const s of store.sources) {
-    if (!map.has(s.node_id)) map.set(s.node_id, [])
-    map.get(s.node_id)!.push(s)
-  }
-  return map
-})
-
 onMounted(async () => {
+  if (store.sources.length) return
   loading.value = true
   try {
     await nodesStore.load()
@@ -205,131 +252,161 @@ onMounted(async () => {
     loading.value = false
   }
 })
-import PageHeader from '@/components/common/PageHeader.vue'
 </script>
 
 <template>
   <PageHeader title="Sources" :count="store.sources.length">
-    <Button variant="outline" size="default" :disabled="scanning" @click="scan">
+    <Input v-model="filter" placeholder="Filter…" class="h-7 w-44 text-xs" />
+    <label v-if="nodesStore.nodes.length > 1" class="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <Switch v-model="groupByNode" /> Group by node
+    </label>
+    <ColumnsMenu table-id="sources" :columns="columns" />
+    <div class="w-px h-5 bg-border mx-1" />
+    <Button variant="outline" size="sm" class="h-7 text-xs" :disabled="scanning" @click="scan">
       {{ scanning ? 'Scanning…' : 'Scan' }}
     </Button>
-    <Button size="default" @click="openCreate">Add test source</Button>
+    <Button size="sm" class="h-7 text-xs" @click="openCreate">Add test source</Button>
   </PageHeader>
-  <div class="p-4 max-w-5xl">
 
-    <p v-if="error" class="text-sm text-destructive mb-4">{{ error }}</p>
-
-    <div v-if="loading" class="text-center text-muted-foreground py-16">Loading sources…</div>
-
-    <div
-      v-else-if="store.sources.length === 0"
-      class="text-center text-muted-foreground py-16 rounded-lg border border-dashed border-border"
+  <div class="p-4">
+    <DataTable
+      table-id="sources"
+      :columns="columns"
+      :rows="store.sources"
+      :row-key="(s) => s.key"
+      :filter="filter"
+      :group-by="grouped ? (s) => s.node_id : null"
+      :group-label="(id) => nodesStore.labelOf(id)"
     >
-      No sources found. Click <strong>Scan</strong> to discover sources.
-    </div>
-
-    <!-- Source list, grouped by node -->
-    <div v-else class="space-y-6">
-      <div v-for="[nodeId, nodeSources] in sourcesByNode" :key="nodeId">
-        <h2
-          v-if="sourcesByNode.size > 1"
-          class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2"
-        >
-          {{ nodesStore.labelOf(nodeId) }}
-        </h2>
-
-        <div class="rounded-lg border border-border bg-card divide-y divide-border">
-          <div v-for="src in nodeSources" :key="src.key" class="p-4">
-            <div class="flex items-start gap-4">
-              <div class="flex-1 min-w-0">
-                <div class="flex items-center gap-2 mb-1">
-                  <span class="font-medium text-sm truncate">{{ src.display_name }}</span>
-                  <Badge variant="secondary" class="shrink-0">{{ src.source_type }}</Badge>
-                </div>
-                <div class="text-xs text-muted-foreground flex flex-wrap gap-x-3 gap-y-0.5">
-                  <template v-if="src.capabilities">
-                    <span>{{ src.capabilities.max_width }}×{{ src.capabilities.max_height }}</span>
-                    <span>{{ fpsLabel(src.capabilities.max_framerate[0], src.capabilities.max_framerate[1]) }}</span>
-                    <span>{{ src.capabilities.audio_channels }}ch audio</span>
-                  </template>
-                  <span v-else>format negotiated when connected</span>
-                  <span class="font-mono opacity-60">{{ src.id }}</span>
-                </div>
-              </div>
-
-              <!-- Edit / Delete for all test sources -->
-              <div v-if="src.source_type === 'test'" class="flex gap-2 shrink-0">
-                <Button variant="outline" size="default" @click="openEdit(src)">
-                  Edit
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="default"
-                  @click="destroy(src)"
-                >
-                  Delete
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Test source form modal -->
-    <FormModal
-      v-if="showForm"
-      :title="editingId ? 'Edit test source' : 'New test source'"
-      :error="formError"
-      :saving="saving"
-      @close="closeForm"
-      @save="save"
-    >
-      <div class="grid grid-cols-2 gap-3">
-        <!-- Node selector — only for new sources when multiple nodes exist -->
-        <FormField v-if="!editingId && nodes.length > 1" label="Node" class="col-span-2">
-          <OptionSelect v-model="formNodeId" :options="nodeOptions" />
-        </FormField>
-
-        <FormField label="Name" class="col-span-2">
-          <Input v-model="form.name" placeholder="e.g. Camera 1 Sim" />
-        </FormField>
-
-        <FormField label="Video pattern" class="col-span-2">
-          <OptionSelect v-model="form.pattern" :options="VIDEO_PATTERNS" />
-        </FormField>
-
-        <FormField label="Resolution">
-          <OptionSelect v-model="resolutionKey" :options="RESOLUTION_OPTIONS" />
-        </FormField>
-
-        <FormField label="Framerate">
-          <OptionSelect v-model="framerateKey" :options="FRAMERATE_OPTIONS" />
-        </FormField>
-
-        <FormField label="Audio signal">
-          <OptionSelect v-model="form.audio_signal" :options="AUDIO_SIGNALS" />
-        </FormField>
-
-        <FormField>
-          <template #label>
-            Frequency (Hz)
-            <span v-if="form.audio_signal !== 'tone'" class="opacity-40">— n/a</span>
+      <template #cell-status="{ row }">
+        <span class="flex items-center gap-1.5 whitespace-nowrap" :class="status(row).key === 'live' && 'text-tally font-medium'">
+          <StatusDot :status="status(row).dot" /> {{ status(row).label }}
+        </span>
+      </template>
+      <template #cell-name="{ row }">
+        <div class="font-medium text-sm">{{ row.display_name }}</div>
+        <div v-if="row.error" class="text-destructive break-words">{{ row.error }}</div>
+      </template>
+      <template #cell-type="{ row }">
+        <Badge variant="secondary" class="uppercase">{{ row.source_type }}</Badge>
+      </template>
+      <template #cell-node="{ row }">{{ nodesStore.labelOf(row.node_id) }}</template>
+      <template #cell-resolution="{ row }">
+        <template v-if="row.capabilities">{{ resolutionLabel(row.capabilities) }}</template>
+        <span v-else class="text-muted-foreground font-sans" title="NDI sources negotiate their format when connected">on connect</span>
+      </template>
+      <template #cell-fps="{ row }">{{ row.capabilities ? fpsLabel(row.capabilities.max_framerate) : '—' }}</template>
+      <template #cell-audio="{ row }">{{ row.capabilities ? `${row.capabilities.audio_channels} ch` : '—' }}</template>
+      <template #cell-timecode="{ row }">{{ row.timecode ?? '—' }}</template>
+      <template #cell-id="{ row }">
+        <span class="flex items-center gap-1 text-muted-foreground">
+          <span class="truncate max-w-28" :title="row.id">{{ row.id }}</span>
+          <CopyButton :value="row.id" />
+        </span>
+      </template>
+      <template #cell-actions="{ row }">
+        <div class="flex justify-end gap-0.5">
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <button class="row-btn" @click="openInRecord(row)"><Radio class="size-3.5" /></button>
+            </TooltipTrigger>
+            <TooltipContent>Open in Record</TooltipContent>
+          </Tooltip>
+          <template v-if="row.source_type === 'test'">
+            <Tooltip>
+              <TooltipTrigger as-child>
+                <button class="row-btn" @click="openEdit(row)"><Pencil class="size-3.5" /></button>
+              </TooltipTrigger>
+              <TooltipContent>Edit test source</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger as-child>
+                <button class="row-btn hover:text-destructive! hover:bg-destructive/10!" @click="deleting = row"><Trash2 class="size-3.5" /></button>
+              </TooltipTrigger>
+              <TooltipContent>Delete test source</TooltipContent>
+            </Tooltip>
           </template>
-          <Input
-            v-model.number="form.frequency"
-            type="number"
-            :disabled="form.audio_signal !== 'tone'"
-            placeholder="440"
-            min="20"
-            max="20000"
-          />
-        </FormField>
-
-        <FormField label="Audio channels">
-          <OptionSelect v-model="form.channels" :options="CHANNEL_OPTIONS" />
-        </FormField>
-      </div>
-    </FormModal>
+        </div>
+      </template>
+      <template #empty>
+        <template v-if="loading">Loading sources…</template>
+        <template v-else-if="filter">No sources match the filter.</template>
+        <template v-else>
+          No sources yet. <button class="text-primary hover:underline" @click="scan">Scan for NDI sources</button>
+          or <button class="text-primary hover:underline" @click="openCreate">add a test source</button>.
+        </template>
+      </template>
+    </DataTable>
   </div>
+
+  <ConfirmDialog
+    :open="!!deleting"
+    :title="`Delete ${deleting?.display_name}?`"
+    description="The test source is removed from its node. Recordings already made are kept."
+    @update:open="(v) => !v && (deleting = null)"
+    @confirm="deleting && destroy(deleting)"
+  />
+
+  <!-- Test source form -->
+  <EditSheet
+    v-if="showForm"
+    :title="editingId ? 'Edit test source' : 'New test source'"
+    description="A synthetic feed: a video pattern plus a test audio signal."
+    :error="formError"
+    :saving="saving"
+    @close="showForm = false"
+    @save="save"
+  >
+    <div class="grid grid-cols-2 gap-3">
+      <FormField v-if="!editingId && nodes.length > 1" label="Node" class="col-span-2">
+        <OptionSelect v-model="formNodeId" :options="nodeOptions" />
+      </FormField>
+
+      <FormField label="Name" class="col-span-2">
+        <Input v-model="form.name" placeholder="Camera 1 sim" />
+      </FormField>
+
+      <FormField label="Video pattern" class="col-span-2">
+        <OptionSelect v-model="form.pattern" :options="VIDEO_PATTERNS" />
+      </FormField>
+
+      <FormField label="Resolution">
+        <OptionSelect v-model="resolutionKey" :options="RESOLUTION_OPTIONS" />
+      </FormField>
+
+      <FormField label="Frame rate">
+        <OptionSelect v-model="framerateKey" :options="FRAMERATE_OPTIONS" />
+      </FormField>
+
+      <FormField label="Audio signal">
+        <OptionSelect v-model="form.audio_signal" :options="AUDIO_SIGNALS" />
+      </FormField>
+
+      <FormField>
+        <template #label>
+          Frequency (Hz)
+          <span v-if="form.audio_signal !== 'tone'" class="opacity-40">— n/a</span>
+        </template>
+        <Input
+          v-model.number="form.frequency"
+          type="number"
+          :disabled="form.audio_signal !== 'tone'"
+          placeholder="440"
+          min="20"
+          max="20000"
+        />
+      </FormField>
+
+      <FormField label="Audio channels">
+        <OptionSelect v-model="form.channels" :options="CHANNEL_OPTIONS" />
+      </FormField>
+    </div>
+  </EditSheet>
 </template>
+
+<style scoped>
+@reference "@/style.css";
+.row-btn {
+  @apply size-7 grid place-items-center rounded text-muted-foreground hover:text-foreground hover:bg-accent;
+}
+</style>
