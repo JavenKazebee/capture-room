@@ -2,15 +2,7 @@
 import { onMounted } from 'vue'
 import { RouterLink, RouterView } from 'vue-router'
 import { startWebSocket } from '@/composables/useWebSocket'
-import {
-  LayoutDashboard,
-  Monitor,
-  Video,
-  Settings2,
-  Server,
-  CalendarClock,
-  ScrollText,
-} from '@lucide/vue'
+import { LayoutDashboard, Monitor, Settings2, Server } from '@lucide/vue'
 
 onMounted(() => {
   startWebSocket()
@@ -19,11 +11,8 @@ onMounted(() => {
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/sources', label: 'Sources', icon: Monitor },
-  { to: '/recordings', label: 'Recordings', icon: Video },
   { to: '/presets', label: 'Presets', icon: Settings2 },
   { to: '/nodes', label: 'Nodes', icon: Server },
-  { to: '/schedules', label: 'Schedules', icon: CalendarClock },
-  { to: '/logs', label: 'Logs', icon: ScrollText },
 ]
 </script>
 

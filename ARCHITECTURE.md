@@ -76,17 +76,17 @@ pub trait InputSource: Send + Sync {
     fn display_name(&self) -> &str;
     fn source_type(&self) -> SourceType;
     fn capabilities(&self) -> SourceCapabilities;
-    fn connect(&mut self) -> Result<()>;
-    fn disconnect(&mut self);
+    /// Identifies the config the bin was built from; a rescan rebuilds the
+    /// source (and restarts its monitor) only when this changes.
+    fn fingerprint(&self) -> String;
     fn gst_src_element(&self) -> gst::Element;
     fn timecode(&self) -> Option<Timecode>;
-    fn is_available(&self) -> bool;
 }
 ```
 
 Initial implementations:
 - `TestSource` — ✅ implemented — `videotestsrc` + `audiotestsrc`, the reference pattern for all sources (`gst::Bin` with `"video"` / `"audio"` ghost pads)
-- `NdiSource` — ⬜ in progress — built on the `gst-plugin-ndi` GStreamer elements (`ndisrc` + `ndisrcdemux`), not the raw NDI SDK FFI. Discovery via `ndi-device-monitor`. Follows the same bin/ghost-pad contract as `TestSource`.
+- `NdiSource` — ✅ implemented — built on the `gst-plugin-ndi` GStreamer elements (`ndisrc` + `ndisrcdemux`), not the raw NDI SDK FFI. Discovery via a persistent `GstDeviceMonitor`. Follows the same bin/ghost-pad contract as `TestSource`.
 - `DecklinkSource` — ⬜ deferred (no hardware) — Decklink SDK via FFI / `decklinkvideosrc`
 
 ---
@@ -103,7 +103,7 @@ Monitor pipeline (pipeline/monitor.rs)
 [InputSource gst src element]
     ├─► [vtee]
     │      ├─► [queue] → [videorate] → [caps fps] → [videoscale] → [caps res]
-    │      │             → [jpegenc] → ThumbnailStore → GET /api/v1/node/thumbnails/{id}
+    │      │             → [videoconvert] → [jpegenc] → ThumbnailStore → GET /api/v1/node/thumbnails/{id}
     │      └─► [queue] → [appsink] = video StreamProducer
     └─► [atee]
            ├─► [queue] → [audioconvert] → [level] → AudioMeter → WS audio.levels
@@ -137,19 +137,19 @@ now fails alone and its error is reported when the session stops.
 Legs with identical profiles currently each run their own encoder.
 
 Supported encoder targets:
-- **Ingest:** ProRes (4444, 422 HQ, 422, LT, Proxy), DNxHD/DNxHR, uncompressed
+- **Ingest:** ProRes (4444, 422 HQ, 422, LT, Proxy), uncompressed
 - **Delivery/proxy:** H.264, H.265/HEVC, VP9
 - **Containers:** MOV, MXF, MP4, MKV
 
-The redundant path writes the same profile as primary to a second filesystem path on the same machine.
+Codecs and containers are closed enums (`VideoCodec`, `Container` in `api/types.rs`), so the API rejects anything else and the UI's choices are generated from Rust. A redundant copy is just another leg with the same profile and a different path.
 
 ---
 
 ## Thumbnails
 
-The thumbnail branch of the GStreamer pipeline generates JPEG frames at a configurable rate (default **1 fps**) regardless of source framerate. Rate is set per recording preset and applies to the preview thumbnail only — it has no effect on encoded output.
+The monitor pipeline's thumbnail branch generates JPEG frames at a configurable rate (default **1 fps**, 1–10) regardless of source framerate. Rate and size are node-wide monitor settings (`PUT /api/v1/node/settings`, edited on the Dashboard), applied live without restarting pipelines, and have no effect on encoded output.
 
-The latest JPEG is held in memory and served from `GET /api/v1/thumbnails/{source_id}`. A `thumbnail.updated` WebSocket event is emitted each time a new frame is ready.
+The latest JPEG is held in memory and served from `GET /api/v1/node/thumbnails/{source_id}`. The periodic emitter sends `thumbnail.updated` at the configured rate and the UI re-fetches the image. The 10 fps ceiling comes from the emitter's 100 ms tick; a subscription WebSocket that pushes frames is planned (see ROADMAP.md).
 
 ---
 
@@ -217,12 +217,10 @@ All events are JSON with a `type` and the `node_id` they describe. `source_id` /
 
 | Event type | Payload |
 |------------|---------|
-| `source.available` / `source.lost` | source id, name |
 | `recording.started` / `recording.stopped` / `recording.error` | session id, source id |
-| `feed.status` | source id, timecode, duration (1 Hz) |
+| `feed.status` | source id, timecode (1 Hz) |
 | `audio.levels` | source id, channel peak/RMS values (~10fps) |
-| `thumbnail.updated` | source id, URL |
-| `log` | level, message, timestamp |
+| `thumbnail.updated` | source id (at the configured thumbnail fps) |
 | `node.online` / `node.offline` | `peer_id` (controller only) |
 
 The controller's relay subscribes to each peer's `/api/v1/node/ws` — local events only — so a peer that is itself a controller is never echoed, and two controllers can watch the same nodes without duplicates.
@@ -265,11 +263,13 @@ In production, the compiled UI is embedded into the Rust binary via `rust-embed`
 |------|-------------|
 | **Dashboard** | Feed grid — thumbnail, source name, timecode, recording state, audio meters, dropped frame indicator per source across all nodes |
 | **Sources** | Per-node source list, connect/disconnect, capabilities |
-| **Recordings** | Start/stop recordings, assign presets, view active sessions |
+| **Recordings** _(planned)_ | Session history, active sessions |
 | **Presets** | Create and edit recording presets |
-| **Nodes** | Add/remove nodes, view health, run benchmarks |
-| **Schedules** | Create, edit, and view upcoming scheduled recordings |
-| **Logs** | Aggregated log viewer with filter by node and level |
+| **Nodes** | Add/remove nodes, view health and storage (benchmarks planned) |
+| **Schedules** _(planned)_ | Create, edit, and view upcoming scheduled recordings |
+| **Logs** _(planned)_ | Aggregated log viewer with filter by node and level |
+
+Planned views stay out of the nav until they're built.
 
 ### Real-time State
 
@@ -402,7 +402,7 @@ capture-room/
 
 ## Build Order for v1
 
-Status legend: ✅ done · 🟡 partial · ⬜ not started · _(as of 2026-06-23)_
+Status legend: ✅ done · 🟡 partial · ⬜ not started · _(as of 2026-10-02)_
 
 1. ✅ **Monorepo scaffold** — workspace config, root scripts, `pnpm dev` wired up
 2. ✅ **UI scaffold** — shadcn-vue init, routing, empty views, Pinia stores, WebSocket composable
@@ -410,29 +410,25 @@ Status legend: ✅ done · 🟡 partial · ⬜ not started · _(as of 2026-06-23
 4. ✅ **Rust — GStreamer pipeline** — single source, single output, no tee
 5. ✅ **Rust — multi-output tee, thumbnail, audio metering**
 6. ✅ **Rust — node-mode REST + WebSocket API**, `ts-rs` type export
-   - _Note: `ts-rs` is wired but `ui/src/types/generated/` is currently empty — run `pnpm types` to populate._
 7. ✅ **UI — dashboard with live feed grid, manual recording controls** — `DashboardView.vue` built
 8. ✅ **Rust — controller mode** — node registry, health polling, unified API, UI serving
 9. 🟡 **UI — nodes view, preset management, schedules**
    - ✅ `NodesView.vue`, ✅ `PresetsView.vue`, ✅ `SourcesView.vue`
-   - ⬜ `RecordingsView`, `SchedulesView`, `LogsView` are still "coming soon" placeholders
+   - ⬜ Recordings, Schedules and Logs views — not started (kept out of the nav)
 10. ✅ **Rust — SourceManager + live source monitoring** (ROADMAP step 2)
     - `MonitorPipeline` (`pipeline/monitor.rs`): always-on vtee/atee → thumbnail + audio meter + StreamProducers; each recording leg is its own pipeline (`pipeline/recording.rs`)
     - `SourceManager` (`sources/manager.rs`): owns per-source pipelines and recording sessions behind a single `RwLock`
     - Live settings reconfiguration via `MonitorPipeline::reconfigure()` — no pipeline restart
-    - Two-phase `begin_stop_recording` + `Arc<MonitorPipeline>` keeps WS emitter unblocked during EOS drain
-    - Leaky video recording queue prevents encoder backpressure from freezing audio monitoring
-11. 🟡 **Rust — NDI implementation** (NDI hardware on hand) ← active
-    - ⬜ Prereq: install `gst-plugin-ndi` (`ndisrc` / `ndisrcdemux`) — not present on dev machine
-    - ⬜ `NdiSource` impl + device discovery in `SourceRegistry::scan()`
+    - Two-phase `begin_stop_recording`: the session leaves the manager under the lock, and its legs drain to EOS on a spawned task (`session.rs`), so the WS emitter is never blocked
+    - Each consumer `appsrc` drops its oldest buffers when full, so a slow encoder drops frames in its own leg instead of stalling the monitor
+11. ✅ **Rust — NDI implementation** — `gst-plugin-ndi` statically linked; `NdiSource` + persistent device monitor (`sources/ndi.rs`)
 
 > **Sequencing note:** the v1 build order above is the original plan. Active work is now
 > sequenced in [ROADMAP.md](ROADMAP.md), which front-loads a generic TestSource, the Sources
 > view, and live source monitoring ahead of NDI capture.
 12. ⬜ **Rust — Decklink implementation** — deferred (no hardware)
-13. 🟡 **Rust — preset sync + scheduling engine**
-    - ✅ Preset sync (`controller/sync.rs`); ⬜ scheduler engine (`controller/scheduler.rs` is an empty stub)
+13. ⬜ **Rust — scheduling engine** — not started. (Preset sync was dropped: presets are sent inline with each start command.)
 14. ⬜ **Rust — benchmark runner** — not started
 15. ⬜ **Rust — timecode** — not started; TestSource fakes a wall-clock TC
-16. ⬜ **Rust — redundant recording path**
+16. ✅ **Rust — redundant recording path** — covered by multi-leg presets (same profile, second path)
 17. ⬜ **Cross-platform packaging + GitHub Actions**

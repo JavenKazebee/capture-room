@@ -109,10 +109,7 @@ pub fn spawn_emitter(state: Arc<AppState>) {
             if tick.is_multiple_of((10 / fps).max(1)) {
                 for source in mgr.sources() {
                     if mgr.is_monitored(source.id()) {
-                        state.emit(&WsEvent::ThumbnailUpdated {
-                            source_id: source.id().to_string(),
-                            url: format!("/api/v1/node/thumbnails/{}", source.id()),
-                        });
+                        state.emit(&WsEvent::ThumbnailUpdated { source_id: source.id().to_string() });
                     }
                 }
             }

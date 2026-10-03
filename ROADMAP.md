@@ -13,7 +13,7 @@ _Last updated: 2026-10-02_
 1. ✅ **Generic TestSource + Sources view**
 2. ✅ **Live source monitoring**
 3. ✅ **NDI capture** (+ plugin build/packaging)
-4. **Multi-pipeline output per preset** ← active
+4. ✅ **Multi-pipeline output per preset**
 5. **Benchmark + capacity estimator**
 6. **UI overhaul / dark mode** — woven through 1–5; design-token pass up front
 7. **Follow-on:** scheduler engine, higher-fps thumbnails, timecode, packaging/CI, additional source types
@@ -47,7 +47,7 @@ parameterized source.
   connect/disconnect, capabilities, and test-source authoring.
 - Keep TestSource discoverable behind a `--dev` / config flag once NDI discovery lands.
 
-Touches: `node/src/sources/test.rs`, `node/src/sources/registry.rs`, `ui/src/views/SourcesView.vue`.
+Touches: `node/src/sources/test.rs`, `node/src/sources/manager.rs`, `ui/src/views/SourcesView.vue`.
 
 ## 2. ✅ Live source monitoring
 
@@ -55,13 +55,12 @@ Touches: `node/src/sources/test.rs`, `node/src/sources/registry.rs`, `ui/src/vie
 `MonitorPipeline` (`node/src/pipeline/monitor.rs`), so thumbnails and meters are always
 live — no recording required.
 
-- **Single pipeline per source.** `source bin → vtee + atee → [thumbnail branch] + [audio meter branch]`. Recording attaches as an additional branch off vtee/atee and detaches cleanly on stop.
-- **`SourceManager`** (`node/src/sources/manager.rs`) owns per-source `MonitorPipeline`s, the `SourceRegistry`, and active `RecordingSession`s — single source of truth for all capture state.
+- **Monitor pipeline per source.** `source bin → vtee + atee → [thumbnail branch] + [audio meter branch] + [video/audio StreamProducers]`. Recordings consume the producers from their own pipelines (see #4), so they never touch the monitor's tees.
+- **`SourceManager`** (`node/src/sources/manager.rs`) owns the sources, their `MonitorPipeline`s, and active recording sessions — single source of truth for all capture state.
 - **Live settings reconfiguration.** `MonitorPipeline::reconfigure()` updates GStreamer element properties in place (capsfilter caps, level interval) without stopping pipelines — applies immediately during recording.
-- **Non-blocking stop recording.** `begin_stop_recording` removes the session and clones `Arc<MonitorPipeline>`, releasing the write lock before awaiting EOS. The WS emitter (which holds a read lock every 100 ms) is never blocked during the multi-second EOS drain.
-- **Leaky video recording queue.** The video branch off vtee uses `leaky=upstream` so a slow encoder (e.g. x264enc on a complex ball-pattern source) drops frames instead of stalling the tee and backpressuring through the muxer's collect-pads to freeze audio monitoring.
+- **Non-blocking stop recording.** `begin_stop_recording` takes the session out of the manager under the write lock and hands back a `StopJob`; its legs drain to EOS on a spawned task (`node/src/session.rs`). The WS emitter (which holds a read lock every 100 ms) is never blocked during the multi-second drain.
 
-Touches: `node/src/pipeline/monitor.rs`, `node/src/pipeline/profile.rs`, `node/src/sources/manager.rs`, `node/src/sources/registry.rs`, `node/src/api/node/mod.rs`, `DashboardView.vue`.
+Touches: `node/src/pipeline/monitor.rs`, `node/src/sources/manager.rs`, `node/src/session.rs`, `node/src/api/node.rs`, `DashboardView.vue`.
 
 ## 3. ✅ NDI capture
 
@@ -79,10 +78,10 @@ as `TestSource`. Decklink remains deferred (no hardware).
 - **Static linking** — `gst-plugin-ndi` compiled as an rlib into the binary
   (`plugin_register_static()` called at startup). No `libgstndi.so` to manage;
   only `libndi.so` (the proprietary NDI runtime) remains as a user dependency.
-- **Recording fix** — added `videoconvert` (and `audioconvert` + `audioresample`) in the
-  recording branch of `MonitorPipeline::attach_recording`. NDI provides UYVY; x264enc
-  needs I420. Without the converter, x264enc's RECONFIGURE event propagated upstream to
-  ndisrc and caused an "Internal data stream error" immediately on recording start.
+- **Recording fix** — recording legs run `videoconvert` (and `audioconvert` +
+  `audioresample`) ahead of the encoders. NDI provides UYVY; x264enc needs I420. Without
+  the converter, x264enc's RECONFIGURE event propagated upstream to ndisrc and caused an
+  "Internal data stream error" immediately on recording start.
 
 ### Packaging / licensing
 
@@ -95,22 +94,30 @@ users must install the NDI Runtime separately (same pattern as OBS). We never di
 | `gst-plugin-ndi` | compiled into binary (static) |
 | `libndi.so` | user installs NDI Runtime redistributable |
 
-## 4. Multi-pipeline output per preset
+## 4. ✅ Multi-pipeline output per preset
 
-Replace the fixed `output_template` / `secondary_output_template` /
-`redundant_output_template` triple with **N output legs** (e.g. H.264 MP4 to one path +
-ProRes MOV to another). Absorbs the old "redundant path" concept.
+Replaced the fixed primary / secondary / redundant output templates with **N output legs**
+per preset (e.g. H.264 MP4 to one path + ProRes MOV to another). A redundant copy is just
+another leg.
 
-- **Schema:** new `preset_outputs` table (preset_id, codec, container, resolution, fps,
-  bitrate, path_template, role) — migration `0003`. `presets` keeps source-level
-  settings.
-- **Pipeline:** `Pipeline::new`'s `secondary: Option<(...)>` becomes `legs: Vec<(path,
-  profile)>`, fanning out from the existing `tee`. Generalize the encode-sharing
-  optimization (identical profiles split bitstream instead of re-encoding).
-- **UI:** Presets view becomes a list-of-outputs editor.
+### What shipped
 
-Touches: `node/migrations/`, `node/src/pipeline/mod.rs`, `node/src/pipeline/profile.rs`,
-`node/src/api/types.rs`, `ui/src/views/PresetsView.vue`.
+- **Schema:** `preset_outputs` table (name, codec, container, resolution, framerate,
+  bitrate, chroma, path_template, sort_order). Codec, container and chroma are closed
+  enums shared with the UI through ts-rs.
+- **One pipeline per leg.** Each leg is its own GStreamer pipeline fed by the monitor's
+  `StreamProducer`s (`node/src/pipeline/recording.rs`). A tee would pass a failing leg's
+  flow error back to the source and stop everything; a producer only logs it, so a bad
+  leg (codec the container rejects, full disk) fails alone and reports on stop.
+- **Start/stop:** all legs are built before any starts, so config errors open no files;
+  a failed start rolls back and deletes partial files. Stop drains every leg to EOS
+  concurrently with a timeout.
+- **UI:** the Presets view is a list-of-outputs editor; nodes keep no preset store —
+  outputs are sent inline with each start command.
+
+### Not done
+
+- Encode sharing: legs with identical profiles each run their own encoder.
 
 ## 5. Benchmark + capacity estimator
 
@@ -128,8 +135,8 @@ Not started (the empty `benchmark/` stub was removed).
 shadcn-vue is already in place, so dark mode is mostly CSS-variable theming + a toggle.
 
 - Up front: a design-token pass (define the dark palette / tokens once).
-- Then woven incrementally into each view as it's built (Sources, Recordings, Schedules,
-  Logs are placeholders today).
+- Then woven incrementally into each view as it's built (Recordings, Schedules and Logs
+  views are not started and are kept out of the nav until they are).
 - **Per-page tweaks backlog:** many small per-page refinements to tackle one at a time —
   tracked here as work surfaces, not planned in bulk.
 

@@ -29,11 +29,6 @@ export const useSourcesStore = defineStore('sources', () => {
     return list.map((s) => ({ ...s, node_id: nodeId, key: sourceKey(nodeId, s.id) }))
   }
 
-  function remove(nodeId: string, sourceId: string) {
-    const key = sourceKey(nodeId, sourceId)
-    sources.value = sources.value.filter((s) => s.key !== key)
-  }
-
   function updateTimecode(nodeId: string, sourceId: string, tc: string | null) {
     const key = sourceKey(nodeId, sourceId)
     const s = sources.value.find((s) => s.key === key)
@@ -94,7 +89,6 @@ export const useSourcesStore = defineStore('sources', () => {
 
   return {
     sources,
-    remove,
     updateTimecode,
     loadSources,
     scan,

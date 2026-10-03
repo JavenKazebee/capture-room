@@ -36,12 +36,10 @@ pub struct TimecodeDto {
 #[cfg_attr(feature = "export-types", derive(TS))]
 #[cfg_attr(feature = "export-types", ts(export))]
 pub struct SourceCapabilitiesDto {
-    pub video_formats: Vec<String>,
     pub max_width: u32,
     pub max_height: u32,
     pub max_framerate: [u32; 2],
     pub audio_channels: u32,
-    pub audio_sample_rates: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,7 +49,6 @@ pub struct SourceDto {
     pub id: String,
     pub display_name: String,
     pub source_type: String,
-    pub is_available: bool,
     pub connected: bool,
     pub timecode: Option<TimecodeDto>,
     pub capabilities: SourceCapabilitiesDto,
@@ -313,16 +310,6 @@ pub struct ChannelLevelDto {
 #[cfg_attr(feature = "export-types", derive(TS))]
 #[cfg_attr(feature = "export-types", ts(export))]
 pub enum WsEvent {
-    #[serde(rename = "source.available")]
-    SourceAvailable {
-        source_id: String,
-        name: String,
-    },
-    #[serde(rename = "source.lost")]
-    SourceLost {
-        source_id: String,
-        name: String,
-    },
     #[serde(rename = "recording.started")]
     RecordingStarted {
         session_id: String,
@@ -350,16 +337,7 @@ pub enum WsEvent {
         channels: Vec<ChannelLevelDto>,
     },
     #[serde(rename = "thumbnail.updated")]
-    ThumbnailUpdated {
-        source_id: String,
-        url: String,
-    },
-    #[serde(rename = "log")]
-    Log {
-        level: String,
-        message: String,
-        timestamp: String,
-    },
+    ThumbnailUpdated { source_id: String },
     #[serde(rename = "node.online")]
     NodeOnline { peer_id: String },
     #[serde(rename = "node.offline")]

@@ -2,4 +2,4 @@
 import type { SourceCapabilitiesDto } from "./SourceCapabilitiesDto";
 import type { TimecodeDto } from "./TimecodeDto";
 
-export type SourceDto = { id: string, display_name: string, source_type: string, is_available: boolean, connected: boolean, timecode: TimecodeDto | null, capabilities: SourceCapabilitiesDto, };
+export type SourceDto = { id: string, display_name: string, source_type: string, connected: boolean, timecode: TimecodeDto | null, capabilities: SourceCapabilitiesDto, };

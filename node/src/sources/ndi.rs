@@ -162,12 +162,10 @@ impl InputSource for NdiSource {
     fn capabilities(&self) -> SourceCapabilities {
         // NDI caps are negotiated at runtime; report broad upper bounds.
         SourceCapabilities {
-            video_formats: vec!["video/x-raw".into()],
             max_width: 3840,
             max_height: 2160,
             max_framerate: (60, 1),
             audio_channels: 16,
-            audio_sample_rates: vec![44100, 48000],
         }
     }
 
@@ -181,9 +179,5 @@ impl InputSource for NdiSource {
 
     fn timecode(&self) -> Option<Timecode> {
         None
-    }
-
-    fn is_available(&self) -> bool {
-        true
     }
 }

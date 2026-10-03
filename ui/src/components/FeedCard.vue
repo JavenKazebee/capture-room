@@ -104,10 +104,7 @@ function formatDuration(startedAt: string): string {
 </script>
 
 <template>
-  <div
-    class="rounded-lg border border-border bg-card overflow-hidden flex flex-col"
-    :class="{ 'opacity-60': !source.is_available }"
-  >
+  <div class="rounded-lg border border-border bg-card overflow-hidden flex flex-col">
     <!-- Thumbnail + meters row -->
     <div class="relative flex bg-black" style="aspect-ratio: 16/9">
       <!-- Thumbnail -->
@@ -187,7 +184,7 @@ function formatDuration(startedAt: string): string {
           :variant="session ? 'destructive' : 'default'"
           size="sm"
           class="h-7 px-3 text-xs shrink-0"
-          :disabled="busy || !source.is_available"
+          :disabled="busy"
           @click="toggleRecording"
         >
           {{ session ? 'Stop' : 'Record' }}

@@ -11,17 +11,14 @@ pub enum SourceType {
     Ndi,
 }
 
-/// What a source can produce. Used by the pipeline layer to negotiate caps
-/// and by the UI to display source info.
+/// What a source can produce, for display in the UI.
 #[derive(Debug, Clone)]
 pub struct SourceCapabilities {
-    pub video_formats: Vec<String>,
     pub max_width: u32,
     pub max_height: u32,
     /// (numerator, denominator)
     pub max_framerate: (u32, u32),
     pub audio_channels: u32,
-    pub audio_sample_rates: Vec<u32>,
 }
 
 /// SMPTE-style timecode.
@@ -67,7 +64,6 @@ pub trait InputSource: Send + Sync {
     fn gst_src_element(&self) -> gst::Element;
 
     fn timecode(&self) -> Option<Timecode>;
-    fn is_available(&self) -> bool;
 }
 
 /// Expose `element`'s static src pad on `bin` as the ghost pad `name`

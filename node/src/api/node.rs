@@ -337,16 +337,13 @@ fn source_to_dto(mgr: &SourceManager, s: &dyn InputSource) -> SourceDto {
         id: s.id().to_string(),
         display_name: s.display_name().to_string(),
         source_type: format!("{:?}", s.source_type()).to_lowercase(),
-        is_available: s.is_available(),
         connected: mgr.is_monitored(s.id()),
         timecode: s.timecode().map(timecode_to_dto),
         capabilities: SourceCapabilitiesDto {
-            video_formats: caps.video_formats,
             max_width: caps.max_width,
             max_height: caps.max_height,
             max_framerate: [caps.max_framerate.0, caps.max_framerate.1],
             audio_channels: caps.audio_channels,
-            audio_sample_rates: caps.audio_sample_rates,
         },
     }
 }

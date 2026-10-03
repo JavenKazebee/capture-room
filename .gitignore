@@ -21,3 +21,7 @@ ui/dist/
 # Env / secrets
 .env
 .env.local
+
+# Claude Code (personal settings and memory)
+.claude/settings.local.json
+.claude/projects/

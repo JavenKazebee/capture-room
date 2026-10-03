@@ -75,12 +75,10 @@ impl InputSource for TestSource {
 
     fn capabilities(&self) -> SourceCapabilities {
         SourceCapabilities {
-            video_formats: vec!["video/x-raw".into()],
             max_width: self.config.width,
             max_height: self.config.height,
             max_framerate: (self.config.fps_num, self.config.fps_den),
             audio_channels: self.config.channels,
-            audio_sample_rates: vec![48000],
         }
     }
 
@@ -106,10 +104,6 @@ impl InputSource for TestSource {
             drop_frame: false,
             framerate: (self.config.fps_num, self.config.fps_den),
         })
-    }
-
-    fn is_available(&self) -> bool {
-        true
     }
 }
 

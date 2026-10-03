@@ -11,7 +11,6 @@ pub mod registry;
 pub mod relay;
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use anyhow::Result;
 use mdns_sd::ServiceDaemon;
@@ -63,7 +62,6 @@ impl Controller {
                 url: row.url,
                 version: String::new(),
                 healthy: false,
-                last_seen: Instant::now(),
                 uptime_secs: 0,
                 fail_count: 0,
                 manual: true,

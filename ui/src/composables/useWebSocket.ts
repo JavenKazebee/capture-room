@@ -66,14 +66,6 @@ function handleEvent(event: Record<string, any>) {
       nodes.load().then(() => Promise.all([sources.loadSources(), recordings.load()]))
       break
 
-    case 'source.available':
-      sources.loadSources()
-      break
-
-    case 'source.lost':
-      sources.remove(nodeId, event.source_id as string)
-      break
-
     case 'recording.started':
       // Usually already in the store via the POST response; reload in case it
       // came from another client or a schedule.

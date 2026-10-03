@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::time::Instant;
 
 use tokio_util::sync::CancellationToken;
 
@@ -10,7 +9,6 @@ pub struct NodeEntry {
     pub url: String,
     pub version: String,
     pub healthy: bool,
-    pub last_seen: Instant,
     pub uptime_secs: u64,
     /// Consecutive failed health checks. Reset to 0 on success.
     pub fail_count: u32,
@@ -66,7 +64,6 @@ impl NodeRegistry {
         if let Some(e) = self.entries.get_mut(id) {
             e.healthy = true;
             e.fail_count = 0;
-            e.last_seen = Instant::now();
             e.name = name.to_string();
             e.uptime_secs = uptime_secs;
             e.version = version.to_string();

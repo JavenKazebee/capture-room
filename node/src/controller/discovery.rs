@@ -1,7 +1,7 @@
 //! mDNS advertisement (every instance) and node discovery + health polling
 //! (controller only).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
@@ -105,7 +105,6 @@ pub async fn add_node(ctx: &Ctx, url: String, manual: bool) -> Result<NodeStatus
         url: url.clone(),
         version: status.version.clone(),
         healthy: true,
-        last_seen: Instant::now(),
         uptime_secs: status.uptime_secs,
         fail_count: 0,
         manual,
