@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 use chrono::Timelike;
 use gstreamer::{self as gst, prelude::*};
 
-use super::{InputSource, SourceCapabilities, SourceType, Timecode};
+use super::{add_ghost_pad, InputSource, SourceCapabilities, SourceType, Timecode};
+use crate::pipeline::{capsfilter, make_el};
 use crate::api::types::{AudioTestSignal, TestSourceConfigDto, VideoTestPattern};
 
 // ── TestSource ────────────────────────────────────────────────────────────────
@@ -24,83 +25,37 @@ fn build_bin(cfg: &TestSourceConfigDto) -> Result<gst::Bin> {
     let bin = gst::Bin::with_name(&format!("testsrc-bin-{id}"));
 
     // ── Video: videotestsrc → capsfilter → videoconvert ───────────────────────
-    let vsrc = gst::ElementFactory::make("videotestsrc")
-        .name(format!("vsrc-{id}"))
-        .property("is-live", true)
-        .build()
-        .context("create videotestsrc")?;
+    let vsrc = make_el("videotestsrc", &format!("vsrc-{id}"))?;
+    vsrc.set_property("is-live", true);
     vsrc.set_property_from_str("pattern", pattern_gst_name(cfg.pattern));
-
-    let vcaps = gst::ElementFactory::make("capsfilter")
-        .name(format!("vcaps-{id}"))
-        .property(
-            "caps",
-            gst::Caps::builder("video/x-raw")
-                .field("width", cfg.width as i32)
-                .field("height", cfg.height as i32)
-                .field(
-                    "framerate",
-                    gst::Fraction::new(cfg.fps_num as i32, cfg.fps_den as i32),
-                )
-                .build(),
-        )
-        .build()
-        .context("create video capsfilter")?;
-
-    let vconv = gst::ElementFactory::make("videoconvert")
-        .name(format!("vconv-{id}"))
-        .build()
-        .context("create videoconvert")?;
+    let vcaps = capsfilter(
+        &format!("vcaps-{id}"),
+        gst::Caps::builder("video/x-raw")
+            .field("width", cfg.width as i32)
+            .field("height", cfg.height as i32)
+            .field("framerate", gst::Fraction::new(cfg.fps_num as i32, cfg.fps_den as i32))
+            .build(),
+    )?;
+    let video = [vsrc, vcaps, make_el("videoconvert", &format!("vconv-{id}"))?];
 
     // ── Audio: audiotestsrc → audioconvert → capsfilter ───────────────────────
-    let asrc = gst::ElementFactory::make("audiotestsrc")
-        .name(format!("asrc-{id}"))
-        .property("is-live", true)
-        .build()
-        .context("create audiotestsrc")?;
+    let asrc = make_el("audiotestsrc", &format!("asrc-{id}"))?;
+    asrc.set_property("is-live", true);
     asrc.set_property_from_str("wave", signal_gst_wave(cfg.audio_signal));
     if cfg.audio_signal == AudioTestSignal::Tone && cfg.frequency > 0.0 {
         asrc.set_property("freq", cfg.frequency);
     }
+    let acaps = capsfilter(
+        &format!("acaps-{id}"),
+        gst::Caps::builder("audio/x-raw").field("channels", cfg.channels as i32).build(),
+    )?;
+    let audio = [asrc, make_el("audioconvert", &format!("aconv-{id}"))?, acaps];
 
-    let aconv = gst::ElementFactory::make("audioconvert")
-        .name(format!("aconv-{id}"))
-        .build()
-        .context("create audioconvert")?;
-
-    let acaps = gst::ElementFactory::make("capsfilter")
-        .name(format!("acaps-{id}"))
-        .property(
-            "caps",
-            gst::Caps::builder("audio/x-raw")
-                .field("channels", cfg.channels as i32)
-                .build(),
-        )
-        .build()
-        .context("create audio capsfilter")?;
-
-    for el in [&vsrc, &vcaps, &vconv, &asrc, &aconv, &acaps] {
-        bin.add(el).context("add element to bin")?;
-    }
-
-    vsrc.link(&vcaps).context("link vsrc -> vcaps")?;
-    vcaps.link(&vconv).context("link vcaps -> vconv")?;
-    asrc.link(&aconv).context("link asrc -> aconv")?;
-    aconv.link(&acaps).context("link aconv -> acaps")?;
-
-    let video_pad = vconv.static_pad("src").context("videoconvert src pad")?;
-    let ghost_video = gst::GhostPad::builder_with_target(&video_pad)
-        .map_err(|e| anyhow::anyhow!("video ghost pad: {e}"))?
-        .name("video")
-        .build();
-    bin.add_pad(&ghost_video).context("add video ghost pad")?;
-
-    let audio_pad = acaps.static_pad("src").context("audio capsfilter src pad")?;
-    let ghost_audio = gst::GhostPad::builder_with_target(&audio_pad)
-        .map_err(|e| anyhow::anyhow!("audio ghost pad: {e}"))?
-        .name("audio")
-        .build();
-    bin.add_pad(&ghost_audio).context("add audio ghost pad")?;
+    bin.add_many(video.iter().chain(&audio)).context("add elements to test bin")?;
+    gst::Element::link_many(&video).context("link test video chain")?;
+    gst::Element::link_many(&audio).context("link test audio chain")?;
+    add_ghost_pad(&bin, &video[2], "video")?;
+    add_ghost_pad(&bin, &audio[2], "audio")?;
 
     Ok(bin)
 }

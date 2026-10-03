@@ -4,7 +4,8 @@ use anyhow::{Context, Result};
 use gstreamer::{self as gst, prelude::*};
 use tracing::{info, warn};
 
-use super::{InputSource, SourceCapabilities, SourceType, Timecode};
+use super::{add_ghost_pad, InputSource, SourceCapabilities, SourceType, Timecode};
+use crate::pipeline::make_el;
 
 // ── NdiSource ──────────────────────────────────────────────────────────────────
 
@@ -31,76 +32,42 @@ impl NdiSource {
 fn build_bin(id: &str, ndi_name: &str, url_address: &str) -> Result<gst::Bin> {
     let bin = gst::Bin::with_name(&format!("ndisrc-bin-{id}"));
 
-    let src = gst::ElementFactory::make("ndisrc")
-        .name(format!("ndisrc-{id}"))
-        .property("ndi-name", ndi_name)
-        .property("url-address", url_address)
-        .property("receiver-ndi-name", "capture-room")
-        .build()
-        .context("create ndisrc")?;
-
-    let demux = gst::ElementFactory::make("ndisrcdemux")
-        .name(format!("ndisrcdemux-{id}"))
-        .build()
-        .context("create ndisrcdemux")?;
+    let src = make_el("ndisrc", &format!("ndisrc-{id}"))?;
+    src.set_property("ndi-name", ndi_name);
+    src.set_property("url-address", url_address);
+    src.set_property("receiver-ndi-name", "capture-room");
+    let demux = make_el("ndisrcdemux", &format!("ndisrcdemux-{id}"))?;
 
     // Intermediate converters. Their static src pads anchor the ghost pads at
     // construction time; the demux links its dynamic video/audio pads to their
     // sinks once the stream starts flowing.
-    let vconv = gst::ElementFactory::make("videoconvert")
-        .name(format!("ndi-vconv-{id}"))
-        .build()
-        .context("create videoconvert")?;
+    let vconv = make_el("videoconvert", &format!("ndi-vconv-{id}"))?;
+    let aconv = make_el("audioconvert", &format!("ndi-aconv-{id}"))?;
 
-    let aconv = gst::ElementFactory::make("audioconvert")
-        .name(format!("ndi-aconv-{id}"))
-        .build()
-        .context("create audioconvert")?;
-
-    for el in [&src, &demux, &vconv, &aconv] {
-        bin.add(el).context("add element to NDI bin")?;
-    }
-
+    bin.add_many([&src, &demux, &vconv, &aconv]).context("add elements to NDI bin")?;
     src.link(&demux).context("link ndisrc → ndisrcdemux")?;
 
     let vconv_weak = vconv.downgrade();
     let aconv_weak = aconv.downgrade();
     demux.connect_pad_added(move |_demux, pad| {
         let name = pad.name();
-        if name.starts_with("video") {
-            let Some(conv) = vconv_weak.upgrade() else { return };
-            let Some(sink) = conv.static_pad("sink") else { return };
-            if sink.is_linked() {
-                return;
-            }
-            if let Err(e) = pad.link(&sink) {
-                warn!("NDI video pad link failed: {e:?}");
-            }
+        let conv = if name.starts_with("video") {
+            &vconv_weak
         } else if name.starts_with("audio") {
-            let Some(conv) = aconv_weak.upgrade() else { return };
-            let Some(sink) = conv.static_pad("sink") else { return };
-            if sink.is_linked() {
-                return;
-            }
+            &aconv_weak
+        } else {
+            return;
+        };
+        let Some(sink) = conv.upgrade().and_then(|c| c.static_pad("sink")) else { return };
+        if !sink.is_linked() {
             if let Err(e) = pad.link(&sink) {
-                warn!("NDI audio pad link failed: {e:?}");
+                warn!("NDI {name} pad link failed: {e:?}");
             }
         }
     });
 
-    let vpad = vconv.static_pad("src").context("videoconvert src pad")?;
-    let ghost_video = gst::GhostPad::builder_with_target(&vpad)
-        .map_err(|e| anyhow::anyhow!("video ghost pad: {e}"))?
-        .name("video")
-        .build();
-    bin.add_pad(&ghost_video).context("add video ghost pad")?;
-
-    let apad = aconv.static_pad("src").context("audioconvert src pad")?;
-    let ghost_audio = gst::GhostPad::builder_with_target(&apad)
-        .map_err(|e| anyhow::anyhow!("audio ghost pad: {e}"))?
-        .name("audio")
-        .build();
-    bin.add_pad(&ghost_audio).context("add audio ghost pad")?;
+    add_ghost_pad(&bin, &vconv, "video")?;
+    add_ghost_pad(&bin, &aconv, "audio")?;
 
     Ok(bin)
 }

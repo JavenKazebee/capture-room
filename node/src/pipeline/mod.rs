@@ -44,16 +44,30 @@ pub type AudioMeter = Latest<Vec<ChannelLevelDto>>;
 /// Latest thumbnail JPEG.
 pub type ThumbnailStore = Latest<Vec<u8>>;
 
-// ── Shared element factory helper ─────────────────────────────────────────────
+// ── Element builders ──────────────────────────────────────────────────────────
 
-/// Create a named element and add it to the pipeline.
-pub(super) fn make(pipeline: &gst::Pipeline, factory: &str, name: &str) -> Result<gst::Element> {
-    let el = gst::ElementFactory::make(factory)
+pub(crate) fn make_el(factory: &str, name: &str) -> Result<gst::Element> {
+    gst::ElementFactory::make(factory)
         .name(name)
         .build()
-        .with_context(|| format!("create {factory}"))?;
-    pipeline.add(&el).with_context(|| format!("add {name}"))?;
-    Ok(el)
+        .with_context(|| format!("create {factory} (is its GStreamer plugin installed?)"))
+}
+
+pub(crate) fn capsfilter(name: &str, caps: gst::Caps) -> Result<gst::Element> {
+    gst::ElementFactory::make("capsfilter")
+        .name(name)
+        .property("caps", caps)
+        .build()
+        .with_context(|| format!("create {name}"))
+}
+
+/// Link a new request pad of `tee` to `sink`'s static sink pad.
+pub(super) fn link_tee(tee: &gst::Element, sink: &gst::Element) -> Result<()> {
+    tee.request_pad_simple("src_%u")
+        .with_context(|| format!("{} request pad", tee.name()))?
+        .link(&sink.static_pad("sink").with_context(|| format!("{} sink pad", sink.name()))?)
+        .with_context(|| format!("link {} → {}", tee.name(), sink.name()))?;
+    Ok(())
 }
 
 // ── Audio level message parsing ───────────────────────────────────────────────

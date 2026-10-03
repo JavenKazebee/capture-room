@@ -1,6 +1,6 @@
 import { ofetch } from 'ofetch'
 
-const api = ofetch.create({ baseURL: '/api/v1' })
+export const api = ofetch.create({ baseURL: '/api/v1' })
 
 /**
  * Talk to one node's local API. Works for this instance and, when it is acting
@@ -17,8 +17,4 @@ export function sourceKey(nodeId: string, sourceId: string) {
 
 export function thumbnailUrl(nodeId: string, sourceId: string) {
   return `/api/v1/nodes/${encodeURIComponent(nodeId)}/thumbnails/${encodeURIComponent(sourceId)}`
-}
-
-export function useApi() {
-  return { api }
 }

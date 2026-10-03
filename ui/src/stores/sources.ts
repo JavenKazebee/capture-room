@@ -4,16 +4,8 @@ import { nodeApi, sourceKey } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
 import type { ChannelLevelDto } from '@/types/generated/ChannelLevelDto'
 import type { TestSourceRequest } from '@/types/generated/TestSourceRequest'
-import type { SourceCapabilitiesDto } from '@/types/generated/SourceCapabilitiesDto'
 import type { SourceDto } from '@/types/generated/SourceDto'
 import type { TestSourceConfigDto } from '@/types/generated/TestSourceConfigDto'
-
-export type { TimecodeDto } from '@/types/generated/TimecodeDto'
-export type { SourceDto }
-export type SourceCapabilities = SourceCapabilitiesDto
-export type ChannelLevel = ChannelLevelDto
-export type TestSourceConfig = TestSourceConfigDto
-export type TestSourceInput = TestSourceRequest
 
 /** A node's source tagged with the node it lives on (`id` is only unique per node). */
 export type Source = SourceDto & {
@@ -24,7 +16,7 @@ export type Source = SourceDto & {
 
 // Audio levels updated ~10fps — shallow to avoid deep reactivity overhead.
 // Both maps are keyed by sourceKey(node_id, source_id).
-export const audioLevels = shallowReactive(new Map<string, ChannelLevel[]>())
+export const audioLevels = shallowReactive(new Map<string, ChannelLevelDto[]>())
 
 // Thumbnail cache-bust counter incremented on each thumbnail.updated event
 export const thumbnailSeqs = shallowReactive(new Map<string, number>())
@@ -74,11 +66,11 @@ export const useSourcesStore = defineStore('sources', () => {
   }
 
   async function testConfigs(nodeId: string) {
-    return nodeApi(nodeId)<TestSourceConfig[]>('/test-sources')
+    return nodeApi(nodeId)<TestSourceConfigDto[]>('/test-sources')
   }
 
-  async function createTestSource(nodeId: string, input: TestSourceInput) {
-    const created = await nodeApi(nodeId)<TestSourceConfig>('/test-sources', {
+  async function createTestSource(nodeId: string, input: TestSourceRequest) {
+    const created = await nodeApi(nodeId)<TestSourceConfigDto>('/test-sources', {
       method: 'POST',
       body: input,
     })
@@ -86,8 +78,8 @@ export const useSourcesStore = defineStore('sources', () => {
     return created
   }
 
-  async function updateTestSource(nodeId: string, id: string, input: TestSourceInput) {
-    const updated = await nodeApi(nodeId)<TestSourceConfig>(`/test-sources/${id}`, {
+  async function updateTestSource(nodeId: string, id: string, input: TestSourceRequest) {
+    const updated = await nodeApi(nodeId)<TestSourceConfigDto>(`/test-sources/${id}`, {
       method: 'PUT',
       body: input,
     })

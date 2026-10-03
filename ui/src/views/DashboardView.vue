@@ -3,7 +3,8 @@ import { onMounted, ref } from 'vue'
 import { useSourcesStore } from '@/stores/sources'
 import { useRecordingsStore } from '@/stores/recordings'
 import { usePresetsStore } from '@/stores/presets'
-import { useNodesStore, type MonitorSettings } from '@/stores/nodes'
+import { useNodesStore } from '@/stores/nodes'
+import type { MonitorSettingsDto } from '@/types/generated/MonitorSettingsDto'
 import { wsStatus } from '@/composables/useWebSocket'
 import { nodeApi } from '@/composables/useApi'
 import FeedCard from '@/components/FeedCard.vue'
@@ -24,7 +25,7 @@ const nodes = useNodesStore()
 
 // ── Monitor settings (applied to every reachable node) ───────────────────────
 
-const monitor = ref<MonitorSettings>({
+const monitor = ref<MonitorSettingsDto>({
   thumb_fps: 1,
   thumb_width: 320,
   thumb_height: 180,
@@ -75,7 +76,7 @@ async function saveMonitorSettings() {
   try {
     const results = await Promise.allSettled(
       nodes.reachable.map((n) =>
-        nodeApi(n.id)<{ monitor: MonitorSettings }>('/settings', { method: 'PUT', body }),
+        nodeApi(n.id)<{ monitor: MonitorSettingsDto }>('/settings', { method: 'PUT', body }),
       ),
     )
     const first = results.find((r) => r.status === 'fulfilled')

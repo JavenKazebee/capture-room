@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { nodeApi } from '@/composables/useApi'
-import { useNodesStore, type StorageVolume } from '@/stores/nodes'
+import { useNodesStore } from '@/stores/nodes'
+import type { StorageVolumeDto } from '@/types/generated/StorageVolumeDto'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,12 +15,12 @@ const addNodeError = ref('')
 const addNodeLoading = ref(false)
 
 /** Storage volumes per node id; `null` = failed to load. */
-const storage = reactive(new Map<string, StorageVolume[] | null>())
+const storage = reactive(new Map<string, StorageVolumeDto[] | null>())
 
 async function loadStorage(nodeId: string) {
   storage.set(
     nodeId,
-    await nodeApi(nodeId)<StorageVolume[]>('/storage').catch(() => null),
+    await nodeApi(nodeId)<StorageVolumeDto[]>('/storage').catch(() => null),
   )
 }
 
@@ -76,7 +77,7 @@ function formatBytes(n: number): string {
   return `${n.toFixed(n >= 100 || i === 0 ? 0 : 1)} ${units[i]}`
 }
 
-function usedPct(v: StorageVolume) {
+function usedPct(v: StorageVolumeDto) {
   return v.total_bytes ? Math.round(((v.total_bytes - v.available_bytes) / v.total_bytes) * 100) : 0
 }
 

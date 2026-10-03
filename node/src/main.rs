@@ -3,7 +3,7 @@ mod controller;
 mod db;
 mod pipeline;
 mod plugins;
-mod recording;
+mod session;
 mod sources;
 mod state;
 mod storage;
@@ -11,14 +11,13 @@ mod ws;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::Result;
 use clap::Parser;
 use tokio::sync::RwLock;
 use tracing::info;
 
-use api::types::WsEvent;
 use controller::Controller;
 use sources::manager::SourceManager;
 use state::AppState;
@@ -109,51 +108,7 @@ async fn main() -> Result<()> {
     });
     let _ = state.node_router.set(api::node_router(Arc::clone(&state)));
 
-    // ── Periodic WS emitter ───────────────────────────────────────────────────
-    {
-        let state = Arc::clone(&state);
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(100));
-            let mut tick: u32 = 0;
-            loop {
-                interval.tick().await;
-                tick = tick.wrapping_add(1);
-
-                let mgr = state.source_manager.read().await;
-
-                // Audio levels for every monitored source (~10 fps).
-                for (source_id, channels) in mgr.all_audio_levels() {
-                    state.emit(&WsEvent::AudioLevels { source_id, channels });
-                }
-
-                // Timecode (feed.status) at 1 Hz — every 10 ticks.
-                if tick.is_multiple_of(10) {
-                    for source in mgr.sources() {
-                        state.emit(&WsEvent::FeedStatus {
-                            source_id: source.id().to_string(),
-                            timecode: source.timecode().map(|tc| tc.to_string()),
-                        });
-                    }
-                }
-
-                // Thumbnail updates at the configured fps.
-                // Tick interval = 100 ms, so 10 ticks = 1 s.
-                // fps=1 → every 10 ticks, fps=2 → every 5, fps=10 → every 1.
-                let fps = mgr.monitor_config().thumb_fps.max(1) as u32;
-                let thumb_div = (10 / fps).max(1);
-                if tick.is_multiple_of(thumb_div) {
-                    for source in mgr.sources() {
-                        if mgr.is_monitored(source.id()) {
-                            state.emit(&WsEvent::ThumbnailUpdated {
-                                source_id: source.id().to_string(),
-                                url: format!("/api/v1/node/thumbnails/{}", source.id()),
-                            });
-                        }
-                    }
-                }
-            }
-        });
-    }
+    ws::spawn_emitter(Arc::clone(&state));
 
     // ── Controller (optional, toggleable at runtime) ──────────────────────────
     if controller_enabled {

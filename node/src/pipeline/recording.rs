@@ -21,6 +21,7 @@ use gstreamer_utils::{ConsumptionLink, StreamProducer};
 use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
+use super::{capsfilter, make_el};
 use super::profile::RecordingProfile;
 
 /// One running output leg.
@@ -294,21 +295,6 @@ impl Drop for RecordingLeg {
 }
 
 // ── Element builders ──────────────────────────────────────────────────────────
-
-fn make_el(factory: &str, name: &str) -> Result<gst::Element> {
-    gst::ElementFactory::make(factory)
-        .name(name)
-        .build()
-        .with_context(|| format!("create {factory} (is its GStreamer plugin installed?)"))
-}
-
-fn capsfilter(name: &str, caps: gst::Caps) -> Result<gst::Element> {
-    gst::ElementFactory::make("capsfilter")
-        .name(name)
-        .property("caps", caps)
-        .build()
-        .with_context(|| format!("create {name}"))
-}
 
 /// Link an encoder to a new muxer input, with an error that names the
 /// combination when the container can't carry the codec.

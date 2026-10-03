@@ -15,10 +15,10 @@ use axum::{
 use super::{discovery, forward, Controller, CONFIG_KEY};
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
-    AddNodeRequest, ChromaSubsampling, ControllerToggleRequest, NodeDto, PresetCreateRequest, PresetDto,
-    PresetOutputDto, PresetOutputInput,
+    AddNodeRequest, ControllerToggleRequest, NodeDto, PresetCreateRequest, PresetDto, PresetOutputDto,
+    PresetOutputInput,
 };
-use crate::db::{self, PresetOutputRow, PresetRow};
+use crate::db;
 use crate::state::AppState;
 use crate::ws;
 
@@ -132,17 +132,7 @@ async fn delete_node(State(state): State<Arc<AppState>>, Path(id): Path<String>)
 const PRESET_NOT_FOUND: ApiError = ApiError::NotFound("preset not found");
 
 async fn get_presets(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<PresetDto>>> {
-    let rows = db::presets_list(&state.db).await?;
-    let all_outputs = db::preset_outputs_list_all(&state.db).await?;
-    Ok(Json(
-        rows.iter()
-            .map(|r| {
-                let outputs: Vec<PresetOutputRow> =
-                    all_outputs.iter().filter(|o| o.preset_id == r.id).cloned().collect();
-                preset_to_dto(r, &outputs)
-            })
-            .collect(),
-    ))
+    Ok(Json(db::presets_list(&state.db).await?))
 }
 
 async fn post_preset(
@@ -150,17 +140,17 @@ async fn post_preset(
     Json(req): Json<PresetCreateRequest>,
 ) -> ApiResult<(StatusCode, Json<PresetDto>)> {
     let now = chrono::Utc::now().to_rfc3339();
-    let preset_id = uuid::Uuid::new_v4().to_string();
-    let row = PresetRow {
-        id: preset_id.clone(),
+    let id = uuid::Uuid::new_v4().to_string();
+    let preset = PresetDto {
+        outputs: output_dtos(&id, req.outputs),
+        id,
         name: req.name,
         created_at: now.clone(),
         updated_at: now,
         version: 1,
     };
-    let output_rows = build_output_rows(&preset_id, &req.outputs);
-    db::preset_insert(&state.db, &row, &output_rows).await?;
-    Ok((StatusCode::CREATED, Json(preset_to_dto(&row, &output_rows))))
+    db::preset_insert(&state.db, &preset).await?;
+    Ok((StatusCode::CREATED, Json(preset)))
 }
 
 async fn put_preset(
@@ -168,11 +158,10 @@ async fn put_preset(
     Path(id): Path<String>,
     Json(req): Json<PresetCreateRequest>,
 ) -> ApiResult<Json<PresetDto>> {
-    let output_rows = build_output_rows(&id, &req.outputs);
-    let updated = db::preset_update(&state.db, &id, &req.name, &chrono::Utc::now().to_rfc3339(), &output_rows)
-        .await?
-        .ok_or(PRESET_NOT_FOUND)?;
-    Ok(Json(preset_to_dto(&updated, &output_rows)))
+    let outputs = output_dtos(&id, req.outputs);
+    let now = chrono::Utc::now().to_rfc3339();
+    let preset = db::preset_update(&state.db, &id, &req.name, &now, outputs).await?.ok_or(PRESET_NOT_FOUND)?;
+    Ok(Json(preset))
 }
 
 async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
@@ -182,49 +171,15 @@ async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<String
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn preset_to_dto(row: &PresetRow, outputs: &[PresetOutputRow]) -> PresetDto {
-    PresetDto {
-        id: row.id.clone(),
-        name: row.name.clone(),
-        outputs: outputs.iter().map(output_row_to_dto).collect(),
-        created_at: row.created_at.clone(),
-        updated_at: row.updated_at.clone(),
-        version: row.version,
-    }
-}
-
-fn output_row_to_dto(o: &PresetOutputRow) -> PresetOutputDto {
-    PresetOutputDto {
-        id: o.id.clone(),
-        preset_id: o.preset_id.clone(),
-        name: o.name.clone(),
-        codec: o.codec.clone(),
-        container: o.container.clone(),
-        resolution: o.resolution.clone(),
-        framerate: o.framerate.clone(),
-        bitrate_kbps: o.bitrate_kbps,
-        chroma: ChromaSubsampling::from_db(&o.chroma),
-        path_template: o.path_template.clone(),
-        sort_order: o.sort_order,
-    }
-}
-
-fn build_output_rows(preset_id: &str, inputs: &[PresetOutputInput]) -> Vec<PresetOutputRow> {
-    inputs
-        .iter()
-        .enumerate()
-        .map(|(i, o)| PresetOutputRow {
+fn output_dtos(preset_id: &str, outputs: Vec<PresetOutputInput>) -> Vec<PresetOutputDto> {
+    outputs
+        .into_iter()
+        .zip(0..)
+        .map(|(output, sort_order)| PresetOutputDto {
             id: uuid::Uuid::new_v4().to_string(),
             preset_id: preset_id.to_string(),
-            name: o.name.clone(),
-            codec: o.codec.clone(),
-            container: o.container.clone(),
-            resolution: o.resolution.clone(),
-            framerate: o.framerate.clone(),
-            bitrate_kbps: o.bitrate_kbps,
-            chroma: o.chroma.as_str().to_string(),
-            path_template: o.path_template.clone(),
-            sort_order: i as i64,
+            output,
+            sort_order,
         })
         .collect()
 }

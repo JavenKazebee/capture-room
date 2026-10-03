@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { usePresetsStore, blankLeg, type Preset, type OutputLegInput } from '@/stores/presets'
+import { usePresetsStore, blankLeg } from '@/stores/presets'
+import type { PresetDto } from '@/types/generated/PresetDto'
+import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import type { ChromaSubsampling } from '@/types/generated/ChromaSubsampling'
+import type { Container } from '@/types/generated/Container'
+import type { VideoCodec } from '@/types/generated/VideoCodec'
 
 const store = usePresetsStore()
 
@@ -12,8 +16,20 @@ const showForm = ref(false)
 const saving = ref(false)
 const error = ref<string | null>(null)
 
-const CODECS = ['h264', 'h265', 'vp9', 'prores', 'prores_4444', 'prores_422hq', 'prores_422lt', 'prores_422proxy', 'uncompressed']
-const CONTAINERS = ['mov', 'mp4', 'mkv', 'mxf']
+// Records keyed by the generated unions, so a codec or container added in Rust
+// fails the type check here until it gets a label.
+const CODECS: Record<VideoCodec, string> = {
+  h264: 'H.264',
+  h265: 'H.265 / HEVC',
+  vp9: 'VP9',
+  prores_4444: 'ProRes 4444',
+  prores_422hq: 'ProRes 422 HQ',
+  prores_422: 'ProRes 422',
+  prores_422lt: 'ProRes 422 LT',
+  prores_422proxy: 'ProRes 422 Proxy',
+  uncompressed: 'Uncompressed',
+}
+const CONTAINERS: Record<Container, string> = { mov: '.mov', mp4: '.mp4', mkv: '.mkv', mxf: '.mxf' }
 const CHROMA: { value: ChromaSubsampling; label: string }[] = [
   { value: '420', label: '4:2:0 — plays everywhere' },
   { value: '422', label: '4:2:2' },
@@ -21,7 +37,7 @@ const CHROMA: { value: ChromaSubsampling; label: string }[] = [
 ]
 
 /** Codecs whose chroma subsampling is configurable (ProRes picks it via the codec). */
-function hasChroma(codec: string) {
+function hasChroma(codec: VideoCodec) {
   return codec === 'h264' || codec === 'h265'
 }
 
@@ -33,13 +49,13 @@ const fieldClass =
   'h-8 rounded-md border border-border bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring/30'
 
 const formName = ref('')
-const formLegs = ref<OutputLegInput[]>([blankLeg()])
+const formLegs = ref<PresetOutputInput[]>([blankLeg()])
 
 function blankToNull(v: string | null | undefined): string | null {
   return v && String(v).trim() !== '' ? String(v) : null
 }
 
-function normalizedLegs(): OutputLegInput[] {
+function normalizedLegs(): PresetOutputInput[] {
   return formLegs.value.map((leg) => ({
     ...leg,
     resolution: blankToNull(leg.resolution),
@@ -56,7 +72,7 @@ function openCreate() {
   showForm.value = true
 }
 
-function openEdit(p: Preset) {
+function openEdit(p: PresetDto) {
   editingId.value = p.id
   formName.value = p.name
   formLegs.value = p.outputs.map((o) => ({
@@ -110,7 +126,7 @@ async function save() {
   }
 }
 
-async function destroy(p: Preset) {
+async function destroy(p: PresetDto) {
   if (!confirm(`Delete preset "${p.name}"?`)) return
   try {
     await store.remove(p.id)
@@ -149,8 +165,8 @@ onMounted(() => store.load())
               :key="i"
               class="flex items-center gap-2 mt-1 text-xs text-muted-foreground"
             >
-              <Badge variant="secondary" class="text-xs">{{ leg.codec }}</Badge>
-              <Badge variant="outline" class="text-xs">.{{ leg.container }}</Badge>
+              <Badge variant="secondary" class="text-xs">{{ CODECS[leg.codec] }}</Badge>
+              <Badge variant="outline" class="text-xs">{{ CONTAINERS[leg.container] }}</Badge>
               <span>{{ leg.resolution ?? 'source res' }} · {{ leg.framerate ?? 'source fps' }}</span>
               <span>·</span>
               <span>{{ leg.bitrate_kbps ? `${leg.bitrate_kbps} kbps` : 'encoder default' }}</span>
@@ -222,14 +238,14 @@ onMounted(() => store.load())
               <label class="flex flex-col gap-1">
                 <span class="text-xs text-muted-foreground">Codec</span>
                 <select v-model="leg.codec" :class="fieldClass">
-                  <option v-for="c in CODECS" :key="c" :value="c">{{ c }}</option>
+                  <option v-for="(label, c) in CODECS" :key="c" :value="c">{{ label }}</option>
                 </select>
               </label>
 
               <label class="flex flex-col gap-1">
                 <span class="text-xs text-muted-foreground">Container</span>
                 <select v-model="leg.container" :class="fieldClass">
-                  <option v-for="c in CONTAINERS" :key="c" :value="c">.{{ c }}</option>
+                  <option v-for="(label, c) in CONTAINERS" :key="c" :value="c">{{ label }}</option>
                 </select>
               </label>
 

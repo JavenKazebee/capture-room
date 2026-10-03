@@ -1,42 +1,6 @@
-#[derive(Debug, Clone)]
-pub enum VideoCodec {
-    H264,
-    H265,
-    Vp9,
-    ProRes(ProResVariant),
-    DnxHd,
-    Uncompressed,
-}
+use crate::api::types::{ChromaSubsampling, Container, PresetOutputInput, VideoCodec};
 
-#[derive(Debug, Clone)]
-pub enum ProResVariant {
-    /// ProRes 4444
-    P4444,
-    /// ProRes 422 HQ
-    P422Hq,
-    /// ProRes 422
-    P422,
-    /// ProRes 422 LT
-    P422Lt,
-    /// ProRes 422 Proxy
-    P422Proxy,
-}
-
-#[derive(Debug, Clone)]
-pub enum Container {
-    /// QuickTime MOV  (avmux_mov; qtmux when gst-plugins-good available)
-    Mov,
-    /// MPEG-4         (avmux_mp4; mp4mux when gst-plugins-good available)
-    Mp4,
-    /// Matroska MKV   (avmux_matroska; matroskamux when gst-plugins-good available)
-    Mkv,
-    /// Material eXchange Format
-    Mxf,
-}
-
-use crate::api::types::ChromaSubsampling;
-
-/// Configures a single recording output leg (primary, secondary, or redundant).
+/// Configures a single recording output leg.
 #[derive(Debug, Clone)]
 pub struct RecordingProfile {
     pub video_codec: VideoCodec,
@@ -51,14 +15,30 @@ pub struct RecordingProfile {
 }
 
 impl RecordingProfile {
+    /// Build a profile from an output leg. Resolution and framerate are free
+    /// text; unparsable values mean "match the source".
+    pub fn from_output(o: &PresetOutputInput) -> Self {
+        Self {
+            video_codec: o.codec,
+            container: o.container,
+            resolution: o.resolution.as_deref().and_then(parse_resolution),
+            framerate: o.framerate.as_deref().and_then(parse_framerate),
+            bitrate_kbps: o.bitrate_kbps,
+            chroma: o.chroma,
+        }
+    }
+
     /// GStreamer element name for the video encoder.
     pub fn video_encoder_element(&self) -> &'static str {
-        match &self.video_codec {
+        match self.video_codec {
             VideoCodec::H264 => "x264enc",
             VideoCodec::H265 => "x265enc",
             VideoCodec::Vp9 => "vp9enc",
-            VideoCodec::ProRes(_) => "avenc_prores_ks",
-            VideoCodec::DnxHd => "avenc_dnxhd",
+            VideoCodec::ProRes4444
+            | VideoCodec::ProRes422Hq
+            | VideoCodec::ProRes422
+            | VideoCodec::ProRes422Lt
+            | VideoCodec::ProRes422Proxy => "avenc_prores_ks",
             VideoCodec::Uncompressed => "identity",
         }
     }
@@ -90,7 +70,7 @@ impl RecordingProfile {
 
     /// GStreamer element name for the container muxer.
     pub fn muxer_element(&self) -> &'static str {
-        match &self.container {
+        match self.container {
             Container::Mov => "qtmux",
             Container::Mp4 => "mp4mux",
             Container::Mkv => "matroskamux",
@@ -100,7 +80,7 @@ impl RecordingProfile {
 
     /// GStreamer audio encoder element appropriate for the container.
     pub fn audio_encoder_element(&self) -> &'static str {
-        match &self.container {
+        match self.container {
             Container::Mov | Container::Mp4 => "avenc_aac",
             Container::Mkv => "opusenc",
             Container::Mxf => "identity", // PCM passthrough; mxfmux accepts raw audio
@@ -109,7 +89,7 @@ impl RecordingProfile {
 
     /// File extension for the output path template.
     pub fn file_extension(&self) -> &'static str {
-        match &self.container {
+        match self.container {
             Container::Mov => "mov",
             Container::Mp4 => "mp4",
             Container::Mkv => "mkv",
@@ -119,62 +99,14 @@ impl RecordingProfile {
 
     /// Value of avenc_prores_ks's `profile` enum.
     pub fn prores_profile(&self) -> Option<&'static str> {
-        match &self.video_codec {
-            VideoCodec::ProRes(v) => Some(match v {
-                ProResVariant::P4444 => "4444",
-                ProResVariant::P422Hq => "hq",
-                ProResVariant::P422 => "standard",
-                ProResVariant::P422Lt => "lt",
-                ProResVariant::P422Proxy => "proxy",
-            }),
+        match self.video_codec {
+            VideoCodec::ProRes4444 => Some("4444"),
+            VideoCodec::ProRes422Hq => Some("hq"),
+            VideoCodec::ProRes422 => Some("standard"),
+            VideoCodec::ProRes422Lt => Some("lt"),
+            VideoCodec::ProRes422Proxy => Some("proxy"),
             _ => None,
         }
-    }
-}
-
-impl RecordingProfile {
-    /// Build a profile from stored preset fields (codec/container are free-text
-    /// in the DB). Unknown values fall back to sane defaults rather than failing.
-    pub fn from_preset(
-        codec: &str,
-        container: &str,
-        resolution: Option<&str>,
-        framerate: Option<&str>,
-        bitrate_kbps: Option<u32>,
-        chroma: ChromaSubsampling,
-    ) -> Self {
-        Self {
-            video_codec: parse_codec(codec),
-            container: parse_container(container),
-            resolution: resolution.and_then(parse_resolution),
-            framerate: framerate.and_then(parse_framerate),
-            bitrate_kbps,
-            chroma,
-        }
-    }
-}
-
-fn parse_codec(s: &str) -> VideoCodec {
-    match s.trim().to_lowercase().as_str() {
-        "h265" | "hevc" => VideoCodec::H265,
-        "vp9" => VideoCodec::Vp9,
-        "prores" | "prores_422hq" => VideoCodec::ProRes(ProResVariant::P422Hq),
-        "prores_4444" => VideoCodec::ProRes(ProResVariant::P4444),
-        "prores_422" => VideoCodec::ProRes(ProResVariant::P422),
-        "prores_422lt" => VideoCodec::ProRes(ProResVariant::P422Lt),
-        "prores_422proxy" => VideoCodec::ProRes(ProResVariant::P422Proxy),
-        "dnxhd" => VideoCodec::DnxHd,
-        "uncompressed" | "raw" => VideoCodec::Uncompressed,
-        _ => VideoCodec::H264,
-    }
-}
-
-fn parse_container(s: &str) -> Container {
-    match s.trim().to_lowercase().as_str() {
-        "mp4" => Container::Mp4,
-        "mkv" => Container::Mkv,
-        "mxf" => Container::Mxf,
-        _ => Container::Mov,
     }
 }
 

@@ -108,10 +108,6 @@ function handleEvent(event: Record<string, any>) {
   }
 }
 
-export function useWebSocket() {
-  return { status: wsStatus }
-}
-
 export function startWebSocket() {
   setTimeout(connect, 0)
 }

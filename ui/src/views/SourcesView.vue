@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useSourcesStore, type Source, type TestSourceInput } from '@/stores/sources'
+import { useSourcesStore, type Source } from '@/stores/sources'
+import type { TestSourceRequest } from '@/types/generated/TestSourceRequest'
 import { useNodesStore } from '@/stores/nodes'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -56,7 +57,7 @@ const FRAMERATES = [
   { n: 30000, d: 1001, label: '29.97 fps' },
 ]
 
-function blankForm(): TestSourceInput {
+function blankForm(): TestSourceRequest {
   return {
     name: '',
     pattern: 'smpte',
@@ -70,7 +71,7 @@ function blankForm(): TestSourceInput {
   }
 }
 
-const form = reactive<TestSourceInput>(blankForm())
+const form = reactive<TestSourceRequest>(blankForm())
 
 const resolutionKey = computed({
   get: () => `${form.width}x${form.height}`,

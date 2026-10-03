@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app as gst_app;
@@ -8,7 +8,7 @@ use tracing::{error, warn};
 use crate::api::types::MonitorSettingsDto;
 use crate::sources::InputSource;
 
-use super::{handle_level_message, make, AudioMeter, ThumbnailStore};
+use super::{capsfilter, handle_level_message, link_tee, make_el, AudioMeter, ThumbnailStore};
 
 // ── MonitorPipeline ───────────────────────────────────────────────────────────
 
@@ -43,21 +43,17 @@ impl MonitorPipeline {
         let src_bin = source.gst_src_element();
         pipeline.add(&src_bin).context("add source bin")?;
 
-        // ── Video tee ─────────────────────────────────────────────────────────
-        let vtee = make(&pipeline, "tee", "vtee")?;
-        src_bin
-            .static_pad("video")
-            .context("source video pad")?
-            .link(&vtee.static_pad("sink").context("vtee sink")?)
-            .context("link source video → vtee")?;
-
-        // ── Audio tee ─────────────────────────────────────────────────────────
-        let atee = make(&pipeline, "tee", "atee")?;
-        src_bin
-            .static_pad("audio")
-            .context("source audio pad")?
-            .link(&atee.static_pad("sink").context("atee sink")?)
-            .context("link source audio → atee")?;
+        // ── Tees ──────────────────────────────────────────────────────────────
+        let vtee = make_el("tee", "vtee")?;
+        let atee = make_el("tee", "atee")?;
+        pipeline.add_many([&vtee, &atee]).context("add tees")?;
+        for (kind, tee) in [("video", &vtee), ("audio", &atee)] {
+            src_bin
+                .static_pad(kind)
+                .with_context(|| format!("source {kind} pad"))?
+                .link(&tee.static_pad("sink").context("tee sink")?)
+                .with_context(|| format!("link source {kind} → tee"))?;
+        }
 
         // ── Always-on branches ────────────────────────────────────────────────
         let (thumb_rate_caps, thumb_scale_caps) =
@@ -93,7 +89,13 @@ impl MonitorPipeline {
             }
         });
 
-        let monitor = Self {
+        // set_state kicks off the async GStreamer state machine in its own
+        // threads. We deliberately do NOT wait on pipeline.state(): that
+        // blocks, and new() runs under the SourceManager write lock — blocking
+        // would starve the WS emitter. Later errors are reported by the bus task.
+        pipeline.set_state(gst::State::Playing).map_err(|e| anyhow!("set PLAYING: {e:?}"))?;
+
+        Ok(Self {
             pipeline,
             src_bin,
             thumbnail,
@@ -104,33 +106,16 @@ impl MonitorPipeline {
             thumb_rate_caps,
             thumb_scale_caps,
             level_el,
-        };
-
-        monitor.start()?;
-        Ok(monitor)
-    }
-
-    fn start(&self) -> Result<()> {
-        // set_state kicks off the async GStreamer state machine in its own
-        // threads.  We deliberately do NOT call pipeline.state() here because
-        // that is a blocking syscall and start() is called while a write lock
-        // on SourceManager is held — blocking would starve the WS emitter.
-        // Errors that surface later are reported by the bus task.
-        self.pipeline
-            .set_state(gst::State::Playing)
-            .map_err(|e| anyhow::anyhow!("set PLAYING: {e:?}"))?;
-        Ok(())
+        })
     }
 
     pub fn stop(&self) -> Result<()> {
-        self.pipeline
-            .set_state(gst::State::Null)
-            .map_err(|e| anyhow::anyhow!("set NULL: {e:?}"))?;
+        let result = self.pipeline.set_state(gst::State::Null).map(|_| ()).map_err(|e| anyhow!("set NULL: {e:?}"));
         // Explicitly unparent the source bin so the same element can be added
         // to a new pipeline immediately (the bus task may still hold a ref to
         // the old pipeline C object, keeping it alive for a moment longer).
         let _ = self.pipeline.remove(&self.src_bin);
-        Ok(())
+        result
     }
 
     /// The clock and base time a consumer pipeline should share, so buffer
@@ -144,29 +129,14 @@ impl MonitorPipeline {
     /// re-negotiates the affected branches within the current pipeline run.
     pub fn reconfigure(&self, config: &MonitorSettingsDto) {
         self.level_el.set_property("interval", level_interval_ns(config));
-
-        self.thumb_rate_caps.set_property(
-            "caps",
-            gst::Caps::builder("video/x-raw")
-                .field("framerate", gst::Fraction::new(config.thumb_fps, 1))
-                .build(),
-        );
-
-        self.thumb_scale_caps.set_property(
-            "caps",
-            gst::Caps::builder("video/x-raw")
-                .field("width", config.thumb_width)
-                .field("height", config.thumb_height)
-                .build(),
-        );
+        self.thumb_rate_caps.set_property("caps", thumb_rate_caps(config));
+        self.thumb_scale_caps.set_property("caps", thumb_scale_caps(config));
     }
-
 }
 
 impl Drop for MonitorPipeline {
     fn drop(&mut self) {
-        let _ = self.pipeline.set_state(gst::State::Null);
-        let _ = self.pipeline.remove(&self.src_bin);
+        let _ = self.stop();
     }
 }
 
@@ -182,41 +152,8 @@ fn add_thumbnail_branch(
     store: ThumbnailStore,
     config: &MonitorSettingsDto,
 ) -> Result<(gst::Element, gst::Element)> {
-    let tq = make(pipeline, "queue", "tq")?;
-    let videorate = make(pipeline, "videorate", "thumb-rate")?;
-
-    let rate_caps = gst::ElementFactory::make("capsfilter")
-        .name("thumb-rate-caps")
-        .property(
-            "caps",
-            gst::Caps::builder("video/x-raw")
-                .field(
-                    "framerate",
-                    gst::Fraction::new(config.thumb_fps, 1),
-                )
-                .build(),
-        )
-        .build()
-        .context("create thumb rate capsfilter")?;
-    pipeline.add(&rate_caps).context("add thumb rate capsfilter")?;
-
-    let videoscale = make(pipeline, "videoscale", "thumb-scale")?;
-
-    let scale_caps = gst::ElementFactory::make("capsfilter")
-        .name("thumb-scale-caps")
-        .property(
-            "caps",
-            gst::Caps::builder("video/x-raw")
-                .field("width", config.thumb_width)
-                .field("height", config.thumb_height)
-                .build(),
-        )
-        .build()
-        .context("create thumb scale capsfilter")?;
-    pipeline.add(&scale_caps).context("add thumb scale capsfilter")?;
-
-    let vconv = make(pipeline, "videoconvert", "thumb-conv")?;
-    let jpegenc = make(pipeline, "jpegenc", "thumb-enc")?;
+    let rate_caps = capsfilter("thumb-rate-caps", thumb_rate_caps(config))?;
+    let scale_caps = capsfilter("thumb-scale-caps", thumb_scale_caps(config))?;
 
     let appsink = gst_app::AppSink::builder()
         .name("thumb-sink")
@@ -224,8 +161,6 @@ fn add_thumbnail_branch(
         .max_buffers(1)
         .drop(true)
         .build();
-    pipeline.add(&appsink).context("add thumbnail appsink")?;
-
     appsink.set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_preroll(|_| Ok(gst::FlowSuccess::Ok))
@@ -239,23 +174,19 @@ fn add_thumbnail_branch(
             .build(),
     );
 
-    for (src, dst) in [
-        (&tq, &videorate),
-        (&videorate, &rate_caps),
-        (&rate_caps, &videoscale),
-        (&videoscale, &scale_caps),
-        (&scale_caps, &vconv),
-        (&vconv, &jpegenc),
-    ] {
-        src.link(dst)
-            .with_context(|| format!("link {} → {}", src.name(), dst.name()))?;
-    }
-    jpegenc.link(&appsink).context("link jpegenc → appsink")?;
-
-    vtee.request_pad_simple("src_%u")
-        .context("vtee thumb pad")?
-        .link(&tq.static_pad("sink").context("tq sink")?)
-        .context("link vtee → tq")?;
+    let chain = [
+        make_el("queue", "tq")?,
+        make_el("videorate", "thumb-rate")?,
+        rate_caps.clone(),
+        make_el("videoscale", "thumb-scale")?,
+        scale_caps.clone(),
+        make_el("videoconvert", "thumb-conv")?,
+        make_el("jpegenc", "thumb-enc")?,
+        appsink.upcast(),
+    ];
+    pipeline.add_many(&chain).context("add thumbnail branch")?;
+    gst::Element::link_many(&chain).context("link thumbnail branch")?;
+    link_tee(vtee, &chain[0])?;
 
     Ok((rate_caps, scale_caps))
 }
@@ -268,32 +199,16 @@ fn add_level_branch(
     atee: &gst::Element,
     config: &MonitorSettingsDto,
 ) -> Result<gst::Element> {
-    let lq = make(pipeline, "queue", "lq")?;
-    let aconv = make(pipeline, "audioconvert", "level-conv")?;
+    let level = make_el("level", "level")?;
+    level.set_property("interval", level_interval_ns(config));
+    level.set_property("post-messages", true);
+    let fakesink = make_el("fakesink", "level-sink")?;
+    fakesink.set_property("sync", false);
 
-    let level = gst::ElementFactory::make("level")
-        .name("level")
-        .property("interval", level_interval_ns(config))
-        .property("post-messages", true)
-        .build()
-        .context("create level")?;
-    pipeline.add(&level).context("add level")?;
-
-    let fakesink = gst::ElementFactory::make("fakesink")
-        .name("level-sink")
-        .property("sync", false)
-        .build()
-        .context("create level fakesink")?;
-    pipeline.add(&fakesink).context("add level fakesink")?;
-
-    lq.link(&aconv).context("link lq → aconv")?;
-    aconv.link(&level).context("link aconv → level")?;
-    level.link(&fakesink).context("link level → fakesink")?;
-
-    atee.request_pad_simple("src_%u")
-        .context("atee level pad")?
-        .link(&lq.static_pad("sink").context("lq sink")?)
-        .context("link atee → lq")?;
+    let chain = [make_el("queue", "lq")?, make_el("audioconvert", "level-conv")?, level.clone(), fakesink];
+    pipeline.add_many(&chain).context("add level branch")?;
+    gst::Element::link_many(&chain).context("link level branch")?;
+    link_tee(atee, &chain[0])?;
 
     Ok(level)
 }
@@ -302,19 +217,27 @@ fn add_level_branch(
 /// out to recording pipelines. A consumer's errors are only logged by the
 /// producer — they never travel back up to the tee.
 fn add_producer_branch(pipeline: &gst::Pipeline, tee: &gst::Element, kind: &str) -> Result<StreamProducer> {
-    let queue = make(pipeline, "queue", &format!("{kind}-producer-queue"))?;
+    let queue = make_el("queue", &format!("{kind}-producer-queue"))?;
     let appsink = gst_app::AppSink::builder()
         .name(format!("{kind}-producer"))
         // Forward as soon as buffers arrive; recordings don't render.
         .sync(false)
         .build();
-    pipeline.add(&appsink).with_context(|| format!("add {kind} producer"))?;
+    pipeline.add_many([&queue, appsink.upcast_ref()]).with_context(|| format!("add {kind} producer"))?;
     queue.link(&appsink).with_context(|| format!("link {kind} queue → producer"))?;
-    tee.request_pad_simple("src_%u")
-        .with_context(|| format!("{kind} tee producer pad"))?
-        .link(&queue.static_pad("sink").context("producer queue sink")?)
-        .with_context(|| format!("link {kind} tee → producer queue"))?;
+    link_tee(tee, &queue)?;
     Ok(StreamProducer::from(&appsink))
+}
+
+fn thumb_rate_caps(config: &MonitorSettingsDto) -> gst::Caps {
+    gst::Caps::builder("video/x-raw").field("framerate", gst::Fraction::new(config.thumb_fps, 1)).build()
+}
+
+fn thumb_scale_caps(config: &MonitorSettingsDto) -> gst::Caps {
+    gst::Caps::builder("video/x-raw")
+        .field("width", config.thumb_width)
+        .field("height", config.thumb_height)
+        .build()
 }
 
 fn level_interval_ns(config: &MonitorSettingsDto) -> u64 {

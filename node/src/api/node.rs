@@ -25,7 +25,7 @@ use crate::api::types::{
 };
 use crate::db;
 use crate::pipeline::profile::RecordingProfile;
-use crate::recording;
+use crate::session;
 use crate::sources::manager::{SourceManager, StopOutcome, StopResult};
 use crate::sources::{InputSource, Timecode};
 use crate::state::AppState;
@@ -139,7 +139,7 @@ async fn post_disconnect(
 ) -> Json<Option<SourceDto>> {
     let mut mgr = state.source_manager.write().await;
     if let Some(teardown) = mgr.disconnect(&id) {
-        recording::spawn_teardowns(&state, vec![teardown]);
+        session::spawn_teardowns(&state, vec![teardown]);
     }
     Json(mgr.get_source(&id).map(|s| source_to_dto(&mgr, s)))
 }
@@ -272,7 +272,7 @@ async fn post_stop_recording(
             // Spawned independently: if the caller's connection drops while
             // we're awaiting below, only this request's response is affected
             // — the stop keeps running to completion regardless.
-            tokio::spawn(recording::run_stop(Arc::clone(&state), *job));
+            tokio::spawn(session::run_stop(Arc::clone(&state), *job));
             await_stop_result(rx).await
         }
         StopOutcome::Join(rx) => await_stop_result(rx).await,
@@ -366,7 +366,7 @@ fn timecode_to_dto(tc: Timecode) -> TimecodeDto {
 async fn rebuild_sources(state: &Arc<AppState>) -> anyhow::Result<()> {
     let configs = db::test_sources_list(&state.db).await?;
     let teardowns = state.source_manager.write().await.scan(&configs);
-    recording::spawn_teardowns(state, teardowns);
+    session::spawn_teardowns(state, teardowns);
     Ok(())
 }
 
@@ -388,14 +388,7 @@ fn build_legs(state: &AppState, req: &StartRecordingRequest) -> Vec<(String, Rec
     req.outputs
         .iter()
         .map(|o| {
-            let profile = RecordingProfile::from_preset(
-                &o.codec,
-                &o.container,
-                o.resolution.as_deref(),
-                o.framerate.as_deref(),
-                o.bitrate_kbps.map(|b| b as u32),
-                o.chroma,
-            );
+            let profile = RecordingProfile::from_output(o);
             let path = o
                 .path_template
                 .replace("{source}", &req.source_id)

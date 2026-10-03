@@ -1,22 +1,13 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { useApi } from '@/composables/useApi'
-import type { MonitorSettingsDto } from '@/types/generated/MonitorSettingsDto'
+import { api } from '@/composables/useApi'
 import type { NodeDto } from '@/types/generated/NodeDto'
 import type { NodeSettingsDto } from '@/types/generated/NodeSettingsDto'
-import type { StorageVolumeDto } from '@/types/generated/StorageVolumeDto'
-
-export type NodeInfo = NodeDto
-export type MonitorSettings = MonitorSettingsDto
-export type NodeSettings = NodeSettingsDto
-export type StorageVolume = StorageVolumeDto
 
 export const useNodesStore = defineStore('nodes', () => {
-  const { api } = useApi()
-
-  const nodes = ref<NodeInfo[]>([])
+  const nodes = ref<NodeDto[]>([])
   /** Settings of the instance the UI is connected to. */
-  const self = ref<NodeSettings | null>(null)
+  const self = ref<NodeSettingsDto | null>(null)
 
   const isController = computed(() => self.value?.is_controller ?? false)
   /** Nodes that can currently be reached. */
@@ -24,8 +15,8 @@ export const useNodesStore = defineStore('nodes', () => {
 
   async function load() {
     const [list, settings] = await Promise.all([
-      api<NodeInfo[]>('/nodes').catch(() => [] as NodeInfo[]),
-      api<NodeSettings>('/node/settings').catch(() => null),
+      api<NodeDto[]>('/nodes').catch(() => [] as NodeDto[]),
+      api<NodeSettingsDto>('/node/settings').catch(() => null),
     ])
     nodes.value = list
     self.value = settings

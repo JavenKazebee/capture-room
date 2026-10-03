@@ -187,86 +187,107 @@ pub struct StartRecordingRequest {
 
 // ── Presets ───────────────────────────────────────────────────────────────────
 
+/// Video codec of an output leg. Stored as text in `preset_outputs`; the serde
+/// and sqlx names must match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "lowercase")]
+#[sqlx(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export))]
+pub enum VideoCodec {
+    H264,
+    H265,
+    Vp9,
+    #[serde(rename = "prores_4444")]
+    #[sqlx(rename = "prores_4444")]
+    ProRes4444,
+    #[serde(rename = "prores_422hq")]
+    #[sqlx(rename = "prores_422hq")]
+    ProRes422Hq,
+    #[serde(rename = "prores_422")]
+    #[sqlx(rename = "prores_422")]
+    ProRes422,
+    #[serde(rename = "prores_422lt")]
+    #[sqlx(rename = "prores_422lt")]
+    ProRes422Lt,
+    #[serde(rename = "prores_422proxy")]
+    #[sqlx(rename = "prores_422proxy")]
+    ProRes422Proxy,
+    Uncompressed,
+}
+
+/// Container format of an output leg. Stored as text in `preset_outputs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "lowercase")]
+#[sqlx(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export))]
+pub enum Container {
+    Mov,
+    Mp4,
+    Mkv,
+    Mxf,
+}
+
 /// Chroma subsampling for H.264/H.265 outputs. Other codecs ignore it
 /// (ProRes picks 422 vs 4444 through the codec itself).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[cfg_attr(feature = "export-types", derive(TS))]
 #[cfg_attr(feature = "export-types", ts(export))]
 pub enum ChromaSubsampling {
     /// Plays everywhere.
     #[default]
     #[serde(rename = "420")]
+    #[sqlx(rename = "420")]
     Yuv420,
     #[serde(rename = "422")]
+    #[sqlx(rename = "422")]
     Yuv422,
     #[serde(rename = "444")]
+    #[sqlx(rename = "444")]
     Yuv444,
 }
 
-impl ChromaSubsampling {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Yuv420 => "420",
-            Self::Yuv422 => "422",
-            Self::Yuv444 => "444",
-        }
-    }
-
-    /// Unknown values fall back to the default.
-    pub fn from_db(s: &str) -> Self {
-        match s {
-            "422" => Self::Yuv422,
-            "444" => Self::Yuv444,
-            _ => Self::Yuv420,
-        }
-    }
+/// One output leg: what to encode and where to write it.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export))]
+pub struct PresetOutputInput {
+    pub name: String,
+    pub codec: VideoCodec,
+    pub container: Container,
+    pub resolution: Option<String>,
+    pub framerate: Option<String>,
+    pub bitrate_kbps: Option<u32>,
+    pub chroma: ChromaSubsampling,
+    pub path_template: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A stored output leg, as kept in `preset_outputs` and as served.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[cfg_attr(feature = "export-types", derive(TS))]
 #[cfg_attr(feature = "export-types", ts(export))]
 pub struct PresetOutputDto {
     pub id: String,
     pub preset_id: String,
-    pub name: String,
-    pub codec: String,
-    pub container: String,
-    pub resolution: Option<String>,
-    pub framerate: Option<String>,
-    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
-    pub bitrate_kbps: Option<i64>,
-    pub chroma: ChromaSubsampling,
-    pub path_template: String,
-    #[cfg_attr(feature = "export-types", ts(type = "number"))]
-    pub sort_order: i64,
+    #[serde(flatten)]
+    #[sqlx(flatten)]
+    pub output: PresetOutputInput,
+    pub sort_order: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
-pub struct PresetOutputInput {
-    pub name: String,
-    pub codec: String,
-    pub container: String,
-    pub resolution: Option<String>,
-    pub framerate: Option<String>,
-    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
-    pub bitrate_kbps: Option<i64>,
-    pub chroma: ChromaSubsampling,
-    pub path_template: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A preset, as stored in `presets` (plus its outputs) and as served.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[cfg_attr(feature = "export-types", derive(TS))]
 #[cfg_attr(feature = "export-types", ts(export))]
 pub struct PresetDto {
     pub id: String,
     pub name: String,
+    #[sqlx(skip)]
     pub outputs: Vec<PresetOutputDto>,
     pub created_at: String,
     pub updated_at: String,
-    #[cfg_attr(feature = "export-types", ts(type = "number"))]
-    pub version: i64,
+    pub version: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

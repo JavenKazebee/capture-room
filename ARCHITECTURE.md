@@ -366,7 +366,7 @@ capture-room/
 │   │   │   ├── manager.rs       # SourceManager — sources, per-source monitors, recording sessions
 │   │   │   ├── test.rs          # TestSource
 │   │   │   └── ndi.rs           # NdiSource + NDI device monitor
-│   │   ├── recording/           # Running stops/teardowns: drain legs, persist, broadcast
+│   │   ├── session.rs           # Running stops/teardowns: drain legs, persist, broadcast
 │   │   └── db/                  # sqlx migrations and queries
 │   ├── migrations/
 │   └── Cargo.toml
