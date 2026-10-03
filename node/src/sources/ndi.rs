@@ -5,7 +5,7 @@ use gstreamer::{self as gst, prelude::*};
 use tracing::{info, warn};
 
 use super::{add_ghost_pad, InputSource};
-use crate::api::types::{SourceCapabilitiesDto, SourceType, TimecodeDto};
+use crate::api::types::{SourceCapabilitiesDto, SourceType};
 use crate::pipeline::make_el;
 
 // ── NdiSource ──────────────────────────────────────────────────────────────────
@@ -160,14 +160,9 @@ impl InputSource for NdiSource {
         SourceType::Ndi
     }
 
-    fn capabilities(&self) -> SourceCapabilitiesDto {
-        // NDI caps are negotiated at runtime; report broad upper bounds.
-        SourceCapabilitiesDto {
-            max_width: 3840,
-            max_height: 2160,
-            max_framerate: [60, 1],
-            audio_channels: 16,
-        }
+    fn capabilities(&self) -> Option<SourceCapabilitiesDto> {
+        // NDI negotiates the format at runtime.
+        None
     }
 
     fn fingerprint(&self) -> String {
@@ -178,7 +173,7 @@ impl InputSource for NdiSource {
         self.bin.clone().upcast()
     }
 
-    fn timecode(&self) -> Option<TimecodeDto> {
+    fn timecode(&self) -> Option<String> {
         None
     }
 }

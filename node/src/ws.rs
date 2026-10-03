@@ -23,14 +23,8 @@ pub fn channel() -> (broadcast::Sender<String>, broadcast::Receiver<String>) {
     broadcast::channel(CHANNEL_CAPACITY)
 }
 
-/// Broadcast `event`, stamped with the `node_id` of the node it describes.
+/// Serialize `event`, stamped with the `node_id` of the node it describes.
 /// Source and session ids inside events are always local to that node.
-pub fn send(tx: &broadcast::Sender<String>, node_id: &str, event: &WsEvent) {
-    if let Some(json) = encode(node_id, event) {
-        let _ = tx.send(json);
-    }
-}
-
 pub fn encode(node_id: &str, event: &WsEvent) -> Option<String> {
     match serde_json::to_value(event) {
         Ok(mut value) => {
@@ -99,7 +93,7 @@ pub fn spawn_emitter(state: Arc<AppState>) {
                 for source in mgr.sources() {
                     state.emit(&WsEvent::FeedStatus {
                         source_id: source.id().to_string(),
-                        timecode: source.timecode().map(|tc| tc.display),
+                        timecode: source.timecode(),
                         error: mgr.monitor_error(source.id()),
                     });
                 }

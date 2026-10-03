@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useNow } from '@vueuse/core'
 import { audioLevels, thumbnailSeqs, type Source } from '@/stores/sources'
 import { useRecordingsStore, type RecordingSession } from '@/stores/recordings'
@@ -32,35 +32,15 @@ const selectedPreset = ref('default')
 
 // ── Thumbnail ─────────────────────────────────────────────────────────────────
 
-const thumbError = ref(false)
-const fallbackSeq = ref(0)
+// Bumped by every `thumbnail.updated` event, which only monitored sources get
+// (at least once a second). A failed load is retried by the next bump.
+const thumbSeq = computed(() => thumbnailSeqs.get(props.source.key) ?? 0)
+const thumbFailed = ref(false)
+watch(thumbSeq, () => (thumbFailed.value = false))
 
-const thumbnailSrc = computed(() => {
-  const wsSeq = thumbnailSeqs.get(props.source.key) ?? 0
-  const seq = Math.max(wsSeq, fallbackSeq.value)
-  return `${thumbnailUrl(props.source.node_id, props.source.id)}?t=${seq}`
-})
-
-// Reset error when a new thumbnail.updated WS event arrives
-watch(
-  () => thumbnailSeqs.get(props.source.key) ?? 0,
-  (seq) => { if (seq > 0) thumbError.value = false },
+const thumbnailSrc = computed(
+  () => `${thumbnailUrl(props.source.node_id, props.source.id)}?t=${thumbSeq.value}`,
 )
-
-// Retry on a slow interval — if thumbError is set, bump fallbackSeq so the
-// URL changes and the browser doesn't serve a cached 404.
-let retryTimer: ReturnType<typeof setInterval> | null = null
-onMounted(() => {
-  retryTimer = setInterval(() => {
-    if (thumbError.value) {
-      fallbackSeq.value++
-      thumbError.value = false
-    }
-  }, 3000)
-})
-onUnmounted(() => {
-  if (retryTimer) clearInterval(retryTimer)
-})
 
 // ── Audio ─────────────────────────────────────────────────────────────────────
 
@@ -135,11 +115,11 @@ function formatDuration(ms: number): string {
           <span class="text-muted-foreground line-clamp-3">{{ source.error }}</span>
         </div>
         <img
-          v-else-if="!thumbError"
+          v-else-if="thumbSeq > 0 && !thumbFailed"
           :src="thumbnailSrc"
           :alt="source.display_name"
           class="w-full h-full object-cover"
-          @error="thumbError = true"
+          @error="thumbFailed = true"
         />
         <div
           v-else
@@ -153,7 +133,7 @@ function formatDuration(ms: number): string {
           v-if="source.timecode"
           class="absolute bottom-1.5 left-1.5 bg-black/70 text-white text-[10px] font-mono px-1.5 py-0.5 rounded"
         >
-          {{ source.timecode.display }}
+          {{ source.timecode }}
         </div>
 
         <!-- Recording indicator + duration (top-right) -->

@@ -39,8 +39,6 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/sources", get(get_sources))
         .route("/sources/scan", post(post_scan))
         .route("/sources/{id}", get(get_source))
-        .route("/sources/{id}/connect", post(post_connect))
-        .route("/sources/{id}/disconnect", post(post_disconnect))
         .route("/test-sources", get(get_test_configs).post(post_test_config))
         .route("/test-sources/{id}", axum::routing::put(put_test_config).delete(delete_test_config))
         .route("/recordings", get(get_recordings).post(post_recording))
@@ -121,26 +119,6 @@ async fn get_source(
 async fn post_scan(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<SourceDto>>> {
     session::rebuild_sources(&state).await?;
     Ok(Json(sources_list(&*state.source_manager.read().await)))
-}
-
-async fn post_connect(
-    State(state): State<Arc<AppState>>,
-    AxumPath(id): AxumPath<String>,
-) -> ApiResult<Json<Option<SourceDto>>> {
-    let mut mgr = state.source_manager.write().await;
-    mgr.connect(&id)?;
-    Ok(Json(mgr.get_source(&id).map(|s| source_to_dto(&mgr, s))))
-}
-
-async fn post_disconnect(
-    State(state): State<Arc<AppState>>,
-    AxumPath(id): AxumPath<String>,
-) -> Json<Option<SourceDto>> {
-    let mut mgr = state.source_manager.write().await;
-    if let Some(teardown) = mgr.disconnect(&id) {
-        session::spawn_teardowns(&state, vec![teardown]);
-    }
-    Json(mgr.get_source(&id).map(|s| source_to_dto(&mgr, s)))
 }
 
 // ── /test-sources ─────────────────────────────────────────────────────────────

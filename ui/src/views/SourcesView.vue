@@ -257,9 +257,12 @@ onMounted(async () => {
                   <Badge variant="secondary" class="shrink-0">{{ src.source_type }}</Badge>
                 </div>
                 <div class="text-xs text-muted-foreground flex flex-wrap gap-x-3 gap-y-0.5">
-                  <span>{{ src.capabilities.max_width }}×{{ src.capabilities.max_height }}</span>
-                  <span>{{ fpsLabel(src.capabilities.max_framerate[0], src.capabilities.max_framerate[1]) }}</span>
-                  <span>{{ src.capabilities.audio_channels }}ch audio</span>
+                  <template v-if="src.capabilities">
+                    <span>{{ src.capabilities.max_width }}×{{ src.capabilities.max_height }}</span>
+                    <span>{{ fpsLabel(src.capabilities.max_framerate[0], src.capabilities.max_framerate[1]) }}</span>
+                    <span>{{ src.capabilities.audio_channels }}ch audio</span>
+                  </template>
+                  <span v-else>format negotiated when connected</span>
                   <span class="font-mono opacity-60">{{ src.id }}</span>
                 </div>
               </div>

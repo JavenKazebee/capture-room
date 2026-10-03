@@ -59,15 +59,11 @@ function chromaLabel(chroma: ChromaSubsampling) {
 const formName = ref('')
 const formLegs = ref<PresetOutputInput[]>([blankLeg()])
 
-function blankToNull(v: string | null | undefined): string | null {
-  return v && String(v).trim() !== '' ? String(v) : null
-}
-
+// The server stores blank resolution/framerate as "match source"; only the
+// bitrate needs fixing up, since an emptied number input yields "".
 function normalizedLegs(): PresetOutputInput[] {
   return formLegs.value.map((leg) => ({
     ...leg,
-    resolution: blankToNull(leg.resolution),
-    framerate: blankToNull(leg.framerate),
     bitrate_kbps: leg.bitrate_kbps ? Number(leg.bitrate_kbps) : null,
   }))
 }

@@ -34,9 +34,7 @@ export const useSourcesStore = defineStore('sources', () => {
     const key = sourceKey(nodeId, sourceId)
     const s = sources.value.find((s) => s.key === key)
     if (!s) return
-    if (tc !== null) {
-      s.timecode = s.timecode ? { ...s.timecode, display: tc } : null
-    }
+    s.timecode = tc
     s.error = error
   }
 

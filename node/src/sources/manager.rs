@@ -134,18 +134,24 @@ impl SourceManager {
         self.monitors.get(source_id)?.error()
     }
 
-    /// Whether any monitor has failed and is waiting for a rescan to restart it.
-    pub fn has_failed_monitor(&self) -> bool {
-        self.monitors.values().any(|m| m.error().is_some())
+    /// Whether a source is being monitored and its monitor hasn't failed.
+    fn is_healthy(&self, source_id: &str) -> bool {
+        self.monitors.get(source_id).is_some_and(|m| m.error().is_none())
+    }
+
+    /// Whether any source lacks a healthy monitor — it failed, or never
+    /// started — and is waiting for a rescan to (re)start it.
+    pub fn needs_rescan(&self) -> bool {
+        self.sources.iter().any(|s| !self.is_healthy(s.id()))
     }
 
     // ── Scan ──────────────────────────────────────────────────────────────────
 
     /// Rebuild the source list from test configs and the NDI sources currently
     /// on the network. A source whose id and fingerprint are unchanged is kept
-    /// as-is, monitor and recordings included — unless its monitor has failed.
-    /// Removed, changed or failed sources are torn down (returned for the
-    /// caller to run); new, changed or failed sources get a fresh monitor.
+    /// as-is, monitor and recordings included — unless its monitor has failed
+    /// or never started. Removed, changed or failed sources are torn down
+    /// (returned for the caller to run); everything else gets a fresh monitor.
     pub fn scan(&mut self, configs: &[TestSourceConfigDto]) -> Vec<Teardown> {
         let mut candidates: Vec<Box<dyn InputSource>> = Vec::new();
         for cfg in configs {
@@ -172,9 +178,7 @@ impl SourceManager {
                 continue;
             }
             match old.remove(&id) {
-                Some(existing)
-                    if existing.fingerprint() == candidate.fingerprint() && self.monitor_error(&id).is_none() =>
-                {
+                Some(existing) if existing.fingerprint() == candidate.fingerprint() && self.is_healthy(&id) => {
                     self.sources.push(existing);
                     continue;
                 }
@@ -196,16 +200,6 @@ impl SourceManager {
 
         info!(count = self.sources.len(), "source scan complete");
         teardowns
-    }
-
-    // ── Manual connect / disconnect ───────────────────────────────────────────
-
-    /// Start the monitor pipeline for a source.
-    pub fn connect(&mut self, source_id: &str) -> Result<()> {
-        if self.monitors.contains_key(source_id) {
-            return Ok(()); // already connected
-        }
-        self.start_monitor(source_id)
     }
 
     // ── Thumbnail / audio access ──────────────────────────────────────────────
@@ -358,7 +352,7 @@ impl SourceManager {
     }
 
     /// Remove the monitor (and any active recordings) for a source.
-    pub fn disconnect(&mut self, source_id: &str) -> Option<Teardown> {
+    fn disconnect(&mut self, source_id: &str) -> Option<Teardown> {
         let pipeline = self.monitors.remove(source_id)?;
         let session_ids: Vec<String> = self
             .sessions

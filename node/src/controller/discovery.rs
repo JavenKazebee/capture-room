@@ -11,7 +11,6 @@ use tracing::{info, warn};
 use super::registry::NodeEntry;
 use super::{relay, Ctx};
 use crate::api::types::{NodeStatus, WsEvent};
-use crate::ws;
 
 const SERVICE_TYPE: &str = "_capture-room._tcp.local.";
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
@@ -116,11 +115,7 @@ pub async fn add_node(ctx: &Ctx, url: String, manual: bool) -> Result<NodeStatus
     let is_new = ctx.registry.write().await.upsert(entry);
     if is_new {
         info!(id = %status.id, url = %url, "node added");
-        ws::send(
-            &ctx.state.ws_tx,
-            &ctx.state.node_id,
-            &WsEvent::NodeOnline { peer_id: status.id.clone() },
-        );
+        ctx.state.emit_controller(&WsEvent::NodeOnline { peer_id: status.id.clone() });
         relay::spawn(ctx.clone(), status.id.clone(), relay);
     }
     Ok(status)
@@ -175,11 +170,7 @@ pub fn start_health_poller(ctx: Ctx) {
                         if !manual && failures >= PRUNE_AFTER_FAILURES {
                             reg.remove(&id);
                             info!(id = %id, "node pruned after {failures} failed checks");
-                            ws::send(
-                                &ctx.state.ws_tx,
-                                &ctx.state.node_id,
-                                &WsEvent::NodeOffline { peer_id: id.clone() },
-                            );
+                            ctx.state.emit_controller(&WsEvent::NodeOffline { peer_id: id.clone() });
                         } else if failures == 1 {
                             warn!(id = %id, "node health check failed");
                         }

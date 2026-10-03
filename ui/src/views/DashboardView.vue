@@ -1,15 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { onMounted } from 'vue'
 import { useSourcesStore } from '@/stores/sources'
 import { useRecordingsStore } from '@/stores/recordings'
 import { usePresetsStore } from '@/stores/presets'
 import { useNodesStore } from '@/stores/nodes'
-import type { MonitorSettingsDto } from '@/types/generated/MonitorSettingsDto'
 import { wsStatus } from '@/composables/useWebSocket'
-import { nodeApi } from '@/composables/useApi'
 import FeedCard from '@/components/FeedCard.vue'
-import OptionSelect from '@/components/OptionSelect.vue'
-import { Button } from '@/components/ui/button'
 import { WifiOff } from '@lucide/vue'
 
 const sources = useSourcesStore()
@@ -17,73 +13,12 @@ const recordings = useRecordingsStore()
 const presets = usePresetsStore()
 const nodes = useNodesStore()
 
-// ── Monitor settings (applied to every reachable node) ───────────────────────
-
-// The form's draft; loaded from this node's settings and sent on Apply.
-const monitor = ref<MonitorSettingsDto>({
-  thumb_fps: 1,
-  thumb_width: 320,
-  thumb_height: 180,
-  level_interval_ms: 100,
-})
-const monitorSaving = ref(false)
-
-const thumbSizeOptions = [
-  { label: '320×180', value: '320x180' },
-  { label: '640×360', value: '640x360' },
-  { label: '1280×720', value: '1280x720' },
-]
-
-const thumbFpsOptions = [
-  { label: '1 fps', value: 1 },
-  { label: '2 fps', value: 2 },
-  { label: '5 fps', value: 5 },
-  { label: '10 fps', value: 10 },
-]
-
-const levelIntervalOptions = [
-  { label: '50 ms', value: 50 },
-  { label: '100 ms', value: 100 },
-  { label: '200 ms', value: 200 },
-  { label: '500 ms', value: 500 },
-]
-
-const thumbSize = computed({
-  get: () => `${monitor.value.thumb_width}x${monitor.value.thumb_height}`,
-  set: (v: string) => {
-    const [w, h] = v.split('x').map(Number)
-    monitor.value = { ...monitor.value, thumb_width: w!, thumb_height: h! }
-  },
-})
-
-async function saveMonitorSettings() {
-  if (monitorSaving.value) return
-  monitorSaving.value = true
-  try {
-    const body = { monitor: monitor.value }
-    const results = await Promise.allSettled(
-      nodes.reachable.map((n) =>
-        nodeApi(n.id)<{ monitor: MonitorSettingsDto }>('/settings', { method: 'PUT', body }),
-      ),
-    )
-    const first = results.find((r) => r.status === 'fulfilled')
-    if (first) {
-      monitor.value = first.value.monitor
-      if (nodes.self) nodes.self.monitor = first.value.monitor
-    }
-  } finally {
-    monitorSaving.value = false
-  }
-}
-
 // ── Load ──────────────────────────────────────────────────────────────────────
 
 onMounted(async () => {
   presets.load()
   await nodes.load()
   await Promise.all([sources.loadSources(), recordings.load()])
-
-  if (nodes.self) monitor.value = { ...nodes.self.monitor }
 })
 </script>
 
@@ -106,45 +41,7 @@ onMounted(async () => {
 
     <!-- Main content -->
     <div class="flex-1 overflow-y-auto p-6">
-      <!-- Title + monitor settings row -->
-      <div class="flex items-center justify-between mb-6 gap-4">
-        <h1 class="text-2xl font-semibold shrink-0">Dashboard</h1>
-
-        <!-- Monitor settings -->
-        <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-xs text-muted-foreground shrink-0">Thumbnail</span>
-          <OptionSelect
-            v-model="thumbSize"
-            :options="thumbSizeOptions"
-            :disabled="monitorSaving"
-            class="w-28"
-          />
-          <OptionSelect
-            v-model="monitor.thumb_fps"
-            :options="thumbFpsOptions"
-            :disabled="monitorSaving"
-            class="w-20"
-          />
-
-          <span class="text-xs text-muted-foreground shrink-0">Audio</span>
-          <OptionSelect
-            v-model="monitor.level_interval_ms"
-            :options="levelIntervalOptions"
-            :disabled="monitorSaving"
-            class="w-20"
-          />
-
-          <Button
-            size="sm"
-            variant="outline"
-            class="h-7 px-3 text-xs"
-            :disabled="monitorSaving"
-            @click="saveMonitorSettings"
-          >
-            {{ monitorSaving ? 'Applying…' : 'Apply' }}
-          </Button>
-        </div>
-      </div>
+      <h1 class="text-2xl font-semibold mb-6">Dashboard</h1>
 
       <!-- Empty state -->
       <div

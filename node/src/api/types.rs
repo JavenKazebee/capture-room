@@ -28,34 +28,6 @@ pub enum SourceType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
-pub struct TimecodeDto {
-    pub hours: u8,
-    pub minutes: u8,
-    pub seconds: u8,
-    pub frames: u8,
-    pub drop_frame: bool,
-    pub framerate: [u32; 2],
-    /// `HH:MM:SS:FF`, with `;` before the frames for drop-frame.
-    pub display: String,
-}
-
-impl TimecodeDto {
-    pub fn new(hours: u8, minutes: u8, seconds: u8, frames: u8, drop_frame: bool, framerate: [u32; 2]) -> Self {
-        let sep = if drop_frame { ';' } else { ':' };
-        Self {
-            display: format!("{hours:02}:{minutes:02}:{seconds:02}{sep}{frames:02}"),
-            hours,
-            minutes,
-            seconds,
-            frames,
-            drop_frame,
-            framerate,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct SourceCapabilitiesDto {
     pub max_width: u32,
     pub max_height: u32,
@@ -72,8 +44,11 @@ pub struct SourceDto {
     pub connected: bool,
     /// Set when the monitor pipeline has failed (e.g. an NDI sender went away).
     pub error: Option<String>,
-    pub timecode: Option<TimecodeDto>,
-    pub capabilities: SourceCapabilitiesDto,
+    /// `HH:MM:SS:FF`, or `None` if the source has no timecode.
+    pub timecode: Option<String>,
+    /// `None` when the source can't know its format up front (NDI negotiates
+    /// it at runtime).
+    pub capabilities: Option<SourceCapabilitiesDto>,
 }
 
 // ── Test source config ────────────────────────────────────────────────────────

@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::api::types::NodeDto;
+
 #[derive(Clone)]
 pub struct NodeEntry {
     pub id: String,
@@ -18,6 +20,21 @@ pub struct NodeEntry {
     /// Stops this node's WS relay. Cancelled when the entry is removed, so a
     /// node that is removed and re-added never ends up with two relays.
     pub relay: CancellationToken,
+}
+
+impl From<&NodeEntry> for NodeDto {
+    fn from(n: &NodeEntry) -> Self {
+        NodeDto {
+            id: n.id.clone(),
+            name: n.name.clone(),
+            url: n.url.clone(),
+            version: n.version.clone(),
+            healthy: n.healthy,
+            uptime_secs: n.uptime_secs,
+            is_self: false,
+            manual: n.manual,
+        }
+    }
 }
 
 #[derive(Default)]

@@ -5,7 +5,7 @@ pub mod manager;
 pub mod ndi;
 pub mod test;
 
-use crate::api::types::{SourceCapabilitiesDto, SourceType, TimecodeDto};
+use crate::api::types::{SourceCapabilitiesDto, SourceType};
 
 /// Every input source implements this trait.
 ///
@@ -16,7 +16,8 @@ pub trait InputSource: Send + Sync {
     fn id(&self) -> &str;
     fn display_name(&self) -> &str;
     fn source_type(&self) -> SourceType;
-    fn capabilities(&self) -> SourceCapabilitiesDto;
+    /// The source's format, if known before it starts producing.
+    fn capabilities(&self) -> Option<SourceCapabilitiesDto>;
 
     /// Identifies the configuration the bin was built from. A rescan keeps a
     /// source (and its running monitor) only if the id and fingerprint match;
@@ -26,7 +27,8 @@ pub trait InputSource: Send + Sync {
     /// Returns the source's GStreamer bin (video + audio ghost pads).
     fn gst_src_element(&self) -> gst::Element;
 
-    fn timecode(&self) -> Option<TimecodeDto>;
+    /// Current timecode as `HH:MM:SS:FF`, if the source has one.
+    fn timecode(&self) -> Option<String>;
 }
 
 /// Expose `element`'s static src pad on `bin` as the ghost pad `name`

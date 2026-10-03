@@ -67,20 +67,7 @@ async fn get_nodes(State(state): State<Arc<AppState>>) -> Json<Vec<NodeDto>> {
 
     if let Some(c) = state.controller.read().await.as_ref() {
         let reg = c.registry.read().await;
-        let mut peers: Vec<NodeDto> = reg
-            .all()
-            .into_iter()
-            .map(|n| NodeDto {
-                id: n.id.clone(),
-                name: n.name.clone(),
-                url: n.url.clone(),
-                version: n.version.clone(),
-                healthy: n.healthy,
-                uptime_secs: n.uptime_secs,
-                is_self: false,
-                manual: n.manual,
-            })
-            .collect();
+        let mut peers: Vec<NodeDto> = reg.all().into_iter().map(NodeDto::from).collect();
         peers.sort_by(|a, b| a.name.cmp(&b.name));
         dtos.extend(peers);
     }
@@ -140,11 +127,11 @@ async fn post_preset(
     State(state): State<Arc<AppState>>,
     Json(req): Json<PresetCreateRequest>,
 ) -> ApiResult<(StatusCode, Json<PresetDto>)> {
-    validate_outputs(&req.outputs)?;
+    let outputs = validate_outputs(req.outputs)?;
     let now = chrono::Utc::now().to_rfc3339();
     let id = uuid::Uuid::new_v4().to_string();
     let preset = PresetDto {
-        outputs: output_dtos(&id, req.outputs),
+        outputs: output_dtos(&id, outputs),
         id,
         name: req.name,
         created_at: now.clone(),
@@ -160,8 +147,7 @@ async fn put_preset(
     Path(id): Path<String>,
     Json(req): Json<PresetCreateRequest>,
 ) -> ApiResult<Json<PresetDto>> {
-    validate_outputs(&req.outputs)?;
-    let outputs = output_dtos(&id, req.outputs);
+    let outputs = output_dtos(&id, validate_outputs(req.outputs)?);
     let now = chrono::Utc::now().to_rfc3339();
     let preset = db::preset_update(&state.db, &id, &req.name, &now, outputs).await?.ok_or(PRESET_NOT_FOUND)?;
     Ok(Json(preset))
@@ -174,13 +160,22 @@ async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<String
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Reject outputs a recording couldn't start with, at save time rather than
-/// when someone presses Record.
-fn validate_outputs(outputs: &[PresetOutputInput]) -> ApiResult<()> {
-    for output in outputs {
-        RecordingProfile::from_output(output).map_err(ApiError::BadRequest)?;
+/// Store blank resolution/framerate as `None` ("match the source"), and reject
+/// outputs a recording couldn't start with — at save time rather than when
+/// someone presses Record.
+fn validate_outputs(outputs: Vec<PresetOutputInput>) -> ApiResult<Vec<PresetOutputInput>> {
+    fn blank_to_none(v: Option<String>) -> Option<String> {
+        v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     }
-    Ok(())
+    outputs
+        .into_iter()
+        .map(|mut output| {
+            output.resolution = blank_to_none(output.resolution);
+            output.framerate = blank_to_none(output.framerate);
+            RecordingProfile::from_output(&output).map_err(ApiError::BadRequest)?;
+            Ok(output)
+        })
+        .collect()
 }
 
 fn output_dtos(preset_id: &str, outputs: Vec<PresetOutputInput>) -> Vec<PresetOutputDto> {

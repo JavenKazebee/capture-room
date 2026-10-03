@@ -4,8 +4,7 @@ use gstreamer::{self as gst, prelude::*};
 
 use super::{add_ghost_pad, InputSource};
 use crate::api::types::{
-    AudioTestSignal, SourceCapabilitiesDto, SourceType, TestSourceConfigDto, TestSourceRequest, TimecodeDto,
-    VideoTestPattern,
+    AudioTestSignal, SourceCapabilitiesDto, SourceType, TestSourceConfigDto, TestSourceRequest, VideoTestPattern,
 };
 use crate::pipeline::{capsfilter, make_el};
 
@@ -76,13 +75,13 @@ impl InputSource for TestSource {
         SourceType::Test
     }
 
-    fn capabilities(&self) -> SourceCapabilitiesDto {
-        SourceCapabilitiesDto {
+    fn capabilities(&self) -> Option<SourceCapabilitiesDto> {
+        Some(SourceCapabilitiesDto {
             max_width: self.config.width,
             max_height: self.config.height,
             max_framerate: [self.config.fps_num, self.config.fps_den],
             audio_channels: self.config.channels,
-        }
+        })
     }
 
     fn fingerprint(&self) -> String {
@@ -93,20 +92,13 @@ impl InputSource for TestSource {
         self.bin.clone().upcast()
     }
 
-    fn timecode(&self) -> Option<TimecodeDto> {
+    fn timecode(&self) -> Option<String> {
         let now = chrono::Utc::now();
         let fps = self.config.fps_num as f64 / self.config.fps_den.max(1) as f64;
         // nanosecond() exceeds 1e9 during a leap second; keep frames in range.
         let frac = (now.nanosecond() as f64 / 1_000_000_000.0).min(0.999_999);
-        let frames = (frac * fps) as u8;
-        Some(TimecodeDto::new(
-            now.hour() as u8,
-            now.minute() as u8,
-            now.second() as u8,
-            frames,
-            false,
-            [self.config.fps_num, self.config.fps_den],
-        ))
+        let frames = (frac * fps) as u32;
+        Some(format!("{:02}:{:02}:{:02}:{frames:02}", now.hour(), now.minute(), now.second()))
     }
 }
 

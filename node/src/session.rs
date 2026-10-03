@@ -105,16 +105,17 @@ pub async fn rebuild_sources(state: &Arc<AppState>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Restart failed monitors (e.g. an NDI sender that dropped out) by rescanning
-/// whenever one has failed. A rescan ends the failed source's recordings, so
-/// their files are finalized rather than left waiting for frames that never
-/// come; a sender that has left the network is removed instead.
+/// Restart failed monitors (e.g. an NDI sender that dropped out), or ones that
+/// failed to start, by rescanning whenever a source lacks a healthy monitor. A
+/// rescan ends a failed source's recordings, so their files are finalized
+/// rather than left waiting for frames that never come; a sender that has left
+/// the network is removed instead.
 pub fn spawn_monitor_recovery(state: Arc<AppState>) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(RECOVERY_INTERVAL);
         loop {
             interval.tick().await;
-            if !state.source_manager.read().await.has_failed_monitor() {
+            if !state.source_manager.read().await.needs_rescan() {
                 continue;
             }
             info!("restarting failed monitors");

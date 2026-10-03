@@ -45,4 +45,12 @@ impl AppState {
             let _ = self.ws_tx.send(json);
         }
     }
+
+    /// Emit a controller event (about its peers) on the merged channel only:
+    /// it isn't this node's own event, so other controllers mustn't relay it.
+    pub fn emit_controller(&self, event: &crate::api::types::WsEvent) {
+        if let Some(json) = crate::ws::encode(&self.node_id, event) {
+            let _ = self.ws_tx.send(json);
+        }
+    }
 }

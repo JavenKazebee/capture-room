@@ -10,7 +10,9 @@ use crate::api::types::{
 pub async fn init(db_path: &str) -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(db_path)
         .context("parse db path")?
-        .create_if_missing(true);
+        .create_if_missing(true)
+        // Preset outputs cascade-delete with their preset.
+        .foreign_keys(true);
 
     let pool = SqlitePool::connect_with(opts)
         .await
@@ -226,18 +228,9 @@ pub async fn preset_update(
     Ok(Some(preset))
 }
 
+/// Delete a preset; its outputs go with it (`ON DELETE CASCADE`).
 pub async fn preset_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
-    let mut tx = pool.begin().await?;
-    // Delete outputs first (no FK cascade enforcement in SQLite without PRAGMA).
-    sqlx::query("DELETE FROM preset_outputs WHERE preset_id = ?")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    let res = sqlx::query("DELETE FROM presets WHERE id = ?")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
+    let res = sqlx::query("DELETE FROM presets WHERE id = ?").bind(id).execute(pool).await?;
     Ok(res.rows_affected() > 0)
 }
 

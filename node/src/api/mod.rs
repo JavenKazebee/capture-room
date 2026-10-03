@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use axum::{
     body::Body,
-    http::{header, StatusCode, Uri},
+    http::{header, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     Router,
 };
@@ -47,7 +47,13 @@ fn serve_asset(path: &str) -> Option<Response> {
     )
 }
 
-async fn serve_ui(uri: Uri) -> Response {
+/// Serve the UI for page loads: GET/HEAD outside `/api`, with unknown paths
+/// getting `index.html` for client-side routing. Anything else unmatched is a
+/// real 404 — an unknown API route must not "succeed" with the UI's HTML.
+async fn serve_ui(method: Method, uri: Uri) -> Response {
+    if !matches!(method, Method::GET | Method::HEAD) || uri.path().starts_with("/api/") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
     serve_asset(path)

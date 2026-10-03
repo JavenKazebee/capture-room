@@ -75,13 +75,14 @@ pub trait InputSource: Send + Sync {
     fn id(&self) -> &str;
     fn display_name(&self) -> &str;
     fn source_type(&self) -> SourceType;
-    fn capabilities(&self) -> SourceCapabilitiesDto;
+    /// Format, if known up front (NDI negotiates at runtime → None).
+    fn capabilities(&self) -> Option<SourceCapabilitiesDto>;
     /// Identifies the config the bin was built from; a rescan rebuilds the
     /// source (and restarts its monitor) only when this changes or the
-    /// monitor has failed.
+    /// monitor has failed or never started.
     fn fingerprint(&self) -> String;
     fn gst_src_element(&self) -> gst::Element;
-    fn timecode(&self) -> Option<TimecodeDto>;
+    fn timecode(&self) -> Option<String>; // "HH:MM:SS:FF"
 }
 ```
 
@@ -138,8 +139,8 @@ now fails alone while the session's other legs keep recording.
   remaining legs. Once every leg has failed nothing is being recorded, so the session
   is stopped and ends as `error`.
 - **Source failure:** a monitor that posts an error (e.g. an NDI sender dropped out)
-  shows it on the source. A background check every 5 s rescans while any monitor has
-  failed: the source is rebuilt with a fresh monitor (or removed, if it has left the
+  shows it on the source. A background check every 5 s rescans while any source lacks
+  a healthy monitor (failed, or failed to start): the source is rebuilt with a fresh monitor (or removed, if it has left the
   network), and its recordings are stopped with `source failed: …` so their files are
   finalized. Recording does not restart automatically.
 - **Chroma:** H.264/H.265 legs encode the preset's chroma subsampling (default 4:2:0);
@@ -158,7 +159,7 @@ Codecs and containers are closed enums (`VideoCodec`, `Container` in `api/types.
 
 ## Thumbnails
 
-The monitor pipeline's thumbnail branch generates JPEG frames at a configurable rate (default **1 fps**, 1–10) regardless of source framerate. Rate and size are node-wide monitor settings (`PUT /api/v1/node/settings`, edited on the Dashboard), applied live without restarting pipelines, and have no effect on encoded output.
+The monitor pipeline's thumbnail branch generates JPEG frames at a configurable rate (default **1 fps**, 1–10) regardless of source framerate. Rate and size are node-wide monitor settings (`PUT /api/v1/node/settings`, edited on the Nodes page), applied live without restarting pipelines, and have no effect on encoded output.
 
 The latest JPEG is held in memory and served from `GET /api/v1/node/thumbnails/{source_id}`. The periodic emitter sends `thumbnail.updated` at the configured rate and the UI re-fetches the image. The 10 fps ceiling comes from the emitter's 100 ms tick; a subscription WebSocket that pushes frames is planned (see ROADMAP.md).
 
@@ -196,7 +197,6 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 | GET | `/sources` | sources on this machine |
 | POST | `/sources/scan` | rescan |
 | GET | `/sources/{id}` | source details |
-| POST | `/sources/{id}/connect` · `/disconnect` | |
 | GET / POST | `/test-sources` | test source configs |
 | PUT / DELETE | `/test-sources/{id}` | |
 | GET / POST | `/recordings` | list / start. Start body: `{ source_id, preset_id?, outputs: [...] }` |
@@ -275,10 +275,10 @@ In production, the compiled UI is embedded into the Rust binary via `rust-embed`
 | View | Description |
 |------|-------------|
 | **Dashboard** | Feed grid — thumbnail, source name, timecode, recording state, audio meters, dropped frame indicator per source across all nodes |
-| **Sources** | Per-node source list, connect/disconnect, capabilities |
+| **Sources** | Per-node source list, capabilities, test source authoring |
 | **Recordings** _(planned)_ | Session history, active sessions |
 | **Presets** | Create and edit recording presets |
-| **Nodes** | Add/remove nodes, view health and storage (benchmarks planned) |
+| **Nodes** | Controller toggle, monitoring settings (thumbnail/meter rate, applied to all nodes), add/remove nodes, health and storage (benchmarks planned) |
 | **Schedules** _(planned)_ | Create, edit, and view upcoming scheduled recordings |
 | **Logs** _(planned)_ | Aggregated log viewer with filter by node and level |
 
