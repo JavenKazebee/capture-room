@@ -1,4 +1,4 @@
-import { ofetch } from 'ofetch'
+import { FetchError, ofetch } from 'ofetch'
 
 export const api = ofetch.create({ baseURL: '/api/v1' })
 
@@ -17,4 +17,13 @@ export function sourceKey(nodeId: string, sourceId: string) {
 
 export function thumbnailUrl(nodeId: string, sourceId: string) {
   return `/api/v1/nodes/${encodeURIComponent(nodeId)}/thumbnails/${encodeURIComponent(sourceId)}`
+}
+
+/**
+ * A failed request's message for display. The server replies with plain-text
+ * error bodies; ofetch's own `message` is only "[POST] /url: 500 …".
+ */
+export function errorMessage(e: unknown, fallback: string): string {
+  if (e instanceof FetchError && typeof e.data === 'string' && e.data.trim()) return e.data
+  return e instanceof Error ? e.message : fallback
 }

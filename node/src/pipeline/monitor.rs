@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
 use gstreamer::{self as gst, prelude::*};
@@ -23,6 +25,9 @@ pub struct MonitorPipeline {
     pub audio_meter: AudioMeter,
     pub video: StreamProducer,
     pub audio: StreamProducer,
+    /// The first error the pipeline posted. An errored pipeline has stopped
+    /// producing, so this is shown on the source until its monitor restarts.
+    error: Arc<Mutex<Option<String>>>,
     _bus_task: tokio::task::JoinHandle<()>,
     // Live-reconfigurable elements.
     thumb_rate_caps: gst::Element,
@@ -65,6 +70,8 @@ impl MonitorPipeline {
         // ── Bus task ──────────────────────────────────────────────────────────
         let bus = pipeline.bus().context("pipeline has no bus")?;
         let audio_meter_ref = audio_meter.clone();
+        let error = Arc::new(Mutex::new(None));
+        let error_ref = error.clone();
         let bus_task = tokio::spawn(async move {
             let mut stream = bus.stream();
             while let Some(msg) = stream.next().await {
@@ -75,6 +82,7 @@ impl MonitorPipeline {
                             msg = %err.error(),
                             "monitor pipeline error"
                         );
+                        error_ref.lock().unwrap().get_or_insert_with(|| err.error().to_string());
                     }
                     gst::MessageView::Warning(w) => {
                         warn!(msg = %w.error(), "monitor pipeline warning");
@@ -102,11 +110,16 @@ impl MonitorPipeline {
             audio_meter,
             video,
             audio,
+            error,
             _bus_task: bus_task,
             thumb_rate_caps,
             thumb_scale_caps,
             level_el,
         })
+    }
+
+    pub fn error(&self) -> Option<String> {
+        self.error.lock().unwrap().clone()
     }
 
     pub fn stop(&self) -> Result<()> {

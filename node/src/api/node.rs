@@ -228,7 +228,7 @@ async fn post_recording(
     if req.outputs.is_empty() {
         return Err(ApiError::BadRequest("at least one output is required"));
     }
-    let legs = build_legs(&state, &req);
+    let legs = build_legs(&state, &req)?;
     for (path, _) in &legs {
         if let Some(parent) = Path::new(path).parent() {
             std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
@@ -338,6 +338,7 @@ fn source_to_dto(mgr: &SourceManager, s: &dyn InputSource) -> SourceDto {
         display_name: s.display_name().to_string(),
         source_type: format!("{:?}", s.source_type()).to_lowercase(),
         connected: mgr.is_monitored(s.id()),
+        error: mgr.monitor_error(s.id()),
         timecode: s.timecode().map(timecode_to_dto),
         capabilities: SourceCapabilitiesDto {
             max_width: caps.max_width,
@@ -376,7 +377,7 @@ async fn rescan_after(state: &Arc<AppState>, change: &str) {
 }
 
 /// Build `(resolved_path, RecordingProfile)` for every requested output leg.
-fn build_legs(state: &AppState, req: &StartRecordingRequest) -> Vec<(String, RecordingProfile)> {
+fn build_legs(state: &AppState, req: &StartRecordingRequest) -> ApiResult<Vec<(String, RecordingProfile)>> {
     let now = chrono::Local::now();
     let date = now.format("%Y-%m-%d").to_string();
     let datetime = now.format("%Y%m%d_%H%M%S").to_string();
@@ -385,7 +386,7 @@ fn build_legs(state: &AppState, req: &StartRecordingRequest) -> Vec<(String, Rec
     req.outputs
         .iter()
         .map(|o| {
-            let profile = RecordingProfile::from_output(o);
+            let profile = RecordingProfile::from_output(o).map_err(ApiError::BadRequest)?;
             let path = o
                 .path_template
                 .replace("{source}", &req.source_id)
@@ -394,7 +395,7 @@ fn build_legs(state: &AppState, req: &StartRecordingRequest) -> Vec<(String, Rec
                 .replace("{datetime}", &datetime)
                 .replace("{output}", &o.name)
                 .replace("{ext}", profile.file_extension());
-            (path, profile)
+            Ok((path, profile))
         })
         .collect()
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { nodeApi } from '@/composables/useApi'
+import { errorMessage, nodeApi } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
 import type { StorageVolumeDto } from '@/types/generated/StorageVolumeDto'
 import { Badge } from '@/components/ui/badge'
@@ -48,8 +48,8 @@ async function addNode() {
     await store.add(addNodeUrl.value.trim())
     addNodeUrl.value = ''
     await Promise.all(store.reachable.map((n) => loadStorage(n.id)))
-  } catch (e: any) {
-    addNodeError.value = e?.data ?? e?.message ?? 'Failed to add node'
+  } catch (e) {
+    addNodeError.value = errorMessage(e, 'Failed to add node')
   } finally {
     addNodeLoading.value = false
   }

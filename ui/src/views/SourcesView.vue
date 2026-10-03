@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useSourcesStore, type Source } from '@/stores/sources'
+import { errorMessage } from '@/composables/useApi'
 import type { TestSourceRequest } from '@/types/generated/TestSourceRequest'
 import { useNodesStore } from '@/stores/nodes'
 import { Button } from '@/components/ui/button'
@@ -143,7 +144,7 @@ async function save() {
     }
     showForm.value = false
   } catch (e) {
-    formError.value = e instanceof Error ? e.message : 'Save failed.'
+    formError.value = errorMessage(e, 'Save failed.')
   } finally {
     saving.value = false
   }
@@ -153,7 +154,7 @@ async function destroy(src: Source) {
   try {
     await store.deleteTestSource(src.node_id, src.id)
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Delete failed.'
+    error.value = errorMessage(e, 'Delete failed.')
   }
 }
 
@@ -165,7 +166,7 @@ async function scan() {
   try {
     await store.scanAll()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Scan failed.'
+    error.value = errorMessage(e, 'Scan failed.')
   } finally {
     scanning.value = false
   }

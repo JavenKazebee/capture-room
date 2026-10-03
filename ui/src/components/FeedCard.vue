@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useNow } from '@vueuse/core'
 import { audioLevels, thumbnailSeqs, type Source } from '@/stores/sources'
 import { useRecordingsStore, type RecordingSession } from '@/stores/recordings'
 import { usePresetsStore } from '@/stores/presets'
-import { thumbnailUrl } from '@/composables/useApi'
+import { errorMessage, thumbnailUrl } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
 import AudioMeter from './AudioMeter.vue'
 import { Button } from '@/components/ui/button'
@@ -74,10 +75,12 @@ const channels = computed(() => audioLevels.get(props.source.key) ?? [])
 // ── Recording controls ────────────────────────────────────────────────────────
 
 const busy = ref(false)
+const actionError = ref<string | null>(null)
 
 async function toggleRecording() {
   if (busy.value) return
   busy.value = true
+  actionError.value = null
   try {
     if (props.session) {
       await recordings.stop(props.source.node_id, props.session.id)
@@ -85,6 +88,8 @@ async function toggleRecording() {
       const preset = presets.presets.find((p) => p.id === selectedPreset.value) ?? null
       await recordings.start(props.source.node_id, props.source.id, preset)
     }
+  } catch (e) {
+    actionError.value = errorMessage(e, props.session ? 'Stop failed.' : 'Record failed.')
   } finally {
     busy.value = false
   }
@@ -92,8 +97,16 @@ async function toggleRecording() {
 
 // ── Duration ─────────────────────────────────────────────────────────────────
 
-function formatDuration(startedAt: string): string {
-  const elapsed = Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000)
+// Ticks once a second so the timer advances on its own (it used to update
+// only when audio levels happened to re-render the card).
+const now = useNow({ interval: 1000 })
+
+const duration = computed(() =>
+  props.session ? formatDuration(now.value.getTime() - new Date(props.session.started_at).getTime()) : '',
+)
+
+function formatDuration(ms: number): string {
+  const elapsed = Math.max(0, Math.floor(ms / 1000))
   const h = Math.floor(elapsed / 3600)
   const m = Math.floor((elapsed % 3600) / 60)
   const s = elapsed % 60
@@ -109,8 +122,15 @@ function formatDuration(startedAt: string): string {
     <div class="relative flex bg-black" style="aspect-ratio: 16/9">
       <!-- Thumbnail -->
       <div class="flex-1 relative overflow-hidden">
+        <div
+          v-if="source.error"
+          class="w-full h-full flex flex-col items-center justify-center gap-1 px-4 text-center text-xs"
+        >
+          <span class="text-destructive font-medium">Source failed</span>
+          <span class="text-muted-foreground line-clamp-3">{{ source.error }}</span>
+        </div>
         <img
-          v-if="!thumbError"
+          v-else-if="!thumbError"
           :src="thumbnailSrc"
           :alt="source.display_name"
           class="w-full h-full object-cover"
@@ -138,7 +158,7 @@ function formatDuration(startedAt: string): string {
         >
           <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse shrink-0" />
           <span class="text-white text-[10px] font-mono">
-            {{ formatDuration(session.started_at) }}
+            {{ duration }}
           </span>
         </div>
       </div>
@@ -190,6 +210,8 @@ function formatDuration(startedAt: string): string {
           {{ session ? 'Stop' : 'Record' }}
         </Button>
       </div>
+
+      <p v-if="actionError" class="text-xs text-destructive break-words">{{ actionError }}</p>
     </div>
   </div>
 </template>

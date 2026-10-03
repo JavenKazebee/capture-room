@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use futures_util::future::join_all;
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use tracing::{info, warn};
 
@@ -35,21 +36,21 @@ pub fn local_hostname() -> Option<String> {
 
 /// Register this instance on the local network so controllers can find it.
 /// The returned daemon must be kept alive for the registration to persist.
-pub fn register_mdns_service(node_id: &str, node_name: &str, port: u16) -> ServiceDaemon {
-    let daemon = ServiceDaemon::new().expect("mDNS daemon");
+/// Fails on machines without working mDNS; the node still runs, but has to be
+/// added to a controller by URL.
+pub fn register_mdns_service(node_id: &str, node_name: &str, port: u16) -> Result<ServiceDaemon> {
+    let daemon = ServiceDaemon::new()?;
     let hostname = local_hostname().unwrap_or_else(|| "capture-room".to_string());
     let mdns_host = format!("{hostname}.local.");
 
     // Instance name must be unique on the network; suffix with a short id slice.
     let instance = format!("{} ({})", node_name, &node_id[..node_id.len().min(8)]);
 
-    let service = ServiceInfo::new(SERVICE_TYPE, &instance, &mdns_host, (), port, None)
-        .expect("mDNS ServiceInfo")
-        .enable_addr_auto();
+    let service = ServiceInfo::new(SERVICE_TYPE, &instance, &mdns_host, (), port, None)?.enable_addr_auto();
 
-    daemon.register(service).expect("mDNS register");
+    daemon.register(service)?;
     info!(instance = %instance, port = port, "registered mDNS service");
-    daemon
+    Ok(daemon)
 }
 
 // ── mDNS browser ─────────────────────────────────────────────────────────────
@@ -153,9 +154,18 @@ pub fn start_health_poller(ctx: Ctx) {
                 reg.all().iter().map(|n| (n.id.clone(), n.url.clone())).collect()
             };
 
-            for (id, url) in entries {
-                let result = fetch_status(&ctx, &url).await;
-                let mut reg = ctx.registry.write().await;
+            // Check concurrently so one unreachable node doesn't delay the rest.
+            let results = join_all(entries.into_iter().map(|(id, url)| {
+                let ctx = &ctx;
+                async move {
+                    let result = fetch_status(ctx, &url).await;
+                    (id, result)
+                }
+            }))
+            .await;
+
+            let mut reg = ctx.registry.write().await;
+            for (id, result) in results {
                 match result {
                     Ok(status) if status.id == id => {
                         reg.record_success(&id, &status.name, status.uptime_secs, &status.version);
@@ -164,7 +174,6 @@ pub fn start_health_poller(ctx: Ctx) {
                         let (failures, manual) = reg.record_failure(&id);
                         if !manual && failures >= PRUNE_AFTER_FAILURES {
                             reg.remove(&id);
-                            drop(reg);
                             info!(id = %id, "node pruned after {failures} failed checks");
                             ws::send(
                                 &ctx.state.ws_tx,

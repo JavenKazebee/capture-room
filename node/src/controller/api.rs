@@ -19,6 +19,7 @@ use crate::api::types::{
     PresetOutputInput,
 };
 use crate::db;
+use crate::pipeline::profile::RecordingProfile;
 use crate::state::AppState;
 use crate::ws;
 
@@ -139,6 +140,7 @@ async fn post_preset(
     State(state): State<Arc<AppState>>,
     Json(req): Json<PresetCreateRequest>,
 ) -> ApiResult<(StatusCode, Json<PresetDto>)> {
+    validate_outputs(&req.outputs)?;
     let now = chrono::Utc::now().to_rfc3339();
     let id = uuid::Uuid::new_v4().to_string();
     let preset = PresetDto {
@@ -158,6 +160,7 @@ async fn put_preset(
     Path(id): Path<String>,
     Json(req): Json<PresetCreateRequest>,
 ) -> ApiResult<Json<PresetDto>> {
+    validate_outputs(&req.outputs)?;
     let outputs = output_dtos(&id, req.outputs);
     let now = chrono::Utc::now().to_rfc3339();
     let preset = db::preset_update(&state.db, &id, &req.name, &now, outputs).await?.ok_or(PRESET_NOT_FOUND)?;
@@ -169,6 +172,15 @@ async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<String
         return Err(PRESET_NOT_FOUND);
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Reject outputs a recording couldn't start with, at save time rather than
+/// when someone presses Record.
+fn validate_outputs(outputs: &[PresetOutputInput]) -> ApiResult<()> {
+    for output in outputs {
+        RecordingProfile::from_output(output).map_err(ApiError::BadRequest)?;
+    }
+    Ok(())
 }
 
 fn output_dtos(preset_id: &str, outputs: Vec<PresetOutputInput>) -> Vec<PresetOutputDto> {

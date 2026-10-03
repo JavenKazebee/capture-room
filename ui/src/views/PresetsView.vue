@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { usePresetsStore, blankLeg } from '@/stores/presets'
+import { errorMessage } from '@/composables/useApi'
 import type { PresetDto } from '@/types/generated/PresetDto'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import { Button } from '@/components/ui/button'
@@ -120,7 +121,7 @@ async function save() {
     else await store.create(payload)
     showForm.value = false
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Save failed.'
+    error.value = errorMessage(e, 'Save failed.')
   } finally {
     saving.value = false
   }
@@ -131,7 +132,7 @@ async function destroy(p: PresetDto) {
   try {
     await store.remove(p.id)
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Delete failed.'
+    error.value = errorMessage(e, 'Delete failed.')
   }
 }
 

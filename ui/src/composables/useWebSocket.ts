@@ -83,7 +83,12 @@ function handleEvent(event: Record<string, any>) {
       break
 
     case 'feed.status':
-      sources.updateTimecode(nodeId, event.source_id as string, event.timecode as string | null)
+      sources.updateStatus(
+        nodeId,
+        event.source_id as string,
+        event.timecode as string | null,
+        event.error as string | null,
+      )
       break
 
     case 'audio.levels': {

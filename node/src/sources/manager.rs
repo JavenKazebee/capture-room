@@ -104,6 +104,11 @@ impl SourceManager {
         self.monitors.contains_key(source_id)
     }
 
+    /// Why a source's monitor stopped producing, if it has.
+    pub fn monitor_error(&self, source_id: &str) -> Option<String> {
+        self.monitors.get(source_id)?.error()
+    }
+
     // ── Scan ──────────────────────────────────────────────────────────────────
 
     /// Rebuild the source list from test configs and the NDI sources currently

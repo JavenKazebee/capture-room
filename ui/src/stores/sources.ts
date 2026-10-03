@@ -29,12 +29,15 @@ export const useSourcesStore = defineStore('sources', () => {
     return list.map((s) => ({ ...s, node_id: nodeId, key: sourceKey(nodeId, s.id) }))
   }
 
-  function updateTimecode(nodeId: string, sourceId: string, tc: string | null) {
+  /** Apply a `feed.status` event: the current timecode and monitor error. */
+  function updateStatus(nodeId: string, sourceId: string, tc: string | null, error: string | null) {
     const key = sourceKey(nodeId, sourceId)
     const s = sources.value.find((s) => s.key === key)
-    if (s && tc !== null) {
+    if (!s) return
+    if (tc !== null) {
       s.timecode = s.timecode ? { ...s.timecode, display: tc } : null
     }
+    s.error = error
   }
 
   /** Replace one node's sources, keeping the others. */
@@ -89,7 +92,7 @@ export const useSourcesStore = defineStore('sources', () => {
 
   return {
     sources,
-    updateTimecode,
+    updateStatus,
     loadSources,
     scan,
     scanAll,

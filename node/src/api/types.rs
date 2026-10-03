@@ -50,6 +50,8 @@ pub struct SourceDto {
     pub display_name: String,
     pub source_type: String,
     pub connected: bool,
+    /// Set when the monitor pipeline has failed (e.g. an NDI sender went away).
+    pub error: Option<String>,
     pub timecode: Option<TimecodeDto>,
     pub capabilities: SourceCapabilitiesDto,
 }
@@ -330,6 +332,7 @@ pub enum WsEvent {
     FeedStatus {
         source_id: String,
         timecode: Option<String>,
+        error: Option<String>,
     },
     #[serde(rename = "audio.levels")]
     AudioLevels {

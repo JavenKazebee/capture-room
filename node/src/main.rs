@@ -16,7 +16,7 @@ use std::time::Instant;
 use anyhow::Result;
 use clap::Parser;
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, warn};
 
 use controller::Controller;
 use sources::manager::SourceManager;
@@ -115,7 +115,9 @@ async fn main() -> Result<()> {
         Controller::enable(&state).await?;
     }
 
-    let _mdns = controller::discovery::register_mdns_service(&node_id, &node_name, args.port);
+    let _mdns = controller::discovery::register_mdns_service(&node_id, &node_name, args.port)
+        .inspect_err(|e| warn!(error = %e, "mDNS registration failed; add this node to a controller by URL"))
+        .ok();
 
     // ── HTTP server ───────────────────────────────────────────────────────────
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));

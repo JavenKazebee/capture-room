@@ -16,16 +16,19 @@ pub struct RecordingProfile {
 
 impl RecordingProfile {
     /// Build a profile from an output leg. Resolution and framerate are free
-    /// text; unparsable values mean "match the source".
-    pub fn from_output(o: &PresetOutputInput) -> Self {
-        Self {
+    /// text: blank means "match the source", anything else must parse — a
+    /// typo is rejected rather than silently recording at the source format.
+    pub fn from_output(o: &PresetOutputInput) -> Result<Self, &'static str> {
+        Ok(Self {
             video_codec: o.codec,
             container: o.container,
-            resolution: o.resolution.as_deref().and_then(parse_resolution),
-            framerate: o.framerate.as_deref().and_then(parse_framerate),
+            resolution: parse_optional(&o.resolution, parse_resolution)
+                .ok_or("resolution must look like 1920x1080")?,
+            framerate: parse_optional(&o.framerate, parse_framerate)
+                .ok_or("framerate must look like 30 or 30000/1001")?,
             bitrate_kbps: o.bitrate_kbps,
             chroma: o.chroma,
-        }
+        })
     }
 
     /// GStreamer element name for the video encoder.
@@ -110,18 +113,60 @@ impl RecordingProfile {
     }
 }
 
+/// `None` or blank → `Some(None)`; otherwise `Some(parsed)`, or `None` if it
+/// doesn't parse.
+fn parse_optional(
+    value: &Option<String>,
+    parse: fn(&str) -> Option<(u32, u32)>,
+) -> Option<Option<(u32, u32)>> {
+    match value.as_deref().map(str::trim) {
+        None | Some("") => Some(None),
+        Some(s) => parse(s).map(Some),
+    }
+}
+
 /// "1920x1080" → (1920, 1080)
 fn parse_resolution(s: &str) -> Option<(u32, u32)> {
-    let (w, h) = s.trim().split_once(['x', 'X'])?;
-    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+    let (w, h) = s.split_once(['x', 'X'])?;
+    nonzero_pair(w, h)
 }
 
 /// "30" → (30, 1); "30000/1001" → (30000, 1001)
 fn parse_framerate(s: &str) -> Option<(u32, u32)> {
-    let s = s.trim();
-    if let Some((n, d)) = s.split_once('/') {
-        Some((n.trim().parse().ok()?, d.trim().parse().ok()?))
-    } else {
-        Some((s.parse().ok()?, 1))
+    let (n, d) = s.split_once('/').unwrap_or((s, "1"));
+    nonzero_pair(n, d)
+}
+
+fn nonzero_pair(a: &str, b: &str) -> Option<(u32, u32)> {
+    let a: u32 = a.trim().parse().ok()?;
+    let b: u32 = b.trim().parse().ok()?;
+    (a > 0 && b > 0).then_some((a, b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_resolution() {
+        assert_eq!(parse_resolution("1920x1080"), Some((1920, 1080)));
+        assert_eq!(parse_resolution(" 1280 X 720 "), Some((1280, 720)));
+        assert_eq!(parse_resolution("1920*1080"), None);
+        assert_eq!(parse_resolution("0x1080"), None);
+    }
+
+    #[test]
+    fn parses_framerate() {
+        assert_eq!(parse_framerate("30"), Some((30, 1)));
+        assert_eq!(parse_framerate("30000/1001"), Some((30000, 1001)));
+        assert_eq!(parse_framerate("29.97"), None);
+        assert_eq!(parse_framerate("30/0"), None);
+    }
+
+    #[test]
+    fn blank_means_match_source() {
+        assert_eq!(parse_optional(&None, parse_resolution), Some(None));
+        assert_eq!(parse_optional(&Some("  ".into()), parse_resolution), Some(None));
+        assert_eq!(parse_optional(&Some("1920*1080".into()), parse_resolution), None);
     }
 }

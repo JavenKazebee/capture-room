@@ -100,6 +100,7 @@ pub fn spawn_emitter(state: Arc<AppState>) {
                     state.emit(&WsEvent::FeedStatus {
                         source_id: source.id().to_string(),
                         timecode: source.timecode().map(|tc| tc.to_string()),
+                        error: mgr.monitor_error(source.id()),
                     });
                 }
             }
