@@ -1,42 +1,15 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useApi } from '@/composables/useApi'
+import type { MonitorSettingsDto } from '@/types/generated/MonitorSettingsDto'
+import type { NodeDto } from '@/types/generated/NodeDto'
+import type { NodeSettingsDto } from '@/types/generated/NodeSettingsDto'
+import type { StorageVolumeDto } from '@/types/generated/StorageVolumeDto'
 
-export interface NodeInfo {
-  id: string
-  name: string
-  /** Empty for this instance. */
-  url: string
-  version: string
-  healthy: boolean
-  uptime_secs: number
-  is_self: boolean
-  /** Added by URL (persisted) rather than discovered via mDNS. */
-  manual: boolean
-}
-
-export interface MonitorSettings {
-  thumb_fps: number
-  thumb_width: number
-  thumb_height: number
-  level_interval_ms: number
-}
-
-export interface NodeSettings {
-  node_id: string
-  node_name: string
-  is_controller: boolean
-  monitor: MonitorSettings
-}
-
-export interface StorageVolume {
-  name: string
-  mount_point: string
-  file_system: string
-  total_bytes: number
-  available_bytes: number
-  removable: boolean
-}
+export type NodeInfo = NodeDto
+export type MonitorSettings = MonitorSettingsDto
+export type NodeSettings = NodeSettingsDto
+export type StorageVolume = StorageVolumeDto
 
 export const useNodesStore = defineStore('nodes', () => {
   const { api } = useApi()

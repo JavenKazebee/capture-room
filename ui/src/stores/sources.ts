@@ -1,67 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, shallowReactive } from 'vue'
-<<<<<<< HEAD
 import { nodeApi, sourceKey } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
-
-export interface TimecodeDto {
-  hours: number
-  minutes: number
-  seconds: number
-  frames: number
-  drop_frame: boolean
-  framerate: [number, number]
-  display: string
-}
-
-export interface SourceCapabilities {
-  video_formats: string[]
-  max_width: number
-  max_height: number
-  max_framerate: [number, number]
-  audio_channels: number
-  audio_sample_rates: number[]
-}
-
-/** As returned by a node: `id` is only unique within that node. */
-export interface SourceDto {
-  id: string
-  display_name: string
-  source_type: string
-  is_available: boolean
-  connected: boolean
-  timecode: TimecodeDto | null
-  capabilities: SourceCapabilities
-}
-
-export interface Source extends SourceDto {
-  node_id: string
-  /** `${node_id}/${id}` — unique across nodes. */
-  key: string
-}
-
-export interface ChannelLevel {
-  peak_db: number
-  rms_db: number
-}
-
-export interface TestSourceConfig {
-  id: string
-  name: string
-  pattern: string
-  width: number
-  height: number
-  fps_num: number
-  fps_den: number
-  audio_signal: string
-  frequency: number
-  channels: number
-  created_at: string
-}
-
-export type TestSourceInput = Omit<TestSourceConfig, 'id' | 'created_at'>
-=======
-import { useApi } from '@/composables/useApi'
 import type { ChannelLevelDto } from '@/types/generated/ChannelLevelDto'
 import type { CreateTestSourceRequest } from '@/types/generated/CreateTestSourceRequest'
 import type { SourceCapabilitiesDto } from '@/types/generated/SourceCapabilitiesDto'
@@ -69,13 +9,18 @@ import type { SourceDto } from '@/types/generated/SourceDto'
 import type { TestSourceConfigDto } from '@/types/generated/TestSourceConfigDto'
 
 export type { TimecodeDto } from '@/types/generated/TimecodeDto'
+export type { SourceDto }
 export type SourceCapabilities = SourceCapabilitiesDto
-// node_id is added by the aggregator when proxying a remote node's sources
-export type Source = SourceDto & { node_id?: string }
 export type ChannelLevel = ChannelLevelDto
 export type TestSourceConfig = TestSourceConfigDto
 export type TestSourceInput = CreateTestSourceRequest
->>>>>>> claude/lucid-bun-9f1bf1
+
+/** A node's source tagged with the node it lives on (`id` is only unique per node). */
+export type Source = SourceDto & {
+  node_id: string
+  /** `${node_id}/${id}` — unique across nodes. */
+  key: string
+}
 
 // Audio levels updated ~10fps — shallow to avoid deep reactivity overhead.
 // Both maps are keyed by sourceKey(node_id, source_id).

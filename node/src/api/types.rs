@@ -128,22 +128,10 @@ pub struct RecordingSessionDto {
 #[cfg_attr(feature = "export-types", ts(export))]
 pub struct StartRecordingRequest {
     pub source_id: String,
-<<<<<<< HEAD
     /// Informational: the controller-side preset these outputs came from.
     pub preset_id: Option<String>,
     /// The output legs to record. Sent inline so nodes keep no preset store.
     pub outputs: Vec<PresetOutputInput>,
-=======
-    pub preset_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
-pub struct PatchRecordingRequest {
-    /// Only valid value currently: "stop"
-    pub action: String,
->>>>>>> claude/lucid-bun-9f1bf1
 }
 
 // ── Presets ───────────────────────────────────────────────────────────────────
@@ -203,28 +191,6 @@ pub struct PresetCreateRequest {
     pub outputs: Vec<PresetOutputInput>,
 }
 
-<<<<<<< HEAD
-=======
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
-pub struct PresetCacheDto {
-    pub id: String,
-    pub name: String,
-    pub data: serde_json::Value,
-    #[cfg_attr(feature = "export-types", ts(type = "number"))]
-    pub version: i64,
-    pub synced_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
-pub struct PresetSyncRequest {
-    pub presets: Vec<PresetCacheDto>,
-}
-
->>>>>>> claude/lucid-bun-9f1bf1
 // ── WebSocket events ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -298,17 +264,18 @@ pub enum WsEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct MonitorSettingsDto {
     pub thumb_fps: i32,
     pub thumb_width: i32,
     pub thumb_height: i32,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub level_interval_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct NodeSettingsDto {
     pub node_id: String,
     pub node_name: String,
@@ -318,7 +285,7 @@ pub struct NodeSettingsDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct UpdateNodeSettingsRequest {
     pub name: Option<String>,
     pub monitor: Option<MonitorSettingsDto>,
@@ -328,12 +295,14 @@ pub struct UpdateNodeSettingsRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct StorageVolumeDto {
     pub name: String,
     pub mount_point: String,
     pub file_system: String,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub total_bytes: u64,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub available_bytes: u64,
     pub removable: bool,
 }
@@ -342,7 +311,7 @@ pub struct StorageVolumeDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct NodeDto {
     pub id: String,
     pub name: String,
@@ -350,6 +319,7 @@ pub struct NodeDto {
     pub url: String,
     pub version: String,
     pub healthy: bool,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub uptime_secs: u64,
     pub is_self: bool,
     /// Whether this node was added by URL (persisted) rather than via mDNS.
@@ -358,14 +328,14 @@ pub struct NodeDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct AddNodeRequest {
     pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export, export_to = "../ui/src/types/generated/"))]
+#[cfg_attr(feature = "export-types", ts(export))]
 pub struct ControllerToggleRequest {
     pub enabled: bool,
 }

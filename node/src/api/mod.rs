@@ -53,33 +53,3 @@ async fn serve_ui(uri: Uri) -> Response {
         .or_else(|| serve_asset("index.html"))
         .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
 }
-
-// ── ts-rs export test (runs under --features export-types) ───────────────────
-
-#[cfg(all(test, feature = "export-types"))]
-mod export_tests {
-    use super::types::*;
-    use ts_rs::TS;
-
-    #[test]
-    fn export_all_types() {
-        NodeStatus::export_all().unwrap();
-        SourceDto::export_all().unwrap();
-        TimecodeDto::export_all().unwrap();
-        SourceCapabilitiesDto::export_all().unwrap();
-        TestSourceConfigDto::export_all().unwrap();
-        CreateTestSourceRequest::export_all().unwrap();
-        RecordingSessionDto::export_all().unwrap();
-        StartRecordingRequest::export_all().unwrap();
-        PresetDto::export_all().unwrap();
-        PresetCreateRequest::export_all().unwrap();
-        WsEvent::export_all().unwrap();
-        ChannelLevelDto::export_all().unwrap();
-        NodeSettingsDto::export_all().unwrap();
-        UpdateNodeSettingsRequest::export_all().unwrap();
-        StorageVolumeDto::export_all().unwrap();
-        NodeDto::export_all().unwrap();
-        AddNodeRequest::export_all().unwrap();
-        ControllerToggleRequest::export_all().unwrap();
-    }
-}

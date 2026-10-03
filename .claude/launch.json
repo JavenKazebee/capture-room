@@ -7,6 +7,12 @@
       "runtimeArgs": ["--filter", "ui", "dev"],
       "port": 5173,
       "autoPort": true
+    },
+    {
+      "name": "node",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": ["run", "-p", "capture-room", "--", "--controller", "--db", "/private/tmp/claude-502/-Users-javenkazebee-Documents-projects-capture-room/8160c687-1616-4172-bfdd-72eb28054ac5/scratchpad/smoke.db"],
+      "port": 7700
     }
   ]
 }
