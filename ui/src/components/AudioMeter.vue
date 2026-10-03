@@ -25,9 +25,9 @@ function dbToPercent(db: number): number {
 }
 
 function levelColor(db: number): string {
-  if (db >= -6) return '#ef4444'   // red
-  if (db >= -18) return '#eab308'  // yellow
-  return '#22c55e'                 // green
+  if (db >= -6) return 'var(--meter-clip)'
+  if (db >= -18) return 'var(--meter-warn)'
+  return 'var(--meter-ok)'
 }
 
 function heldDb(peak: Peak, now: number): number {

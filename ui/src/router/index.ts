@@ -5,11 +5,15 @@ export const router = createRouter({
   routes: [
     {
       path: '/',
-      redirect: '/dashboard',
+      redirect: '/multiview',
     },
     {
       path: '/dashboard',
-      name: 'dashboard',
+      redirect: '/multiview',
+    },
+    {
+      path: '/multiview',
+      name: 'multiview',
       component: () => import('@/views/DashboardView.vue'),
     },
     {
@@ -26,6 +30,11 @@ export const router = createRouter({
       path: '/nodes',
       name: 'nodes',
       component: () => import('@/views/NodesView.vue'),
+    },
+    {
+      path: '/settings',
+      name: 'settings',
+      component: () => import('@/views/SettingsView.vue'),
     },
   ],
 })

@@ -1,45 +1,42 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
-import { RouterLink, RouterView } from 'vue-router'
-import { startWebSocket } from '@/composables/useWebSocket'
-import { LayoutDashboard, Monitor, Settings2, Server } from '@lucide/vue'
+import { onMounted, ref } from 'vue'
+import { RouterView } from 'vue-router'
+import { useIntervalFn } from '@vueuse/core'
+import { reloadAll, startWebSocket } from '@/composables/useWebSocket'
+import { usePreferences } from '@/composables/usePreferences'
+import { usePresetsStore } from '@/stores/presets'
+import { useStorageStore } from '@/stores/storage'
+import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
+import { Toaster } from '@/components/ui/sonner'
+import AppSidebar from '@/components/app/AppSidebar.vue'
+import StatusBar from '@/components/app/StatusBar.vue'
+import CommandPalette from '@/components/app/CommandPalette.vue'
 
-onMounted(() => {
+const { colorMode } = usePreferences()
+const storage = useStorageStore()
+const commandOpen = ref(false)
+
+onMounted(async () => {
   startWebSocket()
+  usePresetsStore().load()
+  await reloadAll()
+  storage.load()
 })
 
-const navItems = [
-  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/sources', label: 'Sources', icon: Monitor },
-  { to: '/presets', label: 'Presets', icon: Settings2 },
-  { to: '/nodes', label: 'Nodes', icon: Server },
-]
+// Free space changes slowly and isn't evented; poll it for the status bar.
+useIntervalFn(() => storage.load(), 30_000)
 </script>
 
 <template>
-  <div class="flex h-svh bg-background text-foreground">
-    <!-- Sidebar -->
-    <aside class="w-56 shrink-0 border-r border-border flex flex-col">
-      <div class="h-14 flex items-center px-4 border-b border-border">
-        <span class="font-semibold tracking-tight">Capture Room</span>
-      </div>
-      <nav class="flex-1 overflow-y-auto py-2">
-        <RouterLink
-          v-for="item in navItems"
-          :key="item.to"
-          :to="item.to"
-          class="flex items-center gap-3 px-4 py-2 text-sm rounded-md mx-2 transition-colors hover:bg-accent hover:text-accent-foreground"
-          :class="{ 'bg-accent text-accent-foreground': $route.path.startsWith(item.to) }"
-        >
-          <component :is="item.icon" class="w-4 h-4 shrink-0" />
-          {{ item.label }}
-        </RouterLink>
-      </nav>
-    </aside>
-
-    <!-- Main content -->
-    <main class="flex-1 overflow-y-auto">
-      <RouterView />
-    </main>
-  </div>
+  <SidebarProvider class="h-svh min-h-0">
+    <AppSidebar />
+    <SidebarInset class="min-w-0 overflow-hidden">
+      <StatusBar @command="commandOpen = true" />
+      <main class="flex-1 min-h-0 overflow-y-auto">
+        <RouterView />
+      </main>
+    </SidebarInset>
+    <CommandPalette v-model:open="commandOpen" />
+    <Toaster :theme="colorMode === 'light' ? 'light' : 'dark'" position="bottom-right" rich-colors close-button />
+  </SidebarProvider>
 </template>

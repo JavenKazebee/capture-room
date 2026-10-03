@@ -1,44 +1,18 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
 import { useSourcesStore } from '@/stores/sources'
 import { useRecordingsStore } from '@/stores/recordings'
-import { usePresetsStore } from '@/stores/presets'
-import { reloadAll, wsStatus } from '@/composables/useWebSocket'
+import { wsStatus } from '@/composables/useWebSocket'
 import FeedCard from '@/components/FeedCard.vue'
-import { WifiOff } from '@lucide/vue'
 
 const sources = useSourcesStore()
 const recordings = useRecordingsStore()
-const presets = usePresetsStore()
-
-// ── Load ──────────────────────────────────────────────────────────────────────
-
-onMounted(() => {
-  presets.load()
-  reloadAll()
-})
 </script>
 
 <template>
   <div class="flex flex-col h-full">
-    <!-- Reconnecting banner -->
-    <div
-      v-if="wsStatus !== 'connected'"
-      class="flex items-center gap-2 px-4 py-2 bg-yellow-500/15 border-b border-yellow-500/30 text-yellow-700 dark:text-yellow-400 text-sm"
-    >
-      <WifiOff class="w-4 h-4 shrink-0" />
-      <span>
-        {{
-          wsStatus === 'connecting'
-            ? 'Connecting to server…'
-            : 'Disconnected — reconnecting…'
-        }}
-      </span>
-    </div>
-
     <!-- Main content -->
     <div class="flex-1 overflow-y-auto p-6">
-      <h1 class="text-2xl font-semibold mb-6">Dashboard</h1>
+      <h1 class="text-2xl font-semibold mb-6">Multiview</h1>
 
       <!-- Empty state -->
       <div

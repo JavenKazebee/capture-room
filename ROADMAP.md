@@ -137,13 +137,25 @@ Not started (the empty `benchmark/` stub was removed).
 
 ## 6. UI overhaul / dark mode
 
-shadcn-vue is already in place, so dark mode is mostly CSS-variable theming + a toggle.
+Staying on shadcn-vue (reka-ui, Tailwind v4), plus `@tanstack/vue-table` for dense
+tables and `vue-sonner` for toasts.
 
-- Up front: a design-token pass (define the dark palette / tokens once).
-- Then woven incrementally into each view as it's built (Recordings, Schedules and Logs
-  views are not started and are kept out of the nav until they are).
-- **Per-page tweaks backlog:** many small per-page refinements to tackle one at a time —
-  tracked here as work surfaces, not planned in bulk.
+- **Design system** (done): dark-first OKLCH tokens in `ui/src/style.css`, light kept
+  in step. Red is split and never decorative — `--primary` (brand crimson),
+  `--tally` (live recording only), `--destructive` (soft treatment, behind a confirm).
+  `--info` (cyan/sky) is the cool accent for selection/inspection. Self-hosted Inter +
+  JetBrains Mono; `num` utility for technical values. Density = root font size.
+- **Preferences** (done): `usePreferences()` — theme, density, Multiview tile size and
+  overlays, inspector, table columns; per browser, surfaced in the view they affect.
+- **App shell** (done): collapsible icon sidebar, global status bar (connection,
+  nodes, live recordings, lowest free storage, clock), ⌘K command palette, toasts.
+- **Shared patterns** (done): `PageHeader`, `ConfirmDialog`, `EditSheet` (replaces
+  `FormModal`), `StatusDot`, `TallyBadge`, `KeyValueList`, `CopyButton`; `DataTable`
+  lands with Sources.
+- **Views, one per pass:** Multiview (tile toolbar, multi-select record, resizable
+  inspector) → Sources (DataTable) → Presets (master-detail editor, path-template
+  preview) → Nodes (cards, room for capacity panel) → Settings (appearance, monitoring).
+- Recordings, Schedules and Logs views are kept out of the nav until they exist.
 
 ## 7. Follow-on
 
