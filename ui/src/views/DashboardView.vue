@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useSourcesStore } from '@/stores/sources'
 import { useRecordingsStore } from '@/stores/recordings'
 import { usePresetsStore } from '@/stores/presets'
@@ -8,14 +8,8 @@ import type { MonitorSettingsDto } from '@/types/generated/MonitorSettingsDto'
 import { wsStatus } from '@/composables/useWebSocket'
 import { nodeApi } from '@/composables/useApi'
 import FeedCard from '@/components/FeedCard.vue'
+import OptionSelect from '@/components/OptionSelect.vue'
 import { Button } from '@/components/ui/button'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { WifiOff } from '@lucide/vue'
 
 const sources = useSourcesStore()
@@ -25,6 +19,7 @@ const nodes = useNodesStore()
 
 // ── Monitor settings (applied to every reachable node) ───────────────────────
 
+// The form's draft; loaded from this node's settings and sent on Apply.
 const monitor = ref<MonitorSettingsDto>({
   thumb_fps: 1,
   thumb_width: 320,
@@ -34,9 +29,9 @@ const monitor = ref<MonitorSettingsDto>({
 const monitorSaving = ref(false)
 
 const thumbSizeOptions = [
-  { label: '320×180', width: 320, height: 180 },
-  { label: '640×360', width: 640, height: 360 },
-  { label: '1280×720', width: 1280, height: 720 },
+  { label: '320×180', value: '320x180' },
+  { label: '640×360', value: '640x360' },
+  { label: '1280×720', value: '1280x720' },
 ]
 
 const thumbFpsOptions = [
@@ -53,34 +48,29 @@ const levelIntervalOptions = [
   { label: '500 ms', value: 500 },
 ]
 
-const thumbSizeValue = ref('320x180')
-const thumbFpsValue = ref('1')
-const levelIntervalValue = ref('100')
-
-function thumbSizeKey(w: number, h: number) {
-  return `${w}x${h}`
-}
+const thumbSize = computed({
+  get: () => `${monitor.value.thumb_width}x${monitor.value.thumb_height}`,
+  set: (v: string) => {
+    const [w, h] = v.split('x').map(Number)
+    monitor.value = { ...monitor.value, thumb_width: w!, thumb_height: h! }
+  },
+})
 
 async function saveMonitorSettings() {
   if (monitorSaving.value) return
   monitorSaving.value = true
-  const size = thumbSizeOptions.find(o => thumbSizeKey(o.width, o.height) === thumbSizeValue.value)
-  const body = {
-    monitor: {
-      thumb_fps: Number(thumbFpsValue.value),
-      thumb_width: size?.width ?? monitor.value.thumb_width,
-      thumb_height: size?.height ?? monitor.value.thumb_height,
-      level_interval_ms: Number(levelIntervalValue.value),
-    },
-  }
   try {
+    const body = { monitor: monitor.value }
     const results = await Promise.allSettled(
       nodes.reachable.map((n) =>
         nodeApi(n.id)<{ monitor: MonitorSettingsDto }>('/settings', { method: 'PUT', body }),
       ),
     )
     const first = results.find((r) => r.status === 'fulfilled')
-    if (first) monitor.value = first.value.monitor
+    if (first) {
+      monitor.value = first.value.monitor
+      if (nodes.self) nodes.self.monitor = first.value.monitor
+    }
   } finally {
     monitorSaving.value = false
   }
@@ -93,13 +83,7 @@ onMounted(async () => {
   await nodes.load()
   await Promise.all([sources.loadSources(), recordings.load()])
 
-  const settings = nodes.self
-  if (settings?.monitor) {
-    monitor.value = settings.monitor
-    thumbSizeValue.value = thumbSizeKey(settings.monitor.thumb_width, settings.monitor.thumb_height)
-    thumbFpsValue.value = String(settings.monitor.thumb_fps)
-    levelIntervalValue.value = String(settings.monitor.level_interval_ms)
-  }
+  if (nodes.self) monitor.value = { ...nodes.self.monitor }
 })
 </script>
 
@@ -129,48 +113,26 @@ onMounted(async () => {
         <!-- Monitor settings -->
         <div class="flex items-center gap-2 flex-wrap">
           <span class="text-xs text-muted-foreground shrink-0">Thumbnail</span>
-          <Select v-model="thumbSizeValue" :disabled="monitorSaving">
-            <SelectTrigger class="h-7 text-xs w-28">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem
-                v-for="opt in thumbSizeOptions"
-                :key="opt.label"
-                :value="thumbSizeKey(opt.width, opt.height)"
-                class="text-xs"
-              >{{ opt.label }}</SelectItem>
-            </SelectContent>
-          </Select>
-
-          <Select v-model="thumbFpsValue" :disabled="monitorSaving">
-            <SelectTrigger class="h-7 text-xs w-20">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem
-                v-for="opt in thumbFpsOptions"
-                :key="opt.value"
-                :value="String(opt.value)"
-                class="text-xs"
-              >{{ opt.label }}</SelectItem>
-            </SelectContent>
-          </Select>
+          <OptionSelect
+            v-model="thumbSize"
+            :options="thumbSizeOptions"
+            :disabled="monitorSaving"
+            class="w-28"
+          />
+          <OptionSelect
+            v-model="monitor.thumb_fps"
+            :options="thumbFpsOptions"
+            :disabled="monitorSaving"
+            class="w-20"
+          />
 
           <span class="text-xs text-muted-foreground shrink-0">Audio</span>
-          <Select v-model="levelIntervalValue" :disabled="monitorSaving">
-            <SelectTrigger class="h-7 text-xs w-20">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem
-                v-for="opt in levelIntervalOptions"
-                :key="opt.value"
-                :value="String(opt.value)"
-                class="text-xs"
-              >{{ opt.label }}</SelectItem>
-            </SelectContent>
-          </Select>
+          <OptionSelect
+            v-model="monitor.level_interval_ms"
+            :options="levelIntervalOptions"
+            :disabled="monitorSaving"
+            class="w-20"
+          />
 
           <Button
             size="sm"
@@ -196,9 +158,8 @@ onMounted(async () => {
       <!-- Feed grid -->
       <div
         v-else
-        class="grid gap-4"
+        class="grid gap-4 grid-cols-[repeat(auto-fill,minmax(min(100%,320px),1fr))]"
         :class="wsStatus !== 'connected' ? 'opacity-60 pointer-events-none' : ''"
-        style="grid-template-columns: repeat(3, minmax(0, 1fr))"
       >
         <FeedCard
           v-for="source in sources.sources"

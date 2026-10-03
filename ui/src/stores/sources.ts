@@ -55,6 +55,10 @@ export const useSourcesStore = defineStore('sources', () => {
     sources.value = results.flat()
   }
 
+  async function refreshNode(nodeId: string) {
+    setForNode(nodeId, await nodeApi(nodeId)<SourceDto[]>('/sources'))
+  }
+
   async function scan(nodeId: string) {
     setForNode(nodeId, await nodeApi(nodeId)<SourceDto[]>('/sources/scan', { method: 'POST' }))
   }
@@ -72,7 +76,7 @@ export const useSourcesStore = defineStore('sources', () => {
       method: 'POST',
       body: input,
     })
-    setForNode(nodeId, await nodeApi(nodeId)<SourceDto[]>('/sources'))
+    await refreshNode(nodeId)
     return created
   }
 
@@ -81,13 +85,13 @@ export const useSourcesStore = defineStore('sources', () => {
       method: 'PUT',
       body: input,
     })
-    setForNode(nodeId, await nodeApi(nodeId)<SourceDto[]>('/sources'))
+    await refreshNode(nodeId)
     return updated
   }
 
   async function deleteTestSource(nodeId: string, id: string) {
     await nodeApi(nodeId)(`/test-sources/${id}`, { method: 'DELETE' })
-    setForNode(nodeId, await nodeApi(nodeId)<SourceDto[]>('/sources'))
+    await refreshNode(nodeId)
   }
 
   return {

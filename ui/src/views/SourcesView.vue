@@ -6,6 +6,10 @@ import type { TestSourceRequest } from '@/types/generated/TestSourceRequest'
 import { useNodesStore } from '@/stores/nodes'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import FormField from '@/components/FormField.vue'
+import FormModal from '@/components/FormModal.vue'
+import OptionSelect from '@/components/OptionSelect.vue'
 import type { AudioTestSignal } from '@/types/generated/AudioTestSignal'
 import type { VideoTestPattern } from '@/types/generated/VideoTestPattern'
 
@@ -48,6 +52,10 @@ const RESOLUTIONS = [
   { w: 720,  h: 576,  label: 'SD PAL' },
   { w: 720,  h: 486,  label: 'SD NTSC' },
 ]
+const RESOLUTION_OPTIONS = RESOLUTIONS.map((r) => ({
+  value: `${r.w}x${r.h}`,
+  label: `${r.label} (${r.w}×${r.h})`,
+}))
 
 const FRAMERATES = [
   { n: 25,    d: 1,    label: '25 fps' },
@@ -57,6 +65,18 @@ const FRAMERATES = [
   { n: 24000, d: 1001, label: '23.976 fps' },
   { n: 30000, d: 1001, label: '29.97 fps' },
 ]
+const FRAMERATE_OPTIONS = FRAMERATES.map((r) => ({ value: `${r.n}/${r.d}`, label: r.label }))
+
+const CHANNEL_OPTIONS = [
+  { value: 1, label: 'Mono' },
+  { value: 2, label: 'Stereo' },
+  { value: 6, label: '5.1' },
+  { value: 8, label: '7.1' },
+]
+
+const nodeOptions = computed(() =>
+  nodes.value.map((n) => ({ value: n.id, label: n.is_self ? `${n.name} (this node)` : n.name })),
+)
 
 function blankForm(): TestSourceRequest {
   return {
@@ -183,9 +203,6 @@ const sourcesByNode = computed(() => {
   return map
 })
 
-const fieldClass =
-  'h-8 w-full rounded-md border border-border bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring/30'
-
 onMounted(async () => {
   loading.value = true
   try {
@@ -267,102 +284,59 @@ onMounted(async () => {
     </div>
 
     <!-- Test source form modal -->
-    <div
+    <FormModal
       v-if="showForm"
-      class="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50"
-      @click.self="closeForm"
+      :title="editingId ? 'Edit test source' : 'New test source'"
+      :error="formError"
+      :saving="saving"
+      @close="closeForm"
+      @save="save"
     >
-      <div class="bg-card border border-border rounded-lg w-full max-w-lg max-h-[90vh] overflow-y-auto p-5">
-        <h2 class="text-lg font-semibold mb-4">
-          {{ editingId ? 'Edit test source' : 'New test source' }}
-        </h2>
+      <div class="grid grid-cols-2 gap-3">
+        <!-- Node selector — only for new sources when multiple nodes exist -->
+        <FormField v-if="!editingId && nodes.length > 1" label="Node" class="col-span-2">
+          <OptionSelect v-model="formNodeId" :options="nodeOptions" />
+        </FormField>
 
-        <div class="grid grid-cols-2 gap-3">
-          <!-- Node selector — only for new sources when multiple nodes exist -->
-          <label v-if="!editingId && nodes.length > 1" class="col-span-2 flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">Node</span>
-            <select v-model="formNodeId" :class="fieldClass">
-              <option v-for="n in nodes" :key="n.id" :value="n.id">
-                {{ n.name }}{{ n.is_self ? ' (this node)' : '' }}
-              </option>
-            </select>
-          </label>
+        <FormField label="Name" class="col-span-2">
+          <Input v-model="form.name" placeholder="e.g. Camera 1 Sim" />
+        </FormField>
 
-          <label class="col-span-2 flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">Name</span>
-            <input v-model="form.name" :class="fieldClass" placeholder="e.g. Camera 1 Sim" />
-          </label>
+        <FormField label="Video pattern" class="col-span-2">
+          <OptionSelect v-model="form.pattern" :options="VIDEO_PATTERNS" />
+        </FormField>
 
-          <label class="col-span-2 flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">Video pattern</span>
-            <select v-model="form.pattern" :class="fieldClass">
-              <option v-for="p in VIDEO_PATTERNS" :key="p.value" :value="p.value">{{ p.label }}</option>
-            </select>
-          </label>
+        <FormField label="Resolution">
+          <OptionSelect v-model="resolutionKey" :options="RESOLUTION_OPTIONS" />
+        </FormField>
 
-          <label class="flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">Resolution</span>
-            <select v-model="resolutionKey" :class="fieldClass">
-              <option v-for="r in RESOLUTIONS" :key="`${r.w}x${r.h}`" :value="`${r.w}x${r.h}`">
-                {{ r.label }} ({{ r.w }}×{{ r.h }})
-              </option>
-            </select>
-          </label>
+        <FormField label="Framerate">
+          <OptionSelect v-model="framerateKey" :options="FRAMERATE_OPTIONS" />
+        </FormField>
 
-          <label class="flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">Framerate</span>
-            <select v-model="framerateKey" :class="fieldClass">
-              <option v-for="r in FRAMERATES" :key="`${r.n}/${r.d}`" :value="`${r.n}/${r.d}`">
-                {{ r.label }}
-              </option>
-            </select>
-          </label>
+        <FormField label="Audio signal">
+          <OptionSelect v-model="form.audio_signal" :options="AUDIO_SIGNALS" />
+        </FormField>
 
-          <label class="flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">Audio signal</span>
-            <select v-model="form.audio_signal" :class="fieldClass">
-              <option v-for="a in AUDIO_SIGNALS" :key="a.value" :value="a.value">{{ a.label }}</option>
-            </select>
-          </label>
+        <FormField>
+          <template #label>
+            Frequency (Hz)
+            <span v-if="form.audio_signal !== 'tone'" class="opacity-40">— n/a</span>
+          </template>
+          <Input
+            v-model.number="form.frequency"
+            type="number"
+            :disabled="form.audio_signal !== 'tone'"
+            placeholder="440"
+            min="20"
+            max="20000"
+          />
+        </FormField>
 
-          <label class="flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">
-              Frequency (Hz)
-              <span v-if="form.audio_signal !== 'tone'" class="opacity-40">— n/a</span>
-            </span>
-            <input
-              v-model.number="form.frequency"
-              type="number"
-              :class="fieldClass"
-              :disabled="form.audio_signal !== 'tone'"
-              placeholder="440"
-              min="20"
-              max="20000"
-            />
-          </label>
-
-          <label class="flex flex-col gap-1">
-            <span class="text-xs text-muted-foreground">Audio channels</span>
-            <select v-model.number="form.channels" :class="fieldClass">
-              <option :value="1">Mono</option>
-              <option :value="2">Stereo</option>
-              <option :value="6">5.1</option>
-              <option :value="8">7.1</option>
-            </select>
-          </label>
-        </div>
-
-        <p v-if="formError" class="text-xs text-destructive mt-3">{{ formError }}</p>
-
-        <div class="flex justify-end gap-2 mt-5">
-          <Button variant="outline" size="default" :disabled="saving" @click="closeForm">
-            Cancel
-          </Button>
-          <Button size="default" :disabled="saving" @click="save">
-            {{ saving ? 'Saving…' : 'Save' }}
-          </Button>
-        </div>
+        <FormField label="Audio channels">
+          <OptionSelect v-model="form.channels" :options="CHANNEL_OPTIONS" />
+        </FormField>
       </div>
-    </div>
+    </FormModal>
   </div>
 </template>

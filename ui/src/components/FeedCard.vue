@@ -8,13 +8,7 @@ import { errorMessage, thumbnailUrl } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
 import AudioMeter from './AudioMeter.vue'
 import { Button } from '@/components/ui/button'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+import OptionSelect from './OptionSelect.vue'
 
 const props = defineProps<{
   source: Source
@@ -30,8 +24,8 @@ const nodes = useNodesStore()
 // The built-in "default" is always available: a single H.264/MOV output,
 // usable even when no presets have been authored yet.
 const presetOptions = computed(() => [
-  { id: 'default', label: 'H.264 (default)' },
-  ...presets.presets.map((p) => ({ id: p.id, label: p.name })),
+  { value: 'default', label: 'H.264 (default)' },
+  ...presets.presets.map((p) => ({ value: p.id, label: p.name })),
 ])
 
 const selectedPreset = ref('default')
@@ -181,24 +175,12 @@ function formatDuration(ms: number): string {
 
       <!-- Controls row -->
       <div class="flex gap-2 items-center">
-        <Select
+        <OptionSelect
           v-model="selectedPreset"
+          :options="presetOptions"
           :disabled="!!session || busy"
-        >
-          <SelectTrigger class="h-7 text-xs flex-1">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem
-              v-for="preset in presetOptions"
-              :key="preset.id"
-              :value="preset.id"
-              class="text-xs"
-            >
-              {{ preset.label }}
-            </SelectItem>
-          </SelectContent>
-        </Select>
+          class="h-7 text-xs flex-1 min-w-0"
+        />
 
         <Button
           :variant="session ? 'destructive' : 'default'"

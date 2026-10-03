@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { usePresetsStore, blankLeg } from '@/stores/presets'
+import { usePresetsStore, blankLeg, presetLegs } from '@/stores/presets'
 import { errorMessage } from '@/composables/useApi'
 import type { PresetDto } from '@/types/generated/PresetDto'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import FormField from '@/components/FormField.vue'
+import FormModal from '@/components/FormModal.vue'
+import OptionSelect from '@/components/OptionSelect.vue'
 import type { ChromaSubsampling } from '@/types/generated/ChromaSubsampling'
 import type { Container } from '@/types/generated/Container'
 import type { VideoCodec } from '@/types/generated/VideoCodec'
@@ -31,11 +35,17 @@ const CODECS: Record<VideoCodec, string> = {
   uncompressed: 'Uncompressed',
 }
 const CONTAINERS: Record<Container, string> = { mov: '.mov', mp4: '.mp4', mkv: '.mkv', mxf: '.mxf' }
+const CODEC_OPTIONS = optionsOf(CODECS)
+const CONTAINER_OPTIONS = optionsOf(CONTAINERS)
 const CHROMA: { value: ChromaSubsampling; label: string }[] = [
   { value: '420', label: '4:2:0 — plays everywhere' },
   { value: '422', label: '4:2:2' },
   { value: '444', label: '4:4:4' },
 ]
+
+function optionsOf<T extends string>(labels: Record<T, string>) {
+  return (Object.entries(labels) as [T, string][]).map(([value, label]) => ({ value, label }))
+}
 
 /** Codecs whose chroma subsampling is configurable (ProRes picks it via the codec). */
 function hasChroma(codec: VideoCodec) {
@@ -45,9 +55,6 @@ function hasChroma(codec: VideoCodec) {
 function chromaLabel(chroma: ChromaSubsampling) {
   return `${chroma[0]}:${chroma[1]}:${chroma[2]}`
 }
-
-const fieldClass =
-  'h-8 rounded-md border border-border bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring/30'
 
 const formName = ref('')
 const formLegs = ref<PresetOutputInput[]>([blankLeg()])
@@ -76,16 +83,7 @@ function openCreate() {
 function openEdit(p: PresetDto) {
   editingId.value = p.id
   formName.value = p.name
-  formLegs.value = p.outputs.map((o) => ({
-    name: o.name,
-    codec: o.codec,
-    container: o.container,
-    resolution: o.resolution,
-    framerate: o.framerate,
-    bitrate_kbps: o.bitrate_kbps,
-    chroma: o.chroma,
-    path_template: o.path_template,
-  }))
+  formLegs.value = presetLegs(p)
   if (formLegs.value.length === 0) formLegs.value = [blankLeg()]
   error.value = null
   showForm.value = true
@@ -190,108 +188,80 @@ onMounted(() => store.load())
     </div>
 
     <!-- Create / edit form -->
-    <div
+    <FormModal
       v-if="showForm"
-      class="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50"
-      @click.self="closeForm"
+      :title="editingId ? 'Edit preset' : 'New preset'"
+      :error="error"
+      :saving="saving"
+      wide
+      @close="closeForm"
+      @save="save"
     >
-      <div class="bg-card border border-border rounded-lg w-full max-w-2xl max-h-[90vh] overflow-y-auto p-5">
-        <h2 class="text-lg font-semibold mb-4">{{ editingId ? 'Edit preset' : 'New preset' }}</h2>
+      <FormField label="Preset name" class="mb-5">
+        <Input v-model="formName" placeholder="e.g. Broadcast H.264" />
+      </FormField>
 
-        <!-- Preset name -->
-        <label class="flex flex-col gap-1 mb-5">
-          <span class="text-xs text-muted-foreground">Preset name</span>
-          <input v-model="formName" :class="fieldClass" placeholder="e.g. Broadcast H.264" />
-        </label>
+      <!-- Output legs -->
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-sm font-medium">Output legs</span>
+        <Button variant="outline" size="sm" @click="addLeg">+ Add leg</Button>
+      </div>
 
-        <!-- Output legs -->
-        <div class="flex items-center justify-between mb-2">
-          <span class="text-sm font-medium">Output legs</span>
-          <Button variant="outline" size="sm" @click="addLeg">+ Add leg</Button>
-        </div>
+      <div class="space-y-4">
+        <div v-for="(leg, i) in formLegs" :key="i" class="rounded-md border border-border p-3">
+          <!-- Leg header -->
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              Leg {{ i + 1 }}
+            </span>
+            <button
+              v-if="formLegs.length > 1"
+              class="text-xs text-destructive hover:underline"
+              @click="removeLeg(i)"
+            >
+              Remove
+            </button>
+          </div>
 
-        <div class="space-y-4">
-          <div
-            v-for="(leg, i) in formLegs"
-            :key="i"
-            class="rounded-md border border-border p-3 relative"
-          >
-            <!-- Leg header -->
-            <div class="flex items-center justify-between mb-3">
-              <span class="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Leg {{ i + 1 }}
-              </span>
-              <button
-                v-if="formLegs.length > 1"
-                class="text-xs text-destructive hover:underline"
-                @click="removeLeg(i)"
-              >
-                Remove
-              </button>
-            </div>
+          <div class="grid grid-cols-2 gap-3">
+            <FormField label="Leg name" class="col-span-2">
+              <Input v-model="leg.name" placeholder="e.g. Primary H.264" />
+            </FormField>
 
-            <div class="grid grid-cols-2 gap-3">
-              <label class="col-span-2 flex flex-col gap-1">
-                <span class="text-xs text-muted-foreground">Leg name</span>
-                <input v-model="leg.name" :class="fieldClass" placeholder="e.g. Primary H.264" />
-              </label>
+            <FormField label="Codec">
+              <OptionSelect v-model="leg.codec" :options="CODEC_OPTIONS" />
+            </FormField>
 
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-muted-foreground">Codec</span>
-                <select v-model="leg.codec" :class="fieldClass">
-                  <option v-for="(label, c) in CODECS" :key="c" :value="c">{{ label }}</option>
-                </select>
-              </label>
+            <FormField label="Container">
+              <OptionSelect v-model="leg.container" :options="CONTAINER_OPTIONS" />
+            </FormField>
 
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-muted-foreground">Container</span>
-                <select v-model="leg.container" :class="fieldClass">
-                  <option v-for="(label, c) in CONTAINERS" :key="c" :value="c">{{ label }}</option>
-                </select>
-              </label>
+            <FormField label="Resolution">
+              <Input v-model="leg.resolution" placeholder="match source / 1920x1080" />
+            </FormField>
 
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-muted-foreground">Resolution</span>
-                <input v-model="leg.resolution" :class="fieldClass" placeholder="match source / 1920x1080" />
-              </label>
+            <FormField label="Framerate">
+              <Input v-model="leg.framerate" placeholder="source / 30 / 30000/1001" />
+            </FormField>
 
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-muted-foreground">Framerate</span>
-                <input v-model="leg.framerate" :class="fieldClass" placeholder="source / 30 / 30000/1001" />
-              </label>
+            <FormField label="Bitrate (kbps)">
+              <Input v-model.number="leg.bitrate_kbps" type="number" placeholder="encoder default" />
+            </FormField>
 
-              <label class="flex flex-col gap-1">
-                <span class="text-xs text-muted-foreground">Bitrate (kbps)</span>
-                <input v-model.number="leg.bitrate_kbps" type="number" :class="fieldClass" placeholder="8000" />
-              </label>
+            <FormField v-if="hasChroma(leg.codec)" label="Chroma">
+              <OptionSelect v-model="leg.chroma" :options="CHROMA" />
+            </FormField>
 
-              <label v-if="hasChroma(leg.codec)" class="flex flex-col gap-1">
-                <span class="text-xs text-muted-foreground">Chroma</span>
-                <select v-model="leg.chroma" :class="fieldClass">
-                  <option v-for="c in CHROMA" :key="c.value" :value="c.value">{{ c.label }}</option>
-                </select>
-              </label>
-
-              <label class="col-span-2 flex flex-col gap-1">
-                <span class="text-xs text-muted-foreground">
-                  Path template
-                  <span class="text-muted-foreground/60 ml-1">{source} {datetime} {ext}</span>
-                </span>
-                <input v-model="leg.path_template" :class="[fieldClass, 'font-mono']" />
-              </label>
-            </div>
+            <FormField class="col-span-2">
+              <template #label>
+                Path template
+                <span class="text-muted-foreground/60 ml-1">{source} {datetime} {ext}</span>
+              </template>
+              <Input v-model="leg.path_template" class="font-mono" />
+            </FormField>
           </div>
         </div>
-
-        <p v-if="error" class="text-xs text-destructive mt-3">{{ error }}</p>
-
-        <div class="flex justify-end gap-2 mt-5">
-          <Button variant="outline" size="default" :disabled="saving" @click="closeForm">Cancel</Button>
-          <Button size="default" :disabled="saving" @click="save">
-            {{ saving ? 'Saving…' : 'Save' }}
-          </Button>
-        </div>
       </div>
-    </div>
+    </FormModal>
   </div>
 </template>

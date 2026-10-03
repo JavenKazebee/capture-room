@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nodeApi } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
-import { blankLeg } from '@/stores/presets'
+import { blankLeg, presetLegs } from '@/stores/presets'
 import type { PresetDto } from '@/types/generated/PresetDto'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import type { RecordingSessionDto } from '@/types/generated/RecordingSessionDto'
@@ -61,9 +61,7 @@ export const useRecordingsStore = defineStore('recordings', () => {
    * H.264/MOV output is used.
    */
   async function start(nodeId: string, sourceId: string, preset: PresetDto | null) {
-    const outputs: PresetOutputInput[] = preset
-      ? preset.outputs.map(({ id: _id, preset_id: _p, sort_order: _s, ...leg }) => leg)
-      : [blankLeg()]
+    const outputs: PresetOutputInput[] = preset ? presetLegs(preset) : [blankLeg()]
     const body: StartRecordingRequest = {
       source_id: sourceId,
       preset_id: preset?.id ?? null,

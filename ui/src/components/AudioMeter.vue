@@ -10,13 +10,15 @@ const props = defineProps<{
 const DB_MIN = -60
 const DB_MAX = 0
 
-// Peak hold: value and when it was last updated (ms)
-const peaks = ref<{ db: number; at: number }[]>([])
+// Peak hold: the held level stays put for PEAK_HOLD_MS, then falls. It is
+// advanced whenever new levels arrive — those re-render the meter anyway, so
+// there's no animation loop of its own. `top` and `at` are the level and time
+// the hold was last raised; `db` is where it currently sits.
 const PEAK_HOLD_MS = 2000
 const PEAK_FALL_DB_PER_SEC = 20
 
-let lastTick = Date.now()
-let rafId: number | null = null
+type Peak = { top: number; at: number; db: number }
+const peaks = ref<Peak[]>([])
 
 function dbToPercent(db: number): number {
   return Math.max(0, Math.min(100, ((db - DB_MIN) / (DB_MAX - DB_MIN)) * 100))
@@ -28,42 +30,23 @@ function levelColor(db: number): string {
   return '#22c55e'                 // green
 }
 
-function tick() {
-  const now = Date.now()
-  const dt = (now - lastTick) / 1000
-  lastTick = now
-
-  // Fall peaks
-  peaks.value = peaks.value.map((p) => {
-    if (now - p.at > PEAK_HOLD_MS) {
-      return { db: p.db - PEAK_FALL_DB_PER_SEC * dt, at: p.at }
-    }
-    return p
-  })
-
-  rafId = requestAnimationFrame(tick)
+function heldDb(peak: Peak, now: number): number {
+  const fallingMs = now - peak.at - PEAK_HOLD_MS
+  return fallingMs > 0 ? peak.top - (PEAK_FALL_DB_PER_SEC * fallingMs) / 1000 : peak.top
 }
 
-// Sync peaks when channels update
 watch(
   () => props.channels,
   (channels) => {
-    const now = Date.now()
+    const now = performance.now()
     peaks.value = channels.map((ch, i) => {
       const prev = peaks.value[i]
-      if (!prev || ch.peak_db >= prev.db) {
-        return { db: ch.peak_db, at: now }
-      }
-      return prev
+      const held = prev ? heldDb(prev, now) : -Infinity
+      return ch.peak_db >= held ? { top: ch.peak_db, at: now, db: ch.peak_db } : { ...prev!, db: held }
     })
   },
   { immediate: true },
 )
-
-// Start/stop RAF
-import { onMounted, onUnmounted } from 'vue'
-onMounted(() => { rafId = requestAnimationFrame(tick) })
-onUnmounted(() => { if (rafId !== null) cancelAnimationFrame(rafId) })
 </script>
 
 <template>

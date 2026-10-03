@@ -18,6 +18,11 @@ export function blankLeg(): PresetOutputInput {
   }
 }
 
+/** A preset's output legs as editable / sendable inputs (stored ids dropped). */
+export function presetLegs(preset: PresetDto): PresetOutputInput[] {
+  return preset.outputs.map(({ id: _id, preset_id: _preset, sort_order: _order, ...leg }) => leg)
+}
+
 export const usePresetsStore = defineStore('presets', () => {
   const presets = ref<PresetDto[]>([])
 
