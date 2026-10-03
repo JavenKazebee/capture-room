@@ -28,6 +28,8 @@ pub type StopResult = watch::Receiver<Option<RecordingSessionDto>>;
 struct ActiveSession {
     legs: Vec<RecordingLeg>,
     dto: RecordingSessionDto,
+    /// Legs that have failed while recording (each reports only once).
+    failed_legs: usize,
 }
 
 /// A session taken out of the active set whose legs still have to drain and
@@ -54,6 +56,15 @@ pub struct LegFailure {
     pub session_id: String,
     pub path: PathBuf,
     pub error: String,
+}
+
+/// A leg failure applied to its running session.
+pub struct NotedFailure {
+    pub source_id: String,
+    /// The session's accumulated error message.
+    pub error: String,
+    /// Every leg has now failed, so nothing is being recorded.
+    pub all_failed: bool,
 }
 
 pub enum StopOutcome {
@@ -249,7 +260,7 @@ impl SourceManager {
         };
 
         info!(id = %dto.id, source = source_id, legs = legs.len(), "recording started");
-        self.sessions.insert(dto.id.clone(), ActiveSession { legs: recording_legs, dto: dto.clone() });
+        self.sessions.insert(dto.id.clone(), ActiveSession { legs: recording_legs, dto: dto.clone(), failed_legs: 0 });
         Ok(dto)
     }
 
@@ -283,18 +294,22 @@ impl SourceManager {
     }
 
     /// Record a leg failure on its still-running session (the session's other
-    /// legs keep recording). Returns the session's source id and its updated
-    /// error message, or `None` if the session is no longer active — a failed
-    /// start or a stop already in progress reports the error itself.
-    pub fn note_leg_failure(&mut self, failure: &LegFailure) -> Option<(String, String)> {
-        let dto = &mut self.sessions.get_mut(&failure.session_id)?.dto;
+    /// legs keep recording). Returns `None` if the session is no longer active
+    /// — a failed start or a stop already in progress reports the error itself.
+    pub fn note_leg_failure(&mut self, failure: &LegFailure) -> Option<NotedFailure> {
+        let session = self.sessions.get_mut(&failure.session_id)?;
+        session.failed_legs += 1;
         let msg = format!("{}: {}", failure.path.display(), failure.error);
-        let full = match dto.error_message.take() {
+        let error = match session.dto.error_message.take() {
             Some(prev) => format!("{prev}; {msg}"),
             None => msg,
         };
-        dto.error_message = Some(full.clone());
-        Some((dto.source_id.clone(), full))
+        session.dto.error_message = Some(error.clone());
+        Some(NotedFailure {
+            source_id: session.dto.source_id.clone(),
+            error,
+            all_failed: session.failed_legs >= session.legs.len(),
+        })
     }
 
     /// Clear the "stopping" marker once a [`StopJob`] has published its result.
@@ -336,7 +351,7 @@ impl SourceManager {
     }
 
     fn take_session(&mut self, session_id: &str) -> Option<StopJob> {
-        let ActiveSession { legs, dto } = self.sessions.remove(session_id)?;
+        let ActiveSession { legs, dto, .. } = self.sessions.remove(session_id)?;
         let (tx, rx) = watch::channel(None);
         self.stopping.insert(session_id.to_string(), rx);
         Some(StopJob { legs, dto, tx })

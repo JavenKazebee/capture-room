@@ -77,8 +77,7 @@ async function toggleRecording() {
   actionError.value = null
   try {
     if (props.session) {
-      const result = await recordings.stop(props.source.node_id, props.session.id)
-      if (result.status === 'error') actionError.value = result.error_message
+      await recordings.stop(props.source.node_id, props.session.id)
     } else {
       const preset = presets.presets.find((p) => p.id === selectedPreset.value) ?? null
       await recordings.start(props.source.node_id, props.source.id, preset)
@@ -89,6 +88,17 @@ async function toggleRecording() {
     busy.value = false
   }
 }
+
+// When a session ends — stopped here, or on its own because every output or
+// the source failed — show why if it ended in error.
+watch(
+  () => props.session,
+  (now, prev) => {
+    if (now || !prev) return
+    const ended = recordings.find(prev.node_id, prev.id)
+    if (ended?.status === 'error') actionError.value = ended.error_message
+  },
+)
 
 // ── Duration ─────────────────────────────────────────────────────────────────
 

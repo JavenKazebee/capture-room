@@ -13,7 +13,7 @@ use tracing::{error, info, warn};
 
 use crate::api::types::{RecordingStatus, WsEvent};
 use crate::db;
-use crate::sources::manager::{LegFailure, StopJob, Teardown};
+use crate::sources::manager::{LegFailure, StopJob, StopOutcome, Teardown};
 use crate::state::AppState;
 
 /// How long a leg may take to drain to EOS and close its file.
@@ -33,10 +33,12 @@ pub async fn run_stop(state: Arc<AppState>, job: StopJob, source_error: Option<S
     let results = join_all(legs.into_iter().map(|leg| leg.stop(EOS_TIMEOUT))).await;
 
     dto.stopped_at = Some(chrono::Utc::now().to_rfc3339());
-    // A failed source is the root cause of anything its legs report.
+    // A failed source is the root cause of anything its legs report. Each
+    // leg's error names its output path, so all of them are kept.
+    let leg_errors: Vec<String> = results.into_iter().filter_map(Result::err).map(|e| e.to_string()).collect();
     let error = source_error
         .map(|e| format!("source failed: {e}"))
-        .or_else(|| results.into_iter().find_map(Result::err).map(|e| e.to_string()));
+        .or_else(|| (!leg_errors.is_empty()).then(|| leg_errors.join("; ")));
     match error {
         None => {
             dto.status = RecordingStatus::Stopped;
@@ -124,14 +126,33 @@ pub fn spawn_monitor_recovery(state: Arc<AppState>) {
 }
 
 /// Report recording legs that fail mid-recording as they happen, rather than
-/// only when the session is stopped. The session's other legs keep recording.
+/// only when the session is stopped. The session's other legs keep recording;
+/// once every leg has failed nothing is being recorded, so the session is
+/// stopped (and finishes as `error`).
 pub fn spawn_leg_failure_reporter(state: Arc<AppState>, mut failures: mpsc::UnboundedReceiver<LegFailure>) {
     tokio::spawn(async move {
         while let Some(failure) = failures.recv().await {
-            let noted = state.source_manager.write().await.note_leg_failure(&failure);
-            let Some((source_id, error)) = noted else { continue };
-            warn!(session = %failure.session_id, path = ?failure.path, error = %failure.error, "recording leg failed");
-            state.emit(&WsEvent::RecordingLegFailed { session_id: failure.session_id, source_id, error });
+            let session_id = failure.session_id.clone();
+            let (noted, stop) = {
+                let mut mgr = state.source_manager.write().await;
+                let noted = mgr.note_leg_failure(&failure);
+                let stop = match &noted {
+                    Some(n) if n.all_failed => Some(mgr.begin_stop_recording(&session_id)),
+                    _ => None,
+                };
+                (noted, stop)
+            };
+            let Some(noted) = noted else { continue };
+            warn!(session = %session_id, path = ?failure.path, error = %failure.error, "recording leg failed");
+            state.emit(&WsEvent::RecordingLegFailed {
+                session_id: session_id.clone(),
+                source_id: noted.source_id,
+                error: noted.error,
+            });
+            if let Some(StopOutcome::Start(job)) = stop {
+                warn!(session = %session_id, "every output failed, stopping recording");
+                tokio::spawn(run_stop(Arc::clone(&state), *job, None));
+            }
         }
     });
 }

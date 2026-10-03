@@ -77,7 +77,8 @@ pub trait InputSource: Send + Sync {
     fn source_type(&self) -> SourceType;
     fn capabilities(&self) -> SourceCapabilitiesDto;
     /// Identifies the config the bin was built from; a rescan rebuilds the
-    /// source (and restarts its monitor) only when this changes.
+    /// source (and restarts its monitor) only when this changes or the
+    /// monitor has failed.
     fn fingerprint(&self) -> String;
     fn gst_src_element(&self) -> gst::Element;
     fn timecode(&self) -> Option<TimecodeDto>;
@@ -118,7 +119,7 @@ Recording pipeline, one per output leg (pipeline/recording.rs)
 Why separate pipelines: a tee passes a branch's flow error back to the source, so a leg
 that failed (a codec the container rejects at runtime, a full disk) used to stop the
 whole monitor and every other leg. A producer only logs consumer errors, so a failing leg
-now fails alone and its error is reported when the session stops.
+now fails alone while the session's other legs keep recording.
 
 - **Backpressure:** each consumer `appsrc` holds up to 500 ms and drops the oldest
   buffers when full, so a slow encoder drops frames in its own leg only. The 10 s audio
@@ -131,6 +132,16 @@ now fails alone and its error is reported when the session stops.
   their partial files deleted.
 - **Stop:** disconnect from the producers, `end_of_stream()` on both appsrcs, wait for
   the leg's own EOS (or error) with a timeout, then NULL. An empty file is removed.
+- **Leg failure:** a leg reports its first error the moment it happens (a bus sync
+  handler, so the error still reaches `stop`). The error is added to the session's
+  `error_message` and sent as `recording.leg_failed`; the session stays active on its
+  remaining legs. Once every leg has failed nothing is being recorded, so the session
+  is stopped and ends as `error`.
+- **Source failure:** a monitor that posts an error (e.g. an NDI sender dropped out)
+  shows it on the source. A background check every 5 s rescans while any monitor has
+  failed: the source is rebuilt with a fresh monitor (or removed, if it has left the
+  network), and its recordings are stopped with `source failed: …` so their files are
+  finalized. Recording does not restart automatically.
 - **Chroma:** H.264/H.265 legs encode the preset's chroma subsampling (default 4:2:0);
   otherwise the encoder would follow the source's format (e.g. 4:4:4 from test patterns).
 
@@ -217,8 +228,10 @@ All events are JSON with a `type` and the `node_id` they describe. `source_id` /
 
 | Event type | Payload |
 |------------|---------|
-| `recording.started` / `recording.stopped` / `recording.error` | session id, source id |
-| `feed.status` | source id, timecode (1 Hz) |
+| `recording.started` / `recording.stopped` | session id, source id |
+| `recording.error` | session id, source id, error — the session ended in error |
+| `recording.leg_failed` | session id, source id, error (the session's accumulated message) — a leg failed; the session keeps recording on its other legs |
+| `feed.status` | source id, timecode, monitor error (1 Hz) |
 | `audio.levels` | source id, channel peak/RMS values (~10fps) |
 | `thumbnail.updated` | source id (at the configured thumbnail fps) |
 | `node.online` / `node.offline` | `peer_id` (controller only) |
@@ -366,7 +379,7 @@ capture-room/
 │   │   │   ├── manager.rs       # SourceManager — sources, per-source monitors, recording sessions
 │   │   │   ├── test.rs          # TestSource
 │   │   │   └── ndi.rs           # NdiSource + NDI device monitor
-│   │   ├── session.rs           # Running stops/teardowns: drain legs, persist, broadcast
+│   │   ├── session.rs           # Background lifecycle: stops/teardowns, leg-failure reports, monitor recovery
 │   │   └── db/                  # sqlx migrations and queries
 │   ├── migrations/
 │   └── Cargo.toml

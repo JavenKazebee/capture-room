@@ -96,6 +96,7 @@ export const useRecordingsStore = defineStore('recordings', () => {
     sessions,
     activeSessions,
     upsert,
+    find,
     markStopped,
     markLegFailed,
     markError,

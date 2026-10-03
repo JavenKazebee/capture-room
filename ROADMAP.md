@@ -4,7 +4,7 @@ Active sequencing of work, decisions, and rationale. This complements
 [ARCHITECTURE.md](ARCHITECTURE.md) (the design spec) — when the two disagree on
 *order*, this file wins; ARCHITECTURE.md remains the source of truth for *design*.
 
-_Last updated: 2026-10-02_
+_Last updated: 2026-10-03_
 
 ---
 
@@ -108,7 +108,12 @@ another leg.
 - **One pipeline per leg.** Each leg is its own GStreamer pipeline fed by the monitor's
   `StreamProducer`s (`node/src/pipeline/recording.rs`). A tee would pass a failing leg's
   flow error back to the source and stop everything; a producer only logs it, so a bad
-  leg (codec the container rejects, full disk) fails alone and reports on stop.
+  leg (codec the container rejects, full disk) fails alone.
+- **Failure handling (2026-10-03):** a failed leg is reported immediately
+  (`recording.leg_failed`, shown on the feed card) while the other legs keep recording;
+  if every leg fails the session stops itself. A failed source monitor is restarted
+  automatically (rescan every 5 s while one has failed), ending its recordings with
+  `source failed: …`.
 - **Start/stop:** all legs are built before any starts, so config errors open no files;
   a failed start rolls back and deletes partial files. Stop drains every leg to EOS
   concurrently with a timeout.
