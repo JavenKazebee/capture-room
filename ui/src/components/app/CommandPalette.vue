@@ -17,7 +17,9 @@ import {
   CommandList,
   CommandSeparator,
 } from '@/components/ui/command'
-import { navItems } from './navItems'
+import { setupPages, workspaces } from './workspaces'
+
+const destinations = [workspaces[0]!, ...setupPages]
 
 const open = defineModel<boolean>('open', { required: true })
 
@@ -80,7 +82,7 @@ const DENSITIES: Density[] = ['compact', 'default', 'comfortable']
 
       <CommandGroup heading="Go to">
         <CommandItem
-          v-for="item in navItems"
+          v-for="item in destinations"
           :key="item.to"
           :value="`go ${item.label}`"
           @select="run(() => router.push(item.to))"

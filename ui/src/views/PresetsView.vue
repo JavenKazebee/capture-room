@@ -157,14 +157,14 @@ async function destroy(p: PresetDto) {
 }
 
 onMounted(() => store.load())
+import PageHeader from '@/components/common/PageHeader.vue'
 </script>
 
 <template>
-  <div class="p-6 max-w-4xl">
-    <div class="flex items-center justify-between mb-6">
-      <h1 class="text-2xl font-semibold">Presets</h1>
-      <Button size="default" @click="openCreate">New preset</Button>
-    </div>
+  <PageHeader title="Presets" :count="store.presets.length">
+    <Button size="default" @click="openCreate">New preset</Button>
+  </PageHeader>
+  <div class="p-4 max-w-4xl">
 
     <!-- Empty state -->
     <div

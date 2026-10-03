@@ -118,11 +118,12 @@ onMounted(async () => {
   await load()
   if (store.self) monitor.value = { ...store.self.monitor }
 })
+import PageHeader from '@/components/common/PageHeader.vue'
 </script>
 
 <template>
-  <div class="p-6 max-w-3xl">
-    <h1 class="text-2xl font-semibold mb-6">Nodes</h1>
+  <PageHeader title="Nodes" :count="store.nodes.length" />
+  <div class="p-4 max-w-3xl">
 
     <!-- This machine -->
     <section class="rounded-lg border border-border bg-card p-4 mb-6">

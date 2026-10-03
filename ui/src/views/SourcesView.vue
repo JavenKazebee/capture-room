@@ -205,20 +205,17 @@ onMounted(async () => {
     loading.value = false
   }
 })
+import PageHeader from '@/components/common/PageHeader.vue'
 </script>
 
 <template>
-  <div class="p-6 max-w-5xl">
-    <!-- Header -->
-    <div class="flex items-center justify-between mb-6">
-      <h1 class="text-2xl font-semibold">Sources</h1>
-      <div class="flex gap-2">
-        <Button variant="outline" size="default" :disabled="scanning" @click="scan">
-          {{ scanning ? 'Scanning…' : 'Scan' }}
-        </Button>
-        <Button size="default" @click="openCreate">Add test source</Button>
-      </div>
-    </div>
+  <PageHeader title="Sources" :count="store.sources.length">
+    <Button variant="outline" size="default" :disabled="scanning" @click="scan">
+      {{ scanning ? 'Scanning…' : 'Scan' }}
+    </Button>
+    <Button size="default" @click="openCreate">Add test source</Button>
+  </PageHeader>
+  <div class="p-4 max-w-5xl">
 
     <p v-if="error" class="text-sm text-destructive mb-4">{{ error }}</p>
 

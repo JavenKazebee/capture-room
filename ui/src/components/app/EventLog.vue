@@ -1,14 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useStorage } from '@vueuse/core'
-import { ArrowDownToLine, Trash2, X } from '@lucide/vue'
+import { ArrowDownToLine, Trash2 } from '@lucide/vue'
 import { useEventsStore, type LogEntry, type LogLevel } from '@/stores/events'
 import { useNodesStore } from '@/stores/nodes'
 import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-
-defineEmits<{ close: [] }>()
 
 const events = useEventsStore()
 const nodes = useNodesStore()
@@ -74,22 +72,16 @@ function resumeFollow() {
   scrollToEnd()
 }
 
-events.markSeen()
-watch(() => events.unseenErrors, (n) => n && events.markSeen())
 </script>
 
 <template>
-  <section class="h-full flex flex-col bg-card min-h-0">
+  <section class="h-full flex flex-col min-h-0">
     <div class="h-8 shrink-0 flex items-center gap-2 px-2 border-b border-border">
-      <span class="text-xs font-semibold px-1">Event log</span>
-      <span class="num text-[11px] text-muted-foreground">{{ filtered.length }}/{{ events.entries.length }}</span>
-
       <ToggleGroup
         v-model="shown"
         type="multiple"
         variant="outline"
         size="sm"
-        class="ml-2"
       >
         <ToggleGroupItem
           v-for="l in LEVELS"
@@ -106,6 +98,7 @@ watch(() => events.unseenErrors, (n) => n && events.markSeen())
       <Input v-model="query" placeholder="Filter…" class="h-6 w-48 text-xs" />
 
       <div class="flex-1" />
+      <span class="num text-[11px] text-muted-foreground">{{ filtered.length }}/{{ events.entries.length }}</span>
 
       <Tooltip>
         <TooltipTrigger as-child>
@@ -124,12 +117,6 @@ watch(() => events.unseenErrors, (n) => n && events.markSeen())
           <button class="log-btn" @click="events.clear()"><Trash2 class="size-3.5" /></button>
         </TooltipTrigger>
         <TooltipContent>Clear log</TooltipContent>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger as-child>
-          <button class="log-btn" @click="$emit('close')"><X class="size-3.5" /></button>
-        </TooltipTrigger>
-        <TooltipContent>Close <span class="opacity-60 ml-1">Ctrl J</span></TooltipContent>
       </Tooltip>
     </div>
 

@@ -148,16 +148,21 @@ tables and `vue-sonner` for toasts.
   JetBrains Mono; `num` utility for technical values. Density = root font size.
 - **Preferences** (done): `usePreferences()` — theme, density, Multiview tile size and
   overlays, inspector, table columns; per browser, surfaced in the view they affect.
-- **Workbench shell** (done): icon rail, resizable bottom event log (Ctrl+J; recording
-  events, failures, node changes, failed actions), bottom status line (connection,
-  nodes, live recordings, lowest free storage, clock), ⌘K command palette, toasts.
-  Pages add their own right-hand inspector where useful (Multiview first).
+- **Workspace shell** (done): the tool will grow into recording, playback and instant
+  replay, so the shell is organized around workspaces (operating desks) rather than
+  pages. A top header holds identity, labeled workspace tabs and global status
+  (connection, nodes, lowest free storage, REC count, clock). Each workspace has a
+  toolbar row and its own panel layout. A tabbed bottom panel (Log / Recordings /
+  Storage, Ctrl+J) is shared. Today: **Record** and **Setup** (Sources, Presets, Nodes,
+  Settings behind a labeled side list). **Replay** and **Playback** join when the
+  backend supports them — not before. ⌘K palette and toasts throughout.
 - **Shared patterns** (done): `PageHeader`, `ConfirmDialog`, `EditSheet` (replaces
   `FormModal`), `StatusDot`, `TallyBadge`, `KeyValueList`, `CopyButton`; `DataTable`
   lands with Sources.
-- **Views, one per pass:** Multiview (tile toolbar, multi-select record, resizable
-  inspector) → Sources (DataTable) → Presets (master-detail editor, path-template
-  preview) → Nodes (cards, room for capacity panel) → Settings (appearance, monitoring).
+- **Views, one per pass:** Record workspace (multiview toolbar, multi-select record
+  with a confirm on Stop all, resizable inspector) → Sources (DataTable) → Presets
+  (master-detail editor, path-template preview) → Nodes (cards, room for capacity
+  panel) → Settings (appearance, monitoring).
 - Recordings, Schedules and Logs views are kept out of the nav until they exist.
 
 ## 7. Follow-on

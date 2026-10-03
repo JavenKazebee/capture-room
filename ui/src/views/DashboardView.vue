@@ -6,13 +6,14 @@ import FeedCard from '@/components/FeedCard.vue'
 
 const sources = useSourcesStore()
 const recordings = useRecordingsStore()
+import PageHeader from '@/components/common/PageHeader.vue'
 </script>
 
 <template>
   <div class="flex flex-col h-full">
     <!-- Main content -->
-    <div class="flex-1 overflow-y-auto p-6">
-      <h1 class="text-2xl font-semibold mb-6">Multiview</h1>
+    <PageHeader title="Record" :count="sources.sources.length" />
+    <div class="flex-1 overflow-y-auto p-4">
 
       <!-- Empty state -->
       <div
