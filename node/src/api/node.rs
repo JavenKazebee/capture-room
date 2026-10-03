@@ -558,6 +558,7 @@ fn build_legs(state: &AppState, req: &StartRecordingRequest) -> Vec<(String, Rec
                 o.resolution.as_deref(),
                 o.framerate.as_deref(),
                 o.bitrate_kbps.map(|b| b as u32),
+                o.chroma,
             );
             let path = o
                 .path_template

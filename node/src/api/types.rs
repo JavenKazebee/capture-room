@@ -136,6 +136,41 @@ pub struct StartRecordingRequest {
 
 // ── Presets ───────────────────────────────────────────────────────────────────
 
+/// Chroma subsampling for H.264/H.265 outputs. Other codecs ignore it
+/// (ProRes picks 422 vs 4444 through the codec itself).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export))]
+pub enum ChromaSubsampling {
+    /// Plays everywhere.
+    #[default]
+    #[serde(rename = "420")]
+    Yuv420,
+    #[serde(rename = "422")]
+    Yuv422,
+    #[serde(rename = "444")]
+    Yuv444,
+}
+
+impl ChromaSubsampling {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Yuv420 => "420",
+            Self::Yuv422 => "422",
+            Self::Yuv444 => "444",
+        }
+    }
+
+    /// Unknown values fall back to the default.
+    pub fn from_db(s: &str) -> Self {
+        match s {
+            "422" => Self::Yuv422,
+            "444" => Self::Yuv444,
+            _ => Self::Yuv420,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
 #[cfg_attr(feature = "export-types", ts(export))]
@@ -149,6 +184,7 @@ pub struct PresetOutputDto {
     pub framerate: Option<String>,
     #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
     pub bitrate_kbps: Option<i64>,
+    pub chroma: ChromaSubsampling,
     pub path_template: String,
     #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub sort_order: i64,
@@ -165,6 +201,7 @@ pub struct PresetOutputInput {
     pub framerate: Option<String>,
     #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
     pub bitrate_kbps: Option<i64>,
+    pub chroma: ChromaSubsampling,
     pub path_template: String,
 }
 

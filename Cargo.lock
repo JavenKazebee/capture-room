@@ -242,6 +242,7 @@ dependencies = [
  "gst-plugin-ndi",
  "gstreamer 0.23.7",
  "gstreamer-app",
+ "gstreamer-utils",
  "mdns-sd",
  "mime_guess",
  "reqwest",
@@ -869,7 +870,7 @@ dependencies = [
  "gstreamer 0.26.0-alpha",
  "gstreamer-audio",
  "gstreamer-base 0.26.0-alpha",
- "gstreamer-video",
+ "gstreamer-video 0.26.0-alpha",
  "libloading",
  "quick-xml",
  "smallvec",
@@ -1066,6 +1067,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "gstreamer-utils"
+version = "0.23.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "61ff07fd1ba426dfe311baa90c7b27d1896725952f6edb91b70cd59c773e9d1a"
+dependencies = [
+ "gstreamer 0.23.7",
+ "gstreamer-app",
+ "gstreamer-video 0.23.6",
+ "once_cell",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "gstreamer-video"
+version = "0.23.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1318b599d77ca4f7702ecbdeac1672d6304cb16b7e5752fabb3ee8260449a666"
+dependencies = [
+ "cfg-if",
+ "futures-channel",
+ "glib 0.20.12",
+ "gstreamer 0.23.7",
+ "gstreamer-base 0.23.6",
+ "gstreamer-video-sys 0.23.6",
+ "libc",
+ "once_cell",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "gstreamer-video"
 version = "0.26.0-alpha"
 source = "git+https://gitlab.freedesktop.org/gstreamer/gstreamer-rs?branch=main#7922e962b267bdb645443615a5ae84239c71f19c"
@@ -1075,9 +1106,23 @@ dependencies = [
  "glib 0.23.0-alpha",
  "gstreamer 0.26.0-alpha",
  "gstreamer-base 0.26.0-alpha",
- "gstreamer-video-sys",
+ "gstreamer-video-sys 0.26.0-alpha",
  "libc",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "gstreamer-video-sys"
+version = "0.23.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a70f0947f12d253b9de9bc3fd92f981e4d025336c18389c7f08cdf388a99f5c"
+dependencies = [
+ "glib-sys 0.20.10",
+ "gobject-sys 0.20.10",
+ "gstreamer-base-sys 0.23.6",
+ "gstreamer-sys 0.23.6",
+ "libc",
+ "system-deps",
 ]
 
 [[package]]

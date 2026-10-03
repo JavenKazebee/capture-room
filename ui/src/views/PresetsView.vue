@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { usePresetsStore, blankLeg, type Preset, type OutputLegInput } from '@/stores/presets'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import type { ChromaSubsampling } from '@/types/generated/ChromaSubsampling'
 
 const store = usePresetsStore()
 
@@ -13,6 +14,20 @@ const error = ref<string | null>(null)
 
 const CODECS = ['h264', 'h265', 'vp9', 'prores', 'prores_4444', 'prores_422hq', 'prores_422lt', 'prores_422proxy', 'dnxhd', 'uncompressed']
 const CONTAINERS = ['mov', 'mp4', 'mkv', 'mxf']
+const CHROMA: { value: ChromaSubsampling; label: string }[] = [
+  { value: '420', label: '4:2:0 — plays everywhere' },
+  { value: '422', label: '4:2:2' },
+  { value: '444', label: '4:4:4' },
+]
+
+/** Codecs whose chroma subsampling is configurable (ProRes picks it via the codec). */
+function hasChroma(codec: string) {
+  return codec === 'h264' || codec === 'h265'
+}
+
+function chromaLabel(chroma: ChromaSubsampling) {
+  return `${chroma[0]}:${chroma[1]}:${chroma[2]}`
+}
 
 const fieldClass =
   'h-8 rounded-md border border-border bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring/30'
@@ -51,6 +66,7 @@ function openEdit(p: Preset) {
     resolution: o.resolution,
     framerate: o.framerate,
     bitrate_kbps: o.bitrate_kbps,
+    chroma: o.chroma,
     path_template: o.path_template,
   }))
   if (formLegs.value.length === 0) formLegs.value = [blankLeg()]
@@ -138,6 +154,10 @@ onMounted(() => store.load())
               <span>{{ leg.resolution ?? 'source res' }} · {{ leg.framerate ?? 'source fps' }}</span>
               <span>·</span>
               <span>{{ leg.bitrate_kbps ? `${leg.bitrate_kbps} kbps` : 'encoder default' }}</span>
+              <template v-if="hasChroma(leg.codec)">
+                <span>·</span>
+                <span>{{ chromaLabel(leg.chroma) }}</span>
+              </template>
               <span class="font-mono truncate">{{ leg.path_template }}</span>
             </div>
             <p v-if="p.outputs.length === 0" class="text-xs text-muted-foreground mt-1 italic">
@@ -226,6 +246,13 @@ onMounted(() => store.load())
               <label class="flex flex-col gap-1">
                 <span class="text-xs text-muted-foreground">Bitrate (kbps)</span>
                 <input v-model.number="leg.bitrate_kbps" type="number" :class="fieldClass" placeholder="8000" />
+              </label>
+
+              <label v-if="hasChroma(leg.codec)" class="flex flex-col gap-1">
+                <span class="text-xs text-muted-foreground">Chroma</span>
+                <select v-model="leg.chroma" :class="fieldClass">
+                  <option v-for="c in CHROMA" :key="c.value" :value="c.value">{{ c.label }}</option>
+                </select>
               </label>
 
               <label class="col-span-2 flex flex-col gap-1">

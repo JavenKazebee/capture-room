@@ -1,4 +1,5 @@
 pub mod monitor;
+pub mod recording;
 pub mod profile;
 
 use anyhow::{Context, Result};

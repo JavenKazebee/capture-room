@@ -34,6 +34,8 @@ pub enum Container {
     Mxf,
 }
 
+use crate::api::types::ChromaSubsampling;
+
 /// Configures a single recording output leg (primary, secondary, or redundant).
 #[derive(Debug, Clone)]
 pub struct RecordingProfile {
@@ -45,6 +47,7 @@ pub struct RecordingProfile {
     pub framerate: Option<(u32, u32)>,
     /// `None` = the encoder's default rate control
     pub bitrate_kbps: Option<u32>,
+    pub chroma: ChromaSubsampling,
 }
 
 impl RecordingProfile {
@@ -57,6 +60,31 @@ impl RecordingProfile {
             VideoCodec::ProRes(_) => "avenc_prores_ks",
             VideoCodec::DnxHd => "avenc_dnxhd",
             VideoCodec::Uncompressed => "identity",
+        }
+    }
+
+    /// Raw format the encoder is fed, where the codec lets the user choose.
+    /// Without this the encoder follows the source's format, which is how
+    /// H.264 ended up as High 4:4:4 (unplayable in most players).
+    pub fn encoder_input_format(&self) -> Option<&'static str> {
+        match self.video_codec {
+            VideoCodec::H264 | VideoCodec::H265 => Some(match self.chroma {
+                ChromaSubsampling::Yuv420 => "I420",
+                ChromaSubsampling::Yuv422 => "Y42B",
+                ChromaSubsampling::Yuv444 => "Y444",
+            }),
+            _ => None,
+        }
+    }
+
+    /// Parser between encoder and muxer. x265enc only emits Annex-B
+    /// byte-stream, which no container muxer accepts (they want hvc1/hev1);
+    /// the parser converts it, and fills in codec headers for H.264 too.
+    pub fn video_parser_element(&self) -> Option<&'static str> {
+        match self.video_codec {
+            VideoCodec::H264 => Some("h264parse"),
+            VideoCodec::H265 => Some("h265parse"),
+            _ => None,
         }
     }
 
@@ -113,6 +141,7 @@ impl RecordingProfile {
         resolution: Option<&str>,
         framerate: Option<&str>,
         bitrate_kbps: Option<u32>,
+        chroma: ChromaSubsampling,
     ) -> Self {
         Self {
             video_codec: parse_codec(codec),
@@ -120,6 +149,7 @@ impl RecordingProfile {
             resolution: resolution.and_then(parse_resolution),
             framerate: framerate.and_then(parse_framerate),
             bitrate_kbps,
+            chroma,
         }
     }
 }

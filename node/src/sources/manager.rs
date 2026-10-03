@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
@@ -10,8 +10,9 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::api::types::{ChannelLevelDto, RecordingSessionDto};
-use crate::pipeline::monitor::{MonitorConfig, MonitorPipeline, RecordingBranch};
+use crate::pipeline::monitor::{MonitorConfig, MonitorPipeline};
 use crate::pipeline::profile::RecordingProfile;
+use crate::pipeline::recording::{self, RecordingLeg};
 
 use super::ndi::NdiMonitor;
 use super::test::{TestSource, TestSourceConfig};
@@ -19,20 +20,19 @@ use super::{ConnectionMode, InputSource};
 
 // ── Stop / teardown handoff ───────────────────────────────────────────────────
 
-/// Resolves to a stopping session's final DTO once its branches are detached.
+/// Resolves to a stopping session's final DTO once its legs have finished.
 pub type StopResult = watch::Receiver<Option<RecordingSessionDto>>;
 
 struct ActiveSession {
-    pipeline: Arc<MonitorPipeline>,
-    branches: Vec<RecordingBranch>,
+    legs: Vec<RecordingLeg>,
     dto: RecordingSessionDto,
 }
 
-/// A session taken out of the active set whose branches still have to be
-/// detached. The caller runs it — see [`SourceManager::begin_stop_recording`].
+/// A session taken out of the active set whose legs still have to drain and
+/// close their files. The caller runs it — see
+/// [`SourceManager::begin_stop_recording`].
 pub struct StopJob {
-    pub pipeline: Arc<MonitorPipeline>,
-    pub branches: Vec<RecordingBranch>,
+    pub legs: Vec<RecordingLeg>,
     pub dto: RecordingSessionDto,
     /// Publish the final DTO here, then call [`SourceManager::finish_stop`].
     pub tx: watch::Sender<Option<RecordingSessionDto>>,
@@ -70,7 +70,7 @@ pub struct SourceManager {
     sources: Vec<Box<dyn InputSource>>,
     monitors: HashMap<String, Arc<MonitorPipeline>>,
     sessions: HashMap<String, ActiveSession>, // session_id → session
-    /// Sessions whose branches are being detached. Lets a duplicate/retried
+    /// Sessions whose legs are draining. Lets a duplicate/retried
     /// stop join the in-flight result instead of reporting "already stopped".
     stopping: HashMap<String, StopResult>,
     ndi_monitor: NdiMonitor,
@@ -215,18 +215,15 @@ impl SourceManager {
         if self.sessions.values().any(|s| s.dto.source_id == source_id) {
             bail!("source {source_id} already has an active recording");
         }
-        let pipeline = self
+        let monitor = self
             .monitors
             .get(source_id)
-            .cloned()
             .ok_or_else(|| anyhow::anyhow!("no monitor running for source {source_id}"))?;
 
         let id = Uuid::new_v4().to_string();
-        let leg_refs: Vec<(&Path, &RecordingProfile)> =
-            legs.iter().map(|(p, prof)| (Path::new(p.as_str()), prof)).collect();
-        // Tag elements with the session id: the previous session on this
-        // source may still be draining in the same pipeline.
-        let branches = pipeline.attach_recording_legs(&id[..8], &leg_refs)?;
+        let leg_refs: Vec<(PathBuf, &RecordingProfile)> =
+            legs.iter().map(|(p, prof)| (PathBuf::from(p), prof)).collect();
+        let recording_legs = recording::start_legs(monitor, &id[..8], &leg_refs)?;
 
         let dto = RecordingSessionDto {
             id,
@@ -240,8 +237,7 @@ impl SourceManager {
         };
 
         info!(id = %dto.id, source = source_id, legs = legs.len(), "recording started");
-        self.sessions
-            .insert(dto.id.clone(), ActiveSession { pipeline, branches, dto: dto.clone() });
+        self.sessions.insert(dto.id.clone(), ActiveSession { legs: recording_legs, dto: dto.clone() });
         Ok(dto)
     }
 
@@ -313,10 +309,10 @@ impl SourceManager {
     }
 
     fn take_session(&mut self, session_id: &str) -> Option<StopJob> {
-        let ActiveSession { pipeline, branches, dto } = self.sessions.remove(session_id)?;
+        let ActiveSession { legs, dto } = self.sessions.remove(session_id)?;
         let (tx, rx) = watch::channel(None);
         self.stopping.insert(session_id.to_string(), rx);
-        Some(StopJob { pipeline, branches, dto, tx })
+        Some(StopJob { legs, dto, tx })
     }
 
     fn take_monitor(&mut self, source_id: &str) -> Option<Teardown> {

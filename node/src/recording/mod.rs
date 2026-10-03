@@ -40,17 +40,14 @@ pub async fn persist_start(
     .await
 }
 
-/// Detach a stopping session's branches, persist and broadcast the outcome,
-/// and publish it to every request waiting on the stop.
+/// Drain a stopping session's legs, persist and broadcast the outcome, and
+/// publish it to every request waiting on the stop.
 pub async fn run_stop(state: Arc<AppState>, job: StopJob) {
-    let StopJob { pipeline, branches, mut dto, tx } = job;
+    let StopJob { legs, mut dto, tx } = job;
 
-    // Detach every leg concurrently: unlinking a branch's tee pad is what
-    // actually stops it recording, and detach_recording() waits for that
-    // leg's EOS. Done sequentially, later legs would keep recording while
-    // earlier ones finalize.
-    let results =
-        join_all(branches.into_iter().map(|b| pipeline.detach_recording(b, EOS_TIMEOUT))).await;
+    // Stop every leg concurrently, so all of them stop recording at the same
+    // moment rather than each waiting for the previous one to finalize.
+    let results = join_all(legs.into_iter().map(|leg| leg.stop(EOS_TIMEOUT))).await;
 
     dto.stopped_at = Some(chrono::Utc::now().to_rfc3339());
     match results.into_iter().find_map(Result::err) {

@@ -15,7 +15,7 @@ use tracing::error;
 
 use super::{discovery, forward, Controller, CONFIG_KEY};
 use crate::api::types::{
-    AddNodeRequest, ControllerToggleRequest, NodeDto, PresetCreateRequest, PresetDto,
+    AddNodeRequest, ChromaSubsampling, ControllerToggleRequest, NodeDto, PresetCreateRequest, PresetDto,
     PresetOutputDto, PresetOutputInput,
 };
 use crate::db::{self, PresetOutputRow, PresetRow};
@@ -247,6 +247,7 @@ fn output_row_to_dto(o: &PresetOutputRow) -> PresetOutputDto {
         resolution: o.resolution.clone(),
         framerate: o.framerate.clone(),
         bitrate_kbps: o.bitrate_kbps,
+        chroma: ChromaSubsampling::from_db(&o.chroma),
         path_template: o.path_template.clone(),
         sort_order: o.sort_order,
     }
@@ -265,6 +266,7 @@ fn build_output_rows(preset_id: &str, inputs: &[PresetOutputInput]) -> Vec<Prese
             resolution: o.resolution.clone(),
             framerate: o.framerate.clone(),
             bitrate_kbps: o.bitrate_kbps,
+            chroma: o.chroma.as_str().to_string(),
             path_template: o.path_template.clone(),
             sort_order: i as i64,
         })

@@ -93,32 +93,48 @@ Initial implementations:
 
 ## GStreamer Pipeline
 
-One pipeline per active source. The monitor branches (thumbnail, audio meter) are always
-running once a source is connected. Recording branches attach and detach at runtime.
+One always-on **monitor pipeline** per connected source (thumbnail, audio meter), plus
+one **recording pipeline per output leg** while recording. The monitor hands raw video
+and audio to recordings through `StreamProducer`s (`gstreamer-utils`: an `appsink` that
+fans buffers out to consumer `appsrc`s in other pipelines).
 
 ```
+Monitor pipeline (pipeline/monitor.rs)
 [InputSource gst src element]
-    │
-    ├─► [timecode extractor]
-    │
-    ├─► [vtee]  ── always-on monitor ──────────────────────────────────────────────────
-    │      ├─► [queue] → [videoscale] → [capsfilter fps] → [capsfilter res]
-    │      │             → [jpegenc] → ThumbnailStore → GET /api/v1/thumbnails/{id}
-    │      │
-    │      └─► [queue, leaky=upstream] → [encoder] → [muxer] → [filesink]  (recording branch, detachable)
-    │
-    └─► [atee]  ── always-on monitor ──────────────────────────────────────────────────
+    ├─► [vtee]
+    │      ├─► [queue] → [videorate] → [caps fps] → [videoscale] → [caps res]
+    │      │             → [jpegenc] → ThumbnailStore → GET /api/v1/node/thumbnails/{id}
+    │      └─► [queue] → [appsink] = video StreamProducer
+    └─► [atee]
            ├─► [queue] → [audioconvert] → [level] → AudioMeter → WS audio.levels
-           │
-           └─► [queue] → [muxer] → [filesink]  (recording branch, detachable)
+           └─► [queue] → [appsink] = audio StreamProducer
+
+Recording pipeline, one per output leg (pipeline/recording.rs)
+[appsrc video] → [videorate → caps]? → [videoscale → caps]? → [videoconvert] → [caps chroma]?
+               → [encoder] → [h264parse|h265parse]? ─┐
+[appsrc audio] → [queue 10 s] → [audioconvert] → [audioresample] → [encoder] ─┴─► [muxer] → [filesink]
 ```
 
-The video recording queue uses `leaky=upstream` so that a slow encoder drops frames
-rather than stalling vtee and backpressuring through the muxer's collect-pads (which
-would freeze audio monitoring). A separate large audio queue buffers up to 10 s so the
-muxer can interleave audio and video without blocking atee.
+Why separate pipelines: a tee passes a branch's flow error back to the source, so a leg
+that failed (a codec the container rejects at runtime, a full disk) used to stop the
+whole monitor and every other leg. A producer only logs consumer errors, so a failing leg
+now fails alone and its error is reported when the session stops.
 
-If the redundant path uses a different profile than primary, it gets its own encoder branch (same topology). If the profiles are identical, the encoded bitstream is split via `tee` after a single encoder, saving a full re-encode.
+- **Backpressure:** each consumer `appsrc` holds up to 500 ms and drops the oldest
+  buffers when full, so a slow encoder drops frames in its own leg only. The 10 s audio
+  queue lets the muxer wait for the video encoder's first frames without dropping audio.
+- **Timing:** recording pipelines share the monitor's clock and base time, and the
+  producer forwards segments, so audio and video stay aligned. `matroskamux` gets
+  `offset-to-zero` (qtmux/mp4mux start at zero on their own).
+- **Start:** every leg is built (NULL, no file opened) before any is started, so config
+  errors touch no files; if a leg fails to start, the attempt's legs are rolled back and
+  their partial files deleted.
+- **Stop:** disconnect from the producers, `end_of_stream()` on both appsrcs, wait for
+  the leg's own EOS (or error) with a timeout, then NULL. An empty file is removed.
+- **Chroma:** H.264/H.265 legs encode the preset's chroma subsampling (default 4:2:0);
+  otherwise the encoder would follow the source's format (e.g. 4:4:4 from test patterns).
+
+Legs with identical profiles currently each run their own encoder.
 
 Supported encoder targets:
 - **Ingest:** ProRes (4444, 422 HQ, 422, LT, Proxy), DNxHD/DNxHR, uncompressed
@@ -403,7 +419,7 @@ Status legend: ✅ done · 🟡 partial · ⬜ not started · _(as of 2026-06-23
    - ✅ `NodesView.vue`, ✅ `PresetsView.vue`, ✅ `SourcesView.vue`
    - ⬜ `RecordingsView`, `SchedulesView`, `LogsView` are still "coming soon" placeholders
 10. ✅ **Rust — SourceManager + live source monitoring** (ROADMAP step 2)
-    - `MonitorPipeline` (`pipeline/monitor.rs`): always-on vtee/atee → thumbnail + audio meter; recording attaches as a detachable branch
+    - `MonitorPipeline` (`pipeline/monitor.rs`): always-on vtee/atee → thumbnail + audio meter + StreamProducers; each recording leg is its own pipeline (`pipeline/recording.rs`)
     - `SourceManager` (`sources/manager.rs`): owns per-source pipelines and recording sessions behind a single `RwLock`
     - Live settings reconfiguration via `MonitorPipeline::reconfigure()` — no pipeline restart
     - Two-phase `begin_stop_recording` + `Arc<MonitorPipeline>` keeps WS emitter unblocked during EOS drain
