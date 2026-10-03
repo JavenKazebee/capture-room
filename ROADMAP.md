@@ -141,10 +141,10 @@ Staying on shadcn-vue (reka-ui, Tailwind v4), plus `@tanstack/vue-table` for den
 tables and `vue-sonner` for toasts.
 
 - **Design system** (done): dark-first OKLCH tokens in `ui/src/style.css`, light kept
-  in step. Solid red on screen means "live": `--brand` crimson is identity only
-  (logo, active nav marker), `--primary` is neutral, `--tally` is live recording only,
-  `--destructive` is a soft treatment behind a confirm. `--info` (cyan/sky) is the
-  accent for focus, selection and inspection. Self-hosted Inter +
+  in step, on slightly blue-gray tinted surfaces. `--primary` is sky-cyan (actions,
+  toggles, focus, selection, links). Solid red means "live": `--tally` is recording
+  only, `--destructive` a soft treatment behind a confirm, and `--brand` red is just
+  the logo's record light. Self-hosted Inter +
   JetBrains Mono; `num` utility for technical values. Density = root font size.
 - **Preferences** (done): `usePreferences()` — theme, density, Multiview tile size and
   overlays, inspector, table columns; per browser, surfaced in the view they affect.

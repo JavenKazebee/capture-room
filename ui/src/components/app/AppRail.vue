@@ -62,6 +62,6 @@ const route = useRoute()
 }
 .rail-item[data-active]::before {
   content: '';
-  @apply absolute -left-1.5 inset-y-2 w-0.5 rounded-full bg-brand;
+  @apply absolute -left-1.5 inset-y-2 w-0.5 rounded-full bg-primary;
 }
 </style>
