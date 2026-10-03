@@ -155,7 +155,7 @@ impl SourceManager {
         gone.extend(old.into_keys());
 
         // Tear down first: a changed source restarts under the same id.
-        let teardowns = gone.iter().filter_map(|id| self.take_monitor(id)).collect();
+        let teardowns = gone.iter().filter_map(|id| self.disconnect(id)).collect();
         for id in added {
             if let Err(e) = self.start_monitor(&id) {
                 warn!(source = %id, error = %e, "failed to start monitor");
@@ -174,11 +174,6 @@ impl SourceManager {
             return Ok(()); // already connected
         }
         self.start_monitor(source_id)
-    }
-
-    /// Remove the monitor (and any active recordings) for a source.
-    pub fn disconnect(&mut self, source_id: &str) -> Option<Teardown> {
-        self.take_monitor(source_id)
     }
 
     // ── Thumbnail / audio access ──────────────────────────────────────────────
@@ -308,7 +303,8 @@ impl SourceManager {
         Some(StopJob { legs, dto, tx })
     }
 
-    fn take_monitor(&mut self, source_id: &str) -> Option<Teardown> {
+    /// Remove the monitor (and any active recordings) for a source.
+    pub fn disconnect(&mut self, source_id: &str) -> Option<Teardown> {
         let pipeline = self.monitors.remove(source_id)?;
         let session_ids: Vec<String> = self
             .sessions

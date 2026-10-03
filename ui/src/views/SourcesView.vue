@@ -110,17 +110,8 @@ async function openEdit(src: Source) {
   if (!cfg) return
   editingId.value = src.id
   formNodeId.value = src.node_id
-  Object.assign(form, {
-    name: cfg.name,
-    pattern: cfg.pattern,
-    width: cfg.width,
-    height: cfg.height,
-    fps_num: cfg.fps_num,
-    fps_den: cfg.fps_den,
-    audio_signal: cfg.audio_signal,
-    frequency: cfg.frequency,
-    channels: cfg.channels,
-  })
+  const { id: _id, created_at: _created, ...config } = cfg
+  Object.assign(form, config)
   showForm.value = true
 }
 

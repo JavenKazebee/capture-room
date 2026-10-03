@@ -5,4 +5,4 @@ import type { VideoTestPattern } from "./VideoTestPattern";
 /**
  * A configured test source, as stored and as served.
  */
-export type TestSourceConfigDto = { id: string, name: string, pattern: VideoTestPattern, width: number, height: number, fps_num: number, fps_den: number, audio_signal: AudioTestSignal, frequency: number, channels: number, created_at: string, };
+export type TestSourceConfigDto = { id: string, created_at: string, name: string, pattern: VideoTestPattern, width: number, height: number, fps_num: number, fps_den: number, audio_signal: AudioTestSignal, frequency: number, channels: number, };

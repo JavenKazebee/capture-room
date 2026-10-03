@@ -75,12 +75,12 @@ pub trait InputSource: Send + Sync {
     fn id(&self) -> &str;
     fn display_name(&self) -> &str;
     fn source_type(&self) -> SourceType;
-    fn capabilities(&self) -> SourceCapabilities;
+    fn capabilities(&self) -> SourceCapabilitiesDto;
     /// Identifies the config the bin was built from; a rescan rebuilds the
     /// source (and restarts its monitor) only when this changes.
     fn fingerprint(&self) -> String;
     fn gst_src_element(&self) -> gst::Element;
-    fn timecode(&self) -> Option<Timecode>;
+    fn timecode(&self) -> Option<TimecodeDto>;
 }
 ```
 
@@ -362,7 +362,7 @@ capture-room/
 │   │   │   ├── profile.rs       # RecordingProfile (codec, container, bitrate, chroma, …)
 │   │   │   └── mod.rs           # Latest<T> (AudioMeter, ThumbnailStore), element helpers
 │   │   ├── sources/
-│   │   │   ├── mod.rs           # InputSource trait + SourceType
+│   │   │   ├── mod.rs           # InputSource trait
 │   │   │   ├── manager.rs       # SourceManager — sources, per-source monitors, recording sessions
 │   │   │   ├── test.rs          # TestSource
 │   │   │   └── ndi.rs           # NdiSource + NDI device monitor

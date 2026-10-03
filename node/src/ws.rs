@@ -99,7 +99,7 @@ pub fn spawn_emitter(state: Arc<AppState>) {
                 for source in mgr.sources() {
                     state.emit(&WsEvent::FeedStatus {
                         source_id: source.id().to_string(),
-                        timecode: source.timecode().map(|tc| tc.to_string()),
+                        timecode: source.timecode().map(|tc| tc.display),
                         error: mgr.monitor_error(source.id()),
                     });
                 }

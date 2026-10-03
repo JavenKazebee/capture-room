@@ -2,26 +2,29 @@ use anyhow::{Context, Result};
 use chrono::Timelike;
 use gstreamer::{self as gst, prelude::*};
 
-use super::{add_ghost_pad, InputSource, SourceCapabilities, SourceType, Timecode};
+use super::{add_ghost_pad, InputSource};
+use crate::api::types::{
+    AudioTestSignal, SourceCapabilitiesDto, SourceType, TestSourceConfigDto, TestSourceRequest, TimecodeDto,
+    VideoTestPattern,
+};
 use crate::pipeline::{capsfilter, make_el};
-use crate::api::types::{AudioTestSignal, TestSourceConfigDto, VideoTestPattern};
 
 // ── TestSource ────────────────────────────────────────────────────────────────
 
 pub struct TestSource {
-    config: TestSourceConfigDto,
+    id: String,
+    config: TestSourceRequest,
     bin: gst::Bin,
 }
 
 impl TestSource {
-    pub fn new(config: TestSourceConfigDto) -> Result<Self> {
-        let bin = build_bin(&config)?;
-        Ok(Self { config, bin })
+    pub fn new(dto: TestSourceConfigDto) -> Result<Self> {
+        let bin = build_bin(&dto.id, &dto.config)?;
+        Ok(Self { id: dto.id, config: dto.config, bin })
     }
 }
 
-fn build_bin(cfg: &TestSourceConfigDto) -> Result<gst::Bin> {
-    let id = &cfg.id;
+fn build_bin(id: &str, cfg: &TestSourceRequest) -> Result<gst::Bin> {
     let bin = gst::Bin::with_name(&format!("testsrc-bin-{id}"));
 
     // ── Video: videotestsrc → capsfilter → videoconvert ───────────────────────
@@ -62,7 +65,7 @@ fn build_bin(cfg: &TestSourceConfigDto) -> Result<gst::Bin> {
 
 impl InputSource for TestSource {
     fn id(&self) -> &str {
-        &self.config.id
+        &self.id
     }
 
     fn display_name(&self) -> &str {
@@ -73,11 +76,11 @@ impl InputSource for TestSource {
         SourceType::Test
     }
 
-    fn capabilities(&self) -> SourceCapabilities {
-        SourceCapabilities {
+    fn capabilities(&self) -> SourceCapabilitiesDto {
+        SourceCapabilitiesDto {
             max_width: self.config.width,
             max_height: self.config.height,
-            max_framerate: (self.config.fps_num, self.config.fps_den),
+            max_framerate: [self.config.fps_num, self.config.fps_den],
             audio_channels: self.config.channels,
         }
     }
@@ -90,20 +93,20 @@ impl InputSource for TestSource {
         self.bin.clone().upcast()
     }
 
-    fn timecode(&self) -> Option<Timecode> {
+    fn timecode(&self) -> Option<TimecodeDto> {
         let now = chrono::Utc::now();
         let fps = self.config.fps_num as f64 / self.config.fps_den.max(1) as f64;
         // nanosecond() exceeds 1e9 during a leap second; keep frames in range.
         let frac = (now.nanosecond() as f64 / 1_000_000_000.0).min(0.999_999);
         let frames = (frac * fps) as u8;
-        Some(Timecode {
-            hours: now.hour() as u8,
-            minutes: now.minute() as u8,
-            seconds: now.second() as u8,
+        Some(TimecodeDto::new(
+            now.hour() as u8,
+            now.minute() as u8,
+            now.second() as u8,
             frames,
-            drop_frame: false,
-            framerate: (self.config.fps_num, self.config.fps_den),
-        })
+            false,
+            [self.config.fps_num, self.config.fps_den],
+        ))
     }
 }
 

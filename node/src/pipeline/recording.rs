@@ -23,6 +23,7 @@ use tracing::{info, warn};
 use super::monitor::MonitorPipeline;
 use super::{capsfilter, make_el};
 use super::profile::RecordingProfile;
+use crate::api::types::{Container, VideoCodec};
 
 /// One running output leg.
 pub struct RecordingLeg {
@@ -149,11 +150,11 @@ impl RecordingLeg {
             aq,
             make_el("audioconvert", "aconv")?,
             make_el("audioresample", "aresample")?,
-            build_audio_encoder(profile)?,
+            make_el(profile.audio_encoder_element(), "aenc")?,
         ];
 
         let muxer = make_el(profile.muxer_element(), "mux")?;
-        if profile.muxer_element() == "matroskamux" {
+        if profile.container == Container::Mkv {
             // Timestamps arrive as the monitor's running time; qtmux/mp4mux
             // start the file at zero on their own, matroskamux needs asking.
             set_property(&muxer, "offset-to-zero", "true")?;
@@ -321,19 +322,18 @@ fn link_to_muxer(
 }
 
 fn build_video_encoder(profile: &RecordingProfile) -> Result<gst::Element> {
-    let name = profile.video_encoder_element();
-    let venc = make_el(name, "venc")?;
+    let venc = make_el(profile.video_encoder_element(), "venc")?;
     if let Some(kbps) = profile.bitrate_kbps {
-        match name {
-            "x264enc" | "x265enc" => set_property(&venc, "bitrate", &kbps.to_string())?,
-            "vp9enc" => set_property(&venc, "target-bitrate", &(kbps * 1000).to_string())?,
+        match profile.video_codec {
+            VideoCodec::H264 | VideoCodec::H265 => set_property(&venc, "bitrate", &kbps.to_string())?,
+            VideoCodec::Vp9 => set_property(&venc, "target-bitrate", &(kbps * 1000).to_string())?,
             _ => {}
         }
     }
     if let Some(prores) = profile.prores_profile() {
         set_property(&venc, "profile", prores)?;
     }
-    if name == "x264enc" {
+    if profile.video_codec == VideoCodec::H264 {
         set_property(&venc, "tune", "zerolatency")?;
     }
     Ok(venc)
@@ -347,8 +347,4 @@ fn set_property(el: &gst::Element, name: &str, value: &str) -> Result<()> {
     }
     el.set_property_from_str(name, value);
     Ok(())
-}
-
-fn build_audio_encoder(profile: &RecordingProfile) -> Result<gst::Element> {
-    make_el(profile.audio_encoder_element(), "aenc")
 }

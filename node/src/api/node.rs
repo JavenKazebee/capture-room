@@ -19,15 +19,14 @@ use tracing::error;
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
-    NodeSettingsDto, NodeStatus, RecordingSessionDto, RecordingStatus, SourceCapabilitiesDto,
-    SourceDto, StartRecordingRequest, StorageVolumeDto, TestSourceConfigDto, TestSourceRequest,
-    TimecodeDto, UpdateNodeSettingsRequest, WsEvent,
+    NodeSettingsDto, NodeStatus, RecordingSessionDto, RecordingStatus, SourceDto, StartRecordingRequest,
+    StorageVolumeDto, TestSourceConfigDto, TestSourceRequest, UpdateNodeSettingsRequest, WsEvent,
 };
 use crate::db;
 use crate::pipeline::profile::RecordingProfile;
 use crate::session;
 use crate::sources::manager::{SourceManager, StopOutcome, StopResult};
-use crate::sources::{InputSource, Timecode};
+use crate::sources::InputSource;
 use crate::state::AppState;
 use crate::ws;
 
@@ -156,7 +155,11 @@ async fn post_test_config(
     State(state): State<Arc<AppState>>,
     Json(req): Json<TestSourceRequest>,
 ) -> ApiResult<(StatusCode, Json<TestSourceConfigDto>)> {
-    let config = req.into_config(uuid::Uuid::new_v4().to_string(), chrono::Utc::now().to_rfc3339());
+    let config = TestSourceConfigDto {
+        id: uuid::Uuid::new_v4().to_string(),
+        config: req,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
     db::test_source_insert(&state.db, &config).await?;
     rescan_after(&state, "create").await;
     Ok((StatusCode::CREATED, Json(config)))
@@ -169,7 +172,7 @@ async fn put_test_config(
 ) -> ApiResult<Json<TestSourceConfigDto>> {
     const NOT_FOUND: ApiError = ApiError::NotFound("test source not found");
     let existing = db::test_source_get(&state.db, &id).await?.ok_or(NOT_FOUND)?;
-    let config = req.into_config(existing.id, existing.created_at);
+    let config = TestSourceConfigDto { config: req, ..existing };
     if !db::test_source_update(&state.db, &config).await? {
         return Err(NOT_FOUND);
     }
@@ -332,32 +335,14 @@ async fn ws_handler(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn source_to_dto(mgr: &SourceManager, s: &dyn InputSource) -> SourceDto {
-    let caps = s.capabilities();
     SourceDto {
         id: s.id().to_string(),
         display_name: s.display_name().to_string(),
-        source_type: format!("{:?}", s.source_type()).to_lowercase(),
+        source_type: s.source_type(),
         connected: mgr.is_monitored(s.id()),
         error: mgr.monitor_error(s.id()),
-        timecode: s.timecode().map(timecode_to_dto),
-        capabilities: SourceCapabilitiesDto {
-            max_width: caps.max_width,
-            max_height: caps.max_height,
-            max_framerate: [caps.max_framerate.0, caps.max_framerate.1],
-            audio_channels: caps.audio_channels,
-        },
-    }
-}
-
-fn timecode_to_dto(tc: Timecode) -> TimecodeDto {
-    TimecodeDto {
-        display: tc.to_string(),
-        hours: tc.hours,
-        minutes: tc.minutes,
-        seconds: tc.seconds,
-        frames: tc.frames,
-        drop_frame: tc.drop_frame,
-        framerate: [tc.framerate.0, tc.framerate.1],
+        timecode: s.timecode(),
+        capabilities: s.capabilities(),
     }
 }
 

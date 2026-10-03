@@ -5,44 +5,7 @@ pub mod manager;
 pub mod ndi;
 pub mod test;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SourceType {
-    Test,
-    Ndi,
-}
-
-/// What a source can produce, for display in the UI.
-#[derive(Debug, Clone)]
-pub struct SourceCapabilities {
-    pub max_width: u32,
-    pub max_height: u32,
-    /// (numerator, denominator)
-    pub max_framerate: (u32, u32),
-    pub audio_channels: u32,
-}
-
-/// SMPTE-style timecode.
-#[derive(Debug, Clone)]
-pub struct Timecode {
-    pub hours: u8,
-    pub minutes: u8,
-    pub seconds: u8,
-    pub frames: u8,
-    pub drop_frame: bool,
-    /// (numerator, denominator)
-    pub framerate: (u32, u32),
-}
-
-impl std::fmt::Display for Timecode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let sep = if self.drop_frame { ';' } else { ':' };
-        write!(
-            f,
-            "{:02}:{:02}:{:02}{}{:02}",
-            self.hours, self.minutes, self.seconds, sep, self.frames
-        )
-    }
-}
+use crate::api::types::{SourceCapabilitiesDto, SourceType, TimecodeDto};
 
 /// Every input source implements this trait.
 ///
@@ -53,7 +16,7 @@ pub trait InputSource: Send + Sync {
     fn id(&self) -> &str;
     fn display_name(&self) -> &str;
     fn source_type(&self) -> SourceType;
-    fn capabilities(&self) -> SourceCapabilities;
+    fn capabilities(&self) -> SourceCapabilitiesDto;
 
     /// Identifies the configuration the bin was built from. A rescan keeps a
     /// source (and its running monitor) only if the id and fingerprint match;
@@ -63,7 +26,7 @@ pub trait InputSource: Send + Sync {
     /// Returns the source's GStreamer bin (video + audio ghost pads).
     fn gst_src_element(&self) -> gst::Element;
 
-    fn timecode(&self) -> Option<Timecode>;
+    fn timecode(&self) -> Option<TimecodeDto>;
 }
 
 /// Expose `element`'s static src pad on `bin` as the ghost pad `name`

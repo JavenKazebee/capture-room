@@ -6,8 +6,7 @@ use ts_rs::TS;
 // ── Node status ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct NodeStatus {
     pub id: String,
     pub name: String,
@@ -19,9 +18,16 @@ pub struct NodeStatus {
 
 // ── Sources ───────────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum SourceType {
+    Test,
+    Ndi,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct TimecodeDto {
     pub hours: u8,
     pub minutes: u8,
@@ -29,12 +35,27 @@ pub struct TimecodeDto {
     pub frames: u8,
     pub drop_frame: bool,
     pub framerate: [u32; 2],
+    /// `HH:MM:SS:FF`, with `;` before the frames for drop-frame.
     pub display: String,
 }
 
+impl TimecodeDto {
+    pub fn new(hours: u8, minutes: u8, seconds: u8, frames: u8, drop_frame: bool, framerate: [u32; 2]) -> Self {
+        let sep = if drop_frame { ';' } else { ':' };
+        Self {
+            display: format!("{hours:02}:{minutes:02}:{seconds:02}{sep}{frames:02}"),
+            hours,
+            minutes,
+            seconds,
+            frames,
+            drop_frame,
+            framerate,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct SourceCapabilitiesDto {
     pub max_width: u32,
     pub max_height: u32,
@@ -43,12 +64,11 @@ pub struct SourceCapabilitiesDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct SourceDto {
     pub id: String,
     pub display_name: String,
-    pub source_type: String,
+    pub source_type: SourceType,
     pub connected: bool,
     /// Set when the monitor pipeline has failed (e.g. an NDI sender went away).
     pub error: Option<String>,
@@ -63,8 +83,7 @@ pub struct SourceDto {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "kebab-case")]
 #[sqlx(rename_all = "kebab-case")]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub enum VideoTestPattern {
     Smpte,
     Snow,
@@ -82,8 +101,7 @@ pub enum VideoTestPattern {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "kebab-case")]
 #[sqlx(rename_all = "kebab-case")]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub enum AudioTestSignal {
     Tone,
     Silence,
@@ -92,26 +110,18 @@ pub enum AudioTestSignal {
 
 /// A configured test source, as stored and as served.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct TestSourceConfigDto {
     pub id: String,
-    pub name: String,
-    pub pattern: VideoTestPattern,
-    pub width: u32,
-    pub height: u32,
-    pub fps_num: u32,
-    pub fps_den: u32,
-    pub audio_signal: AudioTestSignal,
-    pub frequency: f64,
-    pub channels: u32,
+    #[serde(flatten)]
+    #[sqlx(flatten)]
+    pub config: TestSourceRequest,
     pub created_at: String,
 }
 
 /// Body for creating or replacing a test source.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct TestSourceRequest {
     pub name: String,
     pub pattern: VideoTestPattern,
@@ -124,31 +134,12 @@ pub struct TestSourceRequest {
     pub channels: u32,
 }
 
-impl TestSourceRequest {
-    pub fn into_config(self, id: String, created_at: String) -> TestSourceConfigDto {
-        TestSourceConfigDto {
-            id,
-            name: self.name,
-            pattern: self.pattern,
-            width: self.width,
-            height: self.height,
-            fps_num: self.fps_num,
-            fps_den: self.fps_den,
-            audio_signal: self.audio_signal,
-            frequency: self.frequency,
-            channels: self.channels,
-            created_at,
-        }
-    }
-}
-
 // ── Recordings ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "lowercase")]
 #[sqlx(rename_all = "lowercase")]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub enum RecordingStatus {
     Active,
     Stopped,
@@ -157,8 +148,7 @@ pub enum RecordingStatus {
 
 /// A recording session, as stored in `recording_sessions` and as served.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct RecordingSessionDto {
     pub id: String,
     pub source_id: String,
@@ -174,8 +164,7 @@ pub struct RecordingSessionDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct StartRecordingRequest {
     pub source_id: String,
     /// Informational: the controller-side preset these outputs came from.
@@ -191,8 +180,7 @@ pub struct StartRecordingRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "lowercase")]
 #[sqlx(rename_all = "lowercase")]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub enum VideoCodec {
     H264,
     H265,
@@ -219,8 +207,7 @@ pub enum VideoCodec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "lowercase")]
 #[sqlx(rename_all = "lowercase")]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub enum Container {
     Mov,
     Mp4,
@@ -231,8 +218,7 @@ pub enum Container {
 /// Chroma subsampling for H.264/H.265 outputs. Other codecs ignore it
 /// (ProRes picks 422 vs 4444 through the codec itself).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub enum ChromaSubsampling {
     /// Plays everywhere.
     #[default]
@@ -249,8 +235,7 @@ pub enum ChromaSubsampling {
 
 /// One output leg: what to encode and where to write it.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct PresetOutputInput {
     pub name: String,
     pub codec: VideoCodec,
@@ -264,8 +249,7 @@ pub struct PresetOutputInput {
 
 /// A stored output leg, as kept in `preset_outputs` and as served.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct PresetOutputDto {
     pub id: String,
     pub preset_id: String,
@@ -277,8 +261,7 @@ pub struct PresetOutputDto {
 
 /// A preset, as stored in `presets` (plus its outputs) and as served.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct PresetDto {
     pub id: String,
     pub name: String,
@@ -290,8 +273,7 @@ pub struct PresetDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct PresetCreateRequest {
     pub name: String,
     pub outputs: Vec<PresetOutputInput>,
@@ -300,8 +282,7 @@ pub struct PresetCreateRequest {
 // ── WebSocket events ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct ChannelLevelDto {
     pub peak_db: f64,
     pub rms_db: f64,
@@ -309,8 +290,7 @@ pub struct ChannelLevelDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub enum WsEvent {
     #[serde(rename = "recording.started")]
     RecordingStarted {
@@ -351,8 +331,7 @@ pub enum WsEvent {
 
 /// How each source's monitor pipeline samples thumbnails and audio levels.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct MonitorSettingsDto {
     pub thumb_fps: i32,
     pub thumb_width: i32,
@@ -382,8 +361,7 @@ impl MonitorSettingsDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct NodeSettingsDto {
     pub node_id: String,
     pub node_name: String,
@@ -392,8 +370,7 @@ pub struct NodeSettingsDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct UpdateNodeSettingsRequest {
     pub name: Option<String>,
     pub monitor: Option<MonitorSettingsDto>,
@@ -402,8 +379,7 @@ pub struct UpdateNodeSettingsRequest {
 // ── Storage ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct StorageVolumeDto {
     pub name: String,
     pub mount_point: String,
@@ -418,8 +394,7 @@ pub struct StorageVolumeDto {
 // ── Controller ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct NodeDto {
     pub id: String,
     pub name: String,
@@ -435,15 +410,13 @@ pub struct NodeDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct AddNodeRequest {
     pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct ControllerToggleRequest {
     pub enabled: bool,
 }

@@ -3,6 +3,7 @@ import { useSourcesStore, audioLevels, thumbnailSeqs } from '@/stores/sources'
 import { useRecordingsStore } from '@/stores/recordings'
 import { useNodesStore } from '@/stores/nodes'
 import { sourceKey } from '@/composables/useApi'
+import type { WsEvent } from '@/types/generated/WsEvent'
 
 export type WsStatus = 'connecting' | 'connected' | 'disconnected'
 
@@ -53,12 +54,13 @@ function connect() {
 
 // Every event carries the `node_id` it describes; source and session ids
 // inside it are local to that node.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function handleEvent(event: Record<string, any>) {
+type NodeEvent = WsEvent & { node_id: string }
+
+function handleEvent(event: NodeEvent) {
   const sources = useSourcesStore()
   const recordings = useRecordingsStore()
   const nodes = useNodesStore()
-  const nodeId = event.node_id as string
+  const nodeId = event.node_id
 
   switch (event.type) {
     case 'node.online':
@@ -69,36 +71,29 @@ function handleEvent(event: Record<string, any>) {
     case 'recording.started':
       // Usually already in the store via the POST response; reload in case it
       // came from another client or a schedule.
-      if (!recordings.activeForSource(nodeId, event.source_id as string)) {
+      if (!recordings.activeForSource(nodeId, event.source_id)) {
         recordings.loadForNode(nodeId)
       }
       break
 
     case 'recording.stopped':
-      recordings.markStopped(nodeId, event.session_id as string)
+      recordings.markStopped(nodeId, event.session_id)
       break
 
     case 'recording.error':
-      recordings.markError(nodeId, event.session_id as string, event.error as string)
+      recordings.markError(nodeId, event.session_id, event.error)
       break
 
     case 'feed.status':
-      sources.updateStatus(
-        nodeId,
-        event.source_id as string,
-        event.timecode as string | null,
-        event.error as string | null,
-      )
+      sources.updateStatus(nodeId, event.source_id, event.timecode, event.error)
       break
 
-    case 'audio.levels': {
-      const channels = event.channels as { peak_db: number; rms_db: number }[]
-      audioLevels.set(sourceKey(nodeId, event.source_id as string), channels)
+    case 'audio.levels':
+      audioLevels.set(sourceKey(nodeId, event.source_id), event.channels)
       break
-    }
 
     case 'thumbnail.updated': {
-      const key = sourceKey(nodeId, event.source_id as string)
+      const key = sourceKey(nodeId, event.source_id)
       thumbnailSeqs.set(key, (thumbnailSeqs.get(key) ?? 0) + 1)
       break
     }
