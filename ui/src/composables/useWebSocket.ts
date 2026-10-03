@@ -3,6 +3,7 @@ import { useSourcesStore, audioLevels, thumbnailSeqs } from '@/stores/sources'
 import { useRecordingsStore } from '@/stores/recordings'
 import { useNodesStore } from '@/stores/nodes'
 import { sourceKey } from '@/composables/useApi'
+import { useEventsStore } from '@/stores/events'
 import type { WsEvent } from '@/types/generated/WsEvent'
 
 export type WsStatus = 'connecting' | 'connected' | 'disconnected'
@@ -27,6 +28,7 @@ function connect() {
 
   socket.addEventListener('open', () => {
     wsStatus.value = 'connected'
+    if (connectedBefore) useEventsStore().log('info', 'Reconnected to server')
     attempt = 0
     if (reconnectTimer) {
       clearTimeout(reconnectTimer)
@@ -47,6 +49,7 @@ function connect() {
   })
 
   socket.addEventListener('close', () => {
+    if (wsStatus.value === 'connected') useEventsStore().log('warn', 'Lost connection to server — reconnecting')
     wsStatus.value = 'disconnected'
     const delay = Math.min(BASE_DELAY * 2 ** attempt, MAX_DELAY)
     attempt++
@@ -73,6 +76,7 @@ function handleEvent(event: NodeEvent) {
   const sources = useSourcesStore()
   const recordings = useRecordingsStore()
   const nodeId = event.node_id
+  logEvent(event)
 
   switch (event.type) {
     case 'node.online':
@@ -122,4 +126,45 @@ function handleEvent(event: NodeEvent) {
 
 export function startWebSocket() {
   setTimeout(connect, 0)
+}
+
+/** Record the notable events in the event log, before the stores apply them. */
+function logEvent(event: NodeEvent) {
+  const log = useEventsStore().log
+  const node_id = event.node_id
+  const nodes = useNodesStore()
+  const source = (id: string) =>
+    useSourcesStore().sources.find((s) => s.key === sourceKey(node_id, id))?.display_name ?? id
+
+  switch (event.type) {
+    case 'node.online':
+      log('info', `Node online: ${nodes.nameOf(event.peer_id)}`, { node_id: event.peer_id })
+      break
+    case 'node.offline':
+      log('warn', `Node offline: ${nodes.nameOf(event.peer_id)}`, { node_id: event.peer_id })
+      break
+    case 'recording.started':
+      log('rec', `Recording started: ${source(event.source_id)}`, { node_id, detail: event.session_id })
+      break
+    case 'recording.stopped':
+      log('info', `Recording stopped: ${source(event.source_id)}`, { node_id, detail: event.session_id })
+      break
+    case 'recording.leg_failed':
+      log('error', `Output failed on ${source(event.source_id)} — still recording other outputs`, {
+        node_id,
+        detail: event.error,
+      })
+      break
+    case 'recording.error':
+      log('error', `Recording failed: ${source(event.source_id)}`, { node_id, detail: event.error })
+      break
+    case 'feed.status': {
+      // Only transitions: the status event repeats every tick.
+      const prev = useSourcesStore().sources.find((s) => s.key === sourceKey(node_id, event.source_id))
+      if (!prev || prev.error === event.error) break
+      if (event.error) log('error', `Source failed: ${prev.display_name}`, { node_id, detail: event.error })
+      else log('info', `Source recovered: ${prev.display_name}`, { node_id })
+      break
+    }
+  }
 }

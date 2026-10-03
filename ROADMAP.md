@@ -141,14 +141,17 @@ Staying on shadcn-vue (reka-ui, Tailwind v4), plus `@tanstack/vue-table` for den
 tables and `vue-sonner` for toasts.
 
 - **Design system** (done): dark-first OKLCH tokens in `ui/src/style.css`, light kept
-  in step. Red is split and never decorative — `--primary` (brand crimson),
-  `--tally` (live recording only), `--destructive` (soft treatment, behind a confirm).
-  `--info` (cyan/sky) is the cool accent for selection/inspection. Self-hosted Inter +
+  in step. Solid red on screen means "live": `--brand` crimson is identity only
+  (logo, active nav marker), `--primary` is neutral, `--tally` is live recording only,
+  `--destructive` is a soft treatment behind a confirm. `--info` (cyan/sky) is the
+  accent for focus, selection and inspection. Self-hosted Inter +
   JetBrains Mono; `num` utility for technical values. Density = root font size.
 - **Preferences** (done): `usePreferences()` — theme, density, Multiview tile size and
   overlays, inspector, table columns; per browser, surfaced in the view they affect.
-- **App shell** (done): collapsible icon sidebar, global status bar (connection,
+- **Workbench shell** (done): icon rail, resizable bottom event log (Ctrl+J; recording
+  events, failures, node changes, failed actions), bottom status line (connection,
   nodes, live recordings, lowest free storage, clock), ⌘K command palette, toasts.
+  Pages add their own right-hand inspector where useful (Multiview first).
 - **Shared patterns** (done): `PageHeader`, `ConfirmDialog`, `EditSheet` (replaces
   `FormModal`), `StatusDot`, `TallyBadge`, `KeyValueList`, `CopyButton`; `DataTable`
   lands with Sources.

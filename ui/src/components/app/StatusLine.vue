@@ -2,24 +2,24 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNow } from '@vueuse/core'
-import { HardDrive, Search } from '@lucide/vue'
+import { HardDrive, ScrollText } from '@lucide/vue'
 import { wsStatus } from '@/composables/useWebSocket'
 import { formatBytes } from '@/lib/format'
+import { useEventsStore } from '@/stores/events'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordingsStore } from '@/stores/recordings'
 import { useStorageStore } from '@/stores/storage'
-import { SidebarTrigger } from '@/components/ui/sidebar'
-import { Separator } from '@/components/ui/separator'
-import { Kbd } from '@/components/ui/kbd'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import StatusDot from '@/components/common/StatusDot.vue'
 
-defineEmits<{ command: [] }>()
+defineProps<{ logOpen: boolean }>()
+defineEmits<{ toggleLog: [] }>()
 
 const router = useRouter()
 const nodes = useNodesStore()
 const recordings = useRecordingsStore()
 const storage = useStorageStore()
+const events = useEventsStore()
 
 const now = useNow({ interval: 1000 })
 const clock = computed(() => now.value.toLocaleTimeString([], { hour12: false }))
@@ -48,63 +48,59 @@ const connection = computed(() => {
 </script>
 
 <template>
-  <header
-    class="h-11 shrink-0 flex items-center gap-3 px-2 border-b border-border bg-background text-xs"
+  <footer
+    class="h-6 shrink-0 flex items-stretch text-[11px] border-t border-sidebar-border bg-sidebar text-muted-foreground select-none"
   >
-    <SidebarTrigger />
-    <Separator orientation="vertical" class="h-4!" />
-
     <!-- Connection -->
     <Tooltip>
       <TooltipTrigger as-child>
         <span
-          class="flex items-center gap-1.5"
-          :class="wsStatus !== 'connected' && 'text-warning font-medium'"
+          class="status-item"
+          :class="wsStatus !== 'connected' && 'bg-warning/15 text-warning font-medium'"
         >
           <StatusDot :status="connection.status" />
-          {{ wsStatus === 'connected' ? 'Live' : connection.label }}
+          {{ connection.label }}
         </span>
       </TooltipTrigger>
-      <TooltipContent>Event stream: {{ connection.label }}</TooltipContent>
+      <TooltipContent side="top">Live event stream from the server</TooltipContent>
     </Tooltip>
 
     <!-- Nodes -->
-    <button class="flex items-center gap-1.5 hover:text-foreground text-muted-foreground" @click="router.push('/nodes')">
+    <button class="status-item" @click="router.push('/nodes')">
       <StatusDot :status="healthy === nodes.nodes.length ? 'ok' : 'warn'" />
       <span class="num">{{ healthy }}/{{ nodes.nodes.length }}</span> nodes
-      <span
-        v-if="nodes.isController"
-        class="ml-1 rounded-sm border border-border px-1 text-[10px] uppercase tracking-wide"
-      >controller</span>
+      <span v-if="nodes.isController" class="text-info">· controller</span>
     </button>
 
     <!-- Recording -->
     <button
-      class="flex items-center gap-1.5"
-      :class="live ? 'text-tally font-semibold' : 'text-muted-foreground hover:text-foreground'"
+      class="status-item"
+      :class="live ? 'bg-tally text-tally-foreground font-semibold' : ''"
       @click="router.push('/multiview')"
     >
-      <StatusDot :status="live ? 'tally' : 'off'" />
-      <template v-if="live"><span class="num">{{ live }}</span> recording</template>
-      <template v-else>Idle</template>
+      <template v-if="live">
+        <span class="size-1.5 rounded-full bg-current animate-tally" />
+        <span class="num">{{ live }}</span> recording
+      </template>
+      <template v-else><StatusDot status="off" /> Idle</template>
     </button>
 
     <!-- Lowest storage -->
     <Tooltip v-if="lowest">
       <TooltipTrigger as-child>
-        <span
-          class="hidden md:flex items-center gap-1.5"
+        <button
+          class="status-item"
           :class="{
-            'text-muted-foreground': lowest.status === 'ok',
             'text-warning': lowest.status === 'warn',
             'text-destructive font-medium': lowest.status === 'error',
           }"
+          @click="router.push('/nodes')"
         >
-          <HardDrive class="size-3.5" />
+          <HardDrive class="size-3" />
           <span class="num">{{ formatBytes(lowest.volume.available_bytes) }}</span> free
-        </span>
+        </button>
       </TooltipTrigger>
-      <TooltipContent>
+      <TooltipContent side="top">
         Lowest free space: <span class="num">{{ lowest.volume.mount_point }}</span>
         on {{ nodes.nameOf(lowest.nodeId) }} ({{ Math.round(lowest.pct * 100) }}% free)
       </TooltipContent>
@@ -112,15 +108,25 @@ const connection = computed(() => {
 
     <div class="flex-1" />
 
-    <button
-      class="flex items-center gap-2 h-7 rounded-md border border-border bg-input/20 px-2 text-muted-foreground hover:text-foreground hover:bg-input/40 w-56 max-w-[40vw]"
-      @click="$emit('command')"
-    >
-      <Search class="size-3.5" />
-      <span class="flex-1 text-left truncate">Search or run a command…</span>
-      <Kbd>Ctrl K</Kbd>
+    <button class="status-item" :class="logOpen && 'text-foreground'" @click="$emit('toggleLog')">
+      <ScrollText class="size-3" />
+      Log
+      <span
+        v-if="events.unseenErrors"
+        class="num rounded-sm bg-destructive/20 text-destructive px-1 font-medium"
+      >{{ events.unseenErrors }}</span>
+      <span class="opacity-60">Ctrl J</span>
     </button>
-
-    <span class="num text-muted-foreground w-[8ch] text-right pr-1">{{ clock }}</span>
-  </header>
+    <span class="status-item num">{{ clock }}</span>
+  </footer>
 </template>
+
+<style scoped>
+@reference "@/style.css";
+.status-item {
+  @apply flex items-center gap-1.5 px-2.5 whitespace-nowrap;
+}
+button.status-item {
+  @apply hover:bg-sidebar-accent hover:text-foreground;
+}
+</style>

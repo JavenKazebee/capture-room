@@ -10,6 +10,7 @@
 @theme inline {
     --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
     --font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+    --color-brand: var(--brand);
     --color-tally: var(--tally);
     --color-tally-foreground: var(--tally-foreground);
     --color-info: var(--info);
@@ -59,11 +60,12 @@
 
 /* ── Tokens ───────────────────────────────────────────────────────────────────
  * Dark is the primary theme; light is kept in step.
- * Red is split three ways and never decorative:
- *   --primary      brand crimson: primary actions, active nav, focus, selection
+ * Solid red on screen means "live". So:
+ *   --brand        crimson identity only: logo, active nav marker
+ *   --primary      neutral (near-white on dark) for primary actions
  *   --tally        live recording only (REC dot, tile border, Stop while live)
- *   --destructive  delete/remove — outline/ghost treatment, behind a confirm
- * --info (cyan/sky) is the cool accent: inspected/selected, links, info.
+ *   --destructive  delete/remove — soft treatment, behind a confirm
+ *   --info         cyan/sky: focus, selection, inspected item, links, info
  */
 
 :root {
@@ -73,7 +75,7 @@
     --card-foreground: oklch(0.16 0.006 286);
     --popover: oklch(1 0 0);
     --popover-foreground: oklch(0.16 0.006 286);
-    --primary: oklch(0.53 0.21 23);
+    --primary: oklch(0.21 0.006 286);
     --primary-foreground: oklch(0.985 0 0);
     --secondary: oklch(0.955 0.003 286);
     --secondary-foreground: oklch(0.21 0.006 286);
@@ -90,9 +92,9 @@
     --warning: oklch(0.7 0.15 70);
     --border: oklch(0.91 0.004 286);
     --input: oklch(0.88 0.004 286);
-    --ring: var(--primary);
+    --ring: var(--info);
     --chart-1: var(--info);
-    --chart-2: var(--primary);
+    --chart-2: var(--brand);
     --chart-3: var(--success);
     --chart-4: var(--warning);
     --chart-5: oklch(0.6 0.18 300);
@@ -102,28 +104,29 @@
     --radius: 0.45rem;
     --sidebar: oklch(0.97 0.003 286);
     --sidebar-foreground: oklch(0.16 0.006 286);
-    --sidebar-primary: var(--primary);
+    --sidebar-primary: var(--brand);
     --sidebar-primary-foreground: var(--primary-foreground);
     --sidebar-accent: oklch(0.93 0.004 286);
     --sidebar-accent-foreground: oklch(0.16 0.006 286);
     --sidebar-border: oklch(0.91 0.004 286);
-    --sidebar-ring: var(--primary);
+    --sidebar-ring: var(--info);
+    --brand: oklch(0.53 0.21 23);
 }
 
 .dark {
-    --background: oklch(0.145 0.004 286);
+    --background: oklch(0.215 0.005 286);
     --foreground: oklch(0.96 0.002 286);
-    --card: oklch(0.178 0.005 286);
+    --card: oklch(0.245 0.006 286);
     --card-foreground: oklch(0.96 0.002 286);
-    --popover: oklch(0.205 0.006 286);
+    --popover: oklch(0.27 0.006 286);
     --popover-foreground: oklch(0.96 0.002 286);
-    --primary: oklch(0.58 0.2 22);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.24 0.006 286);
+    --primary: oklch(0.93 0.004 286);
+    --primary-foreground: oklch(0.2 0.006 286);
+    --secondary: oklch(0.285 0.006 286);
     --secondary-foreground: oklch(0.96 0.002 286);
-    --muted: oklch(0.235 0.006 286);
-    --muted-foreground: oklch(0.68 0.012 286);
-    --accent: oklch(0.25 0.006 286);
+    --muted: oklch(0.28 0.006 286);
+    --muted-foreground: oklch(0.72 0.012 286);
+    --accent: oklch(0.3 0.007 286);
     --accent-foreground: oklch(0.96 0.002 286);
     --destructive: oklch(0.68 0.19 35);
     --tally: oklch(0.65 0.25 28);
@@ -132,14 +135,15 @@
     --info-foreground: oklch(0.2 0.03 230);
     --success: oklch(0.72 0.17 150);
     --warning: oklch(0.8 0.15 80);
-    --border: oklch(1 0 0 / 8%);
-    --input: oklch(1 0 0 / 12%);
+    --border: oklch(1 0 0 / 9%);
+    --input: oklch(1 0 0 / 13%);
     --chart-5: oklch(0.7 0.16 300);
-    --sidebar: oklch(0.163 0.005 286);
+    --sidebar: oklch(0.19 0.005 286);
     --sidebar-foreground: oklch(0.96 0.002 286);
-    --sidebar-accent: oklch(0.235 0.006 286);
+    --sidebar-accent: oklch(0.27 0.006 286);
     --sidebar-accent-foreground: oklch(0.96 0.002 286);
-    --sidebar-border: oklch(1 0 0 / 8%);
+    --sidebar-border: oklch(1 0 0 / 7%);
+    --brand: oklch(0.6 0.2 22);
 }
 
 /* UI scale: everything is rem-based, so the root size is the density knob. */

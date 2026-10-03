@@ -138,7 +138,7 @@ const duration = computed(() =>
           v-if="session"
           class="absolute top-1.5 right-1.5 flex items-center gap-1.5 bg-black/70 px-1.5 py-0.5 rounded"
         >
-          <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse shrink-0" />
+          <span class="w-2 h-2 rounded-full bg-tally animate-tally shrink-0" />
           <span class="text-white text-[10px] font-mono">
             {{ duration }}
           </span>
@@ -171,12 +171,15 @@ const duration = computed(() =>
         />
 
         <Button
-          :variant="session ? 'destructive' : 'default'"
+          :variant="session ? 'default' : 'outline'"
           size="sm"
-          class="h-7 px-3 text-xs shrink-0"
+          class="h-7 px-3 text-xs shrink-0 gap-1.5"
+          :class="session && 'bg-tally text-tally-foreground hover:bg-tally/85'"
           :disabled="busy"
           @click="toggleRecording"
         >
+          <span v-if="session" class="size-2 rounded-[1px] bg-current" />
+          <span v-else class="size-2 rounded-full bg-tally" />
           {{ session ? 'Stop' : 'Record' }}
         </Button>
       </div>

@@ -3,7 +3,7 @@ import { useEventListener } from '@vueuse/core'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { Circle, MoonStar, Radar, Rows3, Square, Sun } from '@lucide/vue'
-import { errorMessage } from '@/composables/useApi'
+import { notifyError } from '@/lib/notify'
 import { usePreferences, type Density } from '@/composables/usePreferences'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordingsStore } from '@/stores/recordings'
@@ -54,7 +54,7 @@ async function toggleRecording(s: Source) {
       toast.success(`Recording ${s.display_name}`, { description: 'Default H.264 preset' })
     }
   } catch (e) {
-    toast.error(session ? 'Stop failed' : 'Record failed', { description: errorMessage(e, '') })
+    notifyError(`${session ? 'Stop' : 'Record'} failed: ${s.display_name}`, e, s.node_id)
   }
 }
 
@@ -64,7 +64,8 @@ async function scan() {
     await sources.scanAll()
     toast.success(`Scan complete — ${sources.sources.length} sources`, { id })
   } catch (e) {
-    toast.error('Scan failed', { id, description: errorMessage(e, '') })
+    toast.dismiss(id)
+    notifyError('Scan failed', e)
   }
 }
 

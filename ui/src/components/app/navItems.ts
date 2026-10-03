@@ -5,5 +5,6 @@ export const navItems = [
   { to: '/sources', label: 'Sources', icon: Monitor },
   { to: '/presets', label: 'Presets', icon: SlidersHorizontal },
   { to: '/nodes', label: 'Nodes', icon: Server },
-  { to: '/settings', label: 'Settings', icon: Settings },
 ]
+
+export const settingsItem = { to: '/settings', label: 'Settings', icon: Settings }
