@@ -5,34 +5,10 @@ use gstreamer_app as gst_app;
 use gstreamer_utils::StreamProducer;
 use tracing::{error, warn};
 
-use crate::audio::AudioMeter;
+use crate::api::types::MonitorSettingsDto;
 use crate::sources::InputSource;
-use crate::thumbnail::ThumbnailStore;
 
-use super::{handle_level_message, make};
-
-// ── Monitor config ────────────────────────────────────────────────────────────
-
-pub struct MonitorConfig {
-    pub thumb_width: i32,
-    pub thumb_height: i32,
-    pub thumb_fps_num: i32,
-    pub thumb_fps_den: i32,
-    /// GStreamer interval for the `level` element in nanoseconds. 100_000_000 = 10 fps.
-    pub level_interval_ns: u64,
-}
-
-impl Default for MonitorConfig {
-    fn default() -> Self {
-        Self {
-            thumb_width: 320,
-            thumb_height: 180,
-            thumb_fps_num: 1,
-            thumb_fps_den: 1,
-            level_interval_ns: 100_000_000,
-        }
-    }
-}
+use super::{handle_level_message, make, AudioMeter, ThumbnailStore};
 
 // ── MonitorPipeline ───────────────────────────────────────────────────────────
 
@@ -59,9 +35,9 @@ impl MonitorPipeline {
     ///
     /// The pipeline runs immediately: thumbnail frames are produced at the
     /// configured rate and audio levels are metered continuously.
-    pub fn new(source: &dyn InputSource, config: &MonitorConfig) -> Result<Self> {
-        let thumbnail = ThumbnailStore::new();
-        let audio_meter = AudioMeter::new();
+    pub fn new(source: &dyn InputSource, config: &MonitorSettingsDto) -> Result<Self> {
+        let thumbnail = ThumbnailStore::default();
+        let audio_meter = AudioMeter::default();
 
         let pipeline = gst::Pipeline::new();
         let src_bin = source.gst_src_element();
@@ -166,13 +142,13 @@ impl MonitorPipeline {
     /// Apply a new config to the running pipeline without restarting it.
     /// The level interval and thumbnail caps are updated in-place; GStreamer
     /// re-negotiates the affected branches within the current pipeline run.
-    pub fn reconfigure(&self, config: &MonitorConfig) {
-        self.level_el.set_property("interval", config.level_interval_ns);
+    pub fn reconfigure(&self, config: &MonitorSettingsDto) {
+        self.level_el.set_property("interval", level_interval_ns(config));
 
         self.thumb_rate_caps.set_property(
             "caps",
             gst::Caps::builder("video/x-raw")
-                .field("framerate", gst::Fraction::new(config.thumb_fps_num, config.thumb_fps_den))
+                .field("framerate", gst::Fraction::new(config.thumb_fps, 1))
                 .build(),
         );
 
@@ -204,7 +180,7 @@ fn add_thumbnail_branch(
     pipeline: &gst::Pipeline,
     vtee: &gst::Element,
     store: ThumbnailStore,
-    config: &MonitorConfig,
+    config: &MonitorSettingsDto,
 ) -> Result<(gst::Element, gst::Element)> {
     let tq = make(pipeline, "queue", "tq")?;
     let videorate = make(pipeline, "videorate", "thumb-rate")?;
@@ -216,7 +192,7 @@ fn add_thumbnail_branch(
             gst::Caps::builder("video/x-raw")
                 .field(
                     "framerate",
-                    gst::Fraction::new(config.thumb_fps_num, config.thumb_fps_den),
+                    gst::Fraction::new(config.thumb_fps, 1),
                 )
                 .build(),
         )
@@ -257,7 +233,7 @@ fn add_thumbnail_branch(
                 let sample = sink.pull_sample().map_err(|_| gst::FlowError::Error)?;
                 let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
                 let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                store.update(map.to_vec());
+                store.set(map.to_vec());
                 Ok(gst::FlowSuccess::Ok)
             })
             .build(),
@@ -290,14 +266,14 @@ fn add_thumbnail_branch(
 fn add_level_branch(
     pipeline: &gst::Pipeline,
     atee: &gst::Element,
-    config: &MonitorConfig,
+    config: &MonitorSettingsDto,
 ) -> Result<gst::Element> {
     let lq = make(pipeline, "queue", "lq")?;
     let aconv = make(pipeline, "audioconvert", "level-conv")?;
 
     let level = gst::ElementFactory::make("level")
         .name("level")
-        .property("interval", config.level_interval_ns)
+        .property("interval", level_interval_ns(config))
         .property("post-messages", true)
         .build()
         .context("create level")?;
@@ -339,4 +315,8 @@ fn add_producer_branch(pipeline: &gst::Pipeline, tee: &gst::Element, kind: &str)
         .link(&queue.static_pad("sink").context("producer queue sink")?)
         .with_context(|| format!("link {kind} tee → producer queue"))?;
     Ok(StreamProducer::from(&appsink))
+}
+
+fn level_interval_ns(config: &MonitorSettingsDto) -> u64 {
+    config.level_interval_ms * 1_000_000
 }

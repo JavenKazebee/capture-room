@@ -114,7 +114,7 @@ Touches: `node/migrations/`, `node/src/pipeline/mod.rs`, `node/src/pipeline/prof
 
 ## 5. Benchmark + capacity estimator
 
-`node/src/benchmark/mod.rs` is an empty stub today.
+Not started (the empty `benchmark/` stub was removed).
 
 - Synthetic pipelines at increasing feed counts → measure **dropped frames, CPU, disk
   write throughput, memory pressure**. Stop past a dropped-frame threshold.
@@ -136,7 +136,7 @@ shadcn-vue is already in place, so dark mode is mostly CSS-variable theming + a 
 ## 7. Follow-on
 
 - **Scheduler engine** — runs on the controller and sends ordinary start/stop commands (with inline outputs) at the scheduled times. Nodes stay stateless about schedules.
-- **Timecode** — real LTC/VITC extraction; `timecode/mod.rs` is a stub (TestSource fakes wall-clock TC).
+- **Timecode** — real LTC/VITC extraction; not started (TestSource fakes wall-clock TC).
 - **Packaging + GitHub Actions** — cross-platform builds; folds in the NDI packaging strategy above.
 - ✅ **Node registry persistence** — peers added by URL are stored in the `nodes` table and restored when the controller starts.
 - **Additional source types** (each is a new `InputSource` impl, additive):

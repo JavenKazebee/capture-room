@@ -7,13 +7,13 @@ use std::sync::Arc;
 use axum::{
     extract::{ws::WebSocketUpgrade, Path, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::Response,
     routing::{any, delete, get, put},
     Json, Router,
 };
-use tracing::error;
 
 use super::{discovery, forward, Controller, CONFIG_KEY};
+use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     AddNodeRequest, ChromaSubsampling, ControllerToggleRequest, NodeDto, PresetCreateRequest, PresetDto,
     PresetOutputDto, PresetOutputInput,
@@ -33,31 +33,21 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/ws", get(ws_handler))
 }
 
-fn internal(e: impl ToString) -> Response {
-    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-}
-
-fn not_controller() -> Response {
-    (StatusCode::CONFLICT, "this node is not acting as a controller").into_response()
-}
+const NOT_CONTROLLER: ApiError = ApiError::Conflict("this node is not acting as a controller");
 
 // ── /api/v1/controller ───────────────────────────────────────────────────────
 
 async fn put_controller(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ControllerToggleRequest>,
-) -> Response {
-    if let Err(e) = db::config_set(&state.db, CONFIG_KEY, &req.enabled.to_string()).await {
-        return internal(e);
-    }
+) -> ApiResult<Json<ControllerToggleRequest>> {
+    db::config_set(&state.db, CONFIG_KEY, &req.enabled.to_string()).await?;
     if req.enabled {
-        if let Err(e) = Controller::enable(&state).await {
-            return internal(e);
-        }
+        Controller::enable(&state).await?;
     } else {
         Controller::disable(&state).await;
     }
-    Json(req).into_response()
+    Ok(Json(req))
 }
 
 // ── /api/v1/nodes ────────────────────────────────────────────────────────────
@@ -100,43 +90,38 @@ async fn get_nodes(State(state): State<Arc<AppState>>) -> Json<Vec<NodeDto>> {
 async fn post_node(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AddNodeRequest>,
-) -> Response {
+) -> ApiResult<StatusCode> {
     let ctx = match state.controller.read().await.as_ref() {
         Some(c) => c.ctx(&state),
-        None => return not_controller(),
+        None => return Err(NOT_CONTROLLER),
     };
     let mut url = req.url.trim().trim_end_matches('/').to_string();
     if !url.starts_with("http://") && !url.starts_with("https://") {
         url = format!("http://{url}");
     }
 
-    let status = match discovery::add_node(&ctx, url.clone(), true).await {
-        Ok(s) => s,
-        Err(e) => return (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
-    };
+    let status = discovery::add_node(&ctx, url.clone(), true)
+        .await
+        .map_err(|e| ApiError::BadGateway(e.to_string()))?;
     let row = db::NodeRow {
         id: status.id,
         name: status.name,
         url,
         added_at: chrono::Utc::now().to_rfc3339(),
     };
-    if let Err(e) = db::node_upsert(&state.db, &row).await {
-        return internal(e);
-    }
-    StatusCode::NO_CONTENT.into_response()
+    db::node_upsert(&state.db, &row).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
-async fn delete_node(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+async fn delete_node(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
     let registry = match state.controller.read().await.as_ref() {
         Some(c) => Arc::clone(&c.registry),
-        None => return not_controller(),
+        None => return Err(NOT_CONTROLLER),
     };
     // Removing the entry also stops its WS relay.
     registry.write().await.remove(&id);
-    if let Err(e) = db::node_delete(&state.db, &id).await {
-        return internal(e);
-    }
-    StatusCode::NO_CONTENT.into_response()
+    db::node_delete(&state.db, &id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ── /api/v1/presets ──────────────────────────────────────────────────────────
@@ -144,30 +129,26 @@ async fn delete_node(State(state): State<Arc<AppState>>, Path(id): Path<String>)
 // Presets live on whichever instance the UI is talking to. Nodes never store
 // them: starting a recording sends the preset's outputs inline.
 
-async fn get_presets(State(state): State<Arc<AppState>>) -> Response {
-    let rows = match db::presets_list(&state.db).await {
-        Ok(r) => r,
-        Err(e) => return internal(e),
-    };
-    let all_outputs = match db::preset_outputs_list_all(&state.db).await {
-        Ok(o) => o,
-        Err(e) => return internal(e),
-    };
-    let dtos: Vec<PresetDto> = rows
-        .iter()
-        .map(|r| {
-            let outputs: Vec<PresetOutputRow> =
-                all_outputs.iter().filter(|o| o.preset_id == r.id).cloned().collect();
-            preset_to_dto(r, &outputs)
-        })
-        .collect();
-    Json(dtos).into_response()
+const PRESET_NOT_FOUND: ApiError = ApiError::NotFound("preset not found");
+
+async fn get_presets(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<PresetDto>>> {
+    let rows = db::presets_list(&state.db).await?;
+    let all_outputs = db::preset_outputs_list_all(&state.db).await?;
+    Ok(Json(
+        rows.iter()
+            .map(|r| {
+                let outputs: Vec<PresetOutputRow> =
+                    all_outputs.iter().filter(|o| o.preset_id == r.id).cloned().collect();
+                preset_to_dto(r, &outputs)
+            })
+            .collect(),
+    ))
 }
 
 async fn post_preset(
     State(state): State<Arc<AppState>>,
     Json(req): Json<PresetCreateRequest>,
-) -> Response {
+) -> ApiResult<(StatusCode, Json<PresetDto>)> {
     let now = chrono::Utc::now().to_rfc3339();
     let preset_id = uuid::Uuid::new_v4().to_string();
     let row = PresetRow {
@@ -177,21 +158,17 @@ async fn post_preset(
         updated_at: now,
         version: 1,
     };
-    if let Err(e) = db::preset_insert(&state.db, &row).await {
-        return internal(e);
-    }
+    db::preset_insert(&state.db, &row).await?;
     let output_rows = build_output_rows(&preset_id, &req.outputs);
-    if let Err(e) = db::preset_outputs_replace(&state.db, &preset_id, &output_rows).await {
-        return internal(e);
-    }
-    (StatusCode::CREATED, Json(preset_to_dto(&row, &output_rows))).into_response()
+    db::preset_outputs_replace(&state.db, &preset_id, &output_rows).await?;
+    Ok((StatusCode::CREATED, Json(preset_to_dto(&row, &output_rows))))
 }
 
 async fn put_preset(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(req): Json<PresetCreateRequest>,
-) -> Response {
+) -> ApiResult<Json<PresetDto>> {
     let row = PresetRow {
         id: id.clone(),
         name: req.name,
@@ -199,31 +176,20 @@ async fn put_preset(
         updated_at: chrono::Utc::now().to_rfc3339(),
         version: 0,
     };
-    match db::preset_update(&state.db, &row).await {
-        Ok(true) => {}
-        Ok(false) => return (StatusCode::NOT_FOUND, "preset not found").into_response(),
-        Err(e) => return internal(e),
+    if !db::preset_update(&state.db, &row).await? {
+        return Err(PRESET_NOT_FOUND);
     }
     let output_rows = build_output_rows(&id, &req.outputs);
-    if let Err(e) = db::preset_outputs_replace(&state.db, &id, &output_rows).await {
-        return internal(e);
-    }
-    match db::preset_get(&state.db, &id).await {
-        Ok(Some(updated)) => Json(preset_to_dto(&updated, &output_rows)).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "preset not found").into_response(),
-        Err(e) => {
-            error!(error = %e, "reload preset after update");
-            internal(e)
-        }
-    }
+    db::preset_outputs_replace(&state.db, &id, &output_rows).await?;
+    let updated = db::preset_get(&state.db, &id).await?.ok_or(PRESET_NOT_FOUND)?;
+    Ok(Json(preset_to_dto(&updated, &output_rows)))
 }
 
-async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    match db::preset_delete(&state.db, &id).await {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, "preset not found").into_response(),
-        Err(e) => internal(e),
+async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+    if !db::preset_delete(&state.db, &id).await? {
+        return Err(PRESET_NOT_FOUND);
     }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn preset_to_dto(row: &PresetRow, outputs: &[PresetOutputRow]) -> PresetDto {

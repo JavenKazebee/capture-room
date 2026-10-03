@@ -4,6 +4,8 @@ import { useSourcesStore, type Source, type TestSourceInput } from '@/stores/sou
 import { useNodesStore } from '@/stores/nodes'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import type { AudioTestSignal } from '@/types/generated/AudioTestSignal'
+import type { VideoTestPattern } from '@/types/generated/VideoTestPattern'
 
 const store = useSourcesStore()
 const nodesStore = useNodesStore()
@@ -21,7 +23,7 @@ const saving = ref(false)
 const formError = ref<string | null>(null)
 const formNodeId = ref<string>('')  // which node to create on
 
-const VIDEO_PATTERNS = [
+const VIDEO_PATTERNS: { value: VideoTestPattern; label: string }[] = [
   { value: 'smpte',       label: 'SMPTE color bars' },
   { value: 'ball',        label: 'Moving ball' },
   { value: 'snow',        label: 'Snow' },
@@ -31,7 +33,7 @@ const VIDEO_PATTERNS = [
   { value: 'checkers-1',  label: 'Checkers' },
 ]
 
-const AUDIO_SIGNALS = [
+const AUDIO_SIGNALS: { value: AudioTestSignal; label: string }[] = [
   { value: 'tone',       label: 'Tone (sine)' },
   { value: 'silence',    label: 'Silence' },
   { value: 'pink-noise', label: 'Pink noise' },

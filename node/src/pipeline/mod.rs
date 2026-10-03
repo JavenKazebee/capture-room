@@ -1,13 +1,48 @@
 pub mod monitor;
-pub mod recording;
 pub mod profile;
+pub mod recording;
+
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use gstreamer::{self as gst, prelude::*};
 
-use crate::audio::AudioLevelState;
-use crate::audio::AudioMeter;
-use crate::audio::ChannelLevel;
+use crate::api::types::ChannelLevelDto;
+
+// ── Latest value ──────────────────────────────────────────────────────────────
+
+/// The most recent value a pipeline produced, shared between the GStreamer
+/// thread that writes it and the API that reads it. Clones share storage.
+#[derive(Debug)]
+pub struct Latest<T>(Arc<Mutex<Option<T>>>);
+
+impl<T> Default for Latest<T> {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(None)))
+    }
+}
+
+impl<T> Clone for Latest<T> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<T: Clone> Latest<T> {
+    pub fn set(&self, value: T) {
+        *self.0.lock().unwrap() = Some(value);
+    }
+
+    /// `None` until the first value arrives.
+    pub fn get(&self) -> Option<T> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+/// Latest per-channel audio levels from the `level` element.
+pub type AudioMeter = Latest<Vec<ChannelLevelDto>>;
+/// Latest thumbnail JPEG.
+pub type ThumbnailStore = Latest<Vec<u8>>;
 
 // ── Shared element factory helper ─────────────────────────────────────────────
 
@@ -33,12 +68,9 @@ pub(super) fn handle_level_message(s: &gst::StructureRef, meter: &AudioMeter) {
         .iter()
         .zip(rms_arr.iter())
         .filter_map(|(p, r)| {
-            Some(ChannelLevel {
-                peak_db: p.get::<f64>().ok()?,
-                rms_db: r.get::<f64>().ok()?,
-            })
+            Some(ChannelLevelDto { peak_db: p.get::<f64>().ok()?, rms_db: r.get::<f64>().ok()? })
         })
         .collect();
 
-    meter.update(AudioLevelState { channels });
+    meter.set(channels);
 }

@@ -1,148 +1,25 @@
 use anyhow::{Context, Result};
 use chrono::Timelike;
 use gstreamer::{self as gst, prelude::*};
-use serde::{Deserialize, Serialize};
 
 use super::{InputSource, SourceCapabilities, SourceType, Timecode};
-
-// ── Video pattern ─────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum VideoTestPattern {
-    Smpte,
-    Snow,
-    Black,
-    White,
-    Ball,
-    #[serde(rename = "smpte75")]
-    Smpte75,
-    #[serde(rename = "checkers-1")]
-    Checkers1,
-}
-
-impl VideoTestPattern {
-    pub fn as_gst_str(&self) -> &'static str {
-        match self {
-            Self::Smpte => "smpte",
-            Self::Snow => "snow",
-            Self::Black => "black",
-            Self::White => "white",
-            Self::Ball => "ball",
-            Self::Smpte75 => "smpte75",
-            Self::Checkers1 => "checkers-1",
-        }
-    }
-
-    pub fn from_db(s: &str) -> Self {
-        match s {
-            "snow" => Self::Snow,
-            "black" => Self::Black,
-            "white" => Self::White,
-            "ball" => Self::Ball,
-            "smpte75" => Self::Smpte75,
-            "checkers-1" => Self::Checkers1,
-            _ => Self::Smpte,
-        }
-    }
-
-    pub fn as_db_str(&self) -> &'static str {
-        match self {
-            Self::Smpte => "smpte",
-            Self::Snow => "snow",
-            Self::Black => "black",
-            Self::White => "white",
-            Self::Ball => "ball",
-            Self::Smpte75 => "smpte75",
-            Self::Checkers1 => "checkers-1",
-        }
-    }
-}
-
-// ── Audio signal ──────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum AudioTestSignal {
-    Tone,
-    Silence,
-    PinkNoise,
-}
-
-impl AudioTestSignal {
-    pub fn as_gst_wave(&self) -> &'static str {
-        match self {
-            Self::Tone => "sine",
-            Self::Silence => "silence",
-            Self::PinkNoise => "pink-noise",
-        }
-    }
-
-    pub fn from_db(s: &str) -> Self {
-        match s {
-            "silence" => Self::Silence,
-            "pink-noise" => Self::PinkNoise,
-            _ => Self::Tone,
-        }
-    }
-
-    pub fn as_db_str(&self) -> &'static str {
-        match self {
-            Self::Tone => "tone",
-            Self::Silence => "silence",
-            Self::PinkNoise => "pink-noise",
-        }
-    }
-}
-
-// ── Config ────────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-pub struct TestSourceConfig {
-    pub id: String,
-    pub name: String,
-    pub pattern: VideoTestPattern,
-    pub width: u32,
-    pub height: u32,
-    pub fps_num: u32,
-    pub fps_den: u32,
-    pub audio_signal: AudioTestSignal,
-    pub frequency: f64,
-    pub channels: u32,
-}
-
-impl Default for TestSourceConfig {
-    fn default() -> Self {
-        Self {
-            id: "test-1".into(),
-            name: "Test Source 1".into(),
-            pattern: VideoTestPattern::Smpte,
-            width: 1920,
-            height: 1080,
-            fps_num: 30,
-            fps_den: 1,
-            audio_signal: AudioTestSignal::Tone,
-            frequency: 440.0,
-            channels: 2,
-        }
-    }
-}
+use crate::api::types::{AudioTestSignal, TestSourceConfigDto, VideoTestPattern};
 
 // ── TestSource ────────────────────────────────────────────────────────────────
 
 pub struct TestSource {
-    config: TestSourceConfig,
+    config: TestSourceConfigDto,
     bin: gst::Bin,
 }
 
 impl TestSource {
-    pub fn new(config: TestSourceConfig) -> Result<Self> {
+    pub fn new(config: TestSourceConfigDto) -> Result<Self> {
         let bin = build_bin(&config)?;
         Ok(Self { config, bin })
     }
 }
 
-fn build_bin(cfg: &TestSourceConfig) -> Result<gst::Bin> {
+fn build_bin(cfg: &TestSourceConfigDto) -> Result<gst::Bin> {
     let id = &cfg.id;
     let bin = gst::Bin::with_name(&format!("testsrc-bin-{id}"));
 
@@ -152,7 +29,7 @@ fn build_bin(cfg: &TestSourceConfig) -> Result<gst::Bin> {
         .property("is-live", true)
         .build()
         .context("create videotestsrc")?;
-    vsrc.set_property_from_str("pattern", cfg.pattern.as_gst_str());
+    vsrc.set_property_from_str("pattern", pattern_gst_name(cfg.pattern));
 
     let vcaps = gst::ElementFactory::make("capsfilter")
         .name(format!("vcaps-{id}"))
@@ -181,7 +58,7 @@ fn build_bin(cfg: &TestSourceConfig) -> Result<gst::Bin> {
         .property("is-live", true)
         .build()
         .context("create audiotestsrc")?;
-    asrc.set_property_from_str("wave", cfg.audio_signal.as_gst_wave());
+    asrc.set_property_from_str("wave", signal_gst_wave(cfg.audio_signal));
     if cfg.audio_signal == AudioTestSignal::Tone && cfg.frequency > 0.0 {
         asrc.set_property("freq", cfg.frequency);
     }
@@ -276,5 +153,25 @@ impl InputSource for TestSource {
 
     fn is_available(&self) -> bool {
         true
+    }
+}
+
+fn pattern_gst_name(pattern: VideoTestPattern) -> &'static str {
+    match pattern {
+        VideoTestPattern::Smpte => "smpte",
+        VideoTestPattern::Snow => "snow",
+        VideoTestPattern::Black => "black",
+        VideoTestPattern::White => "white",
+        VideoTestPattern::Ball => "ball",
+        VideoTestPattern::Smpte75 => "smpte75",
+        VideoTestPattern::Checkers1 => "checkers-1",
+    }
+}
+
+fn signal_gst_wave(signal: AudioTestSignal) -> &'static str {
+    match signal {
+        AudioTestSignal::Tone => "sine",
+        AudioTestSignal::Silence => "silence",
+        AudioTestSignal::PinkNoise => "pink-noise",
     }
 }

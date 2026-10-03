@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use gstreamer::{self as gst, prelude::*};
 use tracing::{info, warn};
 
-use super::{ConnectionMode, InputSource, SourceCapabilities, SourceType, Timecode};
+use super::{InputSource, SourceCapabilities, SourceType, Timecode};
 
 // ── NdiSource ──────────────────────────────────────────────────────────────────
 
@@ -218,9 +218,5 @@ impl InputSource for NdiSource {
 
     fn is_available(&self) -> bool {
         true
-    }
-
-    fn connection_mode(&self) -> ConnectionMode {
-        ConnectionMode::Auto
     }
 }

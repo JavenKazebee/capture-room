@@ -8,13 +8,9 @@ import type { StartRecordingRequest } from '@/types/generated/StartRecordingRequ
 
 /**
  * A node's session tagged with the node it lives on (`id` and `source_id` are
- * local to that node). `status` is a plain string on the wire; narrowed here
- * to the values nodes emit.
+ * local to that node).
  */
-export type RecordingSession = Omit<RecordingSessionDto, 'status'> & {
-  status: 'active' | 'stopped' | 'error'
-  node_id: string
-}
+export type RecordingSession = RecordingSessionDto & { node_id: string }
 
 export const useRecordingsStore = defineStore('recordings', () => {
   const nodes = useNodesStore()
@@ -23,7 +19,7 @@ export const useRecordingsStore = defineStore('recordings', () => {
   const activeSessions = computed(() => sessions.value.filter((s) => s.status === 'active'))
 
   function upsert(nodeId: string, dto: RecordingSessionDto) {
-    const session = { ...dto, node_id: nodeId } as RecordingSession
+    const session: RecordingSession = { ...dto, node_id: nodeId }
     const idx = sessions.value.findIndex((s) => s.node_id === nodeId && s.id === dto.id)
     if (idx === -1) sessions.value.push(session)
     else sessions.value[idx] = session

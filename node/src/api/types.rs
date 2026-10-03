@@ -58,57 +58,106 @@ pub struct SourceDto {
 }
 
 // ── Test source config ────────────────────────────────────────────────────────
+//
+// Stored as text in `test_sources`; the serde and sqlx names must match.
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "kebab-case")]
+#[sqlx(rename_all = "kebab-case")]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export))]
+pub enum VideoTestPattern {
+    Smpte,
+    Snow,
+    Black,
+    White,
+    Ball,
+    #[serde(rename = "smpte75")]
+    #[sqlx(rename = "smpte75")]
+    Smpte75,
+    #[serde(rename = "checkers-1")]
+    #[sqlx(rename = "checkers-1")]
+    Checkers1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "kebab-case")]
+#[sqlx(rename_all = "kebab-case")]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export))]
+pub enum AudioTestSignal {
+    Tone,
+    Silence,
+    PinkNoise,
+}
+
+/// A configured test source, as stored and as served.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[cfg_attr(feature = "export-types", derive(TS))]
 #[cfg_attr(feature = "export-types", ts(export))]
 pub struct TestSourceConfigDto {
     pub id: String,
     pub name: String,
-    pub pattern: String,
+    pub pattern: VideoTestPattern,
     pub width: u32,
     pub height: u32,
     pub fps_num: u32,
     pub fps_den: u32,
-    pub audio_signal: String,
+    pub audio_signal: AudioTestSignal,
     pub frequency: f64,
     pub channels: u32,
     pub created_at: String,
 }
 
+/// Body for creating or replacing a test source.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
 #[cfg_attr(feature = "export-types", ts(export))]
-pub struct CreateTestSourceRequest {
+pub struct TestSourceRequest {
     pub name: String,
-    pub pattern: String,
+    pub pattern: VideoTestPattern,
     pub width: u32,
     pub height: u32,
     pub fps_num: u32,
     pub fps_den: u32,
-    pub audio_signal: String,
+    pub audio_signal: AudioTestSignal,
     pub frequency: f64,
     pub channels: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "export-types", derive(TS))]
-#[cfg_attr(feature = "export-types", ts(export))]
-pub struct UpdateTestSourceRequest {
-    pub name: String,
-    pub pattern: String,
-    pub width: u32,
-    pub height: u32,
-    pub fps_num: u32,
-    pub fps_den: u32,
-    pub audio_signal: String,
-    pub frequency: f64,
-    pub channels: u32,
+impl TestSourceRequest {
+    pub fn into_config(self, id: String, created_at: String) -> TestSourceConfigDto {
+        TestSourceConfigDto {
+            id,
+            name: self.name,
+            pattern: self.pattern,
+            width: self.width,
+            height: self.height,
+            fps_num: self.fps_num,
+            fps_den: self.fps_den,
+            audio_signal: self.audio_signal,
+            frequency: self.frequency,
+            channels: self.channels,
+            created_at,
+        }
+    }
 }
 
 // ── Recordings ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "lowercase")]
+#[sqlx(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS))]
+#[cfg_attr(feature = "export-types", ts(export))]
+pub enum RecordingStatus {
+    Active,
+    Stopped,
+    Error,
+}
+
+/// A recording session, as stored in `recording_sessions` and as served.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[cfg_attr(feature = "export-types", derive(TS))]
 #[cfg_attr(feature = "export-types", ts(export))]
 pub struct RecordingSessionDto {
@@ -118,8 +167,10 @@ pub struct RecordingSessionDto {
     pub started_at: String,
     pub stopped_at: Option<String>,
     /// Ordered list of output file paths, one per preset output leg.
+    /// Stored as a JSON array.
+    #[sqlx(json)]
     pub output_paths: Vec<String>,
-    pub status: String,
+    pub status: RecordingStatus,
     pub error_message: Option<String>,
 }
 
@@ -271,7 +322,6 @@ pub enum WsEvent {
     FeedStatus {
         source_id: String,
         timecode: Option<String>,
-        duration_secs: f64,
     },
     #[serde(rename = "audio.levels")]
     AudioLevels {
@@ -297,7 +347,8 @@ pub enum WsEvent {
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// How each source's monitor pipeline samples thumbnails and audio levels.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS))]
 #[cfg_attr(feature = "export-types", ts(export))]
 pub struct MonitorSettingsDto {
@@ -306,6 +357,24 @@ pub struct MonitorSettingsDto {
     pub thumb_height: i32,
     #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub level_interval_ms: u64,
+}
+
+impl Default for MonitorSettingsDto {
+    fn default() -> Self {
+        Self { thumb_fps: 1, thumb_width: 320, thumb_height: 180, level_interval_ms: 100 }
+    }
+}
+
+impl MonitorSettingsDto {
+    /// Limit every field to a range the pipelines handle well.
+    pub fn clamped(self) -> Self {
+        Self {
+            thumb_fps: self.thumb_fps.clamp(1, 30),
+            thumb_width: self.thumb_width.clamp(160, 1920),
+            thumb_height: self.thumb_height.clamp(90, 1080),
+            level_interval_ms: self.level_interval_ms.clamp(50, 1000),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

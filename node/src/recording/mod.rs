@@ -5,40 +5,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
 use futures_util::future::join_all;
 use tracing::{error, info, warn};
 
-use crate::api::types::{RecordingSessionDto, WsEvent};
-use crate::db::{self, SessionRow};
+use crate::api::types::{RecordingStatus, WsEvent};
+use crate::db;
 use crate::sources::manager::{StopJob, Teardown};
 use crate::state::AppState;
 
 /// How long a leg may take to drain to EOS and close its file.
 const EOS_TIMEOUT: Duration = Duration::from_secs(10);
-
-pub async fn persist_start(
-    pool: &sqlx::SqlitePool,
-    session: &RecordingSessionDto,
-) -> Result<()> {
-    let output_paths_json = serde_json::to_string(&session.output_paths)
-        .unwrap_or_else(|_| "[]".to_string());
-
-    db::session_insert(
-        pool,
-        &SessionRow {
-            id: session.id.clone(),
-            source_id: session.source_id.clone(),
-            preset_id: session.preset_id.clone(),
-            started_at: session.started_at.clone(),
-            stopped_at: session.stopped_at.clone(),
-            output_paths: output_paths_json,
-            status: session.status.clone(),
-            error_message: session.error_message.clone(),
-        },
-    )
-    .await
-}
 
 /// Drain a stopping session's legs, persist and broadcast the outcome, and
 /// publish it to every request waiting on the stop.
@@ -52,11 +28,11 @@ pub async fn run_stop(state: Arc<AppState>, job: StopJob) {
     dto.stopped_at = Some(chrono::Utc::now().to_rfc3339());
     match results.into_iter().find_map(Result::err) {
         None => {
-            dto.status = "stopped".to_string();
+            dto.status = RecordingStatus::Stopped;
             info!(id = %dto.id, "recording stopped");
         }
         Some(e) => {
-            dto.status = "error".to_string();
+            dto.status = RecordingStatus::Error;
             dto.error_message = Some(e.to_string());
             warn!(id = %dto.id, error = %e, "recording stopped with error");
         }
@@ -66,7 +42,7 @@ pub async fn run_stop(state: Arc<AppState>, job: StopJob) {
         &state.db,
         &dto.id,
         dto.stopped_at.as_deref().unwrap_or_default(),
-        &dto.status,
+        dto.status,
         dto.error_message.as_deref(),
     )
     .await

@@ -9,14 +9,16 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::api::types::{ChannelLevelDto, RecordingSessionDto};
-use crate::pipeline::monitor::{MonitorConfig, MonitorPipeline};
+use crate::api::types::{
+    ChannelLevelDto, MonitorSettingsDto, RecordingSessionDto, RecordingStatus, TestSourceConfigDto,
+};
+use crate::pipeline::monitor::MonitorPipeline;
 use crate::pipeline::profile::RecordingProfile;
 use crate::pipeline::recording::{self, RecordingLeg};
 
 use super::ndi::NdiMonitor;
-use super::test::{TestSource, TestSourceConfig};
-use super::{ConnectionMode, InputSource};
+use super::test::TestSource;
+use super::InputSource;
 
 // ── Stop / teardown handoff ───────────────────────────────────────────────────
 
@@ -48,7 +50,7 @@ pub struct Teardown {
 
 pub enum StopOutcome {
     /// This call gets to do the work.
-    Start(StopJob),
+    Start(Box<StopJob>),
     /// A stop for this session is already in flight (started by another
     /// request or a teardown); wait on its result instead.
     Join(StopResult),
@@ -66,7 +68,7 @@ pub enum StopOutcome {
 /// call and the WS emitter share. Work that has to wait on GStreamer (draining
 /// a recording to EOS) is handed back as a [`StopJob`] or [`Teardown`].
 pub struct SourceManager {
-    config: MonitorConfig,
+    config: MonitorSettingsDto,
     sources: Vec<Box<dyn InputSource>>,
     monitors: HashMap<String, Arc<MonitorPipeline>>,
     sessions: HashMap<String, ActiveSession>, // session_id → session
@@ -77,7 +79,7 @@ pub struct SourceManager {
 }
 
 impl SourceManager {
-    pub fn new(config: MonitorConfig, ndi_monitor: NdiMonitor) -> Self {
+    pub fn new(config: MonitorSettingsDto, ndi_monitor: NdiMonitor) -> Self {
         Self {
             config,
             sources: Vec::new(),
@@ -107,9 +109,9 @@ impl SourceManager {
     /// Rebuild the source list from test configs and the NDI sources currently
     /// on the network. A source whose id and fingerprint are unchanged is kept
     /// as-is, monitor and recordings included. Removed or changed sources are
-    /// torn down (returned for the caller to run); new or changed Auto sources
+    /// torn down (returned for the caller to run); new or changed sources
     /// get a monitor.
-    pub fn scan(&mut self, configs: &[TestSourceConfig]) -> Vec<Teardown> {
+    pub fn scan(&mut self, configs: &[TestSourceConfigDto]) -> Vec<Teardown> {
         let mut candidates: Vec<Box<dyn InputSource>> = Vec::new();
         for cfg in configs {
             match TestSource::new(cfg.clone()) {
@@ -150,11 +152,8 @@ impl SourceManager {
         // Tear down first: a changed source restarts under the same id.
         let teardowns = gone.iter().filter_map(|id| self.take_monitor(id)).collect();
         for id in added {
-            let auto = self.get_source(&id).map(|s| s.connection_mode()) == Some(ConnectionMode::Auto);
-            if auto {
-                if let Err(e) = self.start_monitor(&id) {
-                    warn!(source = %id, error = %e, "failed to start monitor");
-                }
+            if let Err(e) = self.start_monitor(&id) {
+                warn!(source = %id, error = %e, "failed to start monitor");
             }
         }
 
@@ -180,25 +179,14 @@ impl SourceManager {
     // ── Thumbnail / audio access ──────────────────────────────────────────────
 
     pub fn thumbnail_bytes(&self, source_id: &str) -> Option<Vec<u8>> {
-        self.monitors.get(source_id)?.thumbnail.latest()
+        self.monitors.get(source_id)?.thumbnail.get()
     }
 
-    pub fn audio_levels(&self, source_id: &str) -> Option<Vec<ChannelLevelDto>> {
-        let state = self.monitors.get(source_id)?.audio_meter.latest()?;
-        Some(
-            state
-                .channels
-                .iter()
-                .map(|c| ChannelLevelDto { peak_db: c.peak_db, rms_db: c.rms_db })
-                .collect(),
-        )
-    }
-
-    /// Iterate over all monitored source IDs and their audio levels.
+    /// Every monitored source's latest audio levels.
     pub fn all_audio_levels(&self) -> Vec<(String, Vec<ChannelLevelDto>)> {
         self.monitors
-            .keys()
-            .filter_map(|id| self.audio_levels(id).map(|lvl| (id.clone(), lvl)))
+            .iter()
+            .filter_map(|(id, m)| m.audio_meter.get().map(|lvl| (id.clone(), lvl)))
             .collect()
     }
 
@@ -232,7 +220,7 @@ impl SourceManager {
             started_at: Utc::now().to_rfc3339(),
             stopped_at: None,
             output_paths: legs.iter().map(|(p, _)| p.clone()).collect(),
-            status: "active".to_string(),
+            status: RecordingStatus::Active,
             error_message: None,
         };
 
@@ -262,7 +250,7 @@ impl SourceManager {
     /// report "stopped" without the pipeline actually having stopped.
     pub fn begin_stop_recording(&mut self, session_id: &str) -> StopOutcome {
         if let Some(job) = self.take_session(session_id) {
-            StopOutcome::Start(job)
+            StopOutcome::Start(Box::new(job))
         } else if let Some(rx) = self.stopping.get(session_id) {
             StopOutcome::Join(rx.clone())
         } else {
@@ -277,14 +265,14 @@ impl SourceManager {
 
     // ── Monitor config ────────────────────────────────────────────────────────
 
-    pub fn monitor_config(&self) -> &MonitorConfig {
+    pub fn monitor_config(&self) -> &MonitorSettingsDto {
         &self.config
     }
 
     /// Apply a new global monitor config to all running monitors without
     /// restarting any pipelines. GStreamer re-negotiates the affected branches
     /// in place, so audio and thumbnails remain uninterrupted.
-    pub fn apply_monitor_config(&mut self, config: MonitorConfig) {
+    pub fn apply_monitor_config(&mut self, config: MonitorSettingsDto) {
         self.config = config;
         for pipeline in self.monitors.values() {
             pipeline.reconfigure(&self.config);

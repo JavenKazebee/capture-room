@@ -1,13 +1,9 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-
-interface ChannelLevel {
-  peak_db: number
-  rms_db: number
-}
+import type { ChannelLevelDto } from '@/types/generated/ChannelLevelDto'
 
 const props = defineProps<{
-  channels: ChannelLevel[]
+  channels: ChannelLevelDto[]
 }>()
 
 // dB range

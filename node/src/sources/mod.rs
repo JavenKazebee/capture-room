@@ -4,23 +4,10 @@ pub mod manager;
 pub mod ndi;
 pub mod test;
 
-/// Whether the source should be connected (monitor pipeline started) automatically
-/// on discovery, or only on an explicit user request.
-///
-/// Use `Auto` for sources that are cheap to open and harmless to hold open
-/// (TestSource, NDI). Use `Manual` for sources that reserve exclusive hardware
-/// (Decklink) or have significant connection cost.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectionMode {
-    Auto,
-    Manual,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceType {
     Test,
     Ndi,
-    Decklink,
 }
 
 /// What a source can produce. Used by the pipeline layer to negotiate caps
@@ -80,8 +67,4 @@ pub trait InputSource: Send + Sync {
 
     fn timecode(&self) -> Option<Timecode>;
     fn is_available(&self) -> bool;
-
-    fn connection_mode(&self) -> ConnectionMode {
-        ConnectionMode::Auto
-    }
 }

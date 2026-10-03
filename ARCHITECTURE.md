@@ -346,7 +346,8 @@ capture-room/
 │   │   ├── main.rs
 │   │   ├── api/
 │   │   │   ├── node.rs          # Node API (/api/v1/node/…, local only)
-│   │   │   └── types.rs         # DTOs (exported to TS)
+│   │   │   ├── error.rs         # ApiError / ApiResult for handlers
+│   │   │   └── types.rs         # DTOs (exported to TS; some double as DB rows)
 │   │   ├── controller/
 │   │   │   ├── mod.rs           # Controller enable/disable (live toggle)
 │   │   │   ├── api.rs           # /nodes, /controller, /presets, merged /ws
@@ -356,19 +357,16 @@ capture-room/
 │   │   │   └── registry.rs      # NodeRegistry
 │   │   ├── storage.rs           # Storage volume listing
 │   │   ├── pipeline/
-│   │   │   ├── monitor.rs       # MonitorPipeline, MonitorConfig, RecordingBranch, ThumbnailStore, AudioMeter
-│   │   │   ├── profile.rs       # RecordingProfile (codec, container, bitrate, …)
-│   │   │   └── mod.rs           # GStreamer element helpers
+│   │   │   ├── monitor.rs       # MonitorPipeline: thumbnail, audio meter, StreamProducers
+│   │   │   ├── recording.rs     # RecordingLeg: one pipeline per output leg
+│   │   │   ├── profile.rs       # RecordingProfile (codec, container, bitrate, chroma, …)
+│   │   │   └── mod.rs           # Latest<T> (AudioMeter, ThumbnailStore), element helpers
 │   │   ├── sources/
-│   │   │   ├── mod.rs           # InputSource trait + SourceType + ConnectionMode enums
-│   │   │   ├── manager.rs       # SourceManager — per-source monitors + recording sessions
-│   │   │   ├── registry.rs      # SourceRegistry — discovered sources indexed by id
-│   │   │   ├── test.rs          # TestSource + TestSourceConfig
-│   │   │   ├── ndi.rs           # ⬜ NdiSource (stub)
-│   │   │   └── decklink.rs      # ⬜ DecklinkSource (stub)
-│   │   ├── recording/           # DB persistence helpers for recording sessions
-│   │   ├── timecode/            # ⬜ LTC/VITC extraction (stub)
-│   │   ├── benchmark/           # ⬜ Benchmark runner (stub)
+│   │   │   ├── mod.rs           # InputSource trait + SourceType
+│   │   │   ├── manager.rs       # SourceManager — sources, per-source monitors, recording sessions
+│   │   │   ├── test.rs          # TestSource
+│   │   │   └── ndi.rs           # NdiSource + NDI device monitor
+│   │   ├── recording/           # Running stops/teardowns: drain legs, persist, broadcast
 │   │   └── db/                  # sqlx migrations and queries
 │   ├── migrations/
 │   └── Cargo.toml
@@ -434,7 +432,7 @@ Status legend: ✅ done · 🟡 partial · ⬜ not started · _(as of 2026-06-23
 12. ⬜ **Rust — Decklink implementation** — deferred (no hardware)
 13. 🟡 **Rust — preset sync + scheduling engine**
     - ✅ Preset sync (`controller/sync.rs`); ⬜ scheduler engine (`controller/scheduler.rs` is an empty stub)
-14. ⬜ **Rust — benchmark runner** — empty stub (`benchmark/mod.rs`)
-15. ⬜ **Rust — timecode** — empty stub (`timecode/mod.rs`); TestSource fakes a wall-clock TC
+14. ⬜ **Rust — benchmark runner** — not started
+15. ⬜ **Rust — timecode** — not started; TestSource fakes a wall-clock TC
 16. ⬜ **Rust — redundant recording path**
 17. ⬜ **Cross-platform packaging + GitHub Actions**

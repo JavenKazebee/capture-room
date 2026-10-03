@@ -6,23 +6,24 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use anyhow::Context;
 use axum::{
     body::Body,
     extract::{ws::WebSocketUpgrade, Path as AxumPath, State},
     http::{header, StatusCode},
-    response::{IntoResponse, Response},
+    response::Response,
     routing::{get, post},
     Json, Router,
 };
 use tracing::error;
 
+use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
-    CreateTestSourceRequest, MonitorSettingsDto, NodeSettingsDto, NodeStatus,
-    RecordingSessionDto, SourceCapabilitiesDto, SourceDto, StartRecordingRequest,
-    TestSourceConfigDto, TimecodeDto, UpdateNodeSettingsRequest, UpdateTestSourceRequest, WsEvent,
+    NodeSettingsDto, NodeStatus, RecordingSessionDto, RecordingStatus, SourceCapabilitiesDto,
+    SourceDto, StartRecordingRequest, StorageVolumeDto, TestSourceConfigDto, TestSourceRequest,
+    TimecodeDto, UpdateNodeSettingsRequest, WsEvent,
 };
 use crate::db;
-use crate::pipeline::monitor::MonitorConfig;
 use crate::pipeline::profile::RecordingProfile;
 use crate::recording;
 use crate::sources::manager::{SourceManager, StopOutcome, StopResult};
@@ -50,11 +51,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/ws", get(ws_handler))
 }
 
-fn internal(e: impl ToString) -> Response {
-    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-}
-
-// ── /api/v1/status ────────────────────────────────────────────────────────────
+// ── /status ───────────────────────────────────────────────────────────────────
 
 async fn get_status(State(state): State<Arc<AppState>>) -> Json<NodeStatus> {
     Json(NodeStatus {
@@ -69,21 +66,11 @@ async fn get_status(State(state): State<Arc<AppState>>) -> Json<NodeStatus> {
 // ── /settings ─────────────────────────────────────────────────────────────────
 
 async fn settings_dto(state: &AppState) -> NodeSettingsDto {
-    let monitor = {
-        let mgr = state.source_manager.read().await;
-        let mc = mgr.monitor_config();
-        MonitorSettingsDto {
-            thumb_fps: mc.thumb_fps_num,
-            thumb_width: mc.thumb_width,
-            thumb_height: mc.thumb_height,
-            level_interval_ms: mc.level_interval_ns / 1_000_000,
-        }
-    };
     NodeSettingsDto {
         node_id: state.node_id.clone(),
         node_name: state.node_name(),
         is_controller: state.is_controller().await,
-        monitor,
+        monitor: *state.source_manager.read().await.monitor_config(),
     }
 }
 
@@ -94,50 +81,23 @@ async fn get_settings(State(state): State<Arc<AppState>>) -> Json<NodeSettingsDt
 async fn put_settings(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UpdateNodeSettingsRequest>,
-) -> Response {
+) -> ApiResult<Json<NodeSettingsDto>> {
     if let Some(name) = req.name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) {
-        if let Err(e) = db::config_set(&state.db, "name", &name).await {
-            return internal(e);
-        }
+        db::config_set(&state.db, "name", &name).await?;
         *state.node_name.write().unwrap() = name;
     }
-    if let Some(m) = req.monitor {
-        if let Err(e) = apply_monitor_settings(&state, m).await {
-            return internal(e);
-        }
+    if let Some(monitor) = req.monitor {
+        let monitor = monitor.clamped();
+        db::monitor_settings_set(&state.db, &monitor).await?;
+        state.source_manager.write().await.apply_monitor_config(monitor);
     }
-    Json(settings_dto(&state).await).into_response()
-}
-
-async fn apply_monitor_settings(state: &AppState, req: MonitorSettingsDto) -> anyhow::Result<()> {
-    // Clamp to reasonable ranges.
-    let thumb_fps = req.thumb_fps.clamp(1, 30);
-    let thumb_width = req.thumb_width.clamp(160, 1920);
-    let thumb_height = req.thumb_height.clamp(90, 1080);
-    let level_ms = req.level_interval_ms.clamp(50, 1000);
-
-    db::config_set(&state.db, "monitor_thumb_fps", &thumb_fps.to_string()).await?;
-    db::config_set(&state.db, "monitor_thumb_width", &thumb_width.to_string()).await?;
-    db::config_set(&state.db, "monitor_thumb_height", &thumb_height.to_string()).await?;
-    db::config_set(&state.db, "monitor_level_ms", &level_ms.to_string()).await?;
-
-    state.source_manager.write().await.apply_monitor_config(MonitorConfig {
-        thumb_fps_num: thumb_fps,
-        thumb_fps_den: 1,
-        thumb_width,
-        thumb_height,
-        level_interval_ns: level_ms * 1_000_000,
-    });
-    Ok(())
+    Ok(Json(settings_dto(&state).await))
 }
 
 // ── /storage ──────────────────────────────────────────────────────────────────
 
-async fn get_storage() -> Response {
-    match tokio::task::spawn_blocking(crate::storage::list_volumes).await {
-        Ok(v) => Json(v).into_response(),
-        Err(e) => internal(e),
-    }
+async fn get_storage() -> ApiResult<Json<Vec<StorageVolumeDto>>> {
+    Ok(Json(tokio::task::spawn_blocking(crate::storage::list_volumes).await?))
 }
 
 // ── /sources ──────────────────────────────────────────────────────────────────
@@ -147,213 +107,145 @@ fn sources_list(mgr: &SourceManager) -> Vec<SourceDto> {
 }
 
 async fn get_sources(State(state): State<Arc<AppState>>) -> Json<Vec<SourceDto>> {
-    let mgr = state.source_manager.read().await;
-    Json(sources_list(&mgr))
+    Json(sources_list(&*state.source_manager.read().await))
 }
 
 async fn get_source(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
-) -> Response {
+) -> ApiResult<Json<SourceDto>> {
     let mgr = state.source_manager.read().await;
-    match mgr.get_source(&id) {
-        Some(s) => Json(source_to_dto(&mgr, s)).into_response(),
-        None => (StatusCode::NOT_FOUND, "source not found").into_response(),
-    }
+    let source = mgr.get_source(&id).ok_or(ApiError::NotFound("source not found"))?;
+    Ok(Json(source_to_dto(&mgr, source)))
 }
 
-async fn post_scan(State(state): State<Arc<AppState>>) -> Response {
-    if let Err(e) = rebuild_sources(&state).await {
-        return internal(e);
-    }
-    let mgr = state.source_manager.read().await;
-    Json(sources_list(&mgr)).into_response()
+async fn post_scan(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<SourceDto>>> {
+    rebuild_sources(&state).await?;
+    Ok(Json(sources_list(&*state.source_manager.read().await)))
 }
 
 async fn post_connect(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
-) -> Response {
+) -> ApiResult<Json<Option<SourceDto>>> {
     let mut mgr = state.source_manager.write().await;
-    match mgr.connect(&id) {
-        Ok(()) => Json(mgr.get_source(&id).map(|s| source_to_dto(&mgr, s))).into_response(),
-        Err(e) => internal(e),
-    }
+    mgr.connect(&id)?;
+    Ok(Json(mgr.get_source(&id).map(|s| source_to_dto(&mgr, s))))
 }
 
 async fn post_disconnect(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
-) -> Response {
+) -> Json<Option<SourceDto>> {
     let mut mgr = state.source_manager.write().await;
     if let Some(teardown) = mgr.disconnect(&id) {
         recording::spawn_teardowns(&state, vec![teardown]);
     }
-    Json(mgr.get_source(&id).map(|s| source_to_dto(&mgr, s))).into_response()
+    Json(mgr.get_source(&id).map(|s| source_to_dto(&mgr, s)))
 }
 
 // ── /test-sources ─────────────────────────────────────────────────────────────
 
-async fn get_test_configs(State(state): State<Arc<AppState>>) -> Response {
-    match db::test_sources_list(&state.db).await {
-        Ok(rows) => {
-            Json(rows.into_iter().map(row_to_config_dto).collect::<Vec<_>>()).into_response()
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+async fn get_test_configs(
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<Json<Vec<TestSourceConfigDto>>> {
+    Ok(Json(db::test_sources_list(&state.db).await?))
 }
 
 async fn post_test_config(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<CreateTestSourceRequest>,
-) -> Response {
-    let row = db::TestSourceRow {
-        id: uuid::Uuid::new_v4().to_string(),
-        name: req.name,
-        pattern: req.pattern,
-        width: req.width as i64,
-        height: req.height as i64,
-        fps_num: req.fps_num as i64,
-        fps_den: req.fps_den as i64,
-        audio_signal: req.audio_signal,
-        frequency: req.frequency,
-        channels: req.channels as i64,
-        created_at: chrono::Utc::now().to_rfc3339(),
-    };
-    if let Err(e) = db::test_source_insert(&state.db, &row).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-    }
-    if let Err(e) = rebuild_sources(&state).await {
-        error!(error = %e, "rebuild sources after create");
-    }
-    (StatusCode::CREATED, Json(row_to_config_dto(row))).into_response()
+    Json(req): Json<TestSourceRequest>,
+) -> ApiResult<(StatusCode, Json<TestSourceConfigDto>)> {
+    let config = req.into_config(uuid::Uuid::new_v4().to_string(), chrono::Utc::now().to_rfc3339());
+    db::test_source_insert(&state.db, &config).await?;
+    rescan_after(&state, "create").await;
+    Ok((StatusCode::CREATED, Json(config)))
 }
 
 async fn put_test_config(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
-    Json(req): Json<UpdateTestSourceRequest>,
-) -> Response {
-    let existing = match db::test_source_get(&state.db, &id).await {
-        Ok(Some(r)) => r,
-        Ok(None) => return (StatusCode::NOT_FOUND, "test source not found").into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-    let row = db::TestSourceRow {
-        name: req.name,
-        pattern: req.pattern,
-        width: req.width as i64,
-        height: req.height as i64,
-        fps_num: req.fps_num as i64,
-        fps_den: req.fps_den as i64,
-        audio_signal: req.audio_signal,
-        frequency: req.frequency,
-        channels: req.channels as i64,
-        ..existing
-    };
-    match db::test_source_update(&state.db, &row).await {
-        Ok(true) => {}
-        Ok(false) => return (StatusCode::NOT_FOUND, "test source not found").into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    Json(req): Json<TestSourceRequest>,
+) -> ApiResult<Json<TestSourceConfigDto>> {
+    const NOT_FOUND: ApiError = ApiError::NotFound("test source not found");
+    let existing = db::test_source_get(&state.db, &id).await?.ok_or(NOT_FOUND)?;
+    let config = req.into_config(existing.id, existing.created_at);
+    if !db::test_source_update(&state.db, &config).await? {
+        return Err(NOT_FOUND);
     }
-    if let Err(e) = rebuild_sources(&state).await {
-        error!(error = %e, "rebuild sources after update");
-    }
-    Json(row_to_config_dto(row)).into_response()
+    rescan_after(&state, "update").await;
+    Ok(Json(config))
 }
 
 async fn delete_test_config(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
-) -> Response {
-    match db::test_source_delete(&state.db, &id).await {
-        Ok(true) => {}
-        Ok(false) => return (StatusCode::NOT_FOUND, "test source not found").into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+) -> ApiResult<StatusCode> {
+    if !db::test_source_delete(&state.db, &id).await? {
+        return Err(ApiError::NotFound("test source not found"));
     }
-    if let Err(e) = rebuild_sources(&state).await {
-        error!(error = %e, "rebuild sources after delete");
-    }
-    StatusCode::NO_CONTENT.into_response()
+    rescan_after(&state, "delete").await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ── /recordings ───────────────────────────────────────────────────────────────
 
-async fn get_recordings(State(state): State<Arc<AppState>>) -> Response {
-    let active: Vec<RecordingSessionDto> = {
-        let mgr = state.source_manager.read().await;
-        mgr.active_sessions().into_iter().cloned().collect()
-    };
-
-    let historical = match db::sessions_list(&state.db).await {
-        Ok(rows) => rows
-            .into_iter()
-            .filter(|r| !active.iter().any(|a| a.id == r.id))
-            .map(session_row_to_dto)
-            .collect::<Vec<_>>(),
-        Err(e) => {
-            error!(error = %e, "db sessions_list");
-            vec![]
-        }
-    };
-
-    let all: Vec<RecordingSessionDto> = active.into_iter().chain(historical).collect();
-    Json(all).into_response()
+async fn get_recordings(
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<Json<Vec<RecordingSessionDto>>> {
+    let active: Vec<RecordingSessionDto> =
+        state.source_manager.read().await.active_sessions().into_iter().cloned().collect();
+    let historical = db::sessions_list(&state.db)
+        .await?
+        .into_iter()
+        .filter(|r| !active.iter().any(|a| a.id == r.id));
+    Ok(Json(active.iter().cloned().chain(historical).collect()))
 }
 
 async fn get_recording(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
-) -> Response {
-    {
-        let mgr = state.source_manager.read().await;
-        if let Some(s) = mgr.active_sessions().into_iter().find(|s| s.id == id) {
-            return Json(s.clone()).into_response();
-        }
-    }
-    match db::session_get(&state.db, &id).await {
-        Ok(Some(row)) => Json(session_row_to_dto(row)).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "session not found").into_response(),
-        Err(e) => internal(e),
-    }
+) -> ApiResult<Json<RecordingSessionDto>> {
+    let active = state
+        .source_manager
+        .read()
+        .await
+        .active_sessions()
+        .into_iter()
+        .find(|s| s.id == id)
+        .cloned();
+    let session = match active {
+        Some(s) => Some(s),
+        None => db::session_get(&state.db, &id).await?,
+    };
+    session.map(Json).ok_or(ApiError::NotFound("session not found"))
 }
 
 async fn post_recording(
     State(state): State<Arc<AppState>>,
     Json(req): Json<StartRecordingRequest>,
-) -> Response {
+) -> ApiResult<(StatusCode, Json<RecordingSessionDto>)> {
     if req.outputs.is_empty() {
-        return (StatusCode::BAD_REQUEST, "at least one output is required").into_response();
+        return Err(ApiError::BadRequest("at least one output is required"));
     }
     let legs = build_legs(&state, &req);
-
     for (path, _) in &legs {
         if let Some(parent) = Path::new(path).parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                return internal(format!("create {}: {e}", parent.display()));
-            }
+            std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
         }
     }
 
     let preset_id = req.preset_id.clone().unwrap_or_default();
-    let session = {
-        let mut mgr = state.source_manager.write().await;
-        match mgr.start_recording(&req.source_id, &preset_id, &legs) {
-            Ok(s) => s,
-            Err(e) => return internal(e),
-        }
-    };
+    let session = state.source_manager.write().await.start_recording(&req.source_id, &preset_id, &legs)?;
 
-    if let Err(e) = recording::persist_start(&state.db, &session).await {
+    if let Err(e) = db::session_insert(&state.db, &session).await {
         error!(error = %e, "persist session start");
     }
-
     state.emit(&WsEvent::RecordingStarted {
         session_id: session.id.clone(),
         source_id: session.source_id.clone(),
     });
-
-    (StatusCode::CREATED, Json(session)).into_response()
+    Ok((StatusCode::CREATED, Json(session)))
 }
 
 /// Wait for a stop's final DTO on `rx`, whether this request started the
@@ -372,51 +264,38 @@ async fn await_stop_result(mut rx: StopResult) -> Option<RecordingSessionDto> {
 async fn post_stop_recording(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
-) -> Response {
+) -> ApiResult<Json<RecordingSessionDto>> {
     let outcome = state.source_manager.write().await.begin_stop_recording(&id);
-
-    let local = match outcome {
+    let session = match outcome {
         StopOutcome::Start(job) => {
             let rx = job.tx.subscribe();
             // Spawned independently: if the caller's connection drops while
             // we're awaiting below, only this request's response is affected
-            // — the detach work keeps running to completion regardless.
-            tokio::spawn(recording::run_stop(Arc::clone(&state), job));
+            // — the stop keeps running to completion regardless.
+            tokio::spawn(recording::run_stop(Arc::clone(&state), *job));
             await_stop_result(rx).await
         }
         StopOutcome::Join(rx) => await_stop_result(rx).await,
-        StopOutcome::NotFound => {
-            // Orphaned DB row (e.g. after a crash/restart) — mark stopped
-            // directly, but only if it isn't already; a stray retry landing
-            // here after everything settled shouldn't stomp stopped_at.
-            match db::session_get(&state.db, &id).await {
-                Ok(Some(row)) if row.status == "active" => {
-                    let stopped_at = chrono::Utc::now().to_rfc3339();
-                    if let Err(e) =
-                        db::session_update_stop(&state.db, &id, &stopped_at, "stopped", None).await
-                    {
-                        error!(error = %e, "db stop orphaned session");
-                    }
-                    Some(session_row_to_dto(db::SessionRow {
-                        stopped_at: Some(stopped_at),
-                        status: "stopped".to_string(),
-                        error_message: None,
-                        ..row
-                    }))
-                }
-                Ok(Some(row)) => Some(session_row_to_dto(row)),
-                Ok(None) => None,
-                Err(e) => {
-                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-                }
-            }
-        }
+        StopOutcome::NotFound => stop_orphaned(&state, &id).await?,
     };
+    session.map(Json).ok_or(ApiError::NotFound("session not found"))
+}
 
-    match local {
-        Some(session) => Json(session).into_response(),
-        None => (StatusCode::NOT_FOUND, "session not found").into_response(),
+/// A session with no in-memory record, e.g. left `active` by a crash: mark it
+/// stopped in the DB — but only if it isn't already, so a stray retry landing
+/// here after everything settled doesn't stomp `stopped_at`.
+async fn stop_orphaned(state: &AppState, id: &str) -> anyhow::Result<Option<RecordingSessionDto>> {
+    let Some(mut session) = db::session_get(&state.db, id).await? else {
+        return Ok(None);
+    };
+    if session.status == RecordingStatus::Active {
+        let stopped_at = chrono::Utc::now().to_rfc3339();
+        db::session_update_stop(&state.db, id, &stopped_at, RecordingStatus::Stopped, None).await?;
+        session.stopped_at = Some(stopped_at);
+        session.status = RecordingStatus::Stopped;
+        session.error_message = None;
     }
+    Ok(Some(session))
 }
 
 // ── /thumbnails/{source_id} ───────────────────────────────────────────────────
@@ -484,62 +363,19 @@ fn timecode_to_dto(tc: Timecode) -> TimecodeDto {
     }
 }
 
-fn session_row_to_dto(r: db::SessionRow) -> RecordingSessionDto {
-    let output_paths: Vec<String> =
-        serde_json::from_str(&r.output_paths).unwrap_or_default();
-    RecordingSessionDto {
-        id: r.id,
-        source_id: r.source_id,
-        preset_id: r.preset_id,
-        started_at: r.started_at,
-        stopped_at: r.stopped_at,
-        output_paths,
-        status: r.status,
-        error_message: r.error_message,
-    }
-}
-
-fn row_to_config_dto(row: db::TestSourceRow) -> TestSourceConfigDto {
-    TestSourceConfigDto {
-        id: row.id,
-        name: row.name,
-        pattern: row.pattern,
-        width: row.width as u32,
-        height: row.height as u32,
-        fps_num: row.fps_num as u32,
-        fps_den: row.fps_den as u32,
-        audio_signal: row.audio_signal,
-        frequency: row.frequency,
-        channels: row.channels as u32,
-        created_at: row.created_at,
-    }
-}
-
-fn db_row_to_config(row: db::TestSourceRow) -> crate::sources::test::TestSourceConfig {
-    use crate::sources::test::{AudioTestSignal, TestSourceConfig, VideoTestPattern};
-    TestSourceConfig {
-        id: row.id,
-        name: row.name,
-        pattern: VideoTestPattern::from_db(&row.pattern),
-        width: row.width as u32,
-        height: row.height as u32,
-        fps_num: row.fps_num as u32,
-        fps_den: row.fps_den as u32,
-        audio_signal: AudioTestSignal::from_db(&row.audio_signal),
-        frequency: row.frequency,
-        channels: row.channels as u32,
-    }
-}
-
 async fn rebuild_sources(state: &Arc<AppState>) -> anyhow::Result<()> {
-    let configs = db::test_sources_list(&state.db)
-        .await?
-        .into_iter()
-        .map(db_row_to_config)
-        .collect::<Vec<_>>();
+    let configs = db::test_sources_list(&state.db).await?;
     let teardowns = state.source_manager.write().await.scan(&configs);
     recording::spawn_teardowns(state, teardowns);
     Ok(())
+}
+
+/// After a test-source change: the change itself is saved, so a failed
+/// rescan is logged rather than failing the request.
+async fn rescan_after(state: &Arc<AppState>, change: &str) {
+    if let Err(e) = rebuild_sources(state).await {
+        error!(error = %e, "rebuild sources after {change}");
+    }
 }
 
 /// Build `(resolved_path, RecordingProfile)` for every requested output leg.

@@ -1,5 +1,4 @@
 mod api;
-mod audio;
 mod controller;
 mod db;
 mod pipeline;
@@ -8,7 +7,6 @@ mod recording;
 mod sources;
 mod state;
 mod storage;
-mod thumbnail;
 mod ws;
 
 use std::net::SocketAddr;
@@ -22,7 +20,6 @@ use tracing::info;
 
 use api::types::WsEvent;
 use controller::Controller;
-use pipeline::monitor::MonitorConfig;
 use sources::manager::SourceManager;
 use state::AppState;
 
@@ -78,27 +75,8 @@ async fn main() -> Result<()> {
     db::sessions_mark_crashed(&pool).await?;
 
     // ── Source manager ────────────────────────────────────────────────────────
-    let test_configs: Vec<sources::test::TestSourceConfig> = db::test_sources_list(&pool)
-        .await?
-        .into_iter()
-        .map(|row| {
-            use sources::test::{AudioTestSignal, TestSourceConfig, VideoTestPattern};
-            TestSourceConfig {
-                id: row.id,
-                name: row.name,
-                pattern: VideoTestPattern::from_db(&row.pattern),
-                width: row.width as u32,
-                height: row.height as u32,
-                fps_num: row.fps_num as u32,
-                fps_den: row.fps_den as u32,
-                audio_signal: AudioTestSignal::from_db(&row.audio_signal),
-                frequency: row.frequency,
-                channels: row.channels as u32,
-            }
-        })
-        .collect();
-
-    let monitor_config = load_monitor_config(&pool).await;
+    let test_configs = db::test_sources_list(&pool).await?;
+    let monitor_config = db::monitor_settings_get(&pool).await?;
     let ndi_monitor = tokio::task::spawn_blocking(sources::ndi::NdiMonitor::start)
         .await
         .expect("NDI monitor thread panicked");
@@ -149,12 +127,11 @@ async fn main() -> Result<()> {
                 }
 
                 // Timecode (feed.status) at 1 Hz — every 10 ticks.
-                if tick % 10 == 0 {
+                if tick.is_multiple_of(10) {
                     for source in mgr.sources() {
                         state.emit(&WsEvent::FeedStatus {
                             source_id: source.id().to_string(),
                             timecode: source.timecode().map(|tc| tc.to_string()),
-                            duration_secs: 0.0,
                         });
                     }
                 }
@@ -162,9 +139,9 @@ async fn main() -> Result<()> {
                 // Thumbnail updates at the configured fps.
                 // Tick interval = 100 ms, so 10 ticks = 1 s.
                 // fps=1 → every 10 ticks, fps=2 → every 5, fps=10 → every 1.
-                let fps = mgr.monitor_config().thumb_fps_num.max(1) as u32;
+                let fps = mgr.monitor_config().thumb_fps.max(1) as u32;
                 let thumb_div = (10 / fps).max(1);
-                if tick % thumb_div == 0 {
+                if tick.is_multiple_of(thumb_div) {
                     for source in mgr.sources() {
                         if mgr.is_monitored(source.id()) {
                             state.emit(&WsEvent::ThumbnailUpdated {
@@ -193,31 +170,4 @@ async fn main() -> Result<()> {
     axum::serve(listener, router).await?;
 
     Ok(())
-}
-
-async fn load_monitor_config(pool: &sqlx::SqlitePool) -> MonitorConfig {
-    let def = MonitorConfig::default();
-    let thumb_fps = db::config_get(pool, "monitor_thumb_fps")
-        .await.ok().flatten()
-        .and_then(|v| v.parse::<i32>().ok())
-        .unwrap_or(def.thumb_fps_num);
-    let thumb_width = db::config_get(pool, "monitor_thumb_width")
-        .await.ok().flatten()
-        .and_then(|v| v.parse::<i32>().ok())
-        .unwrap_or(def.thumb_width);
-    let thumb_height = db::config_get(pool, "monitor_thumb_height")
-        .await.ok().flatten()
-        .and_then(|v| v.parse::<i32>().ok())
-        .unwrap_or(def.thumb_height);
-    let level_ms = db::config_get(pool, "monitor_level_ms")
-        .await.ok().flatten()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(def.level_interval_ns / 1_000_000);
-    MonitorConfig {
-        thumb_fps_num: thumb_fps,
-        thumb_fps_den: 1,
-        thumb_width,
-        thumb_height,
-        level_interval_ns: level_ms * 1_000_000,
-    }
 }

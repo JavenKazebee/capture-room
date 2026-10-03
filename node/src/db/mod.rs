@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
-use sqlx::{sqlite::SqliteConnectOptions, FromRow, SqlitePool};
+use sqlx::{sqlite::SqliteConnectOptions, types::Json, FromRow, SqlitePool};
 use std::str::FromStr;
 use tracing::info;
+
+use crate::api::types::{MonitorSettingsDto, RecordingSessionDto, RecordingStatus, TestSourceConfigDto};
 
 pub async fn init(db_path: &str) -> Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(db_path)
@@ -45,19 +47,31 @@ pub async fn config_set(pool: &SqlitePool, key: &str, value: &str) -> Result<()>
     Ok(())
 }
 
-// ── recording_sessions ────────────────────────────────────────────────────────
+// ── monitor settings (node_config keys) ──────────────────────────────────────
 
-#[derive(Debug, FromRow)]
-pub struct SessionRow {
-    pub id: String,
-    pub source_id: String,
-    pub preset_id: String,
-    pub started_at: String,
-    pub stopped_at: Option<String>,
-    pub output_paths: String, // JSON array
-    pub status: String,
-    pub error_message: Option<String>,
+/// Stored settings, with defaults for anything missing or unparsable.
+pub async fn monitor_settings_get(pool: &SqlitePool) -> Result<MonitorSettingsDto> {
+    async fn get<T: FromStr>(pool: &SqlitePool, key: &str) -> Result<Option<T>> {
+        Ok(config_get(pool, key).await?.and_then(|v| v.parse().ok()))
+    }
+    let def = MonitorSettingsDto::default();
+    Ok(MonitorSettingsDto {
+        thumb_fps: get(pool, "monitor_thumb_fps").await?.unwrap_or(def.thumb_fps),
+        thumb_width: get(pool, "monitor_thumb_width").await?.unwrap_or(def.thumb_width),
+        thumb_height: get(pool, "monitor_thumb_height").await?.unwrap_or(def.thumb_height),
+        level_interval_ms: get(pool, "monitor_level_ms").await?.unwrap_or(def.level_interval_ms),
+    })
 }
+
+pub async fn monitor_settings_set(pool: &SqlitePool, m: &MonitorSettingsDto) -> Result<()> {
+    config_set(pool, "monitor_thumb_fps", &m.thumb_fps.to_string()).await?;
+    config_set(pool, "monitor_thumb_width", &m.thumb_width.to_string()).await?;
+    config_set(pool, "monitor_thumb_height", &m.thumb_height.to_string()).await?;
+    config_set(pool, "monitor_level_ms", &m.level_interval_ms.to_string()).await?;
+    Ok(())
+}
+
+// ── recording_sessions ────────────────────────────────────────────────────────
 
 pub async fn sessions_mark_crashed(pool: &SqlitePool) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
@@ -72,7 +86,7 @@ pub async fn sessions_mark_crashed(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
-pub async fn session_insert(pool: &SqlitePool, s: &SessionRow) -> Result<()> {
+pub async fn session_insert(pool: &SqlitePool, s: &RecordingSessionDto) -> Result<()> {
     sqlx::query(
         "INSERT INTO recording_sessions
          (id, source_id, preset_id, started_at, stopped_at, output_paths, status, error_message)
@@ -83,8 +97,8 @@ pub async fn session_insert(pool: &SqlitePool, s: &SessionRow) -> Result<()> {
     .bind(&s.preset_id)
     .bind(&s.started_at)
     .bind(&s.stopped_at)
-    .bind(&s.output_paths)
-    .bind(&s.status)
+    .bind(Json(&s.output_paths))
+    .bind(s.status)
     .bind(&s.error_message)
     .execute(pool)
     .await?;
@@ -95,7 +109,7 @@ pub async fn session_update_stop(
     pool: &SqlitePool,
     id: &str,
     stopped_at: &str,
-    status: &str,
+    status: RecordingStatus,
     error_message: Option<&str>,
 ) -> Result<()> {
     sqlx::query(
@@ -112,8 +126,8 @@ pub async fn session_update_stop(
     Ok(())
 }
 
-pub async fn sessions_list(pool: &SqlitePool) -> Result<Vec<SessionRow>> {
-    let rows = sqlx::query_as::<_, SessionRow>(
+pub async fn sessions_list(pool: &SqlitePool) -> Result<Vec<RecordingSessionDto>> {
+    let rows = sqlx::query_as::<_, RecordingSessionDto>(
         "SELECT id, source_id, preset_id, started_at, stopped_at,
                 output_paths, status, error_message
          FROM recording_sessions
@@ -125,8 +139,8 @@ pub async fn sessions_list(pool: &SqlitePool) -> Result<Vec<SessionRow>> {
     Ok(rows)
 }
 
-pub async fn session_get(pool: &SqlitePool, id: &str) -> Result<Option<SessionRow>> {
-    let row = sqlx::query_as::<_, SessionRow>(
+pub async fn session_get(pool: &SqlitePool, id: &str) -> Result<Option<RecordingSessionDto>> {
+    let row = sqlx::query_as::<_, RecordingSessionDto>(
         "SELECT id, source_id, preset_id, started_at, stopped_at,
                 output_paths, status, error_message
          FROM recording_sessions WHERE id = ?",
@@ -235,21 +249,6 @@ pub async fn preset_outputs_list_all(pool: &SqlitePool) -> Result<Vec<PresetOutp
     Ok(rows)
 }
 
-pub async fn preset_outputs_for_preset(
-    pool: &SqlitePool,
-    preset_id: &str,
-) -> Result<Vec<PresetOutputRow>> {
-    let rows = sqlx::query_as::<_, PresetOutputRow>(
-        "SELECT id, preset_id, name, codec, container, resolution, framerate,
-                bitrate_kbps, chroma, path_template, sort_order
-         FROM preset_outputs WHERE preset_id = ? ORDER BY sort_order",
-    )
-    .bind(preset_id)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows)
-}
-
 /// Replace all output legs for a preset atomically.
 pub async fn preset_outputs_replace(
     pool: &SqlitePool,
@@ -327,23 +326,8 @@ pub async fn node_delete(pool: &SqlitePool, id: &str) -> Result<()> {
 
 // ── test_sources ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, FromRow)]
-pub struct TestSourceRow {
-    pub id: String,
-    pub name: String,
-    pub pattern: String,
-    pub width: i64,
-    pub height: i64,
-    pub fps_num: i64,
-    pub fps_den: i64,
-    pub audio_signal: String,
-    pub frequency: f64,
-    pub channels: i64,
-    pub created_at: String,
-}
-
-pub async fn test_sources_list(pool: &SqlitePool) -> Result<Vec<TestSourceRow>> {
-    let rows = sqlx::query_as::<_, TestSourceRow>(
+pub async fn test_sources_list(pool: &SqlitePool) -> Result<Vec<TestSourceConfigDto>> {
+    let rows = sqlx::query_as::<_, TestSourceConfigDto>(
         "SELECT id, name, pattern, width, height, fps_num, fps_den,
                 audio_signal, frequency, channels, created_at
          FROM test_sources ORDER BY created_at",
@@ -353,8 +337,8 @@ pub async fn test_sources_list(pool: &SqlitePool) -> Result<Vec<TestSourceRow>> 
     Ok(rows)
 }
 
-pub async fn test_source_get(pool: &SqlitePool, id: &str) -> Result<Option<TestSourceRow>> {
-    let row = sqlx::query_as::<_, TestSourceRow>(
+pub async fn test_source_get(pool: &SqlitePool, id: &str) -> Result<Option<TestSourceConfigDto>> {
+    let row = sqlx::query_as::<_, TestSourceConfigDto>(
         "SELECT id, name, pattern, width, height, fps_num, fps_den,
                 audio_signal, frequency, channels, created_at
          FROM test_sources WHERE id = ?",
@@ -365,7 +349,7 @@ pub async fn test_source_get(pool: &SqlitePool, id: &str) -> Result<Option<TestS
     Ok(row)
 }
 
-pub async fn test_source_insert(pool: &SqlitePool, row: &TestSourceRow) -> Result<()> {
+pub async fn test_source_insert(pool: &SqlitePool, row: &TestSourceConfigDto) -> Result<()> {
     sqlx::query(
         "INSERT INTO test_sources
          (id, name, pattern, width, height, fps_num, fps_den,
@@ -374,12 +358,12 @@ pub async fn test_source_insert(pool: &SqlitePool, row: &TestSourceRow) -> Resul
     )
     .bind(&row.id)
     .bind(&row.name)
-    .bind(&row.pattern)
+    .bind(row.pattern)
     .bind(row.width)
     .bind(row.height)
     .bind(row.fps_num)
     .bind(row.fps_den)
-    .bind(&row.audio_signal)
+    .bind(row.audio_signal)
     .bind(row.frequency)
     .bind(row.channels)
     .bind(&row.created_at)
@@ -388,7 +372,7 @@ pub async fn test_source_insert(pool: &SqlitePool, row: &TestSourceRow) -> Resul
     Ok(())
 }
 
-pub async fn test_source_update(pool: &SqlitePool, row: &TestSourceRow) -> Result<bool> {
+pub async fn test_source_update(pool: &SqlitePool, row: &TestSourceConfigDto) -> Result<bool> {
     let res = sqlx::query(
         "UPDATE test_sources
          SET name = ?, pattern = ?, width = ?, height = ?,
@@ -397,12 +381,12 @@ pub async fn test_source_update(pool: &SqlitePool, row: &TestSourceRow) -> Resul
          WHERE id = ?",
     )
     .bind(&row.name)
-    .bind(&row.pattern)
+    .bind(row.pattern)
     .bind(row.width)
     .bind(row.height)
     .bind(row.fps_num)
     .bind(row.fps_den)
-    .bind(&row.audio_signal)
+    .bind(row.audio_signal)
     .bind(row.frequency)
     .bind(row.channels)
     .bind(&row.id)

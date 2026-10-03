@@ -3,7 +3,7 @@ import { ref, shallowReactive } from 'vue'
 import { nodeApi, sourceKey } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
 import type { ChannelLevelDto } from '@/types/generated/ChannelLevelDto'
-import type { CreateTestSourceRequest } from '@/types/generated/CreateTestSourceRequest'
+import type { TestSourceRequest } from '@/types/generated/TestSourceRequest'
 import type { SourceCapabilitiesDto } from '@/types/generated/SourceCapabilitiesDto'
 import type { SourceDto } from '@/types/generated/SourceDto'
 import type { TestSourceConfigDto } from '@/types/generated/TestSourceConfigDto'
@@ -13,7 +13,7 @@ export type { SourceDto }
 export type SourceCapabilities = SourceCapabilitiesDto
 export type ChannelLevel = ChannelLevelDto
 export type TestSourceConfig = TestSourceConfigDto
-export type TestSourceInput = CreateTestSourceRequest
+export type TestSourceInput = TestSourceRequest
 
 /** A node's source tagged with the node it lives on (`id` is only unique per node). */
 export type Source = SourceDto & {
