@@ -1,9 +1,7 @@
-use anyhow::Result;
 use gstreamer as gst;
 
 pub mod manager;
 pub mod ndi;
-pub mod registry;
 pub mod test;
 
 /// Whether the source should be connected (monitor pipeline started) automatically
@@ -64,32 +62,24 @@ impl std::fmt::Display for Timecode {
 /// Every input source implements this trait.
 ///
 /// The `gst::Element` returned by `gst_src_element` is always a `gst::Bin`
-/// with two named src ghost pads: `"video"` and `"audio"`. The bin is
-/// created at construction; `connect` advances it to `Ready` state.
+/// with two named src ghost pads: `"video"` and `"audio"`. The bin is created
+/// at construction; the monitor pipeline that adds it drives its state.
 pub trait InputSource: Send + Sync {
     fn id(&self) -> &str;
     fn display_name(&self) -> &str;
     fn source_type(&self) -> SourceType;
     fn capabilities(&self) -> SourceCapabilities;
 
-    /// Advance the internal GStreamer bin to `Ready` state.
-    /// Must be called before adding the element to a pipeline.
-    fn connect(&mut self) -> Result<()>;
-
-    /// Return the bin to `Null` state and release resources.
-    fn disconnect(&mut self);
+    /// Identifies the configuration the bin was built from. A rescan keeps a
+    /// source (and its running monitor) only if the id and fingerprint match;
+    /// otherwise the source is rebuilt and its monitor restarted.
+    fn fingerprint(&self) -> String;
 
     /// Returns the source's GStreamer bin (video + audio ghost pads).
-    /// The bin is valid as soon as the source is constructed; no need
-    /// to call `connect` first just to obtain the element reference.
     fn gst_src_element(&self) -> gst::Element;
 
     fn timecode(&self) -> Option<Timecode>;
     fn is_available(&self) -> bool;
-
-    fn is_connected(&self) -> bool {
-        false
-    }
 
     fn connection_mode(&self) -> ConnectionMode {
         ConnectionMode::Auto

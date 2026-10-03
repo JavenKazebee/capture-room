@@ -131,7 +131,7 @@ async fn delete_node(State(state): State<Arc<AppState>>, Path(id): Path<String>)
         Some(c) => Arc::clone(&c.registry),
         None => return not_controller(),
     };
-    // Removing the entry also stops its WS relay on the next reconnect check.
+    // Removing the entry also stops its WS relay.
     registry.write().await.remove(&id);
     if let Err(e) = db::node_delete(&state.db, &id).await {
         return internal(e);

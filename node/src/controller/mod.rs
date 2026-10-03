@@ -67,9 +67,12 @@ impl Controller {
                 uptime_secs: 0,
                 fail_count: 0,
                 manual: true,
+                relay: ctx.cancel.child_token(),
             };
-            ctx.registry.write().await.upsert(entry);
-            relay::spawn(ctx.clone(), row.id);
+            let relay = entry.relay.clone();
+            if ctx.registry.write().await.upsert(entry) {
+                relay::spawn(ctx.clone(), row.id, relay);
+            }
         }
 
         discovery::start_health_poller(ctx.clone());

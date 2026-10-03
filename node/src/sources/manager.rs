@@ -1,10 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use chrono::Utc;
-use futures_util::future::join_all;
+use gstreamer::prelude::*;
 use tokio::sync::watch;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -14,58 +14,65 @@ use crate::pipeline::monitor::{MonitorConfig, MonitorPipeline, RecordingBranch};
 use crate::pipeline::profile::RecordingProfile;
 
 use super::ndi::NdiMonitor;
-use super::registry::SourceRegistry;
-use super::test::TestSourceConfig;
+use super::test::{TestSource, TestSourceConfig};
 use super::{ConnectionMode, InputSource};
 
-// ── Internal types ────────────────────────────────────────────────────────────
+// ── Stop / teardown handoff ───────────────────────────────────────────────────
 
-struct ActiveMonitor {
-    pipeline: Arc<MonitorPipeline>,
-}
+/// Resolves to a stopping session's final DTO once its branches are detached.
+pub type StopResult = watch::Receiver<Option<RecordingSessionDto>>;
 
 struct ActiveSession {
-    source_id: String,
+    pipeline: Arc<MonitorPipeline>,
     branches: Vec<RecordingBranch>,
-    pub dto: RecordingSessionDto,
+    dto: RecordingSessionDto,
 }
 
-/// Result of attempting to stop a session. The caller is responsible for
-/// actually detaching branches (see `begin_stop_recording`'s doc comment)
-/// so that work happens outside any lock and, critically, outside the
-/// lifetime of the HTTP request that triggered it.
+/// A session taken out of the active set whose branches still have to be
+/// detached. The caller runs it — see [`SourceManager::begin_stop_recording`].
+pub struct StopJob {
+    pub pipeline: Arc<MonitorPipeline>,
+    pub branches: Vec<RecordingBranch>,
+    pub dto: RecordingSessionDto,
+    /// Publish the final DTO here, then call [`SourceManager::finish_stop`].
+    pub tx: watch::Sender<Option<RecordingSessionDto>>,
+}
+
+/// A monitor removed from the manager. The caller stops its recordings, then
+/// its pipeline — on a spawned task, like a [`StopJob`].
+pub struct Teardown {
+    pub source_id: String,
+    pub pipeline: Arc<MonitorPipeline>,
+    pub stops: Vec<StopJob>,
+}
+
 pub enum StopOutcome {
-    /// This call is the one that gets to do the work. Detach `pending`'s
-    /// branches (if any), then report the result via `tx` and call
-    /// `finish_stop` once done.
-    Start {
-        dto: RecordingSessionDto,
-        pending: Option<(Arc<MonitorPipeline>, Vec<RecordingBranch>)>,
-        tx: watch::Sender<Option<RecordingSessionDto>>,
-    },
+    /// This call gets to do the work.
+    Start(StopJob),
     /// A stop for this session is already in flight (started by another
-    /// request). Await `changed()`/`borrow()` on this receiver for the
-    /// final DTO instead of doing any work.
-    Join(watch::Receiver<Option<RecordingSessionDto>>),
-    /// No in-memory record at all — not active, not stopping. Caller should
-    /// fall back to checking the DB for an orphaned row (e.g. after a crash).
+    /// request or a teardown); wait on its result instead.
+    Join(StopResult),
+    /// Not active and not stopping. The caller falls back to the DB for an
+    /// orphaned row (e.g. after a crash).
     NotFound,
 }
 
 // ── SourceManager ─────────────────────────────────────────────────────────────
 
-/// Owns the source registry, per-source monitor pipelines, and active recording
-/// sessions. This is the single point of truth for all capture state on a node.
+/// Owns the sources, their monitor pipelines, and active recording sessions.
+/// The single point of truth for all capture state on a node.
+///
+/// Nothing here awaits: the manager lives behind an `RwLock` that every API
+/// call and the WS emitter share. Work that has to wait on GStreamer (draining
+/// a recording to EOS) is handed back as a [`StopJob`] or [`Teardown`].
 pub struct SourceManager {
-    pub config: MonitorConfig,
-    registry: SourceRegistry,
-    monitors: HashMap<String, ActiveMonitor>,
+    config: MonitorConfig,
+    sources: Vec<Box<dyn InputSource>>,
+    monitors: HashMap<String, Arc<MonitorPipeline>>,
     sessions: HashMap<String, ActiveSession>, // session_id → session
-    /// Sessions whose branches are being detached by a task spawned outside
-    /// any lock. Lets a duplicate/retried stop request join the in-flight
-    /// result instead of being treated as "already fully stopped" — see
-    /// `begin_stop_recording`.
-    stopping: HashMap<String, watch::Receiver<Option<RecordingSessionDto>>>,
+    /// Sessions whose branches are being detached. Lets a duplicate/retried
+    /// stop join the in-flight result instead of reporting "already stopped".
+    stopping: HashMap<String, StopResult>,
     ndi_monitor: NdiMonitor,
 }
 
@@ -73,7 +80,7 @@ impl SourceManager {
     pub fn new(config: MonitorConfig, ndi_monitor: NdiMonitor) -> Self {
         Self {
             config,
-            registry: SourceRegistry::new(),
+            sources: Vec::new(),
             monitors: HashMap::new(),
             sessions: HashMap::new(),
             stopping: HashMap::new(),
@@ -81,14 +88,14 @@ impl SourceManager {
         }
     }
 
-    // ── Registry access ───────────────────────────────────────────────────────
+    // ── Source access ─────────────────────────────────────────────────────────
 
     pub fn sources(&self) -> &[Box<dyn InputSource>] {
-        self.registry.sources()
+        &self.sources
     }
 
     pub fn get_source(&self, id: &str) -> Option<&dyn InputSource> {
-        self.registry.get(id)
+        self.sources.iter().find(|s| s.id() == id).map(|s| s.as_ref())
     }
 
     pub fn is_monitored(&self, source_id: &str) -> bool {
@@ -97,54 +104,67 @@ impl SourceManager {
 
     // ── Scan ──────────────────────────────────────────────────────────────────
 
-    /// Replace the source list from test configs and a fresh NDI device scan,
-    /// start monitors for new Auto sources, and tear down monitors for removed sources.
-    pub async fn scan(&mut self, configs: &[TestSourceConfig]) -> Result<()> {
-        let old_ids: HashSet<String> = self
-            .registry
-            .sources()
-            .iter()
-            .map(|s| s.id().to_string())
-            .collect();
-
-        let ndi_sources: Vec<Box<dyn InputSource>> = self
-            .ndi_monitor
-            .current_sources()
-            .into_iter()
-            .map(|s| Box::new(s) as Box<dyn InputSource>)
-            .collect();
-
-        self.registry.scan(configs, ndi_sources)?;
-
-        let new_ids: HashSet<String> = self
-            .registry
-            .sources()
-            .iter()
-            .map(|s| s.id().to_string())
-            .collect();
-
-        // Tear down monitors for removed sources.
-        for removed in old_ids.difference(&new_ids) {
-            self.stop_monitor(removed).await;
+    /// Rebuild the source list from test configs and the NDI sources currently
+    /// on the network. A source whose id and fingerprint are unchanged is kept
+    /// as-is, monitor and recordings included. Removed or changed sources are
+    /// torn down (returned for the caller to run); new or changed Auto sources
+    /// get a monitor.
+    pub fn scan(&mut self, configs: &[TestSourceConfig]) -> Vec<Teardown> {
+        let mut candidates: Vec<Box<dyn InputSource>> = Vec::new();
+        for cfg in configs {
+            match TestSource::new(cfg.clone()) {
+                Ok(src) => candidates.push(Box::new(src)),
+                Err(e) => warn!(id = %cfg.id, error = %e, "failed to create test source"),
+            }
         }
+        candidates.extend(
+            self.ndi_monitor
+                .current_sources()
+                .into_iter()
+                .map(|s| Box::new(s) as Box<dyn InputSource>),
+        );
 
-        // Start monitors for newly discovered Auto sources.
-        for added in new_ids.difference(&old_ids) {
-            if let Some(src) = self.registry.get(added) {
-                if src.connection_mode() == ConnectionMode::Auto {
-                    if let Err(e) = self.start_monitor(added) {
-                        warn!(source = %added, error = %e, "failed to start monitor");
-                    }
+        let mut old: HashMap<String, Box<dyn InputSource>> =
+            self.sources.drain(..).map(|s| (s.id().to_string(), s)).collect();
+        let mut gone = Vec::new();
+        let mut added = Vec::new();
+        for candidate in candidates {
+            let id = candidate.id().to_string();
+            if self.sources.iter().any(|s| s.id() == id) {
+                warn!(id = %id, "duplicate source id, ignoring");
+                continue;
+            }
+            match old.remove(&id) {
+                Some(existing) if existing.fingerprint() == candidate.fingerprint() => {
+                    self.sources.push(existing);
+                    continue;
+                }
+                Some(_) => gone.push(id.clone()),
+                None => {}
+            }
+            added.push(id);
+            self.sources.push(candidate);
+        }
+        gone.extend(old.into_keys());
+
+        // Tear down first: a changed source restarts under the same id.
+        let teardowns = gone.iter().filter_map(|id| self.take_monitor(id)).collect();
+        for id in added {
+            let auto = self.get_source(&id).map(|s| s.connection_mode()) == Some(ConnectionMode::Auto);
+            if auto {
+                if let Err(e) = self.start_monitor(&id) {
+                    warn!(source = %id, error = %e, "failed to start monitor");
                 }
             }
         }
 
-        Ok(())
+        info!(count = self.sources.len(), "source scan complete");
+        teardowns
     }
 
     // ── Manual connect / disconnect ───────────────────────────────────────────
 
-    /// Start the monitor pipeline for a Manual source.
+    /// Start the monitor pipeline for a source.
     pub fn connect(&mut self, source_id: &str) -> Result<()> {
         if self.monitors.contains_key(source_id) {
             return Ok(()); // already connected
@@ -152,32 +172,24 @@ impl SourceManager {
         self.start_monitor(source_id)
     }
 
-    /// Stop the monitor pipeline (and any active recording) for a source.
-    pub async fn disconnect(&mut self, source_id: &str) {
-        self.stop_monitor(source_id).await;
+    /// Remove the monitor (and any active recordings) for a source.
+    pub fn disconnect(&mut self, source_id: &str) -> Option<Teardown> {
+        self.take_monitor(source_id)
     }
 
     // ── Thumbnail / audio access ──────────────────────────────────────────────
 
     pub fn thumbnail_bytes(&self, source_id: &str) -> Option<Vec<u8>> {
-        self.monitors.get(source_id)?.pipeline.thumbnail.latest()
+        self.monitors.get(source_id)?.thumbnail.latest()
     }
 
     pub fn audio_levels(&self, source_id: &str) -> Option<Vec<ChannelLevelDto>> {
-        let state = self
-            .monitors
-            .get(source_id)?
-            .pipeline
-            .audio_meter
-            .latest()?;
+        let state = self.monitors.get(source_id)?.audio_meter.latest()?;
         Some(
             state
                 .channels
                 .iter()
-                .map(|c| ChannelLevelDto {
-                    peak_db: c.peak_db,
-                    rms_db: c.rms_db,
-                })
+                .map(|c| ChannelLevelDto { peak_db: c.peak_db, rms_db: c.rms_db })
                 .collect(),
         )
     }
@@ -194,104 +206,77 @@ impl SourceManager {
 
     /// Start a multi-leg recording session.
     /// `legs` is an ordered list of `(output_path, profile)` pairs, one per output leg.
-    pub async fn start_recording(
+    pub fn start_recording(
         &mut self,
         source_id: &str,
         preset_id: &str,
         legs: &[(String, RecordingProfile)],
     ) -> Result<RecordingSessionDto> {
-        if self
-            .sessions
-            .values()
-            .any(|s| s.source_id == source_id && s.dto.status == "active")
-        {
+        if self.sessions.values().any(|s| s.dto.source_id == source_id) {
             bail!("source {source_id} already has an active recording");
         }
-
-        let monitor = self
+        let pipeline = self
             .monitors
             .get(source_id)
+            .cloned()
             .ok_or_else(|| anyhow::anyhow!("no monitor running for source {source_id}"))?;
 
-        let leg_refs: Vec<(&Path, &RecordingProfile)> = legs
-            .iter()
-            .map(|(p, prof)| (Path::new(p.as_str()), prof))
-            .collect();
-
-        let branches = monitor.pipeline.attach_recording_legs(&leg_refs).await?;
-
-        let output_paths: Vec<String> = legs.iter().map(|(p, _)| p.clone()).collect();
+        let id = Uuid::new_v4().to_string();
+        let leg_refs: Vec<(&Path, &RecordingProfile)> =
+            legs.iter().map(|(p, prof)| (Path::new(p.as_str()), prof)).collect();
+        // Tag elements with the session id: the previous session on this
+        // source may still be draining in the same pipeline.
+        let branches = pipeline.attach_recording_legs(&id[..8], &leg_refs)?;
 
         let dto = RecordingSessionDto {
-            id: Uuid::new_v4().to_string(),
+            id,
             source_id: source_id.to_string(),
             preset_id: preset_id.to_string(),
             started_at: Utc::now().to_rfc3339(),
             stopped_at: None,
-            output_paths,
+            output_paths: legs.iter().map(|(p, _)| p.clone()).collect(),
             status: "active".to_string(),
             error_message: None,
         };
 
         info!(id = %dto.id, source = source_id, legs = legs.len(), "recording started");
-        self.sessions.insert(
-            dto.id.clone(),
-            ActiveSession {
-                source_id: source_id.to_string(),
-                branches,
-                dto: dto.clone(),
-            },
-        );
-
-        Ok(dto)
-    }
-
-    pub async fn stop_recording(&mut self, session_id: &str) -> Result<RecordingSessionDto> {
-        let session = self
-            .sessions
-            .remove(session_id)
-            .ok_or_else(|| anyhow::anyhow!("session {session_id} not active"))?;
-
-        let mut dto = session.dto;
-
-        let monitor = self.monitors.get(&session.source_id);
-        // Detach every leg concurrently: unlinking a branch's tee pad is what
-        // actually stops it recording, and detach_recording() blocks on that
-        // leg's EOS before returning. Doing this sequentially left later legs
-        // linked (and still recording) for the entire time earlier legs spent
-        // finalizing.
-        let last_err: Option<anyhow::Error> = if let Some(m) = monitor {
-            let pipeline = Arc::clone(&m.pipeline);
-            join_all(session.branches.into_iter().map(|branch| {
-                let pipeline = Arc::clone(&pipeline);
-                async move { pipeline.detach_recording(branch, 10).await }
-            }))
-            .await
-            .into_iter()
-            .find_map(|r| r.err())
-        } else {
-            // Monitor was torn down — branch elements are already NULL, nothing to do.
-            None
-        };
-
-        match last_err {
-            None => {
-                dto.status = "stopped".to_string();
-                dto.stopped_at = Some(Utc::now().to_rfc3339());
-                info!(id = %dto.id, "recording stopped");
-            }
-            Some(e) => {
-                dto.status = "error".to_string();
-                dto.stopped_at = Some(Utc::now().to_rfc3339());
-                dto.error_message = Some(e.to_string());
-            }
-        }
-
+        self.sessions
+            .insert(dto.id.clone(), ActiveSession { pipeline, branches, dto: dto.clone() });
         Ok(dto)
     }
 
     pub fn active_sessions(&self) -> Vec<&RecordingSessionDto> {
         self.sessions.values().map(|s| &s.dto).collect()
+    }
+
+    /// Take a session out of the active set and hand back the detach work.
+    ///
+    /// The caller must run the returned job — and the persist/notify that
+    /// follows it — on a task spawned independently of the triggering HTTP
+    /// request (e.g. via `tokio::spawn`), NOT inline in the request handler.
+    /// If the handler awaits it inline, dropping the handler's future (which
+    /// happens if the client disconnects — a page refresh, a retried request)
+    /// silently cancels whatever branch detach was still in flight, orphaning
+    /// that branch: still linked to the tee, still recording, and — since the
+    /// session was already removed here — unreachable by any future stop call.
+    ///
+    /// A second call for the same `session_id` while the first is still
+    /// running returns `StopOutcome::Join` with a receiver for the same
+    /// result, instead of falling through to a DB-only path that would
+    /// report "stopped" without the pipeline actually having stopped.
+    pub fn begin_stop_recording(&mut self, session_id: &str) -> StopOutcome {
+        if let Some(job) = self.take_session(session_id) {
+            StopOutcome::Start(job)
+        } else if let Some(rx) = self.stopping.get(session_id) {
+            StopOutcome::Join(rx.clone())
+        } else {
+            StopOutcome::NotFound
+        }
+    }
+
+    /// Clear the "stopping" marker once a [`StopJob`] has published its result.
+    pub fn finish_stop(&mut self, session_id: &str) {
+        self.stopping.remove(session_id);
     }
 
     // ── Monitor config ────────────────────────────────────────────────────────
@@ -300,21 +285,13 @@ impl SourceManager {
         &self.config
     }
 
-    /// Update the in-memory config without restarting any pipelines.
-    /// Used when a peer node receives a fan-out settings push from the
-    /// aggregator — the WS notification rate adjusts immediately; pipeline
-    /// fps/resolution/interval take effect on the next process start.
-    pub fn set_config(&mut self, config: MonitorConfig) {
-        self.config = config;
-    }
-
     /// Apply a new global monitor config to all running monitors without
     /// restarting any pipelines. GStreamer re-negotiates the affected branches
     /// in place, so audio and thumbnails remain uninterrupted.
     pub fn apply_monitor_config(&mut self, config: MonitorConfig) {
         self.config = config;
-        for monitor in self.monitors.values() {
-            monitor.pipeline.reconfigure(&self.config);
+        for pipeline in self.monitors.values() {
+            pipeline.reconfigure(&self.config);
         }
     }
 
@@ -322,75 +299,35 @@ impl SourceManager {
 
     fn start_monitor(&mut self, source_id: &str) -> Result<()> {
         let source = self
-            .registry
-            .get(source_id)
+            .get_source(source_id)
             .ok_or_else(|| anyhow::anyhow!("source {source_id} not found"))?;
+        // The bin stays in its old pipeline until that teardown finishes.
+        if source.gst_src_element().parent().is_some() {
+            bail!("source {source_id} is still disconnecting, try again shortly");
+        }
 
         let pipeline = Arc::new(MonitorPipeline::new(source, &self.config)?);
-        self.monitors
-            .insert(source_id.to_string(), ActiveMonitor { pipeline });
+        self.monitors.insert(source_id.to_string(), pipeline);
         info!(source = source_id, "monitor started");
         Ok(())
     }
 
-    /// Remove the session from the active map and hand back what's needed to
-    /// detach its branches. The caller must run that detach work — and the
-    /// persist/notify that follows it — on a task spawned independently of
-    /// the triggering HTTP request (e.g. via `tokio::spawn`), NOT inline in
-    /// the request handler. If the handler awaits it inline, dropping the
-    /// handler's future (which happens if the client disconnects — a page
-    /// refresh, a retried request) silently cancels whatever branch detach
-    /// was still in flight, orphaning that branch: still linked to the tee,
-    /// still recording, and — since the session was already removed here —
-    /// unreachable by any future stop call.
-    ///
-    /// A second call for the same `session_id` while the first is still
-    /// running returns `StopOutcome::Join` with a receiver for the same
-    /// result, instead of falling through to a DB-only path that would
-    /// report "stopped" without the pipeline actually having stopped.
-    pub fn begin_stop_recording(&mut self, session_id: &str) -> StopOutcome {
-        if let Some(session) = self.sessions.remove(session_id) {
-            let pending = self
-                .monitors
-                .get(&session.source_id)
-                .map(|m| (Arc::clone(&m.pipeline), session.branches));
-            let (tx, rx) = watch::channel(None);
-            self.stopping.insert(session_id.to_string(), rx);
-            StopOutcome::Start { dto: session.dto, pending, tx }
-        } else if let Some(rx) = self.stopping.get(session_id) {
-            StopOutcome::Join(rx.clone())
-        } else {
-            StopOutcome::NotFound
-        }
+    fn take_session(&mut self, session_id: &str) -> Option<StopJob> {
+        let ActiveSession { pipeline, branches, dto } = self.sessions.remove(session_id)?;
+        let (tx, rx) = watch::channel(None);
+        self.stopping.insert(session_id.to_string(), rx);
+        Some(StopJob { pipeline, branches, dto, tx })
     }
 
-    /// Clear the "stopping" marker once the detach task has reported its
-    /// final result through the `tx` handed out by `begin_stop_recording`.
-    pub fn finish_stop(&mut self, session_id: &str) {
-        self.stopping.remove(session_id);
-    }
-
-    async fn stop_monitor(&mut self, source_id: &str) {
-        // Stop any active recordings on this monitor first.
+    fn take_monitor(&mut self, source_id: &str) -> Option<Teardown> {
+        let pipeline = self.monitors.remove(source_id)?;
         let session_ids: Vec<String> = self
             .sessions
             .iter()
-            .filter(|(_, s)| s.source_id == source_id)
+            .filter(|(_, s)| s.dto.source_id == source_id)
             .map(|(id, _)| id.clone())
             .collect();
-
-        for session_id in session_ids {
-            if let Err(e) = self.stop_recording(&session_id).await {
-                warn!(session = %session_id, error = %e, "error stopping recording during monitor teardown");
-            }
-        }
-
-        if let Some(m) = self.monitors.remove(source_id) {
-            if let Err(e) = m.pipeline.stop() {
-                warn!(source = source_id, error = %e, "error stopping monitor pipeline");
-            } else {
-                info!(source = source_id, "monitor stopped");
-            }
-        }
+        let stops = session_ids.iter().filter_map(|id| self.take_session(id)).collect();
+        Some(Teardown { source_id: source_id.to_string(), pipeline, stops })
     }
 }

@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
         }
     };
     let node_name = db::config_get(&pool, "name").await?.unwrap_or_else(|| {
-        std::env::var("HOSTNAME").unwrap_or_else(|_| "capture-room-node".to_string())
+        controller::discovery::local_hostname().unwrap_or_else(|| "capture-room-node".to_string())
     });
 
     if args.controller {
@@ -103,7 +103,7 @@ async fn main() -> Result<()> {
         .await
         .expect("NDI monitor thread panicked");
     let mut source_manager = SourceManager::new(monitor_config, ndi_monitor);
-    source_manager.scan(&test_configs).await?;
+    source_manager.scan(&test_configs);
 
     for source in source_manager.sources() {
         info!(

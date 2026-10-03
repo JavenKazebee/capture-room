@@ -1,5 +1,3 @@
-use anyhow::Result;
-
 #[derive(Debug, Clone)]
 pub enum VideoCodec {
     H264,
@@ -39,31 +37,27 @@ pub enum Container {
 /// Configures a single recording output leg (primary, secondary, or redundant).
 #[derive(Debug, Clone)]
 pub struct RecordingProfile {
-    pub id: String,
-    pub name: String,
     pub video_codec: VideoCodec,
     pub container: Container,
     /// `None` = match source resolution
     pub resolution: Option<(u32, u32)>,
     /// `None` = match source framerate (num, den)
     pub framerate: Option<(u32, u32)>,
-    /// `None` = let the encoder pick based on `quality`
+    /// `None` = the encoder's default rate control
     pub bitrate_kbps: Option<u32>,
-    pub quality: Option<String>,
-    pub output_template: String,
 }
 
 impl RecordingProfile {
     /// GStreamer element name for the video encoder.
-    pub fn video_encoder_element(&self) -> Result<&'static str> {
-        Ok(match &self.video_codec {
+    pub fn video_encoder_element(&self) -> &'static str {
+        match &self.video_codec {
             VideoCodec::H264 => "x264enc",
             VideoCodec::H265 => "x265enc",
             VideoCodec::Vp9 => "vp9enc",
-            VideoCodec::ProRes(_) => "avenc_prores",
+            VideoCodec::ProRes(_) => "avenc_prores_ks",
             VideoCodec::DnxHd => "avenc_dnxhd",
             VideoCodec::Uncompressed => "identity",
-        })
+        }
     }
 
     /// GStreamer element name for the container muxer.
@@ -77,12 +71,12 @@ impl RecordingProfile {
     }
 
     /// GStreamer audio encoder element appropriate for the container.
-    pub fn audio_encoder_element(&self) -> Result<&'static str> {
-        Ok(match &self.container {
+    pub fn audio_encoder_element(&self) -> &'static str {
+        match &self.container {
             Container::Mov | Container::Mp4 => "avenc_aac",
             Container::Mkv => "opusenc",
             Container::Mxf => "identity", // PCM passthrough; mxfmux accepts raw audio
-        })
+        }
     }
 
     /// File extension for the output path template.
@@ -95,15 +89,15 @@ impl RecordingProfile {
         }
     }
 
-    /// ProRes profile integer passed to avenc_prores.
-    pub fn prores_profile_index(&self) -> Option<i32> {
+    /// Value of avenc_prores_ks's `profile` enum.
+    pub fn prores_profile(&self) -> Option<&'static str> {
         match &self.video_codec {
             VideoCodec::ProRes(v) => Some(match v {
-                ProResVariant::P4444 => 4,
-                ProResVariant::P422Hq => 0,
-                ProResVariant::P422 => 2,
-                ProResVariant::P422Lt => 1,
-                ProResVariant::P422Proxy => 3,
+                ProResVariant::P4444 => "4444",
+                ProResVariant::P422Hq => "hq",
+                ProResVariant::P422 => "standard",
+                ProResVariant::P422Lt => "lt",
+                ProResVariant::P422Proxy => "proxy",
             }),
             _ => None,
         }
@@ -113,28 +107,19 @@ impl RecordingProfile {
 impl RecordingProfile {
     /// Build a profile from stored preset fields (codec/container are free-text
     /// in the DB). Unknown values fall back to sane defaults rather than failing.
-    #[allow(clippy::too_many_arguments)]
     pub fn from_preset(
-        id: impl Into<String>,
-        name: impl Into<String>,
         codec: &str,
         container: &str,
         resolution: Option<&str>,
         framerate: Option<&str>,
         bitrate_kbps: Option<u32>,
-        quality: Option<String>,
-        output_template: impl Into<String>,
     ) -> Self {
         Self {
-            id: id.into(),
-            name: name.into(),
             video_codec: parse_codec(codec),
             container: parse_container(container),
             resolution: resolution.and_then(parse_resolution),
             framerate: framerate.and_then(parse_framerate),
             bitrate_kbps,
-            quality,
-            output_template: output_template.into(),
         }
     }
 }

@@ -14,7 +14,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use tracing::{error, info};
+use tracing::error;
 
 use crate::api::types::{
     CreateTestSourceRequest, MonitorSettingsDto, NodeSettingsDto, NodeStatus,
@@ -25,8 +25,8 @@ use crate::db;
 use crate::pipeline::monitor::MonitorConfig;
 use crate::pipeline::profile::RecordingProfile;
 use crate::recording;
-use crate::sources::manager::StopOutcome;
-use crate::sources::Timecode;
+use crate::sources::manager::{SourceManager, StopOutcome, StopResult};
+use crate::sources::{InputSource, Timecode};
 use crate::state::AppState;
 use crate::ws;
 
@@ -142,8 +142,8 @@ async fn get_storage() -> Response {
 
 // ── /sources ──────────────────────────────────────────────────────────────────
 
-fn sources_list(mgr: &crate::sources::manager::SourceManager) -> Vec<SourceDto> {
-    mgr.sources().iter().map(|s| source_to_dto(s.as_ref())).collect()
+fn sources_list(mgr: &SourceManager) -> Vec<SourceDto> {
+    mgr.sources().iter().map(|s| source_to_dto(mgr, s.as_ref())).collect()
 }
 
 async fn get_sources(State(state): State<Arc<AppState>>) -> Json<Vec<SourceDto>> {
@@ -157,7 +157,7 @@ async fn get_source(
 ) -> Response {
     let mgr = state.source_manager.read().await;
     match mgr.get_source(&id) {
-        Some(s) => Json(source_to_dto(s)).into_response(),
+        Some(s) => Json(source_to_dto(&mgr, s)).into_response(),
         None => (StatusCode::NOT_FOUND, "source not found").into_response(),
     }
 }
@@ -176,7 +176,7 @@ async fn post_connect(
 ) -> Response {
     let mut mgr = state.source_manager.write().await;
     match mgr.connect(&id) {
-        Ok(()) => Json(mgr.get_source(&id).map(source_to_dto)).into_response(),
+        Ok(()) => Json(mgr.get_source(&id).map(|s| source_to_dto(&mgr, s))).into_response(),
         Err(e) => internal(e),
     }
 }
@@ -186,8 +186,10 @@ async fn post_disconnect(
     AxumPath(id): AxumPath<String>,
 ) -> Response {
     let mut mgr = state.source_manager.write().await;
-    mgr.disconnect(&id).await;
-    Json(mgr.get_source(&id).map(source_to_dto)).into_response()
+    if let Some(teardown) = mgr.disconnect(&id) {
+        recording::spawn_teardowns(&state, vec![teardown]);
+    }
+    Json(mgr.get_source(&id).map(|s| source_to_dto(&mgr, s))).into_response()
 }
 
 // ── /test-sources ─────────────────────────────────────────────────────────────
@@ -336,7 +338,7 @@ async fn post_recording(
     let preset_id = req.preset_id.clone().unwrap_or_default();
     let session = {
         let mut mgr = state.source_manager.write().await;
-        match mgr.start_recording(&req.source_id, &preset_id, &legs).await {
+        match mgr.start_recording(&req.source_id, &preset_id, &legs) {
             Ok(s) => s,
             Err(e) => return internal(e),
         }
@@ -354,71 +356,9 @@ async fn post_recording(
     (StatusCode::CREATED, Json(session)).into_response()
 }
 
-/// Detach `pending`'s branches (if any) concurrently, persist the result, and
-/// broadcast it. Spawned via `tokio::spawn` independently of the HTTP request
-/// that triggered the stop — see `SourceManager::begin_stop_recording` for
-/// why that decoupling matters.
-async fn run_stop_recording(
-    state: Arc<AppState>,
-    mut dto: RecordingSessionDto,
-    pending: Option<(
-        Arc<crate::pipeline::monitor::MonitorPipeline>,
-        Vec<crate::pipeline::monitor::RecordingBranch>,
-    )>,
-    tx: tokio::sync::watch::Sender<Option<RecordingSessionDto>>,
-) {
-    let result = if let Some((pipeline, branches)) = pending {
-        let outcomes = futures_util::future::join_all(branches.into_iter().map(|branch| {
-            let pipeline = Arc::clone(&pipeline);
-            async move { pipeline.detach_recording(branch, 10).await }
-        }))
-        .await;
-        outcomes.into_iter().find_map(|r| r.err()).map(Err).unwrap_or(Ok(()))
-    } else {
-        Ok(())
-    };
-
-    match result {
-        Ok(()) => {
-            dto.status = "stopped".to_string();
-            dto.stopped_at = Some(chrono::Utc::now().to_rfc3339());
-            info!(id = %dto.id, "recording stopped");
-        }
-        Err(e) => {
-            dto.status = "error".to_string();
-            dto.stopped_at = Some(chrono::Utc::now().to_rfc3339());
-            dto.error_message = Some(e.to_string());
-        }
-    }
-
-    if let Err(e) = recording::persist_stop(&state.db, &dto).await {
-        error!(error = %e, "persist session stop");
-    }
-
-    let event = if dto.status == "error" {
-        WsEvent::RecordingError {
-            session_id: dto.id.clone(),
-            source_id: dto.source_id.clone(),
-            error: dto.error_message.clone().unwrap_or_default(),
-        }
-    } else {
-        WsEvent::RecordingStopped {
-            session_id: dto.id.clone(),
-            source_id: dto.source_id.clone(),
-        }
-    };
-    state.emit(&event);
-
-    let session_id = dto.id.clone();
-    let _ = tx.send(Some(dto));
-    state.source_manager.write().await.finish_stop(&session_id);
-}
-
 /// Wait for a stop's final DTO on `rx`, whether this request started the
 /// stop or is joining one already in flight.
-async fn await_stop_result(
-    mut rx: tokio::sync::watch::Receiver<Option<RecordingSessionDto>>,
-) -> Option<RecordingSessionDto> {
+async fn await_stop_result(mut rx: StopResult) -> Option<RecordingSessionDto> {
     loop {
         if let Some(dto) = rx.borrow_and_update().clone() {
             return Some(dto);
@@ -436,12 +376,12 @@ async fn post_stop_recording(
     let outcome = state.source_manager.write().await.begin_stop_recording(&id);
 
     let local = match outcome {
-        StopOutcome::Start { dto, pending, tx } => {
-            let rx = tx.subscribe();
+        StopOutcome::Start(job) => {
+            let rx = job.tx.subscribe();
             // Spawned independently: if the caller's connection drops while
             // we're awaiting below, only this request's response is affected
             // — the detach work keeps running to completion regardless.
-            tokio::spawn(run_stop_recording(Arc::clone(&state), dto, pending, tx));
+            tokio::spawn(recording::run_stop(Arc::clone(&state), job));
             await_stop_result(rx).await
         }
         StopOutcome::Join(rx) => await_stop_result(rx).await,
@@ -512,14 +452,14 @@ async fn ws_handler(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn source_to_dto(s: &dyn crate::sources::InputSource) -> SourceDto {
+fn source_to_dto(mgr: &SourceManager, s: &dyn InputSource) -> SourceDto {
     let caps = s.capabilities();
     SourceDto {
         id: s.id().to_string(),
         display_name: s.display_name().to_string(),
         source_type: format!("{:?}", s.source_type()).to_lowercase(),
         is_available: s.is_available(),
-        connected: s.is_connected(),
+        connected: mgr.is_monitored(s.id()),
         timecode: s.timecode().map(timecode_to_dto),
         capabilities: SourceCapabilitiesDto {
             video_formats: caps.video_formats,
@@ -591,13 +531,15 @@ fn db_row_to_config(row: db::TestSourceRow) -> crate::sources::test::TestSourceC
     }
 }
 
-async fn rebuild_sources(state: &AppState) -> anyhow::Result<()> {
+async fn rebuild_sources(state: &Arc<AppState>) -> anyhow::Result<()> {
     let configs = db::test_sources_list(&state.db)
         .await?
         .into_iter()
         .map(db_row_to_config)
         .collect::<Vec<_>>();
-    state.source_manager.write().await.scan(&configs).await
+    let teardowns = state.source_manager.write().await.scan(&configs);
+    recording::spawn_teardowns(state, teardowns);
+    Ok(())
 }
 
 /// Build `(resolved_path, RecordingProfile)` for every requested output leg.
@@ -609,18 +551,13 @@ fn build_legs(state: &AppState, req: &StartRecordingRequest) -> Vec<(String, Rec
 
     req.outputs
         .iter()
-        .enumerate()
-        .map(|(i, o)| {
+        .map(|o| {
             let profile = RecordingProfile::from_preset(
-                format!("leg-{i}"),
-                &o.name,
                 &o.codec,
                 &o.container,
                 o.resolution.as_deref(),
                 o.framerate.as_deref(),
                 o.bitrate_kbps.map(|b| b as u32),
-                o.quality.clone(),
-                &o.path_template,
             );
             let path = o
                 .path_template

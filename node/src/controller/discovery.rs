@@ -24,12 +24,21 @@ const PRUNE_AFTER_FAILURES: u32 = 3;
 
 // ── mDNS registration (every instance advertises itself) ─────────────────────
 
+/// This machine's hostname without a trailing `.local` (macOS often reports
+/// `name.local`). `$HOSTNAME` is a shell variable and usually isn't exported.
+pub fn local_hostname() -> Option<String> {
+    let name = sysinfo::System::host_name()?;
+    let name = name.trim_end_matches('.');
+    let name = name.strip_suffix(".local").unwrap_or(name);
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 /// Register this instance on the local network so controllers can find it.
 /// The returned daemon must be kept alive for the registration to persist.
 pub fn register_mdns_service(node_id: &str, node_name: &str, port: u16) -> ServiceDaemon {
     let daemon = ServiceDaemon::new().expect("mDNS daemon");
-    let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| "capture-room".to_string());
-    let mdns_host = format!("{}.local.", hostname.trim_end_matches('.'));
+    let hostname = local_hostname().unwrap_or_else(|| "capture-room".to_string());
+    let mdns_host = format!("{hostname}.local.");
 
     // Instance name must be unique on the network; suffix with a short id slice.
     let instance = format!("{} ({})", node_name, &node_id[..node_id.len().min(8)]);
@@ -100,8 +109,10 @@ pub async fn add_node(ctx: &Ctx, url: String, manual: bool) -> Result<NodeStatus
         uptime_secs: status.uptime_secs,
         fail_count: 0,
         manual,
+        relay: ctx.cancel.child_token(),
     };
 
+    let relay = entry.relay.clone();
     let is_new = ctx.registry.write().await.upsert(entry);
     if is_new {
         info!(id = %status.id, url = %url, "node added");
@@ -110,7 +121,7 @@ pub async fn add_node(ctx: &Ctx, url: String, manual: bool) -> Result<NodeStatus
             &ctx.state.node_id,
             &WsEvent::NodeOnline { peer_id: status.id.clone() },
         );
-        relay::spawn(ctx.clone(), status.id.clone());
+        relay::spawn(ctx.clone(), status.id.clone(), relay);
     }
     Ok(status)
 }

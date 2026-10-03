@@ -14,7 +14,6 @@ pub struct NdiSource {
     url_address: String,
     name: String,
     bin: gst::Bin,
-    connected: bool,
 }
 
 impl NdiSource {
@@ -25,7 +24,7 @@ impl NdiSource {
         display_name: String,
     ) -> Result<Self> {
         let bin = build_bin(&id, &ndi_name, &url_address)?;
-        Ok(Self { id, ndi_name, url_address, name: display_name, bin, connected: false })
+        Ok(Self { id, ndi_name, url_address, name: display_name, bin })
     }
 }
 
@@ -205,21 +204,8 @@ impl InputSource for NdiSource {
         }
     }
 
-    fn connect(&mut self) -> Result<()> {
-        self.bin
-            .set_state(gst::State::Ready)
-            .map_err(|e| anyhow::anyhow!("set Ready: {e:?}"))?;
-        self.connected = true;
-        Ok(())
-    }
-
-    fn disconnect(&mut self) {
-        let _ = self.bin.set_state(gst::State::Null);
-        self.connected = false;
-    }
-
-    fn is_connected(&self) -> bool {
-        self.connected
+    fn fingerprint(&self) -> String {
+        format!("{}|{}", self.ndi_name, self.url_address)
     }
 
     fn gst_src_element(&self) -> gst::Element {

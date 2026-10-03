@@ -42,14 +42,15 @@ impl Default for MonitorConfig {
 
 // ── Recording branch ──────────────────────────────────────────────────────────
 
-/// Opaque handle returned by [`MonitorPipeline::attach_recording`].
+/// Opaque handle returned by [`MonitorPipeline::attach_recording_legs`].
 /// Must be passed to [`MonitorPipeline::detach_recording`] to stop and clean up.
 pub struct RecordingBranch {
     vtee_pad: gst::Pad,
     atee_pad: gst::Pad,
     vq: gst::Element,
     aq: gst::Element,
-    all_elements: Vec<gst::Element>,
+    elements: Vec<gst::Element>,
+    sink_name: String,
     /// Fires when the filesink posts its EOS bus message (file fully written).
     eos_rx: oneshot::Receiver<()>,
 }
@@ -219,25 +220,40 @@ impl MonitorPipeline {
 
     // ── Dynamic recording branch attach / detach ──────────────────────────────
 
-    /// Dynamically attach a recording branch to the running monitor pipeline.
-    ///
-    /// Uses blocking pad probes on both tee src pads so the link happens
-    /// atomically with respect to data flow — no frames are lost or duplicated.
-    /// Attach N recording legs at once, one per `(path, profile)` pair.
-    /// Each leg gets a unique tag ("r0", "r1", …) so element names don't collide.
-    pub async fn attach_recording_legs(
+    /// Attach one recording branch per `(path, profile)` leg. Element names are
+    /// suffixed with `"{tag}-{i}"`, so `tag` must be unique among branches that
+    /// can coexist in this pipeline — a stopped session may still be draining
+    /// when the next one starts. If any leg fails, the legs already attached
+    /// are discarded.
+    pub fn attach_recording_legs(
         &self,
+        tag: &str,
         legs: &[(impl AsRef<Path>, &RecordingProfile)],
     ) -> Result<Vec<RecordingBranch>> {
         let mut branches = Vec::with_capacity(legs.len());
         for (i, (path, profile)) in legs.iter().enumerate() {
-            let tag = format!("r{i}");
-            branches.push(self.attach_recording(path.as_ref(), profile, &tag).await?);
+            match self.attach_recording(path.as_ref(), profile, &format!("{tag}-{i}")) {
+                Ok(branch) => branches.push(branch),
+                Err(e) => {
+                    for branch in branches {
+                        self.discard_recording(branch);
+                    }
+                    return Err(e);
+                }
+            }
         }
         Ok(branches)
     }
 
-    pub async fn attach_recording(
+    /// vq → [videorate → caps] → [videoscale → caps] → videoconvert → venc ─┐
+    ///                                                                     mux → filesink
+    /// aq → audioconvert → audioresample → aenc ───────────────────────────┘
+    ///
+    /// The branch is built, linked and set playing before the tee pads are
+    /// linked to it. A freshly requested tee pad carries no data until it is
+    /// linked, so no blocking probe is needed — and none can hang waiting for
+    /// a stalled source.
+    fn attach_recording(
         &self,
         path: &Path,
         profile: &RecordingProfile,
@@ -245,11 +261,10 @@ impl MonitorPipeline {
     ) -> Result<RecordingBranch> {
         let location = path.to_str().context("output path not valid UTF-8")?;
 
-        // ── Build branch elements ─────────────────────────────────────────────
-        // Leaky video queue: if x264enc can't keep up (complex content like moving
-        // ball), vtee's recording pad would otherwise block and stall the entire
-        // vtee — and via the muxer's collect-pads, also the atee.  With
-        // leaky=upstream the oldest frame is silently dropped instead of blocking,
+        // Leaky video queue: if the encoder can't keep up (complex content like
+        // the moving ball), vtee's recording pad would otherwise block and stall
+        // the entire vtee — and via the muxer's collect-pads, also the atee.
+        // With leaky=upstream the oldest frame is dropped instead of blocking,
         // so vtee and atee always keep flowing.
         let vq = gst::ElementFactory::make("queue")
             .name(format!("vq-{tag}"))
@@ -259,12 +274,44 @@ impl MonitorPipeline {
             .build()
             .context("create video recording queue")?;
         vq.set_property_from_str("leaky", "upstream");
-        // Format converter before the video encoder. Prevents RECONFIGURE events
-        // from x264enc propagating upstream to the source (e.g. ndisrc) and
-        // handles sources that provide a format the encoder can't accept directly
-        // (e.g. NDI UYVY → x264enc I420).
-        let vconv = make_el("videoconvert", &format!("vconv-{tag}"))?;
-        let venc = build_video_encoder(profile, tag)?;
+
+        let mut video = vec![vq.clone()];
+        if let Some((num, den)) = profile.framerate {
+            // skip-to-first: otherwise videorate fills from the segment start
+            // (pipeline time zero) by duplicating the first frame.
+            video.push(
+                gst::ElementFactory::make("videorate")
+                    .name(format!("vrate-{tag}"))
+                    .property("skip-to-first", true)
+                    .build()
+                    .context("create videorate")?,
+            );
+            video.push(capsfilter(
+                &format!("vrate-caps-{tag}"),
+                gst::Caps::builder("video/x-raw")
+                    .field("framerate", gst::Fraction::new(num as i32, den as i32))
+                    .build(),
+            )?);
+        }
+        if let Some((width, height)) = profile.resolution {
+            video.push(make_el("videoscale", &format!("vscale-{tag}"))?);
+            // Pin the pixel aspect ratio so videoscale actually resizes instead
+            // of satisfying the caps by changing PAR.
+            video.push(capsfilter(
+                &format!("vscale-caps-{tag}"),
+                gst::Caps::builder("video/x-raw")
+                    .field("width", width as i32)
+                    .field("height", height as i32)
+                    .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
+                    .build(),
+            )?);
+        }
+        // Format converter before the encoder. Prevents RECONFIGURE events from
+        // the encoder propagating upstream to the source (e.g. ndisrc) and
+        // handles formats the encoder can't take directly (NDI UYVY → I420).
+        video.push(make_el("videoconvert", &format!("vconv-{tag}"))?);
+        video.push(build_video_encoder(profile, tag)?);
+
         // Large audio queue so the muxer can buffer audio while waiting for the
         // first video frames without blocking the atee.
         let aq = gst::ElementFactory::make("queue")
@@ -274,198 +321,160 @@ impl MonitorPipeline {
             .property("max-size-buffers", 0u32)
             .build()
             .context("create audio recording queue")?;
-        // Format/rate converters before the audio encoder for the same reason.
-        let aconv = make_el("audioconvert", &format!("aconv-{tag}"))?;
-        let aresample = make_el("audioresample", &format!("aresample-{tag}"))?;
-        let aenc = build_audio_encoder(profile, tag)?;
+        let audio = vec![
+            aq.clone(),
+            make_el("audioconvert", &format!("aconv-{tag}"))?,
+            make_el("audioresample", &format!("aresample-{tag}"))?,
+            build_audio_encoder(profile, tag)?,
+        ];
+
         let muxer = build_muxer(profile, tag)?;
         let filesink = gst::ElementFactory::make("filesink")
             .name(format!("sink-{tag}"))
             .property("location", location)
             .build()
             .context("create filesink")?;
+        let sink_name = filesink.name().to_string();
 
-        let all_elements = vec![
-            vq.clone(),
-            vconv.clone(),
-            venc.clone(),
-            aq.clone(),
-            aconv.clone(),
-            aresample.clone(),
-            aenc.clone(),
-            muxer.clone(),
-            filesink.clone(),
-        ];
+        let elements: Vec<gst::Element> =
+            video.iter().chain(&audio).chain([&muxer, &filesink]).cloned().collect();
 
-        // ── Add to pipeline ───────────────────────────────────────────────────
-        for el in &all_elements {
-            self.pipeline
-                .add(el)
-                .with_context(|| format!("add {} to pipeline", el.name()))?;
-        }
+        let mut tee_pads: Vec<(gst::Element, gst::Pad)> = Vec::new();
+        let linked = (|| -> Result<oneshot::Receiver<()>> {
+            self.pipeline.add_many(&elements).context("add recording branch")?;
+            gst::Element::link_many(&video).context("link video chain")?;
+            gst::Element::link_many(&audio).context("link audio chain")?;
+            link_to_muxer(video.last().unwrap(), &muxer, "video", profile)?;
+            link_to_muxer(audio.last().unwrap(), &muxer, "audio", profile)?;
+            muxer.link(&filesink).context("link mux → filesink")?;
 
-        // ── Link within branch (not to tees yet) ──────────────────────────────
-        vq.link(&vconv).context("link vq → vconv")?;
-        vconv.link(&venc).context("link vconv → venc")?;
-        venc.static_pad("src")
-            .context("venc src pad")?
-            .link(&muxer.request_pad_simple("video_%u").context("mux video pad")?)
-            .context("link venc → mux video")?;
-
-        aq.link(&aconv).context("link aq → aconv")?;
-        aconv.link(&aresample).context("link aconv → aresample")?;
-        aresample.link(&aenc).context("link aresample → aenc")?;
-        aenc.static_pad("src")
-            .context("aenc src pad")?
-            .link(&muxer.request_pad_simple("audio_%u").context("mux audio pad")?)
-            .context("link aenc → mux audio")?;
-
-        muxer.link(&filesink).context("link mux → filesink")?;
-
-        // ── Sync branch to pipeline state ─────────────────────────────────────
-        // Elements are ready to receive data but not yet connected to the tees.
-        for el in &all_elements {
-            el.sync_state_with_parent()
-                .map_err(|_| anyhow::anyhow!("sync_state_with_parent failed for {}", el.name()))?;
-        }
-
-        // ── Register EOS receiver before attaching (avoids race with fast EOS) ─
-        let sink_name = format!("sink-{tag}");
-        let (eos_tx, eos_rx) = oneshot::channel::<()>();
-        self.recording_eos.lock().unwrap().insert(sink_name, eos_tx);
-
-        // ── Request tee src pads ──────────────────────────────────────────────
-        let vtee_pad = self
-            .vtee
-            .request_pad_simple("src_%u")
-            .context("request vtee src pad")?;
-        let atee_pad = self
-            .atee
-            .request_pad_simple("src_%u")
-            .context("request atee src pad")?;
-
-        // ── Atomically link vtee → vq via blocking probe ──────────────────────
-        let (v_tx, v_rx) = oneshot::channel::<()>();
-        let v_tx = Arc::new(Mutex::new(Some(v_tx)));
-        let vq_sink = vq.static_pad("sink").context("vq sink pad")?;
-        vtee_pad.add_probe(gst::PadProbeType::BLOCK_DOWNSTREAM, move |pad, _| {
-            let _ = pad.link(&vq_sink);
-            if let Some(tx) = v_tx.lock().unwrap().take() {
-                let _ = tx.send(());
+            for el in &elements {
+                el.sync_state_with_parent()
+                    .map_err(|_| anyhow::anyhow!("sync_state_with_parent failed for {}", el.name()))?;
             }
-            gst::PadProbeReturn::Remove
-        });
 
-        // ── Atomically link atee → aq via blocking probe ──────────────────────
-        let (a_tx, a_rx) = oneshot::channel::<()>();
-        let a_tx = Arc::new(Mutex::new(Some(a_tx)));
-        let aq_sink = aq.static_pad("sink").context("aq sink pad")?;
-        atee_pad.add_probe(gst::PadProbeType::BLOCK_DOWNSTREAM, move |pad, _| {
-            let _ = pad.link(&aq_sink);
-            if let Some(tx) = a_tx.lock().unwrap().take() {
-                let _ = tx.send(());
+            // Register before linking so even an immediate EOS is caught.
+            let (eos_tx, eos_rx) = oneshot::channel();
+            self.recording_eos.lock().unwrap().insert(sink_name.clone(), eos_tx);
+
+            for (tee, queue) in [(&self.vtee, &vq), (&self.atee, &aq)] {
+                let pad = tee.request_pad_simple("src_%u").context("request tee src pad")?;
+                tee_pads.push((tee.clone(), pad.clone()));
+                pad.link(&queue.static_pad("sink").context("queue sink pad")?)
+                    .context("link tee → recording queue")?;
             }
-            gst::PadProbeReturn::Remove
-        });
+            Ok(eos_rx)
+        })();
 
-        // Wait for both probes to fire before declaring the branch live.
-        v_rx.await.ok();
-        a_rx.await.ok();
+        match linked {
+            Ok(eos_rx) => {
+                info!(path = ?path, "recording branch attached");
+                let [(_, vtee_pad), (_, atee_pad)]: [_; 2] = tee_pads.try_into().unwrap();
+                Ok(RecordingBranch { vtee_pad, atee_pad, vq, aq, elements, sink_name, eos_rx })
+            }
+            Err(e) => {
+                self.remove_branch(tee_pads, &elements, &sink_name);
+                Err(e)
+            }
+        }
+    }
 
-        info!(path = ?path, "recording branch attached");
+    /// Tear a branch down immediately, without finalizing its file. Only for
+    /// rolling back a start that failed part-way.
+    fn discard_recording(&self, branch: RecordingBranch) {
+        let tee_pads = vec![(self.vtee.clone(), branch.vtee_pad), (self.atee.clone(), branch.atee_pad)];
+        self.remove_branch(tee_pads, &branch.elements, &branch.sink_name);
+    }
 
-        Ok(RecordingBranch {
-            vtee_pad,
-            atee_pad,
-            vq,
-            aq,
-            all_elements,
-            eos_rx,
-        })
+    fn remove_branch(
+        &self,
+        tee_pads: Vec<(gst::Element, gst::Pad)>,
+        elements: &[gst::Element],
+        sink_name: &str,
+    ) {
+        // Releasing a request pad also unlinks it, which stops data first.
+        for (tee, pad) in tee_pads {
+            tee.release_request_pad(&pad);
+        }
+        self.recording_eos.lock().unwrap().remove(sink_name);
+        // Downstream first: a muxer blocking its inputs is flushed before the
+        // queues' streaming threads (which may be pushing into it) are joined.
+        for el in elements.iter().rev() {
+            let _ = el.set_state(gst::State::Null);
+            let _ = self.pipeline.remove(el);
+        }
     }
 
     /// Detach a recording branch and wait for the file to be fully written.
     ///
-    /// Blocking pad probes unlink the branch from both tees, EOS is pushed into
-    /// the orphaned branch so the muxer can write its final index, and we wait
-    /// for the filesink to post its EOS bus message before removing elements.
-    pub async fn detach_recording(
-        &self,
-        branch: RecordingBranch,
-        timeout_secs: u64,
-    ) -> Result<()> {
-        let RecordingBranch {
-            vtee_pad,
-            atee_pad,
-            vq,
-            aq,
-            all_elements,
-            eos_rx,
-        } = branch;
+    /// The branch is unlinked from both tees, EOS is pushed into it so the
+    /// muxer can write its final index, and we wait (up to `timeout`) for the
+    /// filesink to post EOS before removing the elements. A timeout at either
+    /// step is an error: the file is probably missing its index.
+    pub async fn detach_recording(&self, branch: RecordingBranch, timeout: Duration) -> Result<()> {
+        let RecordingBranch { vtee_pad, atee_pad, vq, aq, elements, sink_name, eos_rx } = branch;
 
-        // ── Unlink vtee pad, push EOS into video branch ───────────────────────
-        let (v_tx, v_rx) = oneshot::channel::<()>();
-        let v_tx = Arc::new(Mutex::new(Some(v_tx)));
-        let vq_for_probe = vq.clone();
-        let vtee = self.vtee.clone();
-        vtee_pad.add_probe(gst::PadProbeType::BLOCK_DOWNSTREAM, move |pad, _| {
-            if let Some(sink) = vq_for_probe.static_pad("sink") {
-                let _ = pad.unlink(&sink);
-                // Push EOS directly into the unlinked queue so it drains through
-                // encoder → muxer → filesink.
-                sink.send_event(gst::event::Eos::new());
-            }
-            vtee.release_request_pad(pad);
-            if let Some(tx) = v_tx.lock().unwrap().take() {
-                let _ = tx.send(());
-            }
-            gst::PadProbeReturn::Remove
-        });
+        let v_unlinked = unlink_when_idle(&vtee_pad, &vq);
+        let a_unlinked = unlink_when_idle(&atee_pad, &aq);
+        let unlinked = async {
+            v_unlinked.await.ok();
+            a_unlinked.await.ok();
+        };
+        if tokio::time::timeout(timeout, unlinked).await.is_err() {
+            // The tee's push into this branch is blocked — e.g. the muxer stalled
+            // after a failed negotiation and the audio queue filled up. Flushing
+            // the branch unblocks the push, but the file can't be finalized.
+            warn!(sink = %sink_name, "recording branch stalled, forcing it down");
+            self.remove_branch(
+                vec![(self.vtee.clone(), vtee_pad), (self.atee.clone(), atee_pad)],
+                &elements,
+                &sink_name,
+            );
+            anyhow::bail!("recording stalled and was force-stopped; the file is likely incomplete");
+        }
+        self.vtee.release_request_pad(&vtee_pad);
+        self.atee.release_request_pad(&atee_pad);
 
-        // ── Unlink atee pad, push EOS into audio branch ───────────────────────
-        let (a_tx, a_rx) = oneshot::channel::<()>();
-        let a_tx = Arc::new(Mutex::new(Some(a_tx)));
-        let aq_for_probe = aq.clone();
-        let atee = self.atee.clone();
-        atee_pad.add_probe(gst::PadProbeType::BLOCK_DOWNSTREAM, move |pad, _| {
-            if let Some(sink) = aq_for_probe.static_pad("sink") {
-                let _ = pad.unlink(&sink);
-                sink.send_event(gst::event::Eos::new());
-            }
-            atee.release_request_pad(pad);
-            if let Some(tx) = a_tx.lock().unwrap().take() {
-                let _ = tx.send(());
-            }
-            gst::PadProbeReturn::Remove
-        });
-
-        // Wait for both pads to be unlinked.
-        v_rx.await.ok();
-        a_rx.await.ok();
-
-        // ── Wait for the file to be written ───────────────────────────────────
         // The bus task signals eos_rx when the filesink posts its EOS message,
         // which GstBaseSink does after processing EOS (i.e. after fclose).
-        let deadline =
-            tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
-        tokio::select! {
-            _ = eos_rx => {
-                info!("recording EOS: file closed cleanly");
+        let result = match tokio::time::timeout(timeout, eos_rx).await {
+            Ok(Ok(())) => {
+                info!(sink = %sink_name, "recording EOS: file closed cleanly");
+                Ok(())
             }
-            _ = tokio::time::sleep_until(deadline) => {
-                warn!("recording EOS timed out after {timeout_secs}s, forcing NULL");
+            _ => {
+                warn!(sink = %sink_name, "recording EOS timed out after {timeout:?}, forcing NULL");
+                Err(anyhow::anyhow!(
+                    "recording did not finish writing within {timeout:?}; the file may be incomplete"
+                ))
             }
-        }
+        };
 
-        // ── Remove branch elements from pipeline ──────────────────────────────
-        for el in &all_elements {
-            let _ = el.set_state(gst::State::Null);
-            let _ = self.pipeline.remove(el);
-        }
-
-        info!("recording branch removed");
-        Ok(())
+        self.remove_branch(Vec::new(), &elements, &sink_name);
+        info!(sink = %sink_name, "recording branch removed");
+        result
     }
+}
+
+/// Unlink `pad` from `queue` and push EOS into the orphaned branch so it
+/// drains through encoder → muxer → filesink. An IDLE probe runs as soon as
+/// the tee isn't pushing on this pad — immediately if no data is flowing — so
+/// a stalled source can't hang a stop. Resolves once the unlink has happened.
+fn unlink_when_idle(pad: &gst::Pad, queue: &gst::Element) -> oneshot::Receiver<()> {
+    let (tx, rx) = oneshot::channel();
+    let tx = Mutex::new(Some(tx));
+    let queue_sink = queue.static_pad("sink");
+    pad.add_probe(gst::PadProbeType::IDLE, move |pad, _| {
+        if let Some(sink) = &queue_sink {
+            let _ = pad.unlink(sink);
+            sink.send_event(gst::event::Eos::new());
+        }
+        if let Some(tx) = tx.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
+        gst::PadProbeReturn::Remove
+    });
+    rx
 }
 
 impl Drop for MonitorPipeline {
@@ -610,45 +619,74 @@ fn make_el(factory: &str, name: &str) -> Result<gst::Element> {
     gst::ElementFactory::make(factory)
         .name(name)
         .build()
-        .with_context(|| format!("create {factory}"))
+        .with_context(|| format!("create {factory} (is its GStreamer plugin installed?)"))
+}
+
+fn capsfilter(name: &str, caps: gst::Caps) -> Result<gst::Element> {
+    gst::ElementFactory::make("capsfilter")
+        .name(name)
+        .property("caps", caps)
+        .build()
+        .with_context(|| format!("create {name}"))
+}
+
+/// Link an encoder to a new muxer input, with an error that names the
+/// combination when the container can't carry the codec.
+fn link_to_muxer(
+    encoder: &gst::Element,
+    muxer: &gst::Element,
+    kind: &str,
+    profile: &RecordingProfile,
+) -> Result<()> {
+    let incompatible = || {
+        anyhow::anyhow!(
+            "{} output can't be muxed into .{} ({kind})",
+            encoder.factory().map(|f| f.name().to_string()).unwrap_or_default(),
+            profile.file_extension(),
+        )
+    };
+    let sink = muxer.request_pad_simple(&format!("{kind}_%u")).ok_or_else(incompatible)?;
+    encoder
+        .static_pad("src")
+        .context("encoder src pad")?
+        .link(&sink)
+        .map_err(|_| incompatible())?;
+    Ok(())
 }
 
 fn build_video_encoder(profile: &RecordingProfile, tag: &str) -> Result<gst::Element> {
-    let name = profile.video_encoder_element()?;
-    let builder = gst::ElementFactory::make(name).name(format!("venc-{tag}"));
-    let venc = if let Some(kbps) = profile.bitrate_kbps {
+    let name = profile.video_encoder_element();
+    let venc = make_el(name, &format!("venc-{tag}"))?;
+    if let Some(kbps) = profile.bitrate_kbps {
         match name {
-            "x264enc" | "x265enc" => builder.property("bitrate", kbps),
-            "vp9enc" => builder.property("target-bitrate", kbps as i32 * 1000),
-            _ => builder,
+            "x264enc" | "x265enc" => set_property(&venc, "bitrate", &kbps.to_string())?,
+            "vp9enc" => set_property(&venc, "target-bitrate", &(kbps * 1000).to_string())?,
+            _ => {}
         }
-    } else {
-        builder
     }
-    .build()
-    .with_context(|| format!("create {name}"))?;
-
-    if let Some(idx) = profile.prores_profile_index() {
-        venc.set_property("profile", idx);
+    if let Some(prores) = profile.prores_profile() {
+        set_property(&venc, "profile", prores)?;
     }
     if name == "x264enc" {
-        venc.set_property_from_str("tune", "zerolatency");
+        set_property(&venc, "tune", "zerolatency")?;
     }
     Ok(venc)
 }
 
+/// `set_property_from_str` panics on an unknown property; encoder builds
+/// differ between platforms, so a missing one is an error instead.
+fn set_property(el: &gst::Element, name: &str, value: &str) -> Result<()> {
+    if el.find_property(name).is_none() {
+        anyhow::bail!("{} has no `{name}` property", el.factory().map(|f| f.name()).unwrap_or_default());
+    }
+    el.set_property_from_str(name, value);
+    Ok(())
+}
+
 fn build_audio_encoder(profile: &RecordingProfile, tag: &str) -> Result<gst::Element> {
-    let name = profile.audio_encoder_element()?;
-    gst::ElementFactory::make(name)
-        .name(format!("aenc-{tag}"))
-        .build()
-        .with_context(|| format!("create {name}"))
+    make_el(profile.audio_encoder_element(), &format!("aenc-{tag}"))
 }
 
 fn build_muxer(profile: &RecordingProfile, tag: &str) -> Result<gst::Element> {
-    let name = profile.muxer_element();
-    gst::ElementFactory::make(name)
-        .name(format!("mux-{tag}"))
-        .build()
-        .with_context(|| format!("create {name}"))
+    make_el(profile.muxer_element(), &format!("mux-{tag}"))
 }

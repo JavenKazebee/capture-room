@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use tokio_util::sync::CancellationToken;
+
 #[derive(Clone)]
 pub struct NodeEntry {
     pub id: String,
@@ -15,6 +17,9 @@ pub struct NodeEntry {
     /// Added by URL and persisted in the `nodes` table. Manual nodes are never
     /// pruned for being unreachable; mDNS ones are (they re-announce).
     pub manual: bool,
+    /// Stops this node's WS relay. Cancelled when the entry is removed, so a
+    /// node that is removed and re-added never ends up with two relays.
+    pub relay: CancellationToken,
 }
 
 #[derive(Default)]
@@ -23,13 +28,15 @@ pub struct NodeRegistry {
 }
 
 impl NodeRegistry {
-    /// Insert or update. Returns `true` if the node was newly added.
-    /// An update refreshes the URL (e.g. after an IP change) and clears
-    /// the failure state, but never downgrades a manual entry to mDNS.
+    /// Insert or update. Returns `true` if the node was newly added, in which
+    /// case the caller starts a relay for `entry.relay`. An update refreshes
+    /// the URL (e.g. after an IP change) and clears the failure state, keeps
+    /// the running relay, and never downgrades a manual entry to mDNS.
     pub fn upsert(&mut self, mut entry: NodeEntry) -> bool {
         match self.entries.get(&entry.id) {
             Some(existing) => {
                 entry.manual |= existing.manual;
+                entry.relay = existing.relay.clone();
                 self.entries.insert(entry.id.clone(), entry);
                 false
             }
@@ -41,7 +48,9 @@ impl NodeRegistry {
     }
 
     pub fn remove(&mut self, id: &str) -> Option<NodeEntry> {
-        self.entries.remove(id)
+        let entry = self.entries.remove(id)?;
+        entry.relay.cancel();
+        Some(entry)
     }
 
     pub fn all(&self) -> Vec<&NodeEntry> {

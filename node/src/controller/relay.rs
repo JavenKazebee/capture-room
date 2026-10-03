@@ -5,20 +5,21 @@
 //! events only), so a peer that is itself a controller never echoes its peers.
 //!
 //! The relay owns no URL: it looks the node up in the registry on every
-//! connection attempt, so an IP change is picked up on the next reconnect,
-//! and the task exits once the node is removed or the controller is disabled.
+//! connection attempt, so an IP change is picked up on the next reconnect.
+//! It stops as soon as its entry's token is cancelled — when the node is
+//! removed or the controller is disabled.
 
 use std::time::Duration;
 
 use futures_util::StreamExt;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use super::Ctx;
 
-pub fn spawn(ctx: Ctx, node_id: String) {
+pub fn spawn(ctx: Ctx, node_id: String, cancel: CancellationToken) {
     tokio::spawn(async move {
-        let cancel = ctx.cancel.clone();
         tokio::select! {
             _ = cancel.cancelled() => {}
             _ = run(ctx, node_id) => {}
@@ -35,7 +36,8 @@ async fn run(ctx: Ctx, node_id: String) {
                 return;
             }
         };
-        let ws_url = url.replacen("http://", "ws://", 1) + "/api/v1/node/ws";
+        // http → ws, https → wss.
+        let ws_url = url.replacen("http", "ws", 1) + "/api/v1/node/ws";
 
         match tokio_tungstenite::connect_async(&ws_url).await {
             Ok((stream, _)) => {

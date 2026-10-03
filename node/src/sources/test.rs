@@ -133,13 +133,12 @@ impl Default for TestSourceConfig {
 pub struct TestSource {
     config: TestSourceConfig,
     bin: gst::Bin,
-    connected: bool,
 }
 
 impl TestSource {
     pub fn new(config: TestSourceConfig) -> Result<Self> {
         let bin = build_bin(&config)?;
-        Ok(Self { config, bin, connected: false })
+        Ok(Self { config, bin })
     }
 }
 
@@ -253,21 +252,8 @@ impl InputSource for TestSource {
         }
     }
 
-    fn connect(&mut self) -> Result<()> {
-        self.bin
-            .set_state(gst::State::Ready)
-            .map_err(|e| anyhow::anyhow!("set Ready: {e:?}"))?;
-        self.connected = true;
-        Ok(())
-    }
-
-    fn disconnect(&mut self) {
-        let _ = self.bin.set_state(gst::State::Null);
-        self.connected = false;
-    }
-
-    fn is_connected(&self) -> bool {
-        self.connected
+    fn fingerprint(&self) -> String {
+        format!("{:?}", self.config)
     }
 
     fn gst_src_element(&self) -> gst::Element {

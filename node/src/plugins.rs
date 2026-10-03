@@ -21,7 +21,7 @@ const REQUIRED: &[(&str, &str, &str)] = &[
     // ── gst-plugins-ugly ─────────────────────────────────────────────────────
     ("x264enc",       "gst-plugins-ugly",  "pacman -S gst-plugins-ugly  /  apt install gstreamer1.0-plugins-ugly"),
     // ── gst-libav ────────────────────────────────────────────────────────────
-    ("avenc_prores",  "gst-libav",         "pacman -S gst-libav  /  apt install gstreamer1.0-libav"),
+    ("avenc_prores_ks", "gst-libav",        "pacman -S gst-libav  /  apt install gstreamer1.0-libav"),
     ("avenc_aac",     "gst-libav",         "pacman -S gst-libav  /  apt install gstreamer1.0-libav"),
     // ── gst-plugins-good (continued) ─────────────────────────────────────────
     ("jpegenc",       "gst-plugins-good",  "pacman -S gst-plugins-good  /  apt install gstreamer1.0-plugins-good"),
