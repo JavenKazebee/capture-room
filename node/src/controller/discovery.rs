@@ -14,8 +14,6 @@ use crate::api::types::{NodeStatus, WsEvent};
 
 const SERVICE_TYPE: &str = "_capture-room._tcp.local.";
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
-/// Every controller hears its own announcement; that one is skipped quietly.
-const SELF_ERR: &str = "that address is this node";
 
 /// After this many consecutive failed checks (~15s at a 5s interval) an
 /// mDNS-discovered node is dropped. mDNS will re-add it if it comes back.
@@ -71,11 +69,9 @@ pub fn start_mdns_browser(ctx: Ctx) -> Result<ServiceDaemon> {
                     let url = format!("http://{}:{}", ip, info.get_port());
                     let ctx = ctx.clone();
                     handle.spawn(async move {
-                        match add_node(&ctx, url.clone(), false).await {
-                            Err(e) if e.to_string() != SELF_ERR => {
-                                warn!(url = %url, error = %e, "mDNS service not added");
-                            }
-                            _ => {}
+                        // Ok(None) is this node's own announcement: skipped quietly.
+                        if let Err(e) = add_node(&ctx, url.clone(), false).await {
+                            warn!(url = %url, error = %e, "mDNS service not added");
                         }
                     });
                 }
@@ -88,12 +84,14 @@ pub fn start_mdns_browser(ctx: Ctx) -> Result<ServiceDaemon> {
 
 // ── Adding a node ────────────────────────────────────────────────────────────
 
-/// Identify the node at `url` and add it to the registry. Returns its status.
-pub async fn add_node(ctx: &Ctx, url: String, manual: bool) -> Result<NodeStatus> {
+/// Identify the node at `url` and add it to the registry. Returns its status,
+/// or `None` if `url` is this node (every controller hears its own mDNS
+/// announcement).
+pub async fn add_node(ctx: &Ctx, url: String, manual: bool) -> Result<Option<NodeStatus>> {
     let status = fetch_status(ctx, &url).await?;
 
     if status.id == ctx.state.node_id {
-        return Err(anyhow!(SELF_ERR));
+        return Ok(None);
     }
     if ctx.cancel.is_cancelled() {
         return Err(anyhow!("controller disabled"));
@@ -118,7 +116,7 @@ pub async fn add_node(ctx: &Ctx, url: String, manual: bool) -> Result<NodeStatus
         ctx.state.emit_controller(&WsEvent::NodeOnline { peer_id: status.id.clone() });
         relay::spawn(ctx.clone(), status.id.clone(), relay);
     }
-    Ok(status)
+    Ok(Some(status))
 }
 
 async fn fetch_status(ctx: &Ctx, url: &str) -> Result<NodeStatus> {

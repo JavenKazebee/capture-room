@@ -5,6 +5,7 @@ import { audioLevels, thumbnailSeqs, type Source } from '@/stores/sources'
 import { useRecordingsStore, type RecordingSession } from '@/stores/recordings'
 import { usePresetsStore } from '@/stores/presets'
 import { errorMessage, thumbnailUrl } from '@/composables/useApi'
+import { formatDuration } from '@/lib/format'
 import { useNodesStore } from '@/stores/nodes'
 import AudioMeter from './AudioMeter.vue'
 import { Button } from '@/components/ui/button'
@@ -95,16 +96,6 @@ const now = useNow({ interval: 1000 })
 const duration = computed(() =>
   props.session ? formatDuration(now.value.getTime() - new Date(props.session.started_at).getTime()) : '',
 )
-
-function formatDuration(ms: number): string {
-  const elapsed = Math.max(0, Math.floor(ms / 1000))
-  const h = Math.floor(elapsed / 3600)
-  const m = Math.floor((elapsed % 3600) / 60)
-  const s = elapsed % 60
-  return h > 0
-    ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-    : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-}
 </script>
 
 <template>

@@ -20,7 +20,6 @@ use super::{capsfilter, handle_level_message, link_tee, make_el, AudioMeter, Thu
 /// stall the source or the other recordings.
 pub struct MonitorPipeline {
     pipeline: gst::Pipeline,
-    src_bin: gst::Element,
     pub thumbnail: ThumbnailStore,
     pub audio_meter: AudioMeter,
     pub video: StreamProducer,
@@ -47,7 +46,7 @@ impl MonitorPipeline {
         let audio_meter = AudioMeter::default();
 
         let pipeline = gst::Pipeline::new();
-        let src_bin = source.gst_src_element();
+        let src_bin = source.build_bin()?;
         pipeline.add(&src_bin).context("add source bin")?;
 
         // ── Tees ──────────────────────────────────────────────────────────────
@@ -107,7 +106,6 @@ impl MonitorPipeline {
 
         Ok(Self {
             pipeline,
-            src_bin,
             thumbnail,
             audio_meter,
             video,
@@ -125,12 +123,7 @@ impl MonitorPipeline {
     }
 
     pub fn stop(&self) -> Result<()> {
-        let result = self.pipeline.set_state(gst::State::Null).map(|_| ()).map_err(|e| anyhow!("set NULL: {e:?}"));
-        // Explicitly unparent the source bin so the same element can be added
-        // to a new pipeline immediately (the bus task may still hold a ref to
-        // the old pipeline C object, keeping it alive for a moment longer).
-        let _ = self.pipeline.remove(&self.src_bin);
-        result
+        self.pipeline.set_state(gst::State::Null).map(|_| ()).map_err(|e| anyhow!("set NULL: {e:?}"))
     }
 
     /// The clock and base time a consumer pipeline should share, so buffer

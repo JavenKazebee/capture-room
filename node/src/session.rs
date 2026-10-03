@@ -19,8 +19,11 @@ use crate::state::AppState;
 /// How long a leg may take to drain to EOS and close its file.
 const EOS_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How often to check for failed monitors to restart.
+/// How often to check for failed monitors to restart. Each rescan that
+/// leaves a source still failing doubles the wait, up to the max; the wait
+/// resets once every source is healthy.
 const RECOVERY_INTERVAL: Duration = Duration::from_secs(5);
+const RECOVERY_MAX_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Drain a stopping session's legs, persist and broadcast the outcome, and
 /// publish it to every request waiting on the stop. `source_error` is set when
@@ -112,13 +115,15 @@ pub async fn rebuild_sources(state: &Arc<AppState>) -> anyhow::Result<()> {
 /// the network is removed instead.
 pub fn spawn_monitor_recovery(state: Arc<AppState>) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(RECOVERY_INTERVAL);
+        let mut wait = RECOVERY_INTERVAL;
         loop {
-            interval.tick().await;
+            tokio::time::sleep(wait).await;
             if !state.source_manager.read().await.needs_rescan() {
+                wait = RECOVERY_INTERVAL;
                 continue;
             }
-            info!("restarting failed monitors");
+            wait = (wait * 2).min(RECOVERY_MAX_INTERVAL);
+            info!(next_check = ?wait, "restarting failed monitors");
             if let Err(e) = rebuild_sources(&state).await {
                 error!(error = %e, "rescan for failed monitors");
             }

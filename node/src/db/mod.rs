@@ -79,6 +79,10 @@ pub async fn monitor_settings_set(pool: &SqlitePool, m: &MonitorSettingsDto) -> 
 
 // ── recording_sessions ────────────────────────────────────────────────────────
 
+const SESSION_SELECT: &str = "SELECT id, source_id, preset_id, started_at, stopped_at,
+                                     output_paths, status, error_message
+                              FROM recording_sessions";
+
 pub async fn sessions_mark_crashed(pool: &SqlitePool) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
     sqlx::query(
@@ -133,24 +137,16 @@ pub async fn session_update_stop(
 }
 
 pub async fn sessions_list(pool: &SqlitePool) -> Result<Vec<RecordingSessionDto>> {
-    let rows = sqlx::query_as::<_, RecordingSessionDto>(
-        "SELECT id, source_id, preset_id, started_at, stopped_at,
-                output_paths, status, error_message
-         FROM recording_sessions
-         ORDER BY started_at DESC
-         LIMIT 100",
-    )
+    let rows = sqlx::query_as::<_, RecordingSessionDto>(&format!(
+        "{SESSION_SELECT} ORDER BY started_at DESC LIMIT 100"
+    ))
     .fetch_all(pool)
     .await?;
     Ok(rows)
 }
 
 pub async fn session_get(pool: &SqlitePool, id: &str) -> Result<Option<RecordingSessionDto>> {
-    let row = sqlx::query_as::<_, RecordingSessionDto>(
-        "SELECT id, source_id, preset_id, started_at, stopped_at,
-                output_paths, status, error_message
-         FROM recording_sessions WHERE id = ?",
-    )
+    let row = sqlx::query_as::<_, RecordingSessionDto>(&format!("{SESSION_SELECT} WHERE id = ?"))
     .bind(id)
     .fetch_optional(pool)
     .await?;
@@ -309,23 +305,19 @@ pub async fn node_delete(pool: &SqlitePool, id: &str) -> Result<()> {
 
 // ── test_sources ──────────────────────────────────────────────────────────────
 
+const TEST_SOURCE_SELECT: &str = "SELECT id, name, pattern, width, height, fps_num, fps_den,
+                                         audio_signal, frequency, channels, created_at
+                                  FROM test_sources";
+
 pub async fn test_sources_list(pool: &SqlitePool) -> Result<Vec<TestSourceConfigDto>> {
-    let rows = sqlx::query_as::<_, TestSourceConfigDto>(
-        "SELECT id, name, pattern, width, height, fps_num, fps_den,
-                audio_signal, frequency, channels, created_at
-         FROM test_sources ORDER BY created_at",
-    )
+    let rows = sqlx::query_as::<_, TestSourceConfigDto>(&format!("{TEST_SOURCE_SELECT} ORDER BY created_at"))
     .fetch_all(pool)
     .await?;
     Ok(rows)
 }
 
 pub async fn test_source_get(pool: &SqlitePool, id: &str) -> Result<Option<TestSourceConfigDto>> {
-    let row = sqlx::query_as::<_, TestSourceConfigDto>(
-        "SELECT id, name, pattern, width, height, fps_num, fps_den,
-                audio_signal, frequency, channels, created_at
-         FROM test_sources WHERE id = ?",
-    )
+    let row = sqlx::query_as::<_, TestSourceConfigDto>(&format!("{TEST_SOURCE_SELECT} WHERE id = ?"))
     .bind(id)
     .fetch_optional(pool)
     .await?;

@@ -80,6 +80,10 @@ function handleEvent(event: NodeEvent) {
       reloadAll()
       break
 
+    case 'node.updated':
+      useNodesStore().load()
+      break
+
     case 'recording.started':
       // Usually already in the store via the POST response; reload in case it
       // came from another client or a schedule.

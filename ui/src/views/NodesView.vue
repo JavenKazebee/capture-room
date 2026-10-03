@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { errorMessage, nodeApi } from '@/composables/useApi'
+import { formatBytes, formatUptime } from '@/lib/format'
 import { useNodesStore } from '@/stores/nodes'
 import type { MonitorSettingsDto } from '@/types/generated/MonitorSettingsDto'
 import type { NodeSettingsDto } from '@/types/generated/NodeSettingsDto'
@@ -107,23 +108,6 @@ async function saveMonitorSettings() {
   } finally {
     monitorSaving.value = false
   }
-}
-
-function formatUptime(secs: number): string {
-  const h = Math.floor(secs / 3600)
-  const m = Math.floor((secs % 3600) / 60)
-  if (h > 0) return `${h}h ${m}m`
-  return `${m}m`
-}
-
-function formatBytes(n: number): string {
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  let i = 0
-  while (n >= 1000 && i < units.length - 1) {
-    n /= 1000
-    i++
-  }
-  return `${n.toFixed(n >= 100 || i === 0 ? 0 : 1)} ${units[i]}`
 }
 
 function usedPct(v: StorageVolumeDto) {
@@ -258,11 +242,12 @@ onMounted(async () => {
               class="text-xs"
             >
               <div class="flex justify-between gap-2 mb-1">
-                <span class="font-mono truncate" :title="vol.mount_point">
+                <span class="font-mono truncate" :title="[vol.mount_point, ...vol.other_mounts].join('\n')">
                   {{ vol.mount_point }}
                   <span class="text-muted-foreground font-sans">
                     {{ vol.name && vol.name !== vol.mount_point ? `· ${vol.name}` : '' }}
                     {{ vol.removable ? '· removable' : '' }}
+                    {{ vol.other_mounts.length ? `· +${vol.other_mounts.length} more mounts` : '' }}
                   </span>
                 </span>
                 <span class="text-muted-foreground shrink-0">

@@ -41,5 +41,11 @@ export const useNodesStore = defineStore('nodes', () => {
     return nodes.value.find((n) => n.id === id)?.name ?? id.slice(0, 8)
   }
 
-  return { nodes, self, isController, reachable, load, setController, add, remove, nameOf }
+  /** Name for pickers and headings, marking the instance the UI is talking to. */
+  function labelOf(id: string) {
+    const name = nameOf(id)
+    return id === self.value?.node_id ? `${name} (this node)` : name
+  }
+
+  return { nodes, self, isController, reachable, load, setController, add, remove, nameOf, labelOf }
 })

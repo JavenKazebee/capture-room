@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use chrono::Utc;
-use gstreamer::prelude::*;
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -90,6 +89,9 @@ pub struct SourceManager {
     config: MonitorSettingsDto,
     sources: Vec<Box<dyn InputSource>>,
     monitors: HashMap<String, Arc<MonitorPipeline>>,
+    /// Why a source's monitor couldn't be started, until a later start works
+    /// or the source goes away. A running monitor reports its own errors.
+    start_errors: HashMap<String, String>,
     sessions: HashMap<String, ActiveSession>, // session_id → session
     /// Sessions whose legs are draining. Lets a duplicate/retried
     /// stop join the in-flight result instead of reporting "already stopped".
@@ -108,6 +110,7 @@ impl SourceManager {
             config,
             sources: Vec::new(),
             monitors: HashMap::new(),
+            start_errors: HashMap::new(),
             sessions: HashMap::new(),
             stopping: HashMap::new(),
             ndi_monitor,
@@ -129,9 +132,12 @@ impl SourceManager {
         self.monitors.contains_key(source_id)
     }
 
-    /// Why a source's monitor stopped producing, if it has.
+    /// Why a source's monitor stopped producing, or couldn't start.
     pub fn monitor_error(&self, source_id: &str) -> Option<String> {
-        self.monitors.get(source_id)?.error()
+        match self.monitors.get(source_id) {
+            Some(monitor) => monitor.error(),
+            None => self.start_errors.get(source_id).cloned(),
+        }
     }
 
     /// Whether a source is being monitored and its monitor hasn't failed.
@@ -152,14 +158,13 @@ impl SourceManager {
     /// as-is, monitor and recordings included — unless its monitor has failed
     /// or never started. Removed, changed or failed sources are torn down
     /// (returned for the caller to run); everything else gets a fresh monitor.
+    /// Candidates are only descriptions, so a scan that changes nothing builds
+    /// no GStreamer elements.
     pub fn scan(&mut self, configs: &[TestSourceConfigDto]) -> Vec<Teardown> {
-        let mut candidates: Vec<Box<dyn InputSource>> = Vec::new();
-        for cfg in configs {
-            match TestSource::new(cfg.clone()) {
-                Ok(src) => candidates.push(Box::new(src)),
-                Err(e) => warn!(id = %cfg.id, error = %e, "failed to create test source"),
-            }
-        }
+        let mut candidates: Vec<Box<dyn InputSource>> = configs
+            .iter()
+            .map(|cfg| Box::new(TestSource::new(cfg.clone())) as Box<dyn InputSource>)
+            .collect();
         candidates.extend(
             self.ndi_monitor
                 .current_sources()
@@ -192,9 +197,19 @@ impl SourceManager {
 
         // Tear down first: a changed source restarts under the same id.
         let teardowns = gone.iter().filter_map(|id| self.disconnect(id)).collect();
+        for id in &gone {
+            self.start_errors.remove(id);
+        }
         for id in added {
-            if let Err(e) = self.start_monitor(&id) {
-                warn!(source = %id, error = %e, "failed to start monitor");
+            match self.start_monitor(&id) {
+                Ok(()) => {
+                    self.start_errors.remove(&id);
+                }
+                Err(e) => {
+                    let error = format!("{e:#}");
+                    warn!(source = %id, error = %error, "failed to start monitor");
+                    self.start_errors.insert(id, error);
+                }
             }
         }
 
@@ -333,11 +348,6 @@ impl SourceManager {
         let source = self
             .get_source(source_id)
             .ok_or_else(|| anyhow::anyhow!("source {source_id} not found"))?;
-        // The bin stays in its old pipeline until that teardown finishes.
-        if source.gst_src_element().parent().is_some() {
-            bail!("source {source_id} is still disconnecting, try again shortly");
-        }
-
         let pipeline = Arc::new(MonitorPipeline::new(source, &self.config)?);
         self.monitors.insert(source_id.to_string(), pipeline);
         info!(source = source_id, "monitor started");

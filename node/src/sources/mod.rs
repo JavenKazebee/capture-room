@@ -9,9 +9,10 @@ use crate::api::types::{SourceCapabilitiesDto, SourceType};
 
 /// Every input source implements this trait.
 ///
-/// The `gst::Element` returned by `gst_src_element` is always a `gst::Bin`
-/// with two named src ghost pads: `"video"` and `"audio"`. The bin is created
-/// at construction; the monitor pipeline that adds it drives its state.
+/// A source is a cheap description of where media comes from: a rescan builds
+/// one for everything it finds and keeps the old one if nothing changed. The
+/// GStreamer side is built by [`InputSource::build_bin`] each time a monitor
+/// starts, so every monitor owns a fresh bin.
 pub trait InputSource: Send + Sync {
     fn id(&self) -> &str;
     fn display_name(&self) -> &str;
@@ -24,8 +25,10 @@ pub trait InputSource: Send + Sync {
     /// otherwise the source is rebuilt and its monitor restarted.
     fn fingerprint(&self) -> String;
 
-    /// Returns the source's GStreamer bin (video + audio ghost pads).
-    fn gst_src_element(&self) -> gst::Element;
+    /// Build a new GStreamer bin for this source: a `gst::Bin` with two
+    /// named src ghost pads, `"video"` and `"audio"`. The monitor pipeline
+    /// that adds it drives its state.
+    fn build_bin(&self) -> Result<gst::Element>;
 
     /// Current timecode as `HH:MM:SS:FF`, if the source has one.
     fn timecode(&self) -> Option<String>;

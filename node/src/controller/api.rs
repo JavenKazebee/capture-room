@@ -91,7 +91,8 @@ async fn post_node(
 
     let status = discovery::add_node(&ctx, url.clone(), true)
         .await
-        .map_err(|e| ApiError::BadGateway(e.to_string()))?;
+        .map_err(|e| ApiError::BadGateway(e.to_string()))?
+        .ok_or(ApiError::BadRequest("that address is this node".into()))?;
     let row = db::NodeRow {
         id: status.id,
         name: status.name,

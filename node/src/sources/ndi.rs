@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use gstreamer::{self as gst, prelude::*};
-use tracing::{info, warn};
+use tracing::warn;
 
 use super::{add_ghost_pad, InputSource};
 use crate::api::types::{SourceCapabilitiesDto, SourceType};
@@ -15,19 +15,6 @@ pub struct NdiSource {
     ndi_name: String,
     url_address: String,
     name: String,
-    bin: gst::Bin,
-}
-
-impl NdiSource {
-    pub fn new(
-        id: String,
-        ndi_name: String,
-        url_address: String,
-        display_name: String,
-    ) -> Result<Self> {
-        let bin = build_bin(&id, &ndi_name, &url_address)?;
-        Ok(Self { id, ndi_name, url_address, name: display_name, bin })
-    }
 }
 
 fn build_bin(id: &str, ndi_name: &str, url_address: &str) -> Result<gst::Bin> {
@@ -121,19 +108,12 @@ impl Drop for NdiMonitor {
 fn device_to_source(device: gst::Device) -> Option<NdiSource> {
     let props = device.properties()?;
     let ndi_name: String = props.get("ndi-name").ok()?;
-    let url_address: String = props.get("url-address").ok().unwrap_or_default();
-    let display_name = device.display_name().to_string();
-    let id = ndi_source_id(&ndi_name);
-    match NdiSource::new(id, ndi_name.clone(), url_address, display_name) {
-        Ok(src) => {
-            info!(ndi_name = %ndi_name, "found NDI source");
-            Some(src)
-        }
-        Err(e) => {
-            warn!(ndi_name = %ndi_name, error = %e, "failed to create NDI source");
-            None
-        }
-    }
+    Some(NdiSource {
+        id: ndi_source_id(&ndi_name),
+        url_address: props.get("url-address").ok().unwrap_or_default(),
+        name: device.display_name().to_string(),
+        ndi_name,
+    })
 }
 
 fn ndi_source_id(ndi_name: &str) -> String {
@@ -169,8 +149,8 @@ impl InputSource for NdiSource {
         format!("{}|{}", self.ndi_name, self.url_address)
     }
 
-    fn gst_src_element(&self) -> gst::Element {
-        self.bin.clone().upcast()
+    fn build_bin(&self) -> Result<gst::Element> {
+        Ok(build_bin(&self.id, &self.ndi_name, &self.url_address)?.upcast())
     }
 
     fn timecode(&self) -> Option<String> {

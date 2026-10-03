@@ -13,13 +13,11 @@ use crate::pipeline::{capsfilter, make_el};
 pub struct TestSource {
     id: String,
     config: TestSourceRequest,
-    bin: gst::Bin,
 }
 
 impl TestSource {
-    pub fn new(dto: TestSourceConfigDto) -> Result<Self> {
-        let bin = build_bin(&dto.id, &dto.config)?;
-        Ok(Self { id: dto.id, config: dto.config, bin })
+    pub fn new(dto: TestSourceConfigDto) -> Self {
+        Self { id: dto.id, config: dto.config }
     }
 }
 
@@ -88,8 +86,8 @@ impl InputSource for TestSource {
         format!("{:?}", self.config)
     }
 
-    fn gst_src_element(&self) -> gst::Element {
-        self.bin.clone().upcast()
+    fn build_bin(&self) -> Result<gst::Element> {
+        Ok(build_bin(&self.id, &self.config)?.upcast())
     }
 
     fn timecode(&self) -> Option<String> {

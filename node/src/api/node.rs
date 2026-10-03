@@ -88,6 +88,7 @@ async fn put_settings(
         db::monitor_settings_set(&state.db, &monitor).await?;
         state.source_manager.write().await.apply_monitor_config(monitor);
     }
+    state.emit(&WsEvent::NodeUpdated);
     Ok(Json(settings_dto(&state).await))
 }
 
@@ -212,7 +213,7 @@ async fn post_recording(
     let legs = build_legs(&state, &req)?;
     for (path, _) in &legs {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+            tokio::fs::create_dir_all(parent).await.with_context(|| format!("create {}", parent.display()))?;
         }
     }
 

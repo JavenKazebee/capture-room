@@ -304,6 +304,9 @@ pub enum WsEvent {
     },
     #[serde(rename = "thumbnail.updated")]
     ThumbnailUpdated { source_id: String },
+    /// This node's name or monitor settings changed.
+    #[serde(rename = "node.updated")]
+    NodeUpdated,
     #[serde(rename = "node.online")]
     NodeOnline { peer_id: String },
     #[serde(rename = "node.offline")]
@@ -366,6 +369,9 @@ pub struct UpdateNodeSettingsRequest {
 pub struct StorageVolumeDto {
     pub name: String,
     pub mount_point: String,
+    /// More mount points of the same filesystem (e.g. btrfs subvolumes, bind
+    /// mounts), which share its space.
+    pub other_mounts: Vec<String>,
     pub file_system: String,
     #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub total_bytes: u64,

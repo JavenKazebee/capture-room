@@ -74,9 +74,7 @@ const CHANNEL_OPTIONS = [
   { value: 8, label: '7.1' },
 ]
 
-const nodeOptions = computed(() =>
-  nodes.value.map((n) => ({ value: n.id, label: n.is_self ? `${n.name} (this node)` : n.name })),
-)
+const nodeOptions = computed(() => nodes.value.map((n) => ({ value: n.id, label: nodesStore.labelOf(n.id) })))
 
 function blankForm(): TestSourceRequest {
   return {
@@ -189,11 +187,6 @@ function fpsLabel(n: number, d: number) {
   return d === 1 ? `${n} fps` : `${(n / d).toFixed(3)} fps`
 }
 
-function nodeName(nodeId: string) {
-  const n = nodesStore.nodes.find((nd) => nd.id === nodeId)
-  return n ? (n.is_self ? `${n.name} (this node)` : n.name) : nodeId
-}
-
 const sourcesByNode = computed(() => {
   const map = new Map<string, Source[]>()
   for (const s of store.sources) {
@@ -245,7 +238,7 @@ onMounted(async () => {
           v-if="sourcesByNode.size > 1"
           class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2"
         >
-          {{ nodeName(nodeId) }}
+          {{ nodesStore.labelOf(nodeId) }}
         </h2>
 
         <div class="rounded-lg border border-border bg-card divide-y divide-border">
