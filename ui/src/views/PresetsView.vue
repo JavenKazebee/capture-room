@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useEventListener } from '@vueuse/core'
 import { toast } from 'vue-sonner'
 import { Copy, Loader2, Lock, Plus, RotateCcw, Search, Trash2 } from '@lucide/vue'
@@ -25,6 +25,8 @@ const store = usePresetsStore()
 const sources = useSourcesStore()
 const nodes = useNodesStore()
 const desk = useRecordDeskStore()
+const route = useRoute()
+const router = useRouter()
 
 // ── List ──────────────────────────────────────────────────────────────────────
 
@@ -63,7 +65,12 @@ const isBuiltIn = computed(() => selectedId.value === 'default')
 const snapshot = () => JSON.stringify({ name: draftName.value, legs: draftLegs.value })
 const dirty = computed(() => !isBuiltIn.value && selectedId.value !== null && snapshot() !== original.value)
 
+/** Record feeds that asked for this draft ("New preset…"); it's applied to them once saved. */
+const pendingFor = ref<string[]>([])
+
 function load(id: string, name: string, legs: PresetOutputInput[]) {
+  // Leaving the draft for another preset drops the request.
+  if (id !== 'new') pendingFor.value = []
   selectedId.value = id
   draftName.value = name
   draftLegs.value = legs.map((l) => ({ ...l }))
@@ -102,8 +109,14 @@ function select(id: string) {
   })
 }
 
+const nameInput = ref<{ $el: HTMLInputElement } | null>(null)
+
 function create() {
-  guarded(() => load('new', '', [blankLeg()]))
+  guarded(() => {
+    load('new', '', [blankLeg()])
+    // A new preset's first job is a name.
+    nextTick(() => nameInput.value?.$el.focus())
+  })
 }
 
 function duplicate() {
@@ -147,11 +160,18 @@ function moveOutput(i: number, dir: -1 | 1) {
 }
 
 const clashes = computed(() => clashingLegs(draftLegs.value))
-const problemCount = computed(
-  () => draftLegs.value.filter(
-      (l, i) => clashes.value.has(i) || Object.keys(legProblems(l)).length || Object.keys(advancedProblems(l)).length,
-    ).length + (draftName.value.trim() ? 0 : 1),
-)
+/** What's blocking Save, in words: the name, then each output with a problem. */
+const problems = computed(() => {
+  const list: string[] = []
+  if (!draftName.value.trim()) list.push('Name the preset')
+  draftLegs.value.forEach((l, i) => {
+    if (clashes.value.has(i) || Object.keys(legProblems(l)).length || Object.keys(advancedProblems(l)).length) {
+      list.push(`Fix ${l.name || `output ${i + 1}`}`)
+    }
+  })
+  return list
+})
+const problemCount = computed(() => problems.value.length)
 
 const preview = computed(() => ({
   source: sources.sources[0]?.id ?? 'cam1',
@@ -169,8 +189,13 @@ async function save() {
   try {
     const payload = { name: draftName.value.trim(), outputs: draftLegs.value }
     const p = selectedId.value === 'new' ? await store.create(payload) : await store.update(selectedId.value!, payload)
+    // Settle the editor on the saved preset first: a failure after this
+    // must not leave the draft open, where saving again would duplicate it.
+    const feedKeys = pendingFor.value
+    const feeds = feedKeys.length
     loadPreset(p)
-    toast.success(`Saved ${p.name}`)
+    if (feeds) desk.setPresetMany(feedKeys, p.id)
+    toast.success(feeds ? `Saved ${p.name} · applied to ${feeds} feed${feeds > 1 ? 's' : ''}` : `Saved ${p.name}`)
   } catch (e) {
     serverError.value = errorMessage(e, 'Save failed.')
   } finally {
@@ -208,6 +233,13 @@ function pickInitial() {
 onMounted(async () => {
   if (!store.presets.length) await store.load()
   pickInitial()
+  // "New preset…" from a Record picker lands here with ?new=1, and ?for= the
+  // feeds to apply it to.
+  if (route.query.new) {
+    create()
+    pendingFor.value = ([] as unknown[]).concat(route.query.for ?? []).filter((k): k is string => typeof k === 'string')
+    router.replace({ query: {} })
+  }
 })
 
 // A preset updated elsewhere refreshes the editor unless there are local edits.
@@ -268,6 +300,7 @@ watch(selected, (p) => p && !dirty.value && p.id === selectedId.value && loadPre
       <section v-if="selectedId" class="flex-1 min-w-0 flex flex-col min-h-0">
         <div class="shrink-0 flex flex-wrap items-center gap-3 px-4 py-2.5 border-b border-border">
           <Input
+            ref="nameInput"
             v-model="draftName"
             placeholder="Preset name"
             class="h-8 max-w-sm text-sm font-semibold"
@@ -288,8 +321,8 @@ watch(selected, (p) => p && !dirty.value && p.id === selectedId.value && loadPre
             <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" :disabled="!dirty" @click="revert">
               <RotateCcw class="size-3.5" /> Revert
             </Button>
-            <span v-if="problemCount" class="text-xs text-destructive">{{ problemCount }} to fix</span>
-            <Button size="sm" class="h-7 gap-1.5 text-xs" :disabled="!dirty || !!problemCount || saving" :title="problemCount ? 'Fix the highlighted fields first' : `Save (${shortcut('S')})`" @click="save">
+            <span v-if="problemCount" class="text-xs text-destructive">{{ problems.join(' · ') }}</span>
+            <Button size="sm" class="h-7 gap-1.5 text-xs" :disabled="!dirty || !!problemCount || saving" :title="problemCount ? problems.join('\n') : `Save (${shortcut('S')})`" @click="save">
               <Loader2 v-if="saving" class="size-3.5 animate-spin" /> Save
             </Button>
           </template>

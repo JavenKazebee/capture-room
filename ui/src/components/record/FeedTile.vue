@@ -12,7 +12,7 @@ import { formatDuration } from '@/lib/format'
 import { fpsLabel } from '@/lib/sourceFormat'
 import { Button } from '@/components/ui/button'
 import AudioMeter from '@/components/AudioMeter.vue'
-import OptionSelect from '@/components/OptionSelect.vue'
+import PresetSelect from './PresetSelect.vue'
 import TallyBadge from '@/components/common/TallyBadge.vue'
 import { useThumbnail } from './useThumbnail'
 
@@ -147,8 +147,9 @@ watch(session, (now, prev) => {
       </div>
 
       <div class="flex gap-1.5 items-center" @click.stop>
-        <OptionSelect
+        <PresetSelect
           v-model="preset"
+          :feeds="[source.key]"
           :options="desk.presetOptions"
           :disabled="!!session || busy"
           class="h-7 text-xs flex-1 min-w-0"

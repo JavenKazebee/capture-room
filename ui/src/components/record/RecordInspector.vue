@@ -8,11 +8,12 @@ import { usePresetsStore, blankLeg, presetLegs } from '@/stores/presets'
 import { useNodesStore } from '@/stores/nodes'
 import { formatDuration } from '@/lib/format'
 import { shortcut } from '@/lib/keys'
-import { legSummary } from '@/lib/codecs'
+import { CODECS, CONTAINERS, chromaLabel, framerateLabel, hasBitrate, hasChroma } from '@/lib/codecs'
+import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import { fpsLabel, resolutionLabel } from '@/lib/sourceFormat'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import OptionSelect from '@/components/OptionSelect.vue'
+import PresetSelect from './PresetSelect.vue'
 import KeyValueList from '@/components/common/KeyValueList.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
@@ -45,6 +46,17 @@ const legs = computed(() => {
   const p = presets.presets.find((p) => p.id === presetId.value)
   return p ? presetLegs(p) : [blankLeg()]
 })
+
+function legFacts(leg: PresetOutputInput) {
+  return [
+    { label: 'Format', value: `${CODECS[leg.codec]} ${CONTAINERS[leg.container]}` },
+    { label: 'Resolution', value: leg.resolution ?? 'source', mono: !!leg.resolution },
+    { label: 'Frame rate', value: leg.framerate ? `${framerateLabel(leg.framerate)} fps` : 'source', mono: !!leg.framerate },
+    ...(hasBitrate(leg.codec) ? [{ label: 'Bitrate', value: leg.bitrate_kbps ? `${leg.bitrate_kbps} kbps` : 'auto', mono: !!leg.bitrate_kbps }] : []),
+    ...(hasChroma(leg.codec) ? [{ label: 'Chroma', value: chromaLabel(leg.chroma), mono: true }] : []),
+    { label: 'Path', value: leg.path_template, mono: true },
+  ]
+}
 
 const sourceFacts = computed(() => {
   const s = source.value
@@ -124,8 +136,9 @@ const confirmStop = ref(false)
       </ul>
       <div class="space-y-1.5">
         <h3 class="section-title">Preset for all selected</h3>
-        <OptionSelect
+        <PresetSelect
           :model-value="desk.selectedPresetId"
+          :feeds="desk.selectedSources.map((s) => s.key)"
           :options="desk.selectionPresetOptions"
           class="h-8"
           @update:model-value="desk.setSelectionPreset"
@@ -168,7 +181,7 @@ const confirmStop = ref(false)
         <section class="space-y-2">
           <h3 class="section-title">Record</h3>
           <div class="flex gap-2">
-            <OptionSelect v-model="presetId" :options="desk.presetOptions" :disabled="!!session || busy" class="h-8 flex-1 min-w-0" />
+            <PresetSelect v-model="presetId" :feeds="[source.key]" :options="desk.presetOptions" :disabled="!!session || busy" class="h-8 flex-1 min-w-0" />
             <Button
               :variant="session ? 'default' : 'outline'"
               class="h-8 px-4 gap-1.5 shrink-0"
@@ -181,13 +194,20 @@ const confirmStop = ref(false)
               {{ session ? 'Stop' : 'Record' }}
             </Button>
           </div>
-          <ol class="space-y-1.5">
-            <li v-for="(leg, i) in legs" :key="i" class="rounded-md border border-border px-2.5 py-1.5 text-xs">
-              <div class="font-medium">{{ leg.name || `Output ${i + 1}` }}</div>
-              <div class="text-muted-foreground">{{ legSummary(leg) }}</div>
-              <div class="num text-muted-foreground truncate" :title="leg.path_template">{{ leg.path_template }}</div>
-            </li>
-          </ol>
+        </section>
+
+        <!-- Source -->
+        <section class="space-y-2">
+          <h3 class="section-title">Source</h3>
+          <KeyValueList :items="sourceFacts" />
+        </section>
+
+        <!-- Outputs -->
+        <section v-for="(leg, i) in legs" :key="i" class="space-y-2">
+          <h3 class="section-title">
+            {{ leg.name || (legs.length > 1 ? `Output ${i + 1}` : 'Output') }}
+          </h3>
+          <KeyValueList :items="legFacts(leg)" />
         </section>
 
         <!-- Live session -->
@@ -226,12 +246,6 @@ const confirmStop = ref(false)
           <p v-if="session.error_message" class="text-xs text-destructive break-words">
             Output failed: {{ session.error_message }}
           </p>
-        </section>
-
-        <!-- Source -->
-        <section class="space-y-2">
-          <h3 class="section-title">Source</h3>
-          <KeyValueList :items="sourceFacts" />
         </section>
 
         <!-- History -->

@@ -203,6 +203,7 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     clearSelection,
     presetIdOf,
     setPreset,
+    setPresetMany,
     presetOptions,
     selectedPresetId,
     selectionPresetOptions,
