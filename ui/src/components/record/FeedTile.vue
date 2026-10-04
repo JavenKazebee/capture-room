@@ -3,7 +3,7 @@ import { computed, toRef, watch } from 'vue'
 import { useNow } from '@vueuse/core'
 import { Check } from '@lucide/vue'
 import { audioLevels, type Source } from '@/stores/sources'
-import { useRecordingsStore } from '@/stores/recordings'
+import { totalDropped, useRecordingsStore } from '@/stores/recordings'
 import { useRecordDeskStore } from '@/stores/recordDesk'
 import { useNodesStore } from '@/stores/nodes'
 import { useEventsStore } from '@/stores/events'
@@ -106,8 +106,15 @@ watch(session, (now, prev) => {
         </button>
 
         <!-- Live (top-right) -->
-        <div v-if="session" class="absolute top-1.5 right-1.5">
+        <div v-if="session" class="absolute top-1.5 right-1.5 flex flex-col items-end gap-1">
           <TallyBadge :duration="duration" />
+          <span
+            v-if="totalDropped(session)"
+            class="rounded-sm bg-warning px-1.5 py-0.5 text-[10px] font-semibold text-black num"
+            title="Video frames dropped because an encoder couldn't keep up"
+          >
+            {{ totalDropped(session).toLocaleString() }} dropped
+          </span>
         </div>
 
         <!-- Timecode (bottom-left) / format (bottom-right) -->

@@ -176,7 +176,7 @@ async fn get_recordings(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<Vec<RecordingSessionDto>>> {
     let active: Vec<RecordingSessionDto> =
-        state.source_manager.read().await.active_sessions().into_iter().cloned().collect();
+        state.source_manager.read().await.active_sessions();
     let historical = db::sessions_list(&state.db)
         .await?
         .into_iter()
@@ -194,8 +194,7 @@ async fn get_recording(
         .await
         .active_sessions()
         .into_iter()
-        .find(|s| s.id == id)
-        .cloned();
+        .find(|s| s.id == id);
     let session = match active {
         Some(s) => Some(s),
         None => db::session_get(&state.db, &id).await?,
@@ -272,7 +271,7 @@ async fn stop_orphaned(state: &AppState, id: &str) -> anyhow::Result<Option<Reco
     };
     if session.status == RecordingStatus::Active {
         let stopped_at = chrono::Utc::now().to_rfc3339();
-        db::session_update_stop(&state.db, id, &stopped_at, RecordingStatus::Stopped, None).await?;
+        db::session_update_stop(&state.db, id, &stopped_at, RecordingStatus::Stopped, None, None).await?;
         session.stopped_at = Some(stopped_at);
         session.status = RecordingStatus::Stopped;
         session.error_message = None;

@@ -38,7 +38,7 @@ export function legSummary(leg: PresetOutputInput) {
   return [
     `${CODECS[leg.codec]} ${CONTAINERS[leg.container]}`,
     leg.resolution ?? 'source res',
-    leg.framerate ? `${fpsLabel(leg.framerate)} fps` : 'source fps',
+    leg.framerate ? `${framerateLabel(leg.framerate)} fps` : 'source fps',
     leg.bitrate_kbps && hasBitrate(leg.codec) ? `${leg.bitrate_kbps} kbps` : null,
     hasChroma(leg.codec) ? chromaLabel(leg.chroma) : null,
   ]
@@ -143,7 +143,7 @@ export function formatFramerate([n, d]: [number, number]) {
 }
 
 /** A stored frame rate shown as a decimal ("30000/1001" → "29.97"). */
-export function fpsLabel(value: string) {
+export function framerateLabel(value: string) {
   const f = parseFramerate(value)
   return f ? formatFramerate(f) : value
 }

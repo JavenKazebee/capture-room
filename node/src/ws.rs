@@ -74,7 +74,7 @@ pub async fn handle(socket: WebSocket, mut rx: broadcast::Receiver<String>) {
 }
 
 /// Emit this node's periodic events: audio levels every tick (~10 fps),
-/// timecode at 1 Hz, and thumbnail notifications at the configured fps.
+/// timecode and recording stats at 1 Hz, and thumbnail notifications at the configured fps.
 pub fn spawn_emitter(state: Arc<AppState>) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(100));
@@ -90,6 +90,13 @@ pub fn spawn_emitter(state: Arc<AppState>) {
             }
 
             if tick.is_multiple_of(10) {
+                for session in mgr.active_sessions() {
+                    state.emit(&WsEvent::RecordingStats {
+                        session_id: session.id,
+                        source_id: session.source_id,
+                        dropped_frames: session.dropped_frames,
+                    });
+                }
                 for source in mgr.sources() {
                     state.emit(&WsEvent::FeedStatus {
                         source_id: source.id().to_string(),

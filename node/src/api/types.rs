@@ -134,6 +134,11 @@ pub struct RecordingSessionDto {
     /// Stored as a JSON array.
     #[sqlx(json)]
     pub output_paths: Vec<String>,
+    /// Video frames each output leg dropped because it couldn't keep up,
+    /// ordered like `output_paths`. Live while recording, final once stopped.
+    #[sqlx(json)]
+    #[cfg_attr(feature = "export-types", ts(type = "Array<number>"))]
+    pub dropped_frames: Vec<u64>,
     pub status: RecordingStatus,
     pub error_message: Option<String>,
 }
@@ -292,6 +297,14 @@ pub enum WsEvent {
         session_id: String,
         source_id: String,
         error: String,
+    },
+    /// Live dropped-frame counts of an active session, once a second.
+    #[serde(rename = "recording.stats")]
+    RecordingStats {
+        session_id: String,
+        source_id: String,
+        #[cfg_attr(feature = "export-types", ts(type = "Array<number>"))]
+        dropped_frames: Vec<u64>,
     },
     #[serde(rename = "feed.status")]
     FeedStatus {

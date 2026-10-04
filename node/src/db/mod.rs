@@ -80,7 +80,7 @@ pub async fn monitor_settings_set(pool: &SqlitePool, m: &MonitorSettingsDto) -> 
 // ── recording_sessions ────────────────────────────────────────────────────────
 
 const SESSION_SELECT: &str = "SELECT id, source_id, preset_id, started_at, stopped_at,
-                                     output_paths, status, error_message
+                                     output_paths, dropped_frames, status, error_message
                               FROM recording_sessions";
 
 pub async fn sessions_mark_crashed(pool: &SqlitePool) -> Result<()> {
@@ -99,8 +99,8 @@ pub async fn sessions_mark_crashed(pool: &SqlitePool) -> Result<()> {
 pub async fn session_insert(pool: &SqlitePool, s: &RecordingSessionDto) -> Result<()> {
     sqlx::query(
         "INSERT INTO recording_sessions
-         (id, source_id, preset_id, started_at, stopped_at, output_paths, status, error_message)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, source_id, preset_id, started_at, stopped_at, output_paths, dropped_frames, status, error_message)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.id)
     .bind(&s.source_id)
@@ -108,6 +108,7 @@ pub async fn session_insert(pool: &SqlitePool, s: &RecordingSessionDto) -> Resul
     .bind(&s.started_at)
     .bind(&s.stopped_at)
     .bind(Json(&s.output_paths))
+    .bind(Json(&s.dropped_frames))
     .bind(s.status)
     .bind(&s.error_message)
     .execute(pool)
@@ -121,15 +122,17 @@ pub async fn session_update_stop(
     stopped_at: &str,
     status: RecordingStatus,
     error_message: Option<&str>,
+    dropped_frames: Option<&[u64]>,
 ) -> Result<()> {
     sqlx::query(
         "UPDATE recording_sessions
-         SET stopped_at = ?, status = ?, error_message = ?
+         SET stopped_at = ?, status = ?, error_message = ?, dropped_frames = COALESCE(?, dropped_frames)
          WHERE id = ?",
     )
     .bind(stopped_at)
     .bind(status)
     .bind(error_message)
+    .bind(dropped_frames.map(Json))
     .bind(id)
     .execute(pool)
     .await?;

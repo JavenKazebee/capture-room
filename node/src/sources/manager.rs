@@ -31,6 +31,12 @@ struct ActiveSession {
     failed_legs: usize,
 }
 
+impl ActiveSession {
+    fn dropped_frames(&self) -> Vec<u64> {
+        self.legs.iter().map(RecordingLeg::dropped_frames).collect()
+    }
+}
+
 /// A session taken out of the active set whose legs still have to drain and
 /// close their files. The caller runs it — see
 /// [`SourceManager::begin_stop_recording`].
@@ -269,6 +275,7 @@ impl SourceManager {
             started_at: Utc::now().to_rfc3339(),
             stopped_at: None,
             output_paths: legs.iter().map(|(p, _)| p.display().to_string()).collect(),
+            dropped_frames: vec![0; legs.len()],
             status: RecordingStatus::Active,
             error_message: None,
         };
@@ -278,8 +285,12 @@ impl SourceManager {
         Ok(dto)
     }
 
-    pub fn active_sessions(&self) -> Vec<&RecordingSessionDto> {
-        self.sessions.values().map(|s| &s.dto).collect()
+    /// Active sessions, with their live dropped-frame counts.
+    pub fn active_sessions(&self) -> Vec<RecordingSessionDto> {
+        self.sessions
+            .values()
+            .map(|s| RecordingSessionDto { dropped_frames: s.dropped_frames(), ..s.dto.clone() })
+            .collect()
     }
 
     /// Take a session out of the active set and hand back the detach work.
@@ -360,7 +371,10 @@ impl SourceManager {
     }
 
     fn take_session(&mut self, session_id: &str) -> Option<StopJob> {
-        let ActiveSession { legs, dto, .. } = self.sessions.remove(session_id)?;
+        let session = self.sessions.remove(session_id)?;
+        // Nothing is fed to the legs once they're stopping, so this is final.
+        let dto = RecordingSessionDto { dropped_frames: session.dropped_frames(), ..session.dto };
+        let legs = session.legs;
         let (tx, rx) = watch::channel(None);
         self.stopping.insert(session_id.to_string(), rx);
         Some(StopJob { legs, dto, tx })

@@ -9,4 +9,9 @@ export type RecordingSessionDto = { id: string, source_id: string, preset_id: st
  * Ordered list of output file paths, one per preset output leg.
  * Stored as a JSON array.
  */
-output_paths: Array<string>, status: RecordingStatus, error_message: string | null, };
+output_paths: Array<string>, 
+/**
+ * Video frames each output leg dropped because it couldn't keep up,
+ * ordered like `output_paths`. Live while recording, final once stopped.
+ */
+dropped_frames: Array<number>, status: RecordingStatus, error_message: string | null, };

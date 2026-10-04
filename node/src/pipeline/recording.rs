@@ -238,6 +238,14 @@ impl RecordingLeg {
         Ok(())
     }
 
+    /// Video frames dropped so far because the leg couldn't keep up (its
+    /// leaky input queue overflowed). Read from the appsrc rather than the
+    /// `ConsumptionLink`: the link's count includes these same drops, plus
+    /// keyframe waits that raw video never has.
+    pub fn dropped_frames(&self) -> u64 {
+        self.video_src.property::<u64>("dropped")
+    }
+
     /// Stop feeding the leg, let it drain to EOS so the muxer writes its
     /// index, and wait up to `timeout` for that. An error the leg hit while
     /// recording, or a timeout, is returned as the stop's error.

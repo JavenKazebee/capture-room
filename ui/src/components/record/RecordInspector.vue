@@ -200,9 +200,16 @@ const confirmStop = ref(false)
             ]"
           />
           <div class="space-y-1">
-            <div v-for="p in session.output_paths" :key="p" class="flex items-center gap-1 min-w-0 text-xs">
+            <div v-for="(p, i) in session.output_paths" :key="p" class="flex items-center gap-1 min-w-0 text-xs">
               <span class="num truncate text-muted-foreground" :title="p">{{ p }}</span>
               <CopyButton :value="p" />
+              <span
+                class="num ml-auto shrink-0"
+                :class="session.dropped_frames[i] ? 'text-warning' : 'text-muted-foreground'"
+                title="Video frames dropped because this output's encoder couldn't keep up"
+              >
+                {{ (session.dropped_frames[i] ?? 0).toLocaleString() }} dropped
+              </span>
             </div>
           </div>
           <p v-if="session.error_message" class="text-xs text-destructive break-words">

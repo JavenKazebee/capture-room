@@ -14,6 +14,11 @@ import type { StartRecordingRequest } from '@/types/generated/StartRecordingRequ
  */
 export type RecordingSession = RecordingSessionDto & { node_id: string }
 
+/** Video frames a session dropped across all its outputs. */
+export function totalDropped(s: Pick<RecordingSessionDto, 'dropped_frames'>) {
+  return s.dropped_frames.reduce((a, b) => a + b, 0)
+}
+
 export const useRecordingsStore = defineStore('recordings', () => {
   const nodes = useNodesStore()
   const sessions = ref<RecordingSession[]>([])
@@ -40,6 +45,12 @@ export const useRecordingsStore = defineStore('recordings', () => {
   function markLegFailed(nodeId: string, sessionId: string, error: string) {
     const session = find(nodeId, sessionId)
     if (session) session.error_message = error
+  }
+
+  /** Live per-output dropped-frame counts of an active session. */
+  function setDropped(nodeId: string, sessionId: string, dropped: number[]) {
+    const session = find(nodeId, sessionId)
+    if (session) session.dropped_frames = dropped
   }
 
   function markError(nodeId: string, sessionId: string, error: string) {
@@ -100,6 +111,7 @@ export const useRecordingsStore = defineStore('recordings', () => {
     find,
     markStopped,
     markLegFailed,
+    setDropped,
     markError,
     load,
     loadForNode,

@@ -60,6 +60,7 @@ pub async fn run_stop(state: Arc<AppState>, job: StopJob, source_error: Option<S
         dto.stopped_at.as_deref().unwrap_or_default(),
         dto.status,
         dto.error_message.as_deref(),
+        Some(&dto.dropped_frames),
     )
     .await
     {

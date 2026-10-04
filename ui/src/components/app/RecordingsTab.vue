@@ -75,9 +75,16 @@ const statusDot = { active: 'tally', stopped: 'off', error: 'error' } as const
           <td class="num text-muted-foreground whitespace-nowrap">{{ started(s) }}</td>
           <td class="num text-right" :class="s.status === 'active' && 'text-tally font-medium'">{{ duration(s) }}</td>
           <td class="min-w-0">
-            <div v-for="p in s.output_paths" :key="p" class="flex items-center gap-1 min-w-0">
+            <div v-for="(p, i) in s.output_paths" :key="p" class="flex items-center gap-1 min-w-0">
               <span class="num truncate text-muted-foreground" :title="p">{{ p }}</span>
               <CopyButton :value="p" />
+              <span
+                v-if="s.dropped_frames[i]"
+                class="num shrink-0 text-warning"
+                title="Video frames dropped because this output's encoder couldn't keep up"
+              >
+                {{ s.dropped_frames[i]!.toLocaleString() }} dropped
+              </span>
             </div>
             <p v-if="s.error_message" class="text-destructive break-words">{{ s.error_message }}</p>
           </td>

@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import { useSourcesStore, audioLevels, thumbnailSeqs } from '@/stores/sources'
-import { useRecordingsStore } from '@/stores/recordings'
+import { totalDropped, useRecordingsStore } from '@/stores/recordings'
 import { useNodesStore } from '@/stores/nodes'
 import { sourceKey } from '@/composables/useApi'
 import { useEventsStore } from '@/stores/events'
@@ -108,6 +108,10 @@ function handleEvent(event: NodeEvent) {
       recordings.markError(nodeId, event.session_id, event.error)
       break
 
+    case 'recording.stats':
+      recordings.setDropped(nodeId, event.session_id, event.dropped_frames)
+      break
+
     case 'feed.status':
       sources.updateStatus(nodeId, event.source_id, event.timecode, event.error)
       break
@@ -158,6 +162,18 @@ function logEvent(event: NodeEvent) {
     case 'recording.error':
       log('error', `Recording failed: ${source(event.source_id)}`, { node_id, detail: event.error })
       break
+    case 'recording.stats': {
+      // Only the first drop of a session: the stats repeat every second.
+      const prev = useRecordingsStore().find(node_id, event.session_id)
+      const now = event.dropped_frames.reduce((a, b) => a + b, 0)
+      if (prev && totalDropped(prev) === 0 && now > 0) {
+        log('warn', `Dropping frames on ${source(event.source_id)} — an encoder can't keep up`, {
+          node_id,
+          detail: event.session_id,
+        })
+      }
+      break
+    }
     case 'feed.status': {
       // Only transitions: the status event repeats every tick.
       const prev = useSourcesStore().sources.find((s) => s.key === sourceKey(node_id, event.source_id))
