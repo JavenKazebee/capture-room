@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 use chrono::Utc;
@@ -28,6 +29,10 @@ struct ActiveSession {
     dto: RecordingSessionDto,
     /// Legs that have failed while recording (each reports only once).
     failed_legs: usize,
+    /// What the outputs encode (see [`crate::capacity::outputs_key`]), to
+    /// count the session against the node's benchmarked capacity.
+    outputs_key: String,
+    started: Instant,
 }
 
 impl ActiveSession {
@@ -256,6 +261,7 @@ impl SourceManager {
         source_id: &str,
         preset_id: &str,
         legs: &[(PathBuf, RecordingProfile)],
+        outputs_key: String,
     ) -> Result<RecordingSessionDto> {
         if self.sessions.values().any(|s| s.dto.source_id == source_id) {
             bail!("source {source_id} already has an active recording");
@@ -302,7 +308,10 @@ impl SourceManager {
         };
 
         info!(id = %dto.id, source = source_id, legs = legs.len(), "recording started");
-        self.sessions.insert(dto.id.clone(), ActiveSession { legs: recording_legs, dto: dto.clone(), failed_legs: 0 });
+        self.sessions.insert(
+            dto.id.clone(),
+            ActiveSession { legs: recording_legs, dto: dto.clone(), failed_legs: 0, outputs_key, started: Instant::now() },
+        );
         Ok(dto)
     }
 
@@ -312,6 +321,21 @@ impl SourceManager {
             .values()
             .map(|s| RecordingSessionDto { dropped_frames: s.dropped_frames(), files: s.files(), ..s.dto.clone() })
             .collect()
+    }
+
+    /// Every active leg's files, with how long its session has recorded —
+    /// for measuring what recordings write.
+    pub fn active_leg_files(&self) -> Vec<(Vec<String>, Duration)> {
+        self.sessions
+            .values()
+            .flat_map(|s| s.legs.iter().map(|leg| (leg.files(), s.started.elapsed())))
+            .collect()
+    }
+
+    /// Every active session's outputs key and its source's format, to add
+    /// up against the node's benchmarked capacity.
+    pub fn active_feeds(&self) -> Vec<(String, SourceFormat)> {
+        self.sessions.values().map(|s| (s.outputs_key.clone(), self.source_format(&s.dto.source_id))).collect()
     }
 
     /// Take a session out of the active set and hand back the detach work.

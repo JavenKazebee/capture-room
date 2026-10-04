@@ -501,6 +501,9 @@ pub enum WsEvent {
     },
     #[serde(rename = "thumbnail.updated")]
     ThumbnailUpdated { source_id: String },
+    /// A benchmark started, began a step, finished a step, or ended.
+    #[serde(rename = "benchmark.updated")]
+    BenchmarkUpdated { run: Box<BenchmarkRunDto> },
     /// This node's name or monitor settings changed.
     #[serde(rename = "node.updated")]
     NodeUpdated,
@@ -575,6 +578,209 @@ pub struct StorageVolumeDto {
     #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub available_bytes: u64,
     pub removable: bool,
+    /// What this node's active recordings write to the volume, measured from
+    /// their files. 0 when nothing records here.
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub write_bytes_per_sec: u64,
+    /// Recording time left at that rate; `None` when nothing records here.
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub seconds_left: Option<u64>,
+}
+
+// ── Benchmarks ────────────────────────────────────────────────────────────────
+
+/// Body for starting a benchmark: the outputs to record (sent inline, like a
+/// recording start) and the media file every feed plays.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct BenchmarkRequest {
+    /// Informational: the preset the outputs came from.
+    pub preset_id: Option<String>,
+    pub preset_name: Option<String>,
+    pub outputs: Vec<PresetOutputInput>,
+    /// Absolute path on the node of the footage every feed plays in a loop.
+    pub media_path: String,
+    /// Search no higher than this many feeds. Default 64.
+    #[serde(default)]
+    pub max_feeds: Option<u32>,
+    /// Seconds each step is measured for, after a warm-up. Default 20.
+    #[serde(default)]
+    pub step_secs: Option<u32>,
+    /// A step fails once more than this percentage of frames is dropped.
+    /// Default 0.5.
+    #[serde(default)]
+    pub drop_threshold_pct: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "lowercase")]
+#[sqlx(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum BenchmarkStatus {
+    Running,
+    /// Ran until a step failed or it reached the feed limit.
+    Completed,
+    Cancelled,
+    Error,
+}
+
+/// One step of a benchmark: `feeds` feeds recording at once, measured over
+/// `secs`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct BenchmarkStepDto {
+    pub feeds: u32,
+    pub secs: f64,
+    /// Frames the feeds should have produced, from the footage's frame rate.
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub expected_frames: u64,
+    /// Frames the feeds didn't produce: decoding or the monitors fell behind.
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub source_shortfall: u64,
+    /// Frames the outputs dropped because an encoder couldn't keep up.
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub output_dropped: u64,
+    /// The larger of the two, as a percentage of the frames involved.
+    pub drop_pct: f64,
+    /// Whole-machine CPU use, averaged over the step.
+    pub cpu_pct: f64,
+    /// Whole-machine memory use at the end of the step.
+    pub memory_pct: f64,
+    /// Everything the step wrote, per second.
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub write_bytes_per_sec: u64,
+    /// Per output, ordered like the run's `outputs`: bytes per second one
+    /// feed wrote, averaged over the feeds.
+    #[cfg_attr(feature = "export-types", ts(type = "Array<number>"))]
+    pub output_bytes_per_sec: Vec<u64>,
+    pub passed: bool,
+    /// A quick check while the feeds are doubled: it passes only well clear of
+    /// the limit, and is otherwise followed by a full-length step.
+    #[serde(default)]
+    pub quick: bool,
+}
+
+/// A benchmark run, as stored and as served.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct BenchmarkRunDto {
+    pub id: String,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub status: BenchmarkStatus,
+    pub preset_id: Option<String>,
+    pub preset_name: Option<String>,
+    pub outputs: Vec<PresetOutputInput>,
+    pub media_path: String,
+    pub media: MediaInfo,
+    pub max_feeds: u32,
+    pub step_secs: u32,
+    pub drop_threshold_pct: f64,
+    /// Feeds currently running (0 once finished). Goes down as well as up:
+    /// the search narrows in on the answer.
+    pub feeds_running: u32,
+    pub steps: Vec<BenchmarkStepDto>,
+    /// The most feeds that kept up (while running, the most so far). 0 if
+    /// even one feed couldn't.
+    pub sustainable_feeds: u32,
+    /// The encoder element each output used, ordered like `outputs`.
+    pub encoders: Vec<String>,
+    /// Why the run ended: the failed step, the feed limit, a cancel, or an
+    /// error.
+    pub message: Option<String>,
+    /// Where the run writes its files (deleted when it ends).
+    pub scratch_dirs: Vec<String>,
+}
+
+// ── Capacity ──────────────────────────────────────────────────────────────────
+
+/// What one benchmarked recording setup sustains on this node: the latest
+/// finished run for those outputs and that footage format.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct ProfileCapacityDto {
+    pub run_id: String,
+    pub finished_at: String,
+    pub preset_name: Option<String>,
+    pub outputs: Vec<PresetOutputInput>,
+    pub media: MediaInfo,
+    pub sustainable_feeds: u32,
+    /// Every step passed, so the node may sustain more than
+    /// `sustainable_feeds`.
+    pub at_limit: bool,
+    pub encoders: Vec<String>,
+    /// Bytes per second one feed writes, all outputs together.
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub bytes_per_sec_per_feed: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct NodeCapacityDto {
+    /// Latest result per benchmarked setup, newest first.
+    pub profiles: Vec<ProfileCapacityDto>,
+    pub active_feeds: u32,
+    /// Share of the benchmarked capacity the active recordings use (1 = full),
+    /// counting only those with a matching benchmark.
+    pub load: f64,
+    /// Active recordings with no benchmark to judge them by.
+    pub unknown_feeds: u32,
+    /// The benchmark running now, if any.
+    pub running: Option<BenchmarkRunDto>,
+}
+
+/// Would recording `source_ids` with `outputs` fit, on top of what's
+/// recording already?
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct CapacityCheckRequest {
+    pub outputs: Vec<PresetOutputInput>,
+    pub source_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum CapacityVerdict {
+    /// Within 80% of the benchmarked capacity.
+    Fits,
+    /// Between 80% and 100%.
+    Tight,
+    Over,
+    /// Some of it has no benchmark to judge by (and what does fits).
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct CapacityCheckDto {
+    pub verdict: CapacityVerdict,
+    /// Load before and after starting (see [`NodeCapacityDto::load`]).
+    pub load_before: f64,
+    pub load_after: f64,
+    /// Feeds (active or new) with no benchmark to judge them by.
+    pub unknown_feeds: u32,
+    /// A benchmark for these outputs was scaled from footage of another
+    /// format, so the numbers are approximate.
+    pub estimated: bool,
+    /// Volumes the new recordings would write to.
+    pub volumes: Vec<VolumeCheckDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct VolumeCheckDto {
+    pub mount_point: String,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub available_bytes: u64,
+    /// Active recordings plus the new ones (estimated from a benchmark, or
+    /// the outputs' bitrates).
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub write_bytes_per_sec: u64,
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub seconds_left: Option<u64>,
 }
 
 // ── Controller ────────────────────────────────────────────────────────────────

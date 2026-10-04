@@ -665,6 +665,42 @@ impl RecordingProfile {
             ((kbps / 500.0).round() * 500.0).max(500.0) as u32
         }))
     }
+
+    /// Roughly what the leg writes per second, video and audio, for storage
+    /// estimates when no benchmark has measured it: the bitrate where there
+    /// is one, Apple's target rates for ProRes (scaled from 1080p29.97), and
+    /// the raw size for uncompressed video.
+    pub fn estimated_bytes_per_sec(&self) -> u64 {
+        let (w, h) = self.frame_size();
+        let (n, d) = self.frame_rate();
+        let pixels_per_sec = w as f64 * h as f64 * n as f64 / d as f64;
+        let prores_mbps = match self.video_codec {
+            VideoCodec::ProRes4444 => Some(330.0),
+            VideoCodec::ProRes422Hq => Some(220.0),
+            VideoCodec::ProRes422 => Some(147.0),
+            VideoCodec::ProRes422Lt => Some(102.0),
+            VideoCodec::ProRes422Proxy => Some(45.0),
+            _ => None,
+        };
+        let video = match (self.bitrate(), prores_mbps) {
+            (Some(kbps), _) => kbps as f64 * 1000.0 / 8.0,
+            (None, Some(mbps)) => mbps * 1e6 / 8.0 * pixels_per_sec / (1920.0 * 1080.0 * 30000.0 / 1001.0),
+            (None, None) => {
+                let bytes_per_pixel = match self.chroma {
+                    ChromaSubsampling::Yuv420 => 1.5,
+                    ChromaSubsampling::Yuv422 => 2.0,
+                    ChromaSubsampling::Yuv444 => 3.0,
+                };
+                pixels_per_sec * bytes_per_pixel
+            }
+        };
+        let channels = self.audio_mix().map(|m| m.channels).or(self.source_audio.map(|(n, _)| n)).unwrap_or(2);
+        let audio = match self.audio_format() {
+            AudioFormat::Pcm24 => 48_000.0 * 3.0 * channels as f64,
+            AudioFormat::Aac { bitrate } | AudioFormat::Opus { bitrate } => bitrate as f64 / 8.0,
+        };
+        (video + audio) as u64
+    }
 }
 
 /// Why `codec` can't be recorded in `container`, if it can't. Found by

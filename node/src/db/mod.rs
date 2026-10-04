@@ -4,7 +4,7 @@ use std::str::FromStr;
 use tracing::info;
 
 use crate::api::types::{
-    ConfiguredSourceDto, MonitorSettingsDto, PresetDto, PresetOutputDto, RecordingSessionDto, RecordingStatus,
+    BenchmarkRunDto, BenchmarkStatus, ConfiguredSourceDto, MonitorSettingsDto, PresetDto, PresetOutputDto, RecordingSessionDto, RecordingStatus,
 };
 
 pub async fn init(db_path: &str) -> Result<SqlitePool> {
@@ -367,4 +367,56 @@ pub async fn configured_source_delete(pool: &SqlitePool, id: &str) -> Result<boo
         .execute(pool)
         .await?;
     Ok(res.rows_affected() > 0)
+}
+
+// ── benchmark_results ─────────────────────────────────────────────────────────
+
+/// Insert or replace a benchmark run.
+pub async fn benchmark_save(pool: &SqlitePool, run: &BenchmarkRunDto) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO benchmark_results (id, started_at, status, run) VALUES (?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET status = excluded.status, run = excluded.run",
+    )
+    .bind(&run.id)
+    .bind(&run.started_at)
+    .bind(run.status)
+    .bind(Json(run))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// The latest runs, newest first.
+pub async fn benchmarks_list(pool: &SqlitePool) -> Result<Vec<BenchmarkRunDto>> {
+    let rows = sqlx::query_scalar::<_, Json<BenchmarkRunDto>>(
+        "SELECT run FROM benchmark_results ORDER BY started_at DESC LIMIT 200",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
+}
+
+pub async fn benchmark_get(pool: &SqlitePool, id: &str) -> Result<Option<BenchmarkRunDto>> {
+    let row = sqlx::query_scalar::<_, Json<BenchmarkRunDto>>("SELECT run FROM benchmark_results WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| r.0))
+}
+
+pub async fn benchmark_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
+    let res = sqlx::query("DELETE FROM benchmark_results WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Runs still marked running: on startup, ones a crash or restart cut short.
+pub async fn benchmarks_running(pool: &SqlitePool) -> Result<Vec<BenchmarkRunDto>> {
+    let rows = sqlx::query_scalar::<_, Json<BenchmarkRunDto>>("SELECT run FROM benchmark_results WHERE status = ?")
+        .bind(BenchmarkStatus::Running)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
 }

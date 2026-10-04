@@ -2,12 +2,22 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useStorage } from '@vueuse/core'
 import { toast } from 'vue-sonner'
+import { formatTimeLeft } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
-import { usePresetsStore } from '@/stores/presets'
+import { LOW_TIME_SECS, useCapacityStore } from '@/stores/capacity'
+import { useEventsStore } from '@/stores/events'
+import { useNodesStore } from '@/stores/nodes'
+import { blankLeg, presetLegs, usePresetsStore } from '@/stores/presets'
 import { useRecordingsStore } from '@/stores/recordings'
 import { useSourcesStore, type Source } from '@/stores/sources'
 
 export type StateFilter = 'all' | 'live' | 'idle'
+
+/** Something to tell the operator about recordings they're starting. */
+interface Warning {
+  nodeId: string
+  text: string
+}
 
 /**
  * State of the Record workspace: which feeds are selected, which one the
@@ -17,6 +27,8 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
   const sources = useSourcesStore()
   const recordings = useRecordingsStore()
   const presets = usePresetsStore()
+  const capacity = useCapacityStore()
+  const nodes = useNodesStore()
 
   // ── Filters ────────────────────────────────────────────────────────────────
 
@@ -152,13 +164,80 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     if (session) await recordings.stop(s.node_id, session.id)
   }
 
+  /**
+   * What to warn about before starting `list`: a node pushed past (or close
+   * to) its benchmarked capacity, or a volume that would fill within the
+   * hour. Checked before starting, so the new recordings aren't counted
+   * twice. Never blocks recording: a failed check just warns about nothing.
+   */
+  async function capacityWarnings(list: Source[]): Promise<Warning[]> {
+    const groups = new Map<string, { nodeId: string; presetId: string; sourceIds: string[] }>()
+    for (const s of list) {
+      const presetId = presetIdOf(s.key)
+      const key = `${s.node_id}\n${presetId}`
+      const group = groups.get(key) ?? { nodeId: s.node_id, presetId, sourceIds: [] }
+      group.sourceIds.push(s.id)
+      groups.set(key, group)
+    }
+    const checks = await Promise.all(
+      [...groups.values()].map(async (g) => {
+        const preset = presets.presets.find((p) => p.id === g.presetId)
+        const outputs = preset ? presetLegs(preset) : [blankLeg()]
+        return { ...g, check: await capacity.check(g.nodeId, outputs, g.sourceIds).catch(() => null) }
+      }),
+    )
+
+    const warnings: Warning[] = []
+    const perNode = new Map<string, { before: number; added: number }>()
+    const lowest = new Map<string, { nodeId: string; mount: string; secs: number }>()
+    for (const { nodeId, check } of checks) {
+      if (!check) continue
+      // Groups for one node each start from the same load, so add their increases.
+      const n = perNode.get(nodeId) ?? { before: check.load_before, added: 0 }
+      n.added += check.load_after - check.load_before
+      perNode.set(nodeId, n)
+      for (const v of check.volumes) {
+        const key = `${nodeId}\n${v.mount_point}`
+        if (v.seconds_left != null && v.seconds_left < (lowest.get(key)?.secs ?? Infinity)) {
+          lowest.set(key, { nodeId, mount: v.mount_point, secs: v.seconds_left })
+        }
+      }
+    }
+    for (const [nodeId, { before, added }] of perNode) {
+      const pct = Math.round((before + added) * 100)
+      const name = nodes.nameOf(nodeId)
+      if (pct > 100) warnings.push({ nodeId, text: `${name} is over its benchmarked capacity (${pct}%): expect dropped frames.` })
+      else if (pct > 80) warnings.push({ nodeId, text: `${name} is near its benchmarked capacity (${pct}%).` })
+    }
+    for (const { nodeId, mount, secs } of lowest.values()) {
+      if (secs < LOW_TIME_SECS) {
+        warnings.push({ nodeId, text: `${mount} on ${nodes.nameOf(nodeId)} fills in about ${formatTimeLeft(secs)} at this rate.` })
+      }
+    }
+    return warnings
+  }
+
+  function showWarnings(warnings: Warning[]) {
+    const log = useEventsStore().log
+    for (const w of warnings) {
+      toast.warning(w.text)
+      log('warn', w.text, { node_id: w.nodeId })
+    }
+  }
+
   /** Start or stop one source; failures go to a toast and the event log. */
   async function toggle(s: Source) {
     if (busy.value.has(s.key)) return
     const live = isLive(s)
     busy.value = new Set(busy.value).add(s.key)
     try {
-      await (live ? stop(s) : start(s))
+      if (live) {
+        await stop(s)
+      } else {
+        const warnings = await capacityWarnings([s])
+        await start(s)
+        showWarnings(warnings)
+      }
     } catch (e) {
       notifyError(`${live ? 'Stop' : 'Record'} failed: ${s.display_name}`, e, s.node_id)
     } finally {
@@ -172,6 +251,7 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
   async function bulk(action: 'start' | 'stop', list: Source[]) {
     const targets = list.filter((s) => (action === 'start' ? !isLive(s) : isLive(s)))
     if (!targets.length) return
+    const warnings = action === 'start' ? await capacityWarnings(targets) : []
     const results = await Promise.allSettled(targets.map((s) => (action === 'start' ? start(s) : stop(s))))
     let failed = 0
     results.forEach((r, i) => {
@@ -183,6 +263,7 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     })
     const ok = targets.length - failed
     if (ok) toast.success(`${action === 'start' ? 'Recording' : 'Stopped'} ${ok} feed${ok > 1 ? 's' : ''}`)
+    if (ok) showWarnings(warnings)
   }
 
   return {

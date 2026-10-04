@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use anyhow::{anyhow, bail, Context, Result};
 use futures_util::StreamExt;
@@ -295,12 +295,13 @@ fn add_forward_chain(
         .max_buffers(2)
         .build();
     let target = target.downgrade();
+    let last_pts = AtomicU64::new(u64::MAX);
     sink.set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
                 let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                 let Some(target) = target.upgrade() else { return Err(gst::FlowError::Flushing) };
-                forward(&sample, &target);
+                forward(&sample, &target, &last_pts);
                 Ok(gst::FlowSuccess::Ok)
             })
             .build(),
@@ -312,11 +313,18 @@ fn add_forward_chain(
 }
 
 /// Push `sample` into `target`, stamped with `target`'s running time: the
-/// file's own timestamps restart at every loop.
-fn forward(sample: &gst::Sample, target: &gst_app::AppSrc) {
+/// file's own timestamps restart at every loop. The first buffer of each loop
+/// is marked `DISCONT`, since a stream shorter than the file's longest one
+/// leaves a gap there: counters can then tell a loop's gap from a feed
+/// falling behind. `last_pts` is the file timestamp of the previous buffer.
+fn forward(sample: &gst::Sample, target: &gst_app::AppSrc, last_pts: &AtomicU64) {
     // Not playing yet, or stopping.
     let Some(now) = target.current_running_time() else { return };
     let Some(mut buffer) = sample.buffer_owned() else { return };
+    let looped = buffer.pts().is_some_and(|pts| {
+        let prev = last_pts.swap(pts.nseconds(), Ordering::Relaxed);
+        prev != u64::MAX && pts.nseconds() <= prev
+    });
     if let Some(caps) = sample.caps() {
         if target.caps().is_none_or(|c| c.as_ref() != caps) {
             target.set_caps(Some(&caps.to_owned()));
@@ -326,6 +334,9 @@ fn forward(sample: &gst::Sample, target: &gst_app::AppSrc) {
         let buffer = buffer.make_mut();
         buffer.set_pts(now);
         buffer.set_dts(gst::ClockTime::NONE);
+        if looped {
+            buffer.set_flags(gst::BufferFlags::DISCONT);
+        }
     }
     // Fails only while the monitor is stopping.
     let _ = target.push_buffer(buffer);

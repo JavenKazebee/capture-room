@@ -1,4 +1,6 @@
 mod api;
+mod benchmark;
+mod capacity;
 mod controller;
 mod db;
 mod pipeline;
@@ -72,6 +74,7 @@ async fn main() -> Result<()> {
     info!(id = %node_id, name = %node_name, controller = controller_enabled, "identity");
 
     db::sessions_mark_crashed(&pool).await?;
+    benchmark::recover(&pool).await?;
 
     // ── Source manager ────────────────────────────────────────────────────────
     let configured = db::configured_sources_list(&pool).await?;
@@ -104,6 +107,7 @@ async fn main() -> Result<()> {
         db: pool,
         node_tx,
         ws_tx,
+        benchmark: std::sync::Mutex::new(None),
         controller: RwLock::new(None),
         http: reqwest::Client::new(),
         node_router: std::sync::OnceLock::new(),

@@ -65,6 +65,8 @@ pub struct RecordingLeg {
     location: PathBuf,
     /// Every file written so far: just `location`, unless the leg splits.
     files: Arc<Mutex<Vec<PathBuf>>>,
+    /// The video encoder element the leg was built with.
+    encoder: &'static str,
 }
 
 /// Called when a splitting leg opens a new file. Runs on a GStreamer
@@ -409,7 +411,15 @@ impl RecordingLeg {
             link_to_muxer(audio.last().unwrap(), &sink, "audio_%u", profile)?;
         }
 
-        Ok(Self { pipeline, video_src, audio_src, links: Vec::new(), location: path.to_path_buf(), files })
+        Ok(Self {
+            pipeline,
+            video_src,
+            audio_src,
+            links: Vec::new(),
+            location: path.to_path_buf(),
+            files,
+            encoder: encoder.element(),
+        })
     }
 
     /// Open the file, start the pipeline and connect it to the producers.
@@ -494,8 +504,9 @@ impl RecordingLeg {
     }
 
     /// Tear the leg down without finalizing it and delete its partial file.
-    /// Only for rolling back a start that failed part-way.
-    fn discard(mut self) {
+    /// Only for rolling back a start that failed part-way, and for benchmark
+    /// legs, whose files are thrown away.
+    pub fn discard(mut self) {
         self.links.clear();
         let _ = self.pipeline.set_state(gst::State::Null);
         for file in self.files.lock().unwrap().iter() {
@@ -506,6 +517,11 @@ impl RecordingLeg {
     /// Every file the leg has written so far.
     pub fn files(&self) -> Vec<String> {
         self.files.lock().unwrap().iter().map(|f| f.display().to_string()).collect()
+    }
+
+    /// The video encoder element the leg uses.
+    pub fn encoder(&self) -> &'static str {
+        self.encoder
     }
 }
 

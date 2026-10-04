@@ -16,14 +16,12 @@ _Last updated: 2026-10-04_
 4. ✅ **Multi-pipeline output per preset**
 5. ✅ **UI overhaul / dark mode**
 6. ✅ **Looping media file source**
-7. **Hardware encoders + encode sharing** — before the benchmark, so it measures the
-   encoders people will actually use
-8. **Benchmark + capacity estimator** (with storage headroom)
-9. **Recordings view** (+ browser preview via a playback proxy)
-10. **Playback** — playout channels, NDI output first
-11. **Clock sync across nodes** — prerequisite for multi-angle replay
-12. **Instant replay**
-13. **Follow-on**, in rough priority order (see below)
+7. ✅ **Benchmark + capacity estimator** (with storage headroom)
+8. **Recordings view** (+ browser preview via a playback proxy)
+9. **Playback** — playout channels, NDI output first
+10. **Clock sync across nodes** — prerequisite for multi-angle replay
+11. **Instant replay**
+12. **Follow-on**, in rough priority order (see below)
 
 **Any time, small:** CI (fmt, clippy, tests, UI type-check), which doesn't need to wait
 for packaging.
@@ -61,38 +59,22 @@ Design detail for all of these lives in ARCHITECTURE.md; the history is in git.
 - **6. Looping media file source** — a file on the node played in a loop as a live
   feed, picked through a node file browser. Configured sources (test and file) now share
   one `configured_sources` table and `/configured-sources` API.
+- **7. Benchmark + capacity estimator (2026-10-04)** — a node records looping copies
+  of real footage with a preset's outputs, searching for the most feeds that keep up
+  (doubling with quick checks, then narrowing with full steps), and stores what each
+  setup sustains. Capacity load from active recordings and a pre-start check
+  (warns, never blocks) in the Record workspace; storage shows the measured write rate
+  and recording time left per volume, and a start onto a nearly full volume is refused.
+  Run from the node cards. Hardware encoders and encode sharing were dropped from the
+  front of the queue (see Follow-on), so the benchmark measures VideoToolbox and
+  software encoders for now: re-run it when new encoders land.
 - **No overwriting on start (2026-10-04)** — an existing file gets a `_2` suffix
   (or the next `{take}`); a path another recording holds is refused.
 - **Node registry persistence** — peers added by URL are stored and restored on start.
 
 ---
 
-## 7. Hardware encoders + encode sharing
-
-- **Encoders:** VideoToolbox is in. Add NVENC (`nvh264enc` / `nvh265enc`), Intel QSV
-  (`qsvh264enc`, …) and VA-API (`vah264enc`, …) to `RecordingProfile::encoders`, with
-  the same build-first-that-works fallback. These set how many feeds one machine can
-  encode, so they come before the benchmark.
-- **Encode sharing:** legs with identical encode settings (codec, resolution, framerate,
-  bitrate, chroma) but different containers or paths share one encoder.
-
-## 8. Benchmark + capacity estimator
-
-Not started (the empty `benchmark/` stub was removed).
-
-- Pipelines fed by looping media files (#6) at increasing feed counts → measure
-  **dropped frames, CPU, GPU/encoder load, disk write throughput, memory pressure**.
-  Stop past a dropped-frame threshold.
-- Count drops in both places: the leg's `appsrc` (shipped) and the source/monitor side,
-  which isn't counted yet.
-- Persist runs in `benchmark_results` (table already specced in ARCHITECTURE.md).
-- **Capacity estimator:** given a preset (incl. multi-leg) and feed count, predict
-  sustainability from stored benchmarks — surfaced in the Nodes view.
-- **Storage headroom:** today a full disk only shows up as a failed leg. Show recording
-  time left per volume (free space ÷ bitrate of the legs writing to it), warn below a
-  threshold, and check space before a recording starts.
-
-## 9. Recordings view
+## 8. Recordings view
 
 Session history and the files each session produced, across nodes. Already planned in
 ARCHITECTURE.md; arguably more useful day to day than the scheduler.
@@ -100,9 +82,9 @@ ARCHITECTURE.md; arguably more useful day to day than the scheduler.
 - **Browser preview:** a preset output can be flagged as the playback proxy (H.264/AAC
   MP4 — browsers can't play ProRes or PCM-in-MOV). Nodes serve files with HTTP range
   requests; the controller's forwarder must stream them, not buffer.
-- Doubles as the media browser that Playback (#10) loads clips from.
+- Doubles as the media browser that Playback (#9) loads clips from.
 
-## 10. Playback
+## 9. Playback
 
 A full playout system — capture in reverse. Design in ARCHITECTURE.md (Playback).
 
@@ -116,11 +98,12 @@ A full playout system — capture in reverse. Design in ARCHITECTURE.md (Playbac
 - **Output types, in order:** NDI (`ndisink`, no hardware needed) → SRT / RTSP → local
   display / HDMI out → WHEP → Decklink / AJA.
 - Reuses file decoding from the looping media file source (#6).
+- Playout channels count against capacity: extend the benchmark to cover them.
 - **Playback workspace** in the UI.
 - Start with: one NDI channel playing a single file, then gapless playlists, then more
   output types.
 
-## 11. Clock sync across nodes
+## 10. Clock sync across nodes
 
 Design sketch in ARCHITECTURE.md (Timecode › Clock sync).
 
@@ -130,9 +113,9 @@ Design sketch in ARCHITECTURE.md (Timecode › Clock sync).
 - **Synchronized start:** a start command can carry a wall-clock time, so bulk Record
   across machines produces files that line up.
 
-## 12. Instant replay
+## 11. Instant replay
 
-Builds on playback (#10) and clock sync (#11). Design in ARCHITECTURE.md (Instant Replay).
+Builds on playback (#9) and clock sync (#10). Design in ARCHITECTURE.md (Instant Replay).
 
 - **Prototype first:** one source into a rolling buffer of all-intra segments, played
   through a channel. The point is to test reverse playback, variable speed and
@@ -143,10 +126,18 @@ Builds on playback (#10) and clock sync (#11). Design in ARCHITECTURE.md (Instan
 - Replay buffers count against capacity; extend the benchmark to cover them and
   playout channels.
 
-## 13. Follow-on
+## 12. Follow-on
 
 Roughly in priority order.
 
+- **Hardware encoders** — VideoToolbox is in. Add NVENC (`nvh264enc` / `nvh265enc`),
+  Intel QSV (`qsvh264enc`, …) and VA-API (`vah264enc`, …) to
+  `RecordingProfile::encoders`, with the same build-first-that-works fallback. Only
+  VA-API can be tested on current hardware (AMD); re-run benchmarks once they land.
+  Encode sharing (legs with identical encode settings sharing one encoder) is decided
+  against for now.
+- **Benchmark: GPU load** — not measured (no portable way to read it); CPU, memory and
+  write rate are.
 - **Authentication** — the API is open to anyone on the network, and any of them can
   start or stop recordings. At least a shared token, before packaging.
 - **Packaging** — cross-platform builds via GitHub Actions; NDI packaging per

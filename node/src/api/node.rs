@@ -15,15 +15,19 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use tracing::error;
+use tracing::{error, info};
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
-    ConfiguredSourceDto, ConfiguredSourceRequest, DirListingDto, NodeSettingsDto, NodeStatus, RecordingSessionDto,
+    BenchmarkRequest, BenchmarkRunDto, CapacityCheckDto, CapacityCheckRequest, ConfiguredSourceDto,
+    ConfiguredSourceRequest, DirListingDto, NodeCapacityDto, NodeSettingsDto, NodeStatus, RecordingSessionDto,
     RecordingStatus, SourceConfig, SourceDto, StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest,
-    WsEvent,
+    VolumeCheckDto, WsEvent,
 };
+use crate::benchmark;
+use crate::capacity::{self, Capacity};
 use crate::db;
+use crate::storage;
 use crate::pipeline::profile::{plan_legs, PathVars, RecordingProfile};
 use crate::session;
 use crate::sources::manager::{SourceManager, StopOutcome, StopResult};
@@ -49,6 +53,11 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/recordings", get(get_recordings).post(post_recording))
         .route("/recordings/{id}", get(get_recording))
         .route("/recordings/{id}/stop", post(post_stop_recording))
+        .route("/benchmarks", get(get_benchmarks).post(post_benchmark))
+        .route("/benchmarks/{id}", get(get_benchmark).delete(delete_benchmark))
+        .route("/benchmarks/{id}/cancel", post(post_cancel_benchmark))
+        .route("/capacity", get(get_capacity))
+        .route("/capacity/check", post(post_capacity_check))
         .route("/thumbnails/{source_id}", get(get_thumbnail))
         .route("/ws", get(ws_handler))
 }
@@ -100,8 +109,17 @@ async fn put_settings(
 
 // ── /storage ──────────────────────────────────────────────────────────────────
 
-async fn get_storage() -> ApiResult<Json<Vec<StorageVolumeDto>>> {
-    Ok(Json(tokio::task::spawn_blocking(crate::storage::list_volumes).await?))
+/// Volumes, with what this node's active recordings write to each and the
+/// recording time that leaves.
+async fn get_storage(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<StorageVolumeDto>>> {
+    let legs = state.source_manager.read().await.active_leg_files();
+    let volumes = tokio::task::spawn_blocking(move || {
+        let mut volumes = storage::list_volumes();
+        storage::apply_write_rates(&mut volumes, &storage::leg_write_rates(&legs));
+        volumes
+    })
+    .await?;
+    Ok(Json(volumes))
 }
 
 // ── /sources ──────────────────────────────────────────────────────────────────
@@ -251,14 +269,21 @@ async fn post_recording(
         return Err(ApiError::BadRequest("at least one output is required".into()));
     }
     let legs = build_legs(&state, &req).await?;
+    check_free_space(&legs).await?;
     for (path, _) in &legs {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.with_context(|| format!("create {}", parent.display()))?;
         }
     }
+    // Real recordings win: a benchmark would compete with this one (and its
+    // result would be skewed by it).
+    if benchmark::cancel(&state, None, "Cancelled: a recording started on this node.").await {
+        info!("benchmark cancelled for a recording");
+    }
 
     let preset_id = req.preset_id.clone().unwrap_or_default();
-    let session = state.source_manager.write().await.start_recording(&req.source_id, &preset_id, &legs)?;
+    let key = capacity::outputs_key(&req.outputs);
+    let session = state.source_manager.write().await.start_recording(&req.source_id, &preset_id, &legs, key)?;
 
     if let Err(e) = db::session_insert(&state.db, &session).await {
         error!(error = %e, "persist session start");
@@ -268,6 +293,27 @@ async fn post_recording(
         source_id: session.source_id.clone(),
     });
     Ok((StatusCode::CREATED, Json(session)))
+}
+
+/// Refuse to record onto a volume that's all but full: the leg would fail
+/// within moments anyway.
+async fn check_free_space(legs: &[(PathBuf, RecordingProfile)]) -> ApiResult<()> {
+    let paths: Vec<PathBuf> = legs.iter().map(|(p, _)| p.clone()).collect();
+    let full = tokio::task::spawn_blocking(move || {
+        let volumes = storage::list_volumes();
+        paths.iter().find_map(|p| {
+            let v = &volumes[storage::volume_of(p, &volumes)?];
+            (v.available_bytes < storage::MIN_FREE_TO_RECORD).then(|| (v.mount_point.clone(), v.available_bytes))
+        })
+    })
+    .await?;
+    match full {
+        Some((mount, free)) => Err(ApiError::BadRequest(
+            format!("{mount} is nearly full ({:.1} GB free); free up space or record somewhere else", free as f64 / 1e9)
+                .into(),
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Wait for a stop's final DTO on `rx`, whether this request started the
@@ -318,6 +364,137 @@ async fn stop_orphaned(state: &AppState, id: &str) -> anyhow::Result<Option<Reco
         session.error_message = None;
     }
     Ok(Some(session))
+}
+
+// ── /benchmarks ───────────────────────────────────────────────────────────────
+
+async fn get_benchmarks(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<BenchmarkRunDto>>> {
+    Ok(Json(db::benchmarks_list(&state.db).await?))
+}
+
+async fn get_benchmark(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> ApiResult<Json<BenchmarkRunDto>> {
+    db::benchmark_get(&state.db, &id).await?.map(Json).ok_or(ApiError::NotFound("benchmark not found"))
+}
+
+async fn post_benchmark(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BenchmarkRequest>,
+) -> ApiResult<(StatusCode, Json<BenchmarkRunDto>)> {
+    Ok((StatusCode::CREATED, Json(benchmark::start(&state, req).await?)))
+}
+
+/// Cancel a running benchmark; answers once it has torn down.
+async fn post_cancel_benchmark(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> ApiResult<Json<BenchmarkRunDto>> {
+    if !benchmark::cancel(&state, Some(&id), "Cancelled.").await {
+        return Err(ApiError::Conflict("that benchmark isn't running"));
+    }
+    get_benchmark(State(state), AxumPath(id)).await
+}
+
+async fn delete_benchmark(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> ApiResult<StatusCode> {
+    if benchmark::running_id(&state).as_deref() == Some(id.as_str()) {
+        return Err(ApiError::Conflict("cancel the benchmark before deleting it"));
+    }
+    if !db::benchmark_delete(&state.db, &id).await? {
+        return Err(ApiError::NotFound("benchmark not found"));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ── /capacity ─────────────────────────────────────────────────────────────────
+
+async fn get_capacity(State(state): State<Arc<AppState>>) -> ApiResult<Json<NodeCapacityDto>> {
+    let runs = db::benchmarks_list(&state.db).await?;
+    let capacity = Capacity::from_runs(&runs);
+    let feeds = state.source_manager.read().await.active_feeds();
+    let load = capacity.load(feeds.iter().map(|(key, format)| (key.as_str(), *format)));
+    let running = benchmark::running_id(&state).and_then(|id| runs.into_iter().find(|r| r.id == id));
+    Ok(Json(NodeCapacityDto {
+        profiles: capacity.profiles(),
+        active_feeds: feeds.len() as u32,
+        load: load.load,
+        unknown_feeds: load.unknown,
+        running,
+    }))
+}
+
+/// Would recording these sources with these outputs fit on this node — its
+/// benchmarked capacity, and the space on the volumes they'd write to?
+async fn post_capacity_check(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CapacityCheckRequest>,
+) -> ApiResult<Json<CapacityCheckDto>> {
+    let capacity = Capacity::from_runs(&db::benchmarks_list(&state.db).await?);
+    let key = capacity::outputs_key(&req.outputs);
+    let (active, formats, active_legs) = {
+        let mgr = state.source_manager.read().await;
+        let formats: Vec<_> = req.source_ids.iter().map(|id| mgr.source_format(id)).collect();
+        (mgr.active_feeds(), formats, mgr.active_leg_files())
+    };
+    let active_iter = || active.iter().map(|(k, f)| (k.as_str(), *f));
+    let before = capacity.load(active_iter());
+    let after = capacity.load(active_iter().chain(formats.iter().map(|f| (key.as_str(), *f))));
+
+    // What the new legs would write, and where: measured by a benchmark of
+    // these outputs where there is one, else estimated from their settings.
+    let mut new_writes = Vec::new();
+    for (source_id, format) in req.source_ids.iter().zip(&formats) {
+        let start = StartRecordingRequest {
+            source_id: source_id.clone(),
+            preset_id: None,
+            preset_name: None,
+            outputs: req.outputs.clone(),
+        };
+        let legs = build_legs(&state, &start).await?;
+        let measured = capacity
+            .lookup(&key, *format)
+            .map(|m| m.output_bytes_per_sec)
+            .filter(|rates| rates.len() == legs.len());
+        for (i, (path, profile)) in legs.into_iter().enumerate() {
+            let rate = measured.as_ref().map_or_else(|| profile.estimated_bytes_per_sec(), |rates| rates[i]);
+            new_writes.push((path, rate));
+        }
+    }
+    let volumes = tokio::task::spawn_blocking(move || {
+        let mut volumes = storage::list_volumes();
+        let mut writes = storage::leg_write_rates(&active_legs);
+        writes.extend(new_writes.iter().cloned());
+        storage::apply_write_rates(&mut volumes, &writes);
+        let mut touched: Vec<usize> = new_writes.iter().filter_map(|(p, _)| storage::volume_of(p, &volumes)).collect();
+        touched.sort_unstable();
+        touched.dedup();
+        touched
+            .into_iter()
+            .map(|i| {
+                let v = &volumes[i];
+                VolumeCheckDto {
+                    mount_point: v.mount_point.clone(),
+                    available_bytes: v.available_bytes,
+                    write_bytes_per_sec: v.write_bytes_per_sec,
+                    seconds_left: v.seconds_left,
+                }
+            })
+            .collect()
+    })
+    .await?;
+
+    Ok(Json(CapacityCheckDto {
+        verdict: after.verdict(),
+        load_before: before.load,
+        load_after: after.load,
+        unknown_feeds: after.unknown,
+        estimated: after.estimated,
+        volumes,
+    }))
 }
 
 // ── /thumbnails/{source_id} ───────────────────────────────────────────────────

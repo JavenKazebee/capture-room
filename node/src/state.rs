@@ -20,6 +20,8 @@ pub struct AppState {
     /// This node's events plus everything relayed from peers while acting as
     /// a controller. Served on `/ws`.
     pub ws_tx: broadcast::Sender<String>,
+    /// The benchmark running on this node, if any.
+    pub benchmark: std::sync::Mutex<Option<crate::benchmark::Running>>,
 
     // ── Controller: present only while promoted ────────────────────────────
     pub controller: RwLock<Option<Controller>>,

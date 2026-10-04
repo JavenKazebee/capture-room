@@ -29,5 +29,17 @@ export const useStorageStore = defineStore('storage', () => {
     return best
   })
 
-  return { volumes, load, loadForNode, lowest }
+  /** The volume recordings will fill soonest, across every node. */
+  const soonestFull = computed(() => {
+    let best: { nodeId: string; volume: StorageVolumeDto } | null = null
+    for (const [nodeId, list] of volumes) {
+      for (const volume of list ?? []) {
+        if (volume.seconds_left == null) continue
+        if (!best || volume.seconds_left < best.volume.seconds_left!) best = { nodeId, volume }
+      }
+    }
+    return best
+  })
+
+  return { volumes, load, loadForNode, lowest, soonestFull }
 })

@@ -99,7 +99,7 @@ pub trait InputSource: Send + Sync {
 Initial implementations:
 - `TestSource` — ✅ implemented — `videotestsrc` + `audiotestsrc`, the reference pattern for all sources (`gst::Bin` with `"video"` / `"audio"` ghost pads)
 - `NdiSource` — ✅ implemented — built on the `gst-plugin-ndi` GStreamer elements (`ndisrc` + `ndisrcdemux`), not the raw NDI SDK FFI. Discovery via a persistent `GstDeviceMonitor`. Follows the same bin/ghost-pad contract as `TestSource`.
-- `FileSource` — ✅ implemented — a media file on the node played in a loop as a live feed (real footage for the benchmark, demos without hardware). The file plays in its own *player* pipeline (`uridecodebin` → appsinks, synced to the clock) that loops with segment seeks, so loops are gapless unless the file's streams differ in length. Its appsinks push into live `appsrc`s in the source bin, which restamp every buffer with the monitor's running time, so the monitor sees one continuous live feed. The player starts when the monitor first wants data and stops when the bin is disposed; its errors are posted on the monitor. A file without audio plays stereo silence; one without video is refused. The file is probed (`Discoverer`) when the source is saved, which rejects anything undecodable and gives the source its capabilities up front.
+- `FileSource` — ✅ implemented — a media file on the node played in a loop as a live feed (real footage for the benchmark, demos without hardware). The file plays in its own *player* pipeline (`uridecodebin` → appsinks, synced to the clock) that loops with segment seeks, so loops are gapless unless the file's streams differ in length (the first frame after such a gap is marked `DISCONT`, so frame counters can tell a loop from a feed falling behind). Its appsinks push into live `appsrc`s in the source bin, which restamp every buffer with the monitor's running time, so the monitor sees one continuous live feed. The player starts when the monitor first wants data and stops when the bin is disposed; its errors are posted on the monitor. A file without audio plays stereo silence; one without video is refused. The file is probed (`Discoverer`) when the source is saved, which rejects anything undecodable and gives the source its capabilities up front.
 
 **Configured vs discovered sources.** Test and file sources are *configured*: stored in `configured_sources` as a JSON config tagged with its `type` (`SourceConfig` in `api/types.rs`), and served from `/configured-sources`. A new configured type adds a `SourceConfig` variant and a case in `sources::configured`. NDI sources are *discovered* and not stored.
 - `DecklinkSource` — ⬜ deferred (no hardware) — Decklink SDK via FFI / `decklinkvideosrc`
@@ -290,18 +290,79 @@ need every node to agree on the time. Not specced in detail yet:
 
 ## Benchmark Runner
 
-Determines sustainable recording capacity for a given machine on demand:
+Finds how many feeds a node can record with a set of outputs (`benchmark.rs`), and
+estimates capacity from the results (`capacity.rs`).
 
-1. Spins up pipelines fed by looping media files (real footage — test patterns compress
-   unrealistically) at increasing feed counts
-2. Measures: dropped frames per pipeline (leg and source side), CPU and GPU/encoder load,
-   disk throughput, memory pressure
-3. Stops when dropped frames exceed a configurable threshold (TBD — likely expressed as a percentage of frames over a rolling window)
-4. Reports: max sustainable feed count at that profile, raw metrics per step
-5. Stores results in local SQLite
+**A run** records more and more feeds of real footage (a file on the node played in a
+loop: test patterns compress unrealistically) with a preset's outputs, sent inline like
+a recording start. Each feed is a `FileSource` with its own monitor and recording legs,
+built exactly as a real recording but kept out of the `SourceManager`, so it never shows
+up as a source. Each step runs some number of feeds and, after a warm-up (5 s, plus 1 s
+per 4 feeds started), measures:
 
-Later, playout channels and replay buffers (below) count against the same capacity and
-should be part of the measurement.
+- **Source shortfall:** frames the feeds didn't deliver. The monitor counts frames at
+  its video producer (`MonitorPipeline::video_progress`), and the frames counted are
+  compared with the time their timestamps span, not the wall clock, since frames arrive
+  in bursts. A looping file marks the first frame of each loop `DISCONT`, and the gap
+  before it (a stream shorter than the file's longest leaves one) is left out.
+- **Output drops:** frames the legs' input queues dropped because an encoder couldn't
+  keep up (the same count recordings report).
+- Whole-machine CPU (averaged) and memory, and what the legs wrote per second, per
+  output and per feed. GPU load isn't measured: there's no portable way to read it.
+
+A step fails when the larger of the two drop percentages passes the threshold (default
+0.5%). The feed count is searched for rather than stepped through one at a time
+(`Search` in `benchmark.rs`):
+
+1. **Doubling** (1, 2, 4, 8, …) with **quick checks** of 5 s. A quick check passes only
+   well clear of the limit (under half the threshold, CPU under 85%), fails outright
+   over 4× the threshold, and is otherwise followed by full-length steps.
+2. **Narrowing:** once a count fails, the gap between the most feeds that passed and the
+   fewest that failed is halved with full-length steps (`step_secs`, default 20).
+3. The answer is always confirmed by a full step; if a count that only passed a quick
+   check fails one, the search carries on below it.
+
+A full step that fails is measured once more before it counts, so one hiccup elsewhere
+on the machine doesn't decide it; every measurement is kept. A node that sustains 40
+feeds takes about a dozen steps (5 min or so) instead of 40. The search goes no higher
+than the feed limit (default 64; reaching it reads "at least N") and stops climbing when
+memory passes 95% or a scratch volume drops under 2 GB free; a run also ends on an error
+or when cancelled.
+
+- **Where it writes:** each output writes into a scratch folder,
+  `.capture-room-benchmark-{id}`, in the nearest existing folder of where the output
+  would record, so the same disks are measured. Legs are discarded rather than
+  finalized, and the folders deleted when the run ends. A run left `running` by a crash
+  is marked failed on startup and its folders deleted. Only folders named so are ever
+  removed.
+- **Real recordings win:** a benchmark won't start while anything records, only one runs
+  at a time, and starting a recording cancels a running benchmark (the start waits for
+  its teardown, up to 15 s).
+- **Results** are stored whole as JSON in `benchmark_results`, saved at every step and
+  sent as `benchmark.updated`.
+
+**Capacity estimate.** A result is looked up by what the outputs encode
+(`outputs_key`: the outputs without their names, paths and split settings) and the
+footage format; a setup's latest completed run counts. A source of the same format gets
+that result as is; another format scales the nearest result by pixels per second, and a
+source whose format isn't known yet takes the newest (both flagged `estimated`). A feed
+of a setup that sustains N feeds uses 1/N of the node, and the shares of the active
+recordings add up to its **load** (1 = full; one that couldn't sustain a single feed
+counts double). Shares only roughly add across different setups (a GPU-bound encoder and
+a CPU-bound one share less than this assumes), so the estimate is a guide. Verdicts:
+fits (≤ 80%), tight (≤ 100%), over, or unknown when something has no benchmark.
+
+**Storage headroom.** `/storage` reports, per volume, what active recordings write
+(each leg's bytes since its session started, once it has run 5 s) and the recording time
+that leaves. The pre-start check adds the new legs at the rate a matching benchmark
+measured, or else an estimate from their settings (`estimated_bytes_per_sec`: the
+bitrate, Apple's target rates for ProRes, raw size for uncompressed). A recording isn't
+started on a volume with less than 1 GB free.
+
+The Record workspace checks before starting (`POST /capacity/check`, per node and
+preset) and warns, never blocks, when a node would pass 80% of its capacity or a volume
+would fill within the hour. Later, playout channels and replay buffers count against the
+same capacity and should be part of the measurement.
 
 ---
 
@@ -435,16 +496,21 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 |--------|------|-------------|
 | GET | `/status` | id, name, version, uptime, `is_controller` |
 | GET / PUT | `/settings` | node name, monitor settings (thumbnail fps/size, meter interval) |
-| GET | `/storage` | writable volumes: mount point, total/free bytes, removable |
+| GET | `/storage` | writable volumes: mount point, total/free bytes, removable; what active recordings write to each and the time left |
 | GET | `/sources` | sources on this machine |
 | POST | `/sources/scan` | rescan |
 | GET | `/sources/{id}` | source details |
 | GET / POST | `/configured-sources` | test and file source configs; saving a file source probes the file (400 if it can't be played) |
 | PUT / DELETE | `/configured-sources/{id}` | |
 | GET | `/files?path=` | folders and media files in a directory (home if no path), for picking a file source. Read-only |
-| GET / POST | `/recordings` | list / start. Start body: `{ source_id, preset_id?, outputs: [...] }` |
+| GET / POST | `/recordings` | list / start. Start body: `{ source_id, preset_id?, outputs: [...] }`. Refused onto a volume with under 1 GB free; cancels a running benchmark |
 | GET | `/recordings/{id}` | session details |
 | POST | `/recordings/{id}/stop` | stop (waits for EOS drain) |
+| GET / POST | `/benchmarks` | runs, newest first / start one: `{ outputs, media_path, max_feeds?, step_secs?, drop_threshold_pct?, preset_id?, preset_name? }` (409 while recording or benchmarking) |
+| GET / DELETE | `/benchmarks/{id}` | a run / delete it (not while running) |
+| POST | `/benchmarks/{id}/cancel` | cancel; answers once it has torn down |
+| GET | `/capacity` | each benchmarked setup's result, the load of active recordings, the running benchmark |
+| POST | `/capacity/check` | `{ outputs, source_ids }` → verdict, load before/after, time left on the volumes they'd write to |
 | GET | `/thumbnails/{source_id}` | latest JPEG |
 | WS | `/ws` | this node's events only |
 
@@ -478,6 +544,7 @@ All events are JSON with a `type` and the `node_id` they describe. `source_id` /
 | `feed.status` | source id, timecode, monitor error (1 Hz) |
 | `audio.levels` | source id, channel peak/RMS values (~10fps) |
 | `thumbnail.updated` | source id (at the configured thumbnail fps) |
+| `benchmark.updated` | the run — when it starts, begins a step, finishes a step, and ends |
 | `node.updated` | none — this node's name or monitor settings changed |
 | `node.online` / `node.offline` | `peer_id` (controller only) |
 
@@ -500,7 +567,7 @@ Every instance has the same schema (see `node/migrations/`):
 - `configured_sources` — test and file source configs (`config` is JSON tagged with `type`)
 - `presets` + `preset_outputs` — used while acting as controller (or from the UI on a lone node)
 - `nodes` — peers added by URL on a controller (mDNS peers are not persisted)
-- `benchmark_results` — reserved
+- `benchmark_results` — benchmark runs, each stored whole as JSON (`run`)
 
 ---
 
@@ -547,10 +614,10 @@ them — not before.
 
 | Workspace / view | Description |
 |------------------|-------------|
-| **Record** | Multiview of every feed across all nodes — thumbnail, name, timecode, recording state, audio meters, dropped frames; multi-select with bulk Record/Stop; inspector with outputs, session and history |
+| **Record** | Multiview of every feed across all nodes — thumbnail, name, timecode, recording state, audio meters, dropped frames; multi-select with bulk Record/Stop (warning when a node nears its capacity or a volume would fill within the hour); inspector with outputs, session and history |
 | **Setup › Sources** | Sources grouped by node, capabilities, test and file source authoring (with a browser for the node's files) |
 | **Setup › Presets** | Create and edit recording presets (outputs, path preview) |
-| **Setup › Nodes** | A card per node: health, sources, storage; controller toggle, add/remove nodes (benchmarks planned) |
+| **Setup › Nodes** | A card per node: health, sources, storage (with time left while recording), capacity (benchmarked setups, load, running benchmark, history); controller toggle, add/remove nodes |
 | **Setup › Settings** | Appearance; monitoring settings (thumbnail/meter rate, applied to all nodes); About |
 | **Recordings** _(planned)_ | Session history and files, across nodes; browser preview via the playback proxy |
 | **Playback** _(planned)_ | Playout channels, playlists, transport |
@@ -680,7 +747,9 @@ capture-room/
 │   │   │   ├── discovery.rs     # mDNS advertise/browse + health polling
 │   │   │   ├── relay.rs         # peer WS → merged /ws
 │   │   │   └── registry.rs      # NodeRegistry
-│   │   ├── storage.rs           # Storage volume listing
+│   │   ├── benchmark.rs         # Benchmark runner
+│   │   ├── capacity.rs          # Capacity estimates from benchmark results
+│   │   ├── storage.rs           # Storage volumes, write rates, file browsing
 │   │   ├── pipeline/
 │   │   │   ├── monitor.rs       # MonitorPipeline: thumbnail, audio meter, StreamProducers
 │   │   │   ├── recording.rs     # RecordingLeg: one pipeline per output leg

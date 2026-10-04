@@ -4,7 +4,8 @@ import { RouterLink, useRouter } from 'vue-router'
 import { useNow } from '@vueuse/core'
 import { HardDrive, Search } from '@lucide/vue'
 import { wsStatus } from '@/composables/useWebSocket'
-import { formatBytes } from '@/lib/format'
+import { formatBytes, formatRate, formatTimeLeft } from '@/lib/format'
+import { LOW_TIME_SECS } from '@/stores/capacity'
 import { shortcut } from '@/lib/keys'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordingsStore } from '@/stores/recordings'
@@ -33,6 +34,13 @@ const lowest = computed(() => {
   const { volume } = l
   const pct = volume.total_bytes ? volume.available_bytes / volume.total_bytes : 1
   return { ...l, pct, status: pct < 0.1 ? 'error' : pct < 0.25 ? 'warn' : 'ok' } as const
+})
+
+/** The volume that recordings will fill first, when it's under an hour away. */
+const runningOut = computed(() => {
+  const s = storage.soonestFull
+  if (!s || s.volume.seconds_left == null || s.volume.seconds_left >= LOW_TIME_SECS) return null
+  return { ...s, secs: s.volume.seconds_left }
 })
 </script>
 
@@ -88,7 +96,24 @@ const lowest = computed(() => {
         <span class="text-muted-foreground">nodes</span>
       </button>
 
-      <Tooltip v-if="lowest">
+      <Tooltip v-if="runningOut">
+        <TooltipTrigger as-child>
+          <button
+            class="chip hover:bg-accent font-medium"
+            :class="runningOut.secs < 900 ? 'text-destructive border-destructive/40' : 'text-warning border-warning/30'"
+            @click="router.push('/setup/nodes')"
+          >
+            <HardDrive class="size-3.5" />
+            <span class="num">{{ formatTimeLeft(runningOut.secs) }}</span> left
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>
+          <span class="num">{{ runningOut.volume.mount_point }}</span> on {{ nodes.nameOf(runningOut.nodeId) }} fills
+          in about <span class="num">{{ formatTimeLeft(runningOut.secs) }}</span> at the current recording rate
+          (<span class="num">{{ formatRate(runningOut.volume.write_bytes_per_sec) }}</span>)
+        </TooltipContent>
+      </Tooltip>
+      <Tooltip v-else-if="lowest">
         <TooltipTrigger as-child>
           <button
             class="chip hover:bg-accent"

@@ -26,3 +26,18 @@ export function formatBytes(n: number): string {
   }
   return `${n.toFixed(n >= 100 || i === 0 ? 0 : 1)} ${units[i]}`
 }
+
+/** A data rate: `1.4 MB/s`. */
+export function formatRate(bytesPerSec: number): string {
+  return `${formatBytes(bytesPerSec)}/s`
+}
+
+/** Recording time left, coarse: `2d 4h`, `3h 20m`, `45m`, `<1m`. */
+export function formatTimeLeft(secs: number): string {
+  const d = Math.floor(secs / 86400)
+  const h = Math.floor((secs % 86400) / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  if (d > 0) return `${d}d ${h}h`
+  if (h > 0) return `${h}h ${m}m`
+  return m > 0 ? `${m}m` : '<1m'
+}

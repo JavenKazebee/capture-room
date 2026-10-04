@@ -4,6 +4,7 @@ import { totalDropped, useRecordingsStore } from '@/stores/recordings'
 import { useNodesStore } from '@/stores/nodes'
 import { sourceKey } from '@/composables/useApi'
 import { useEventsStore } from '@/stores/events'
+import { useCapacityStore } from '@/stores/capacity'
 import type { WsEvent } from '@/types/generated/WsEvent'
 
 export type WsStatus = 'connecting' | 'connected' | 'disconnected'
@@ -125,6 +126,10 @@ function handleEvent(event: NodeEvent) {
       thumbnailSeqs.set(key, (thumbnailSeqs.get(key) ?? 0) + 1)
       break
     }
+
+    case 'benchmark.updated':
+      useCapacityStore().applyRun(nodeId, event.run)
+      break
   }
 }
 
@@ -170,6 +175,27 @@ function logEvent(event: NodeEvent) {
         log('warn', `Dropping frames on ${source(event.source_id)} — an encoder can't keep up`, {
           node_id,
           detail: event.session_id,
+        })
+      }
+      break
+    }
+    case 'benchmark.updated': {
+      // Only the start and the end; steps in between update the node card.
+      const run = event.run
+      const name = run.preset_name ?? 'H.264 (default)'
+      if (run.status === 'running') {
+        if (run.feeds_running === 0) log('info', `Benchmark started: ${name}`, { node_id })
+      } else if (run.status === 'completed') {
+        const n = run.sustainable_feeds
+        const atLimit = n >= run.max_feeds
+        log('info', `Benchmark finished: ${name} sustains ${atLimit ? 'at least ' : ''}${n} feed${n === 1 ? '' : 's'}`, {
+          node_id,
+          detail: run.message ?? undefined,
+        })
+      } else {
+        log(run.status === 'error' ? 'error' : 'warn', `Benchmark ${run.status === 'error' ? 'failed' : 'cancelled'}: ${name}`, {
+          node_id,
+          detail: run.message ?? undefined,
         })
       }
       break

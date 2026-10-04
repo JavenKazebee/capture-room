@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
@@ -24,6 +25,8 @@ pub struct MonitorPipeline {
     pub audio_meter: AudioMeter,
     pub video: StreamProducer,
     pub audio: StreamProducer,
+    /// Video frames the source has delivered since the monitor started.
+    video_frames: Arc<FrameCount>,
     /// The first error the pipeline posted. An errored pipeline has stopped
     /// producing, so this is shown on the source until its monitor restarts.
     error: Arc<Mutex<Option<String>>>,
@@ -34,6 +37,21 @@ pub struct MonitorPipeline {
     thumb_rate_caps: gst::Element,
     thumb_scale_caps: gst::Element,
     level_el: gst::Element,
+}
+
+/// Frames a source has delivered, for telling whether it keeps up. Between
+/// two readings, the frames counted against the time their timestamps span
+/// (less any gaps the source marked) shows a source falling behind — without
+/// the jitter of comparing against the wall clock, since frames arrive in
+/// bursts.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VideoProgress {
+    pub frames: u64,
+    /// The last frame's timestamp (running time).
+    pub last_pts: Option<gst::ClockTime>,
+    /// Total length of the gaps before frames marked `DISCONT` — a looping
+    /// file's restart, not a frame lost.
+    pub skipped: gst::ClockTime,
 }
 
 /// A source's negotiated format; each part `None` until negotiated (or, for
@@ -79,6 +97,7 @@ impl MonitorPipeline {
         let level_el = add_level_branch(&pipeline, &atee, config)?;
         let video = add_producer_branch(&pipeline, &vtee, "video")?;
         let audio = add_producer_branch(&pipeline, &atee, "audio")?;
+        let video_frames = count_buffers(&video)?;
 
         // ── Bus task ──────────────────────────────────────────────────────────
         let bus = pipeline.bus().context("pipeline has no bus")?;
@@ -122,6 +141,7 @@ impl MonitorPipeline {
             audio_meter,
             video,
             audio,
+            video_frames,
             error,
             bus_task,
             thumb_rate_caps,
@@ -132,6 +152,26 @@ impl MonitorPipeline {
 
     pub fn error(&self) -> Option<String> {
         self.error.lock().unwrap().clone()
+    }
+
+    /// Video frames the source has delivered so far.
+    pub fn video_frames(&self) -> u64 {
+        self.video_frames.frames.load(Ordering::Relaxed)
+    }
+
+    /// How far the source's video has got; see [`VideoProgress`].
+    pub fn video_progress(&self) -> VideoProgress {
+        // A frame can land between these reads, leaving the count one ahead
+        // of the timestamp: readers allow a frame of slack.
+        let count = &self.video_frames;
+        let skipped = count.skipped_ns.load(Ordering::Acquire);
+        let pts = count.last_pts.load(Ordering::Acquire);
+        let frames = count.frames.load(Ordering::Acquire);
+        VideoProgress {
+            frames,
+            last_pts: (pts != u64::MAX).then(|| gst::ClockTime::from_nseconds(pts)),
+            skipped: gst::ClockTime::from_nseconds(skipped),
+        }
     }
 
     pub fn stop(&self) -> Result<()> {
@@ -274,6 +314,42 @@ fn add_producer_branch(pipeline: &gst::Pipeline, tee: &gst::Element, kind: &str)
     queue.link(&appsink).with_context(|| format!("link {kind} queue → producer"))?;
     link_tee(tee, &queue)?;
     Ok(StreamProducer::from(&appsink))
+}
+
+/// Buffers that have reached a producer; see [`VideoProgress`].
+struct FrameCount {
+    frames: AtomicU64,
+    /// Nanoseconds; `u64::MAX` until a timestamped buffer arrives.
+    last_pts: AtomicU64,
+    skipped_ns: AtomicU64,
+}
+
+/// Count the buffers reaching `producer`'s appsink.
+fn count_buffers(producer: &StreamProducer) -> Result<Arc<FrameCount>> {
+    let count = Arc::new(FrameCount {
+        frames: AtomicU64::new(0),
+        last_pts: AtomicU64::new(u64::MAX),
+        skipped_ns: AtomicU64::new(0),
+    });
+    let counter = Arc::clone(&count);
+    producer.appsink().static_pad("sink").context("producer sink pad")?.add_probe(
+        gst::PadProbeType::BUFFER,
+        move |_, info| {
+            let Some(buffer) = info.buffer() else { return gst::PadProbeReturn::Ok };
+            if let Some(pts) = buffer.pts() {
+                let prev = counter.last_pts.swap(pts.nseconds(), Ordering::AcqRel);
+                if buffer.flags().contains(gst::BufferFlags::DISCONT) && prev != u64::MAX {
+                    // The gap, less the frame interval that would be there anyway.
+                    let interval = buffer.duration().map_or(0, |d| d.nseconds());
+                    let gap = pts.nseconds().saturating_sub(prev).saturating_sub(interval);
+                    counter.skipped_ns.fetch_add(gap, Ordering::AcqRel);
+                }
+            }
+            counter.frames.fetch_add(1, Ordering::Release);
+            gst::PadProbeReturn::Ok
+        },
+    );
+    Ok(count)
 }
 
 fn thumb_rate_caps(config: &MonitorSettingsDto) -> gst::Caps {

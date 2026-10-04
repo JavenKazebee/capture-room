@@ -5,4 +5,13 @@ export type StorageVolumeDto = { name: string, mount_point: string,
  * More mount points of the same filesystem (e.g. btrfs subvolumes, bind
  * mounts), which share its space.
  */
-other_mounts: Array<string>, file_system: string, total_bytes: number, available_bytes: number, removable: boolean, };
+other_mounts: Array<string>, file_system: string, total_bytes: number, available_bytes: number, removable: boolean, 
+/**
+ * What this node's active recordings write to the volume, measured from
+ * their files. 0 when nothing records here.
+ */
+write_bytes_per_sec: number, 
+/**
+ * Recording time left at that rate; `None` when nothing records here.
+ */
+seconds_left: number | null, };

@@ -16,9 +16,10 @@ import { Input } from '@/components/ui/input'
 import CopyButton from '@/components/common/CopyButton.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import StorageVolumeBar from '@/components/common/StorageVolumeBar.vue'
+import NodeCapacity from './NodeCapacity.vue'
 
 /**
- * One node: identity, activity, storage. Sections keep their height whether the
+ * One node: identity, activity, storage, capacity. Sections keep their height whether the
  * node is reachable or not, so a node going offline doesn't reflow the grid.
  */
 const props = defineProps<{ node: NodeDto }>()
@@ -173,7 +174,7 @@ async function saveRename() {
       <StorageVolumeBar v-for="v in node.healthy ? volumes ?? [] : []" :key="v.mount_point" :volume="v" />
     </section>
 
-    <!-- Capacity (benchmark estimator) goes here, between storage and actions. -->
+    <NodeCapacity :node="node" :recording="stats.recording" />
 
     <footer class="mt-auto flex items-center gap-1.5 px-3 py-2 border-t border-border">
       <Button variant="ghost" size="sm" class="h-7 gap-1.5 text-xs" :disabled="!node.healthy" @click="openInRecord">

@@ -1,7 +1,8 @@
 //! Storage volumes this node can record to, and browsing its filesystem for
 //! media files.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use sysinfo::Disks;
@@ -45,6 +46,8 @@ pub fn list_volumes() -> Vec<StorageVolumeDto> {
                 total_bytes: d.total_space(),
                 available_bytes: d.available_space(),
                 removable: d.is_removable(),
+                write_bytes_per_sec: 0,
+                seconds_left: None,
             }
         })
         .collect();
@@ -70,6 +73,73 @@ fn merge_shared(mut volumes: Vec<StorageVolumeDto>) -> Vec<StorageVolumeDto> {
     }
     merged.sort_by(|a, b| a.mount_point.cmp(&b.mount_point));
     merged
+}
+
+/// Which of `volumes` `path` is on. `path` needn't exist yet: its nearest
+/// existing folder is used. On Unix the device decides, which follows
+/// firmlinks (macOS `/Users` is on `/System/Volumes/Data`) and bind mounts;
+/// elsewhere, the longest mount point the path starts with. Blocking.
+pub fn volume_of(path: &Path, volumes: &[StorageVolumeDto]) -> Option<usize> {
+    let existing = path.ancestors().find(|p| p.exists())?;
+    let mounts = |v: &StorageVolumeDto| {
+        std::iter::once(v.mount_point.clone()).chain(v.other_mounts.clone()).collect::<Vec<_>>()
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let Ok(dev) = std::fs::metadata(existing).map(|m| m.dev()) {
+            let same = |m: &String| std::fs::metadata(m).is_ok_and(|meta| meta.dev() == dev);
+            if let Some(i) = volumes.iter().position(|v| mounts(v).iter().any(same)) {
+                return Some(i);
+            }
+        }
+    }
+    volumes
+        .iter()
+        .enumerate()
+        .flat_map(|(i, v)| mounts(v).into_iter().map(move |m| (i, m)))
+        .filter(|(_, m)| existing.starts_with(m))
+        .max_by_key(|(_, m)| m.len())
+        .map(|(i, _)| i)
+}
+
+/// Recording time left on a volume with `available` bytes, written at
+/// `bytes_per_sec`; `None` when nothing is written.
+pub fn seconds_left(available: u64, bytes_per_sec: u64) -> Option<u64> {
+    (bytes_per_sec > 0).then(|| available / bytes_per_sec)
+}
+
+/// A recording isn't started on a volume with less free space than this.
+pub const MIN_FREE_TO_RECORD: u64 = 1_000_000_000;
+
+/// How long a leg must have recorded before its write rate is trusted: the
+/// first seconds include headers and encoder start-up.
+const MIN_MEASURE: Duration = Duration::from_secs(5);
+
+/// What each recording leg writes per second, averaged since its session
+/// started, keyed by the file it's writing now. Takes each leg's files and
+/// how long it has recorded. Blocking: reads file sizes.
+pub fn leg_write_rates(legs: &[(Vec<String>, Duration)]) -> Vec<(PathBuf, u64)> {
+    legs.iter()
+        .filter(|(files, elapsed)| !files.is_empty() && *elapsed >= MIN_MEASURE)
+        .map(|(files, elapsed)| {
+            let bytes: u64 = files.iter().filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.len()).sum();
+            (PathBuf::from(files.last().unwrap()), (bytes as f64 / elapsed.as_secs_f64()) as u64)
+        })
+        .collect()
+}
+
+/// Add each `(file, bytes per second)` being written to its volume's write
+/// rate, and work out the time left. Blocking.
+pub fn apply_write_rates(volumes: &mut [StorageVolumeDto], writes: &[(PathBuf, u64)]) {
+    for (file, rate) in writes {
+        if let Some(i) = volume_of(file, volumes) {
+            volumes[i].write_bytes_per_sec += rate;
+        }
+    }
+    for v in volumes {
+        v.seconds_left = seconds_left(v.available_bytes, v.write_bytes_per_sec);
+    }
 }
 
 /// List `dir` (the home directory if `None`): its subdirectories and media
@@ -128,6 +198,8 @@ mod tests {
             total_bytes: 100,
             available_bytes: 50,
             removable: false,
+            write_bytes_per_sec: 0,
+            seconds_left: None,
         }
     }
 
