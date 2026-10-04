@@ -144,6 +144,8 @@ pub struct StartRecordingRequest {
     pub source_id: String,
     /// Informational: the controller-side preset these outputs came from.
     pub preset_id: Option<String>,
+    /// The preset's name, for `{preset}` in path templates.
+    pub preset_name: Option<String>,
     /// The output legs to record. Sent inline so nodes keep no preset store.
     pub outputs: Vec<PresetOutputInput>,
 }

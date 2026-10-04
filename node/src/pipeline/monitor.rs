@@ -36,6 +36,15 @@ pub struct MonitorPipeline {
     level_el: gst::Element,
 }
 
+/// A source's negotiated video format; each part `None` until negotiated (or,
+/// for the rate, if it's variable).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VideoFormat {
+    pub size: Option<(u32, u32)>,
+    /// (numerator, denominator)
+    pub rate: Option<(u32, u32)>,
+}
+
 impl MonitorPipeline {
     /// Build and start an always-on monitor pipeline for `source`.
     ///
@@ -130,6 +139,22 @@ impl MonitorPipeline {
     /// timestamps mean the same thing on both sides.
     pub fn timing(&self) -> (Option<gst::Clock>, Option<gst::ClockTime>) {
         (self.pipeline.clock(), self.pipeline.base_time())
+    }
+
+    /// The video format the source is currently producing.
+    pub fn video_format(&self) -> VideoFormat {
+        let caps = self.video.appsink().static_pad("sink").and_then(|pad| pad.current_caps());
+        let Some(s) = caps.as_ref().and_then(|c| c.structure(0)) else { return VideoFormat::default() };
+        let size = match (s.get::<i32>("width"), s.get::<i32>("height")) {
+            (Ok(w), Ok(h)) if w > 0 && h > 0 => Some((w as u32, h as u32)),
+            _ => None,
+        };
+        let rate = s
+            .get::<gst::Fraction>("framerate")
+            .ok()
+            .filter(|f| f.numer() > 0 && f.denom() > 0)
+            .map(|f| (f.numer() as u32, f.denom() as u32));
+        VideoFormat { size, rate }
     }
 
     /// Apply a new config to the running pipeline without restarting it.

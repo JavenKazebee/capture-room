@@ -7,6 +7,10 @@ export type StartRecordingRequest = { source_id: string,
  */
 preset_id: string | null, 
 /**
+ * The preset's name, for `{preset}` in path templates.
+ */
+preset_name: string | null, 
+/**
  * The output legs to record. Sent inline so nodes keep no preset store.
  */
 outputs: Array<PresetOutputInput>, };

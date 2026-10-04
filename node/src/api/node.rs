@@ -210,7 +210,7 @@ async fn post_recording(
     if req.outputs.is_empty() {
         return Err(ApiError::BadRequest("at least one output is required".into()));
     }
-    let legs = build_legs(&state, &req)?;
+    let legs = build_legs(&state, &req).await?;
     for (path, _) in &legs {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.with_context(|| format!("create {}", parent.display()))?;
@@ -334,13 +334,30 @@ async fn rescan_after(state: &Arc<AppState>, change: &str) {
 }
 
 /// Build `(resolved_path, RecordingProfile)` for every requested output leg.
-fn build_legs(state: &AppState, req: &StartRecordingRequest) -> ApiResult<Vec<(PathBuf, RecordingProfile)>> {
-    let now = chrono::Local::now();
-    let vars = PathVars {
-        source: req.source_id.clone(),
-        node: state.node_name(),
-        date: now.format("%Y-%m-%d").to_string(),
-        datetime: now.format("%Y%m%d_%H%M%S").to_string(),
+/// A template with `{take}` gets the first take number none of whose files
+/// exist yet.
+async fn build_legs(state: &AppState, req: &StartRecordingRequest) -> ApiResult<Vec<(PathBuf, RecordingProfile)>> {
+    let (source_name, format) = {
+        let mgr = state.source_manager.read().await;
+        let name = mgr.get_source(&req.source_id).map(|s| s.display_name().to_string());
+        (name.unwrap_or_else(|| req.source_id.clone()), mgr.video_format(&req.source_id))
     };
-    plan_legs(&req.outputs, Some(&vars)).map_err(|e| ApiError::BadRequest(e.into()))
+    let mut vars = PathVars {
+        source: req.source_id.clone(),
+        source_name,
+        node: state.node_name(),
+        preset: req.preset_name.clone().unwrap_or_else(|| "default".into()),
+        at: chrono::Local::now(),
+        take: 1,
+        source_resolution: format.size,
+        source_framerate: format.rate,
+    };
+    let uses_take = req.outputs.iter().any(|o| o.path_template.contains("{take}"));
+    loop {
+        let legs = plan_legs(&req.outputs, Some(&vars)).map_err(|e| ApiError::BadRequest(e.into()))?;
+        if !uses_take || vars.take >= 999 || !legs.iter().any(|(path, _)| path.exists()) {
+            return Ok(legs);
+        }
+        vars.take += 1;
+    }
 }

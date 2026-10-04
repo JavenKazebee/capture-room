@@ -49,6 +49,9 @@ function usedBy(id: string) {
 const selectedId = ref<string | null>(null)
 const draftName = ref('')
 const draftLegs = ref<PresetOutputInput[]>([])
+/** Stable keys for the output cards, moved and spliced alongside `draftLegs`. */
+const legKeys = ref<number[]>([])
+let nextKey = 0
 const original = ref('')
 const saving = ref(false)
 const serverError = ref<string | null>(null)
@@ -62,6 +65,7 @@ function load(id: string, name: string, legs: PresetOutputInput[]) {
   selectedId.value = id
   draftName.value = name
   draftLegs.value = legs.map((l) => ({ ...l }))
+  legKeys.value = legs.map(() => nextKey++)
   original.value = id === 'new' ? '' : snapshot()
   serverError.value = null
 }
@@ -112,16 +116,24 @@ function addOutput() {
   const n = draftLegs.value.length + 1
   // {output} keeps a second output from writing the first one's file.
   draftLegs.value.push({ ...blankLeg(), name: `Output ${n}`, path_template: '~/capture-room/{date}/{source}_{output}_{datetime}.{ext}' })
+  legKeys.value.push(nextKey++)
 }
 
 function duplicateOutput(i: number) {
   const leg = draftLegs.value[i]!
   draftLegs.value.splice(i + 1, 0, { ...leg, name: `${leg.name} copy` })
+  legKeys.value.splice(i + 1, 0, nextKey++)
+}
+
+function removeOutput(i: number) {
+  draftLegs.value.splice(i, 1)
+  legKeys.value.splice(i, 1)
 }
 
 function moveOutput(i: number, dir: -1 | 1) {
-  const legs = draftLegs.value
-  ;[legs[i], legs[i + dir]] = [legs[i + dir]!, legs[i]!]
+  for (const list of [draftLegs.value, legKeys.value] as unknown[][]) {
+    ;[list[i], list[i + dir]] = [list[i + dir], list[i]]
+  }
 }
 
 const clashes = computed(() => clashingLegs(draftLegs.value))
@@ -131,7 +143,9 @@ const problemCount = computed(
 
 const preview = computed(() => ({
   source: sources.sources[0]?.id ?? 'cam1',
+  sourceName: sources.sources[0]?.display_name ?? 'Camera 1',
   node: nodes.self?.node_name ?? 'node',
+  preset: draftName.value.trim(),
 }))
 
 // ── Save / delete ─────────────────────────────────────────────────────────────
@@ -289,13 +303,13 @@ watch(selected, (p) => p && !dirty.value && p.id === selectedId.value && loadPre
           <fieldset :disabled="isBuiltIn" class="space-y-2" :class="isBuiltIn && 'opacity-80'">
             <OutputCard
               v-for="(_, i) in draftLegs"
-              :key="i"
+              :key="legKeys[i]"
               v-model="draftLegs[i]!"
               :index="i"
               :count="draftLegs.length"
               :clash="clashes.has(i)"
               :preview="preview"
-              @remove="draftLegs.splice(i, 1)"
+              @remove="removeOutput(i)"
               @duplicate="duplicateOutput(i)"
               @move="(d) => moveOutput(i, d)"
             />

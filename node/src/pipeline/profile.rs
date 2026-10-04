@@ -1,21 +1,58 @@
 use std::path::PathBuf;
 
+use chrono::{DateTime, Local};
+
 use crate::api::types::{ChromaSubsampling, Container, PresetOutputInput, VideoCodec};
 
 /// Values for the per-recording tokens of a path template.
 pub struct PathVars {
     pub source: String,
+    pub source_name: String,
     pub node: String,
-    pub date: String,
-    pub datetime: String,
+    pub preset: String,
+    /// When the recording starts.
+    pub at: DateTime<Local>,
+    /// `{take}`: the first number whose paths don't exist yet.
+    pub take: u32,
+    /// The source's current format, for `{resolution}` and `{fps}` on an
+    /// output that matches the source. `None` until it's negotiated.
+    pub source_resolution: Option<(u32, u32)>,
+    pub source_framerate: Option<(u32, u32)>,
+}
+
+impl PathVars {
+    fn expand(&self, template: &str, profile: &RecordingProfile) -> String {
+        let at = &self.at;
+        let resolution = profile.resolution.or(self.source_resolution).map_or("source".into(), format_resolution);
+        let fps = profile.framerate.or(self.source_framerate).map_or("source".into(), format_framerate);
+        [
+            ("{source}", sanitize(&self.source)),
+            ("{source_name}", sanitize(&self.source_name)),
+            ("{node}", sanitize(&self.node)),
+            ("{preset}", sanitize(&self.preset)),
+            ("{date}", at.format("%Y-%m-%d").to_string()),
+            ("{time}", at.format("%H%M%S").to_string()),
+            ("{datetime}", at.format("%Y%m%d_%H%M%S").to_string()),
+            ("{year}", at.format("%Y").to_string()),
+            ("{month}", at.format("%m").to_string()),
+            ("{day}", at.format("%d").to_string()),
+            ("{take}", format!("{:02}", self.take)),
+            ("{resolution}", resolution),
+            ("{fps}", fps),
+        ]
+        .iter()
+        .fold(template.to_string(), |path, (token, value)| path.replace(token, value))
+    }
 }
 
 /// Build every leg's profile and output path, rejecting a format that doesn't
 /// parse or two legs that would write the same file.
 ///
 /// With `vars` as `None` the per-recording tokens are left unexpanded, so the
-/// check covers every future recording — what a preset save wants. `{output}`
-/// and `{ext}` come from the leg itself; a leading `~` is this node's home.
+/// check covers every future recording — what a preset save wants. Tokens the
+/// leg settles itself (`{output}`, `{ext}`, `{codec}`, and `{resolution}` /
+/// `{fps}` when it sets them) are always expanded; a leading `~` is this
+/// node's home.
 pub fn plan_legs(
     outputs: &[PresetOutputInput],
     vars: Option<&PathVars>,
@@ -23,13 +60,19 @@ pub fn plan_legs(
     let mut legs: Vec<(PathBuf, RecordingProfile)> = Vec::with_capacity(outputs.len());
     for o in outputs {
         let profile = RecordingProfile::from_output(o)?;
-        let mut path = o.path_template.replace("{output}", &o.name).replace("{ext}", profile.file_extension());
+        let mut path = o
+            .path_template
+            .replace("{output}", &sanitize(&o.name))
+            .replace("{ext}", profile.file_extension())
+            .replace("{codec}", profile.codec_slug());
+        if let Some((w, h)) = profile.resolution {
+            path = path.replace("{resolution}", &format_resolution((w, h)));
+        }
+        if let Some(fps) = profile.framerate {
+            path = path.replace("{fps}", &format_framerate(fps));
+        }
         if let Some(v) = vars {
-            path = path
-                .replace("{source}", &v.source)
-                .replace("{node}", &v.node)
-                .replace("{date}", &v.date)
-                .replace("{datetime}", &v.datetime);
+            path = v.expand(&path, &profile);
         }
         let path = expand_home(&path);
         if legs.iter().any(|(p, _)| *p == path) {
@@ -39,6 +82,30 @@ pub fn plan_legs(
         legs.push((path, profile));
     }
     Ok(legs)
+}
+
+/// A name made safe to use as one path component: separators and characters
+/// Windows or macOS reject become `-`.
+fn sanitize(value: &str) -> String {
+    let s: String = value
+        .trim()
+        .chars()
+        .map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '-' } else { c })
+        .collect();
+    match s.as_str() {
+        "" | "." | ".." => "_".into(),
+        _ => s,
+    }
+}
+
+fn format_resolution((w, h): (u32, u32)) -> String {
+    format!("{w}x{h}")
+}
+
+/// (30, 1) → "30"; (30000, 1001) → "29.97"; (24000, 1001) → "23.976"
+fn format_framerate((n, d): (u32, u32)) -> String {
+    let s = format!("{:.3}", n as f64 / d as f64);
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 /// `~` or `~/…` → this node's home directory. Paths are resolved on the node,
@@ -83,7 +150,7 @@ impl RecordingProfile {
             resolution: parse_optional(&o.resolution, parse_resolution)
                 .ok_or("resolution must look like 1920x1080")?,
             framerate: parse_optional(&o.framerate, parse_framerate)
-                .ok_or("framerate must look like 30 or 30000/1001")?,
+                .ok_or("framerate must look like 30, 29.97 or 30000/1001")?,
             bitrate_kbps: o.bitrate_kbps,
             chroma: o.chroma,
         })
@@ -155,6 +222,21 @@ impl RecordingProfile {
         }
     }
 
+    /// `{codec}` in a path template: the codec's API name.
+    pub fn codec_slug(&self) -> &'static str {
+        match self.video_codec {
+            VideoCodec::H264 => "h264",
+            VideoCodec::H265 => "h265",
+            VideoCodec::Vp9 => "vp9",
+            VideoCodec::ProRes4444 => "prores_4444",
+            VideoCodec::ProRes422Hq => "prores_422hq",
+            VideoCodec::ProRes422 => "prores_422",
+            VideoCodec::ProRes422Lt => "prores_422lt",
+            VideoCodec::ProRes422Proxy => "prores_422proxy",
+            VideoCodec::Uncompressed => "uncompressed",
+        }
+    }
+
     /// Value of avenc_prores_ks's `profile` enum.
     pub fn prores_profile(&self) -> Option<&'static str> {
         match self.video_codec {
@@ -202,10 +284,31 @@ fn parse_resolution(s: &str) -> Option<(u32, u32)> {
     nonzero_pair(w, h)
 }
 
-/// "30" → (30, 1); "30000/1001" → (30000, 1001)
+/// "30" → (30, 1); "30000/1001" → (30000, 1001); "29.97" → (30000, 1001).
+/// A decimal within rounding of an NTSC rate (N×1000/1001) means that rate;
+/// any other decimal is taken exactly ("12.5" → (25, 2)).
 fn parse_framerate(s: &str) -> Option<(u32, u32)> {
+    let s = s.trim();
+    if s.contains('.') && !s.contains('/') {
+        let fps: f64 = s.parse().ok().filter(|f: &f64| f.is_finite() && *f > 0.0 && *f <= 1000.0)?;
+        let whole = fps.round();
+        if (fps - whole).abs() < 1e-9 {
+            return Some((whole as u32, 1));
+        }
+        let ntsc = (fps * 1.001).round();
+        if (fps - ntsc * 1000.0 / 1001.0).abs() < 0.006 {
+            return Some((ntsc as u32 * 1000, 1001));
+        }
+        let milli = (fps * 1000.0).round() as u32;
+        let g = gcd(milli, 1000);
+        return (milli > 0).then_some((milli / g, 1000 / g));
+    }
     let (n, d) = s.split_once('/').unwrap_or((s, "1"));
     nonzero_pair(n, d)
+}
+
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 fn nonzero_pair(a: &str, b: &str) -> Option<(u32, u32)> {
@@ -230,7 +333,13 @@ mod tests {
     fn parses_framerate() {
         assert_eq!(parse_framerate("30"), Some((30, 1)));
         assert_eq!(parse_framerate("30000/1001"), Some((30000, 1001)));
-        assert_eq!(parse_framerate("29.97"), None);
+        assert_eq!(parse_framerate("29.97"), Some((30000, 1001)));
+        assert_eq!(parse_framerate("23.976"), Some((24000, 1001)));
+        assert_eq!(parse_framerate("59.94"), Some((60000, 1001)));
+        assert_eq!(parse_framerate("25.0"), Some((25, 1)));
+        assert_eq!(parse_framerate("12.5"), Some((25, 2)));
+        assert_eq!(parse_framerate("abc"), None);
+        assert_eq!(parse_framerate("-29.97"), None);
         assert_eq!(parse_framerate("30/0"), None);
     }
 
@@ -272,11 +381,47 @@ mod tests {
 
     #[test]
     fn expands_tokens_and_home() {
-        let vars = PathVars { source: "cam1".into(), node: "n".into(), date: "d".into(), datetime: "dt".into() };
-        let legs = plan_legs(&[leg("a", Container::Mp4, "~/rec/{source}_{datetime}.{ext}")], Some(&vars)).unwrap();
-        assert_eq!(legs[0].0, std::env::home_dir().unwrap().join("rec/cam1_dt.mp4"));
+        use chrono::TimeZone;
+        let vars = PathVars {
+            source: "cam1".into(),
+            source_name: "HOST (Cam 1/A)".into(),
+            node: "n".into(),
+            preset: "Edit".into(),
+            at: Local.with_ymd_and_hms(2026, 10, 3, 9, 5, 7).unwrap(),
+            take: 3,
+            source_resolution: Some((1920, 1080)),
+            source_framerate: Some((30000, 1001)),
+        };
+        let template = "~/rec/{year}/{month}/{day}/{source}_{source_name}_{preset}_{time}_{take}_{resolution}@{fps}_{codec}.{ext}";
+        let legs = plan_legs(&[leg("a", Container::Mp4, template)], Some(&vars)).unwrap();
+        assert_eq!(
+            legs[0].0,
+            std::env::home_dir()
+                .unwrap()
+                .join("rec/2026/10/03/cam1_HOST (Cam 1-A)_Edit_090507_03_1920x1080@29.97_h264.mp4")
+        );
+        // The output's own format wins over the source's.
+        let mut scaled = leg("a", Container::Mp4, "/r/{resolution}_{fps}");
+        scaled.resolution = Some("1280x720".into());
+        scaled.framerate = Some("25".into());
+        assert_eq!(plan_legs(&[scaled], Some(&vars)).unwrap()[0].0, PathBuf::from("/r/1280x720_25"));
         assert_eq!(expand_home("/abs/~x"), PathBuf::from("/abs/~x"));
         assert_eq!(expand_home("~user/x"), PathBuf::from("~user/x"));
+    }
+
+    #[test]
+    fn sanitizes_names() {
+        assert_eq!(sanitize(" a/b:c "), "a-b-c");
+        assert_eq!(sanitize(".."), "_");
+        assert_eq!(sanitize(""), "_");
+    }
+
+    #[test]
+    fn formats_framerates() {
+        assert_eq!(format_framerate((30, 1)), "30");
+        assert_eq!(format_framerate((30000, 1001)), "29.97");
+        assert_eq!(format_framerate((24000, 1001)), "23.976");
+        assert_eq!(format_framerate((25, 2)), "12.5");
     }
 
     #[test]

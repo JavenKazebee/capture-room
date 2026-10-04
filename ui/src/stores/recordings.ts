@@ -71,6 +71,7 @@ export const useRecordingsStore = defineStore('recordings', () => {
     const body: StartRecordingRequest = {
       source_id: sourceId,
       preset_id: preset?.id ?? null,
+      preset_name: preset?.name ?? null,
       outputs,
     }
     const dto = await nodeApi(nodeId)<RecordingSessionDto>('/recordings', { method: 'POST', body })

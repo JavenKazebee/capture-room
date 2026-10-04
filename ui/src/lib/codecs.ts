@@ -19,6 +19,11 @@ export const CODECS: Record<VideoCodec, string> = {
 
 export const CONTAINERS: Record<Container, string> = { mov: '.mov', mp4: '.mp4', mkv: '.mkv' }
 
+/** Codecs that take a target bitrate (ProRes and uncompressed are fixed-rate by design). */
+export function hasBitrate(codec: VideoCodec) {
+  return codec === 'h264' || codec === 'h265' || codec === 'vp9'
+}
+
 /** Codecs whose chroma subsampling is configurable (ProRes picks it via the codec). */
 export function hasChroma(codec: VideoCodec) {
   return codec === 'h264' || codec === 'h265'
@@ -33,8 +38,8 @@ export function legSummary(leg: PresetOutputInput) {
   return [
     `${CODECS[leg.codec]} ${CONTAINERS[leg.container]}`,
     leg.resolution ?? 'source res',
-    leg.framerate ? `${leg.framerate} fps` : 'source fps',
-    leg.bitrate_kbps ? `${leg.bitrate_kbps} kbps` : null,
+    leg.framerate ? `${fpsLabel(leg.framerate)} fps` : 'source fps',
+    leg.bitrate_kbps && hasBitrate(leg.codec) ? `${leg.bitrate_kbps} kbps` : null,
     hasChroma(leg.codec) ? chromaLabel(leg.chroma) : null,
   ]
     .filter(Boolean)
@@ -76,59 +81,185 @@ export function containerOptions(codec: VideoCodec) {
 export const CODEC_OPTIONS = (Object.entries(CODECS) as [VideoCodec, string][]).map(([value, label]) => ({ value, label }))
 
 export const CHROMA_OPTIONS: { value: ChromaSubsampling; label: string }[] = [
-  { value: '420', label: '4:2:0 — plays everywhere' },
+  { value: '420', label: '4:2:0' },
   { value: '422', label: '4:2:2' },
   { value: '444', label: '4:4:4' },
 ]
 
+// ── Resolution / frame rate ───────────────────────────────────────────────────
+
+/** Common output sizes; anything else is entered as a custom WIDTHxHEIGHT. */
+export const RESOLUTION_PRESETS = [
+  { value: '3840x2160', label: '3840 × 2160 (UHD)' },
+  { value: '2560x1440', label: '2560 × 1440' },
+  { value: '1920x1080', label: '1920 × 1080 (HD)' },
+  { value: '1280x720', label: '1280 × 720' },
+] as const
+
+/** Common frame rates, stored as the fractions the node records at. */
+export const FRAMERATE_PRESETS = [
+  { value: '24000/1001', label: '23.976' },
+  { value: '24', label: '24' },
+  { value: '25', label: '25' },
+  { value: '30000/1001', label: '29.97' },
+  { value: '30', label: '30' },
+  { value: '50', label: '50' },
+  { value: '60000/1001', label: '59.94' },
+  { value: '60', label: '60' },
+] as const
+
+export function parseResolution(s: string): [number, number] | null {
+  const m = /^\s*([1-9]\d*)\s*[xX]\s*([1-9]\d*)\s*$/.exec(s)
+  return m ? [Number(m[1]), Number(m[2])] : null
+}
+
+const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a)
+
+/**
+ * "30" → [30, 1]; "30000/1001" → [30000, 1001]; "29.97" → [30000, 1001].
+ * Mirrors `parse_framerate` in `node/src/pipeline/profile.rs`.
+ */
+export function parseFramerate(input: string): [number, number] | null {
+  const s = input.trim()
+  if (s.includes('.') && !s.includes('/')) {
+    if (!/^\d*\.\d*$/.test(s)) return null
+    const fps = Number(s)
+    if (!Number.isFinite(fps) || fps <= 0 || fps > 1000) return null
+    const whole = Math.round(fps)
+    if (Math.abs(fps - whole) < 1e-9) return [whole, 1]
+    const ntsc = Math.round(fps * 1.001)
+    if (Math.abs(fps - (ntsc * 1000) / 1001) < 0.006) return [ntsc * 1000, 1001]
+    const milli = Math.round(fps * 1000)
+    const g = gcd(milli, 1000)
+    return milli > 0 ? [milli / g, 1000 / g] : null
+  }
+  const m = /^([1-9]\d*)\s*(?:\/\s*([1-9]\d*))?$/.exec(s)
+  return m ? [Number(m[1]), Number(m[2] ?? 1)] : null
+}
+
+/** [30000, 1001] → "29.97", as `{fps}` and labels show it. */
+export function formatFramerate([n, d]: [number, number]) {
+  return (n / d).toFixed(3).replace(/\.?0+$/, '')
+}
+
+/** A stored frame rate shown as a decimal ("30000/1001" → "29.97"). */
+export function fpsLabel(value: string) {
+  const f = parseFramerate(value)
+  return f ? formatFramerate(f) : value
+}
+
+/** The preset matching a stored frame rate, comparing values ("29.97" matches "30000/1001"). */
+export function framerateChoice(value: string) {
+  const f = parseFramerate(value)
+  return f ? FRAMERATE_PRESETS.find((p) => { const q = parseFramerate(p.value)!; return q[0] * f[1] === f[0] * q[1] })?.value : undefined
+}
+
 // ── Path templates ────────────────────────────────────────────────────────────
 
-/** Tokens a path template can use; expanded on the recording node (see `plan_legs`). */
-export const PATH_TOKENS = [
-  { token: '{source}', help: 'Source ID' },
-  { token: '{node}', help: 'Recording node name' },
-  { token: '{date}', help: 'Start date, YYYY-MM-DD' },
-  { token: '{datetime}', help: 'Start time, YYYYMMDD_HHMMSS' },
-  { token: '{output}', help: "This output's name" },
-  { token: '{ext}', help: 'File extension from the container' },
+/** Tokens a path template can use, grouped for the editor; expanded on the recording node (see `plan_legs`). */
+export const PATH_TOKEN_GROUPS = [
+  {
+    label: 'Who',
+    tokens: [
+      { token: '{source}', help: 'Source ID' },
+      { token: '{source_name}', help: "Source's display name" },
+      { token: '{node}', help: 'Recording node name' },
+    ],
+  },
+  {
+    label: 'When',
+    tokens: [
+      { token: '{date}', help: 'Start date, YYYY-MM-DD' },
+      { token: '{time}', help: 'Start time, HHMMSS' },
+      { token: '{datetime}', help: 'Start date and time, YYYYMMDD_HHMMSS' },
+      { token: '{year}', help: 'Start year, YYYY' },
+      { token: '{month}', help: 'Start month, MM' },
+      { token: '{day}', help: 'Start day, DD' },
+    ],
+  },
+  {
+    label: 'What',
+    tokens: [
+      { token: '{preset}', help: 'Preset name' },
+      { token: '{output}', help: "This output's name" },
+      { token: '{codec}', help: 'Codec, e.g. h264 or prores_422hq' },
+      { token: '{resolution}', help: "Output size, e.g. 1920x1080 (the source's when matching it)" },
+      { token: '{fps}', help: "Frame rate, e.g. 29.97 (the source's when matching it)" },
+      { token: '{ext}', help: 'File extension from the container' },
+    ],
+  },
+  {
+    label: 'Take',
+    tokens: [{ token: '{take}', help: "01, 02, … — the first number whose files don't exist yet, so nothing is overwritten" }],
+  },
 ] as const
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
+/** A name made safe as one path component; mirrors `sanitize` in `profile.rs`. */
+function sanitize(value: string) {
+  const s = value.trim().replace(/[\x00-\x1f\x7f/\\:*?"<>|]/g, '-')
+  return s === '' || s === '.' || s === '..' ? '_' : s
+}
+
+/** Tokens an output settles by itself, whoever records it. */
+function legTokens(leg: Pick<PresetOutputInput, 'name' | 'container' | 'codec' | 'resolution' | 'framerate'>) {
+  const res = leg.resolution ? parseResolution(leg.resolution) : null
+  const fps = leg.framerate ? parseFramerate(leg.framerate) : null
+  return [
+    ['{output}', sanitize(leg.name)],
+    ['{ext}', leg.container],
+    ['{codec}', leg.codec],
+    ...(res ? [['{resolution}', `${res[0]}x${res[1]}`]] : []),
+    ...(fps ? [['{fps}', formatFramerate(fps)]] : []),
+  ] as [string, string][]
+}
+
+const expand = (template: string, pairs: [string, string][]) => pairs.reduce((t, [k, v]) => t.replaceAll(k, v), template)
+
 /** A template expanded the way the node would expand it at `at`. `~` stays (the node's home). */
 export function expandPath(
-  leg: Pick<PresetOutputInput, 'path_template' | 'name' | 'container'>,
-  vars: { source: string; node: string },
+  leg: PresetOutputInput,
+  vars: { source: string; sourceName: string; node: string; preset: string },
   at = new Date(),
 ) {
-  const date = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
-  const datetime = `${at.getFullYear()}${pad(at.getMonth() + 1)}${pad(at.getDate())}_${pad(at.getHours())}${pad(at.getMinutes())}${pad(at.getSeconds())}`
-  return leg.path_template
-    .replaceAll('{output}', leg.name)
-    .replaceAll('{ext}', leg.container)
-    .replaceAll('{source}', vars.source)
-    .replaceAll('{node}', vars.node)
-    .replaceAll('{date}', date)
-    .replaceAll('{datetime}', datetime)
+  const [y, mo, d] = [String(at.getFullYear()), pad(at.getMonth() + 1), pad(at.getDate())]
+  const time = `${pad(at.getHours())}${pad(at.getMinutes())}${pad(at.getSeconds())}`
+  return expand(leg.path_template, [
+    ...legTokens(leg),
+    ['{source}', sanitize(vars.source)],
+    ['{source_name}', sanitize(vars.sourceName)],
+    ['{node}', sanitize(vars.node)],
+    ['{preset}', sanitize(vars.preset || 'preset')],
+    ['{date}', `${y}-${mo}-${d}`],
+    ['{time}', time],
+    ['{datetime}', `${y}${mo}${d}_${time}`],
+    ['{year}', y],
+    ['{month}', mo],
+    ['{day}', d],
+    ['{take}', '01'],
+    ['{resolution}', 'source'],
+    ['{fps}', 'source'],
+  ])
 }
 
 /** Client-side copies of the server's format checks, for inline feedback. */
 export function legProblems(leg: PresetOutputInput) {
   const p: Partial<Record<'resolution' | 'framerate' | 'path', string>> = {}
   const res = leg.resolution?.trim()
-  if (res && !/^\s*[1-9]\d*\s*[xX]\s*[1-9]\d*\s*$/.test(res)) p.resolution = 'Use WIDTHxHEIGHT, e.g. 1920x1080'
+  if (res && !parseResolution(res)) p.resolution = 'Enter a width and height'
   const fps = leg.framerate?.trim()
-  if (fps && !/^\s*[1-9]\d*\s*(\/\s*[1-9]\d*\s*)?$/.test(fps)) p.framerate = 'Use a number or a fraction, e.g. 30 or 30000/1001'
+  if (fps && !parseFramerate(fps)) p.framerate = 'Use a number or a fraction, e.g. 29.97 or 30000/1001'
   if (!leg.path_template.trim()) p.path = 'A path is required'
   return p
 }
 
-/** Indexes of legs that would write the same file (same template after {output}/{ext}). */
+/** Indexes of legs that would write the same file (same template after the tokens each leg settles). */
 export function clashingLegs(legs: PresetOutputInput[]) {
   const seen = new Map<string, number>()
   const clash = new Set<number>()
   legs.forEach((l, i) => {
-    const key = l.path_template.replaceAll('{output}', l.name).replaceAll('{ext}', l.container)
+    const key = expand(l.path_template, legTokens(l))
     if (seen.has(key)) {
       clash.add(i)
       clash.add(seen.get(key)!)
