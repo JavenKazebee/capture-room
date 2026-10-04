@@ -15,7 +15,8 @@ defineProps<{
         <span class="truncate" :class="item.mono && 'num'" :title="String(item.value ?? '')">
           {{ item.value ?? '—' }}
         </span>
-        <CopyButton v-if="item.copy && item.value" :value="String(item.value)" />
+        <!-- Negative margin: the button is taller than a text line and would make its row taller. -->
+        <CopyButton v-if="item.copy && item.value" :value="String(item.value)" class="-my-0.5" />
       </dd>
     </template>
   </dl>

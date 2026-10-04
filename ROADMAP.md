@@ -174,8 +174,10 @@ TanStack Table, whose v9 API is brand new and more than these tables need.
   a confirm when peers would disappear; add by address in a popover; remove only for nodes
   added by address, since discovered ones come back; cards keep their height when a node goes
   unreachable; a slot for the capacity panel; the controller now emits `node.offline` /
-  `node.online` on health changes, not just on prune) → Settings (appearance, monitoring —
-  monitoring moved here from Nodes as-is).
+  `node.online` on health changes, not just on prune) → ✅ Settings (appearance; monitoring as
+  one setting for every node, with apply/revert, an unsaved-changes guard, per-node failures in
+  a toast and a warning when a node's values differ; About with version, node ID, API address
+  and controller status).
 - Recordings, Schedules and Logs views are kept out of the nav until they exist.
 
 ## 7. Follow-on
