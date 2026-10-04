@@ -189,8 +189,11 @@ export const PATH_TOKEN_GROUPS = [
     ],
   },
   {
-    label: 'Take',
-    tokens: [{ token: '{take}', help: "01, 02, … — the first number whose files don't exist yet, so nothing is overwritten" }],
+    label: 'Numbering',
+    tokens: [
+      { token: '{take}', help: "01, 02, … — the first number whose files don't exist yet, so nothing is overwritten" },
+      { token: '{segment}', help: 'File number within a split recording: 001, 002, … Added before the extension automatically when an output splits' },
+    ],
   },
 ] as const
 
@@ -200,6 +203,23 @@ const pad = (n: number) => String(n).padStart(2, '0')
 function sanitize(value: string) {
   const s = value.trim().replace(/[\x00-\x1f\x7f/\\:*?"<>|]/g, '-')
   return s === '' || s === '.' || s === '..' ? '_' : s
+}
+
+/** Whether an output starts new files as it goes (Advanced → Split). */
+export function splits(leg: Pick<PresetOutputInput, 'advanced'>) {
+  return leg.advanced.split_minutes != null || leg.advanced.split_gb != null
+}
+
+/**
+ * A leg's template as recorded: a splitting leg without `{segment}` gets it
+ * before the file name's extension. Mirrors `with_segment` in `profile.rs`.
+ */
+function segmentedTemplate(leg: Pick<PresetOutputInput, 'path_template' | 'advanced'>) {
+  const t = leg.path_template
+  if (!splits(leg) || t.includes('{segment}')) return t
+  const nameStart = t.lastIndexOf('/') + 1
+  const dot = t.slice(nameStart).lastIndexOf('.')
+  return dot > 0 ? `${t.slice(0, nameStart + dot)}_{segment}${t.slice(nameStart + dot)}` : `${t}_{segment}`
 }
 
 /** Tokens an output settles by itself, whoever records it. */
@@ -212,6 +232,8 @@ function legTokens(leg: Pick<PresetOutputInput, 'name' | 'container' | 'codec' |
     ['{codec}', leg.codec],
     ...(res ? [['{resolution}', `${res[0]}x${res[1]}`]] : []),
     ...(fps ? [['{fps}', formatFramerate(fps)]] : []),
+    // The first file's number: what clashes and previews compare.
+    ['{segment}', '001'],
   ] as [string, string][]
 }
 
@@ -225,7 +247,7 @@ export function expandPath(
 ) {
   const [y, mo, d] = [String(at.getFullYear()), pad(at.getMonth() + 1), pad(at.getDate())]
   const time = `${pad(at.getHours())}${pad(at.getMinutes())}${pad(at.getSeconds())}`
-  return expand(leg.path_template, [
+  return expand(segmentedTemplate(leg), [
     ...legTokens(leg),
     ['{source}', sanitize(vars.source)],
     ['{source_name}', sanitize(vars.sourceName)],
@@ -259,7 +281,7 @@ export function clashingLegs(legs: PresetOutputInput[]) {
   const seen = new Map<string, number>()
   const clash = new Set<number>()
   legs.forEach((l, i) => {
-    const key = expand(l.path_template, legTokens(l))
+    const key = expand(segmentedTemplate(l), legTokens(l))
     if (seen.has(key)) {
       clash.add(i)
       clash.add(seen.get(key)!)

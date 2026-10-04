@@ -30,4 +30,13 @@ audio_bitrate_kbps: number | null, audio_channels: AudioChannels,
 /**
  * 1-based source channels for [`AudioChannels::Pick`], in output order.
  */
-channel_pick: Array<number>, };
+channel_pick: Array<number>, 
+/**
+ * Start a new file every this many minutes. With `split_gb`, whichever
+ * comes first. Both `None` = one file.
+ */
+split_minutes: number | null, 
+/**
+ * Start a new file at about this many GB.
+ */
+split_gb: number | null, };

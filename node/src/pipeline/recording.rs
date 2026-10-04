@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -25,12 +25,29 @@ use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
 use super::{capsfilter, make_el};
-use super::profile::{AudioFormat, RecordingProfile, VideoEncoder};
+use super::profile::{segment_number, AudioFormat, RecordingProfile, VideoEncoder, PCM_MAX_FILE};
 use crate::api::types::{Container, RateControl};
 
-/// How long a .mov/.mp4 keeps its index crash-safe, and how often it's
-/// rewritten. See where the muxer is configured in [`RecordingLeg::build_with`].
-const CRASH_SAFE_MAX: gst::ClockTime = gst::ClockTime::from_seconds(2 * 3600);
+/// Crash safety for .mov/.mp4 (see where the muxer is configured in
+/// [`RecordingLeg::build_with`]):
+///
+/// - Compressed audio: written as fragments while recording, each playable
+///   once complete, and turned into an ordinary file when the leg finishes.
+///   A crash loses at most the fragment being written. Costs nothing.
+/// - PCM: qtmux writes fragments of raw audio that nothing can read back
+///   (tested: ffmpeg and qtdemux both stop at the first one), so these keep
+///   the index at the front of the file instead, rewritten every period.
+///   That space is reserved up front, twice over (qtmux alternates two
+///   copies): 2 × 550 B/s per track for the longest a file runs — about
+///   32 MB for `PCM_MAX_FILE` (4 h), 4 MB for a 30-minute split. If the
+///   space fills, qtmux stops the leg with an error ("Not enough free
+///   reserved header space") rather than falling back, so these legs always
+///   go through splitmuxsink and start a new file by then. 550 B/s is a
+///   worst case: 1080p30 ProRes + PCM used about an eighth of it.
+///
+/// (qtmux's `moov-recovery-file` with `qtmoovrecover` was tried first: the
+/// files it rebuilt from H.264 + AAC didn't decode.)
+const CRASH_SAFE_FRAGMENT: gst::ClockTime = gst::ClockTime::from_seconds(2);
 const CRASH_SAFE_PERIOD: gst::ClockTime = gst::ClockTime::from_seconds(10);
 
 /// Called with the leg's output path and error message the first time a leg
@@ -44,8 +61,15 @@ pub struct RecordingLeg {
     audio_src: gst_app::AppSrc,
     /// Connections to the monitor's producers; dropping one stops the feed.
     links: Vec<ConsumptionLink>,
+    /// The leg's (first) file.
     location: PathBuf,
+    /// Every file written so far: just `location`, unless the leg splits.
+    files: Arc<Mutex<Vec<PathBuf>>>,
 }
+
+/// Called when a splitting leg opens a new file. Runs on a GStreamer
+/// streaming thread, so it must not block.
+pub type OnLegFile = Arc<dyn Fn() + Send + Sync>;
 
 /// Start one leg per `(path, profile)`, consuming `monitor`'s output. `tag`
 /// names the pipelines in logs; `on_error` hears about any leg that fails.
@@ -59,12 +83,13 @@ pub fn start_legs(
     tag: &str,
     legs: &[(PathBuf, RecordingProfile)],
     on_error: &OnLegError,
+    on_file: &OnLegFile,
 ) -> Result<Vec<RecordingLeg>> {
     let built = legs
         .iter()
         .enumerate()
         .map(|(i, (path, profile))| {
-            RecordingLeg::build(path, profile, &format!("rec-{tag}-{i}"), Arc::clone(on_error))
+            RecordingLeg::build(path, profile, &format!("rec-{tag}-{i}"), Arc::clone(on_error), Arc::clone(on_file))
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -87,8 +112,9 @@ pub fn start_legs(
 /// no files; the pipelines are dropped in NULL.
 pub fn check_legs(legs: &[(PathBuf, RecordingProfile)]) -> Result<()> {
     let on_error: OnLegError = Arc::new(|_, _| {});
+    let on_file: OnLegFile = Arc::new(|| {});
     for (i, (path, profile)) in legs.iter().enumerate() {
-        RecordingLeg::build(path, profile, &format!("check-{i}"), Arc::clone(&on_error))?;
+        RecordingLeg::build(path, profile, &format!("check-{i}"), Arc::clone(&on_error), Arc::clone(&on_file))?;
     }
     Ok(())
 }
@@ -97,11 +123,17 @@ impl RecordingLeg {
     /// Build and link the leg's pipeline with the first of the profile's
     /// encoders that this platform has and that links, leaving it in NULL:
     /// the output file isn't opened until [`Self::start`].
-    fn build(path: &Path, profile: &RecordingProfile, name: &str, on_error: OnLegError) -> Result<Self> {
+    fn build(
+        path: &Path,
+        profile: &RecordingProfile,
+        name: &str,
+        on_error: OnLegError,
+        on_file: OnLegFile,
+    ) -> Result<Self> {
         let encoders = profile.encoders();
         let mut last_err = None;
         for (i, &encoder) in encoders.iter().enumerate() {
-            match Self::build_with(path, profile, encoder, name, Arc::clone(&on_error)) {
+            match Self::build_with(path, profile, encoder, name, Arc::clone(&on_error), Arc::clone(&on_file)) {
                 Ok(leg) => {
                     info!(path = ?path, encoder = encoder.element(), hardware = encoder.is_hardware(), "recording leg built");
                     return Ok(leg);
@@ -122,6 +154,7 @@ impl RecordingLeg {
         encoder: VideoEncoder,
         name: &str,
         on_error: OnLegError,
+        on_file: OnLegFile,
     ) -> Result<Self> {
         let location = path.to_str().context("output path not valid UTF-8")?;
         let pipeline = gst::Pipeline::with_name(name);
@@ -197,7 +230,20 @@ impl RecordingLeg {
                 gst::Caps::builder("video/x-raw").field("format", format).build(),
             )?);
         }
-        video.push(build_video_encoder(profile, encoder)?);
+        let venc = build_video_encoder(profile, encoder)?;
+        if encoder == VideoEncoder::VtProRes {
+            // vtenc_prores marks every frame a delta unit, but ProRes frames
+            // are all keyframes: left as is, the muxer's keyframe table lists
+            // almost none of them and splitmuxsink never finds a frame to
+            // split at.
+            venc.static_pad("src").context("encoder src pad")?.add_probe(gst::PadProbeType::BUFFER, |_, info| {
+                if let Some(gst::PadProbeData::Buffer(buffer)) = info.data.as_mut() {
+                    buffer.make_mut().unset_flags(gst::BufferFlags::DELTA_UNIT);
+                }
+                gst::PadProbeReturn::Ok
+            });
+        }
+        video.push(venc);
         if let (VideoEncoder::VtProRes, Some(variant)) = (encoder, profile.prores_profile()) {
             // vtenc_prores picks its profile from downstream caps.
             video.push(capsfilter(
@@ -274,34 +320,96 @@ impl RecordingLeg {
         match profile.container {
             // Timestamps arrive as the monitor's running time; qtmux/mp4mux
             // start the file at zero on their own, matroskamux needs asking.
+            // A cut-off .mkv is readable as it is.
             Container::Mkv => set_property(&muxer, "offset-to-zero", "true")?,
-            // Keep the index at the front of the file and rewrite it as
-            // recording goes, so a crash or power cut leaves a playable file
-            // missing at most the last update period. The space is reserved
-            // up front, twice over (qtmux alternates between two copies):
-            // 2 × 550 B/s per track, about 16 MB for 2 hours. Recording past
-            // that writes the index at the end, as without this.
-            Container::Mov | Container::Mp4 => {
-                set_property(&muxer, "reserved-max-duration", &CRASH_SAFE_MAX.nseconds().to_string())?;
+            // .mov/.mp4 need their index to play, and normally write it only
+            // when they finish: make a crash or power cut leave a playable
+            // file. See `CRASH_SAFE_*`.
+            Container::Mov | Container::Mp4 if profile.audio_format() == AudioFormat::Pcm24 => {
+                // Longest file plus slack: the file splits at a keyframe
+                // after the limit.
+                let longest = profile.max_file_duration().unwrap_or(PCM_MAX_FILE);
+                let reserve = gst::ClockTime::from_nseconds(longest.as_nanos() as u64 + CRASH_SAFE_PERIOD.nseconds());
+                set_property(&muxer, "reserved-max-duration", &reserve.nseconds().to_string())?;
                 set_property(&muxer, "reserved-moov-update-period", &CRASH_SAFE_PERIOD.nseconds().to_string())?;
             }
+            Container::Mov | Container::Mp4 => {
+                set_property(&muxer, "fragment-duration", &CRASH_SAFE_FRAGMENT.mseconds().to_string())?;
+                set_property(&muxer, "fragment-mode", "first-moov-then-finalise")?;
+            }
         }
-        let filesink = gst::ElementFactory::make("filesink")
-            .name("sink")
-            .property("location", location)
-            .build()
-            .context("create filesink")?;
+
+        let files = Arc::new(Mutex::new(Vec::new()));
+        let sink = match &profile.segment_template {
+            None => {
+                files.lock().unwrap().push(path.to_path_buf());
+                gst::ElementFactory::make("filesink")
+                    .name("sink")
+                    .property("location", location)
+                    .build()
+                    .context("create filesink")?
+            }
+            Some(template) => {
+                let split = gst::ElementFactory::make("splitmuxsink")
+                    .name("sink")
+                    .property("muxer", &muxer)
+                    .build()
+                    .context("create splitmuxsink")?;
+                if let Some(d) = profile.max_file_duration() {
+                    split.set_property("max-size-time", d.as_nanos() as u64);
+                }
+                if let Some(bytes) = profile.split_bytes() {
+                    split.set_property("max-size-bytes", bytes);
+                }
+                // Ask for a keyframe at the split point; ignored when a size
+                // limit is set too, which then splits at the next one (at most
+                // a keyframe interval late).
+                split.set_property("send-keyframe-requests", profile.split_bytes().is_none());
+                let template = template.clone();
+                let first = path.to_path_buf();
+                let leg_files = Arc::clone(&files);
+                split.connect("format-location", false, move |args| {
+                    let index = args[1].get::<u32>().unwrap_or(0);
+                    // The first file is the leg's own path (plain, for a leg
+                    // that only rolls over at `PCM_MAX_FILE`).
+                    let file = match index {
+                        0 => first.clone(),
+                        _ => PathBuf::from(template.replace("{segment}", &segment_number(index))),
+                    };
+                    // `{segment}` may name a folder.
+                    if let Some(dir) = file.parent() {
+                        if let Err(e) = std::fs::create_dir_all(dir) {
+                            warn!(dir = ?dir, error = %e, "could not create folder for split file");
+                        }
+                    }
+                    info!(path = ?file, "recording leg opened file");
+                    leg_files.lock().unwrap().push(file.clone());
+                    on_file();
+                    Some(file.to_string_lossy().into_owned().to_value())
+                });
+                split
+            }
+        };
 
         pipeline
-            .add_many(video.iter().chain(&audio).chain([&muxer, &filesink]))
+            .add_many(video.iter().chain(&audio).chain([&sink]))
             .context("add recording elements")?;
+        if profile.segment_template.is_none() {
+            pipeline.add(&muxer).context("add muxer")?;
+        }
         gst::Element::link_many(&video).context("link video chain")?;
         gst::Element::link_many(&audio).context("link audio chain")?;
-        link_to_muxer(video.last().unwrap(), &muxer, "video", profile)?;
-        link_to_muxer(audio.last().unwrap(), &muxer, "audio", profile)?;
-        muxer.link(&filesink).context("link mux → filesink")?;
+        if profile.segment_template.is_none() {
+            link_to_muxer(video.last().unwrap(), &muxer, "video_%u", profile)?;
+            link_to_muxer(audio.last().unwrap(), &muxer, "audio_%u", profile)?;
+            muxer.link(&sink).context("link mux → filesink")?;
+        } else {
+            // splitmuxsink hands its pads to the muxer it was given.
+            link_to_muxer(video.last().unwrap(), &sink, "video", profile)?;
+            link_to_muxer(audio.last().unwrap(), &sink, "audio_%u", profile)?;
+        }
 
-        Ok(Self { pipeline, video_src, audio_src, links: Vec::new(), location: path.to_path_buf() })
+        Ok(Self { pipeline, video_src, audio_src, links: Vec::new(), location: path.to_path_buf(), files })
     }
 
     /// Open the file, start the pipeline and connect it to the producers.
@@ -377,8 +485,10 @@ impl RecordingLeg {
         // A leg that never wrote anything (it failed straight away) leaves an
         // empty file behind. Anything with data is kept: a leg that failed
         // mid-recording (disk full) may still be recoverable.
-        if std::fs::metadata(&self.location).is_ok_and(|m| m.len() == 0) {
-            remove_file(&self.location);
+        for file in self.files.lock().unwrap().iter() {
+            if std::fs::metadata(file).is_ok_and(|m| m.len() == 0) {
+                remove_file(file);
+            }
         }
         result
     }
@@ -388,7 +498,14 @@ impl RecordingLeg {
     fn discard(mut self) {
         self.links.clear();
         let _ = self.pipeline.set_state(gst::State::Null);
-        remove_file(&self.location);
+        for file in self.files.lock().unwrap().iter() {
+            remove_file(file);
+        }
+    }
+
+    /// Every file the leg has written so far.
+    pub fn files(&self) -> Vec<String> {
+        self.files.lock().unwrap().iter().map(|f| f.display().to_string()).collect()
     }
 }
 
@@ -446,7 +563,7 @@ fn link_to_muxer(
             profile.file_extension(),
         )
     };
-    let sink = muxer.request_pad_simple(&format!("{kind}_%u")).ok_or_else(incompatible)?;
+    let sink = muxer.request_pad_simple(kind).ok_or_else(incompatible)?;
     encoder
         .static_pad("src")
         .context("encoder src pad")?

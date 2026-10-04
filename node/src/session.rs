@@ -61,6 +61,7 @@ pub async fn run_stop(state: Arc<AppState>, job: StopJob, source_error: Option<S
         dto.status,
         dto.error_message.as_deref(),
         Some(&dto.dropped_frames),
+        Some(&dto.files),
     )
     .await
     {
@@ -159,6 +160,28 @@ pub fn spawn_leg_failure_reporter(state: Arc<AppState>, mut failures: mpsc::Unbo
             if let Some(StopOutcome::Start(job)) = stop {
                 warn!(session = %session_id, "every output failed, stopping recording");
                 tokio::spawn(run_stop(Arc::clone(&state), *job, None));
+            }
+        }
+    });
+}
+
+/// Save a running session's file list whenever a leg opens a new file (a
+/// split), so the Recordings tab lists every file even after a crash. Stops
+/// save the final list themselves.
+pub fn spawn_leg_file_recorder(state: Arc<AppState>, mut sessions: mpsc::UnboundedReceiver<String>) {
+    tokio::spawn(async move {
+        while let Some(session_id) = sessions.recv().await {
+            let files = state
+                .source_manager
+                .read()
+                .await
+                .active_sessions()
+                .into_iter()
+                .find(|s| s.id == session_id)
+                .map(|s| s.files);
+            let Some(files) = files else { continue };
+            if let Err(e) = db::session_update_files(&state.db, &session_id, &files).await {
+                error!(session = %session_id, error = %e, "persist session files");
             }
         }
     });

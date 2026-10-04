@@ -80,7 +80,7 @@ pub async fn monitor_settings_set(pool: &SqlitePool, m: &MonitorSettingsDto) -> 
 // ── recording_sessions ────────────────────────────────────────────────────────
 
 const SESSION_SELECT: &str = "SELECT id, source_id, preset_id, started_at, stopped_at,
-                                     output_paths, dropped_frames, status, error_message
+                                     output_paths, dropped_frames, files, status, error_message
                               FROM recording_sessions";
 
 pub async fn sessions_mark_crashed(pool: &SqlitePool) -> Result<()> {
@@ -99,8 +99,8 @@ pub async fn sessions_mark_crashed(pool: &SqlitePool) -> Result<()> {
 pub async fn session_insert(pool: &SqlitePool, s: &RecordingSessionDto) -> Result<()> {
     sqlx::query(
         "INSERT INTO recording_sessions
-         (id, source_id, preset_id, started_at, stopped_at, output_paths, dropped_frames, status, error_message)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, source_id, preset_id, started_at, stopped_at, output_paths, dropped_frames, files, status, error_message)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.id)
     .bind(&s.source_id)
@@ -109,6 +109,7 @@ pub async fn session_insert(pool: &SqlitePool, s: &RecordingSessionDto) -> Resul
     .bind(&s.stopped_at)
     .bind(Json(&s.output_paths))
     .bind(Json(&s.dropped_frames))
+    .bind(Json(&s.files))
     .bind(s.status)
     .bind(&s.error_message)
     .execute(pool)
@@ -123,19 +124,32 @@ pub async fn session_update_stop(
     status: RecordingStatus,
     error_message: Option<&str>,
     dropped_frames: Option<&[u64]>,
+    files: Option<&[Vec<String>]>,
 ) -> Result<()> {
     sqlx::query(
         "UPDATE recording_sessions
-         SET stopped_at = ?, status = ?, error_message = ?, dropped_frames = COALESCE(?, dropped_frames)
+         SET stopped_at = ?, status = ?, error_message = ?, dropped_frames = COALESCE(?, dropped_frames),
+             files = COALESCE(?, files)
          WHERE id = ?",
     )
     .bind(stopped_at)
     .bind(status)
     .bind(error_message)
     .bind(dropped_frames.map(Json))
+    .bind(files.map(Json))
     .bind(id)
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+/// Record the files a running session's legs have written so far.
+pub async fn session_update_files(pool: &SqlitePool, id: &str, files: &[Vec<String>]) -> Result<()> {
+    sqlx::query("UPDATE recording_sessions SET files = ? WHERE id = ?")
+        .bind(Json(files))
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

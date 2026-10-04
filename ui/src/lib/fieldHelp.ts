@@ -96,6 +96,7 @@ export const FIELD_HELP = {
     options: [
       { label: '{take}', text: 'Use it to never overwrite: it counts up until the file name is free.' },
       { label: '{output}', text: 'Needed when several outputs would otherwise get the same file name.' },
+      { label: '{segment}', text: 'The file number when an output splits (Advanced). Added before the extension if the template leaves it out.' },
     ],
   },
 
@@ -211,5 +212,19 @@ export const FIELD_HELP = {
       { label: 'Pick…', text: 'Only the channels listed, in that order, e.g. "1-2" for the program mix or "3, 4". Channels the source lacks are silent. AAC and Opus take 1 or 2.' },
     ],
     default: 'All',
+  },
+  splitEvery: {
+    title: 'Split every',
+    body: 'Start a new file at regular intervals instead of recording one long file. Each file plays on its own, files follow on with no frames lost or repeated between them, and a crash or full disk can only affect the file being written. Files are numbered with {segment} (001, 002, …).',
+    options: [
+      { label: 'Off', text: 'One file for the whole recording.' },
+      { label: '15–60 min', text: 'Easier to copy, back up and start editing while recording continues.' },
+    ],
+    default: 'Off. Outputs with PCM audio in .mov (ProRes and uncompressed, by default) still start a new file every 4 hours, which keeps them crash-safe; most recordings never reach it.',
+  },
+  splitSize: {
+    title: 'Split at size',
+    body: 'Start a new file when the current one reaches about this size, e.g. to stay under a drive\'s or upload service\'s file size limit. With a time as well, whichever comes first. Files split at a keyframe, so they can run slightly over.',
+    options: [{ label: 'Blank', text: 'No size limit.' }],
   },
 } satisfies Record<string, FieldHelp>

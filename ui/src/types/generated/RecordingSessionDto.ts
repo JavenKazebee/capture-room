@@ -14,4 +14,10 @@ output_paths: Array<string>,
  * Video frames each output leg dropped because it couldn't keep up,
  * ordered like `output_paths`. Live while recording, final once stopped.
  */
-dropped_frames: Array<number>, status: RecordingStatus, error_message: string | null, };
+dropped_frames: Array<number>, 
+/**
+ * Every file each output leg has written, in order, ordered like
+ * `output_paths`: one per leg unless it splits. Saved as each file
+ * opens, so it survives a crash.
+ */
+files: Array<Array<string>>, status: RecordingStatus, error_message: string | null, };

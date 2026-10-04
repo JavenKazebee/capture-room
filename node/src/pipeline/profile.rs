@@ -86,7 +86,18 @@ pub fn plan_legs(
         if let Some(v) = vars {
             path = v.expand(&path, &profile);
         }
-        let path = expand_home(&path);
+        // `{segment}` is the file's number within a split recording; the
+        // first file's path is what the leg is known by. A leg that only
+        // rolls over to a new file at `PCM_MAX_FILE` keeps a plain first name
+        // (most recordings never reach it) and numbers the files after it.
+        if profile.splits() {
+            let template = with_segment(&path);
+            profile.segment_template = Some(expand_home(&template).to_string_lossy().into_owned());
+            path = template;
+        } else if profile.reserves_index() {
+            profile.segment_template = Some(expand_home(&with_segment(&path)).to_string_lossy().into_owned());
+        }
+        let path = expand_home(&path.replace("{segment}", &segment_number(0)));
         if legs.iter().any(|(p, _)| *p == path) {
             return Err("two outputs would write the same file; give each its own path template, \
                         container, or {output} name");
@@ -118,6 +129,28 @@ fn format_resolution((w, h): (u32, u32)) -> String {
 fn format_framerate((n, d): (u32, u32)) -> String {
     let s = format!("{:.3}", n as f64 / d as f64);
     s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// A split leg's template with `{segment}` in it: added before the file
+/// name's extension (or at its end) when the template doesn't place it, so
+/// every file gets its own name.
+fn with_segment(path: &str) -> String {
+    if path.contains("{segment}") {
+        return path.to_string();
+    }
+    let name_start = path.rfind('/').map_or(0, |i| i + 1);
+    match path[name_start..].rfind('.') {
+        Some(dot) if dot > 0 => {
+            let at = name_start + dot;
+            format!("{}_{{segment}}{}", &path[..at], &path[at..])
+        }
+        _ => format!("{path}_{{segment}}"),
+    }
+}
+
+/// `{segment}` for the file at `index` (0-based): 001, 002, …
+pub fn segment_number(index: u32) -> String {
+    format!("{:03}", index + 1)
 }
 
 /// `~` or `~/…` → this node's home directory. Paths are resolved on the node,
@@ -156,6 +189,9 @@ pub struct RecordingProfile {
     /// mix down or pick channels; `None` until known.
     pub source_audio: Option<(u32, bool)>,
     pub advanced: OutputAdvanced,
+    /// For a leg that splits: its path with `{segment}` still in it, to name
+    /// each file. Set by [`plan_legs`].
+    pub segment_template: Option<String>,
 }
 
 /// A video encoder element and what it needs around it. Each codec lists its
@@ -215,6 +251,11 @@ pub struct AudioMix {
     pub channels: u32,
 }
 
+/// Longest file a leg with PCM audio in .mov writes before starting the
+/// next: the index space it reserves (see `CRASH_SAFE_*` in `recording.rs`)
+/// is sized for this, and qtmux stops the leg with an error if it fills up.
+pub const PCM_MAX_FILE: std::time::Duration = std::time::Duration::from_secs(4 * 3600);
+
 /// Keyframe spacing: short enough to scrub, cut and split files cleanly.
 pub const KEYFRAME_INTERVAL_SECS: f64 = 2.0;
 /// Constant-quality level when an output doesn't set one (1–100).
@@ -252,6 +293,7 @@ impl RecordingProfile {
             source_rate: None,
             source_audio: None,
             advanced: o.advanced.clone(),
+            segment_template: None,
         })
         .and_then(|p| p.check_advanced().map(|()| p))
     }
@@ -272,6 +314,12 @@ impl RecordingProfile {
         }
         if a.keyframe_secs.is_some_and(|k| !(0.1..=60.0).contains(&k)) {
             return Err("keyframe interval must be 0.1–60 seconds");
+        }
+        if a.split_minutes.is_some_and(|m| !(1..=1440).contains(&m)) {
+            return Err("split every 1–1440 minutes");
+        }
+        if a.split_gb.is_some_and(|g| !(0.1..=10_000.0).contains(&g)) {
+            return Err("split at 0.1–10,000 GB");
         }
         if a.audio_bitrate_kbps.is_some_and(|b| !(32..=512).contains(&b)) {
             return Err("audio bitrate must be 32–512 kbps");
@@ -430,6 +478,39 @@ impl RecordingProfile {
     /// Constant-quality level, 1–100.
     pub fn quality(&self) -> u8 {
         self.advanced.quality.unwrap_or(DEFAULT_QUALITY)
+    }
+
+    /// Whether the leg starts new files as it goes.
+    pub fn splits(&self) -> bool {
+        self.advanced.split_minutes.is_some() || self.advanced.split_gb.is_some()
+    }
+
+    /// Longest a file runs, when split by time.
+    pub fn split_duration(&self) -> Option<std::time::Duration> {
+        self.advanced.split_minutes.map(|m| std::time::Duration::from_secs(u64::from(m) * 60))
+    }
+
+    /// Whether the leg reserves its index at the front of the file for crash
+    /// safety: PCM in .mov (the only container besides .mkv that takes it).
+    /// Other .mov/.mp4 legs write fragments instead.
+    pub fn reserves_index(&self) -> bool {
+        self.container == Container::Mov && self.audio_format() == AudioFormat::Pcm24
+    }
+
+    /// Longest a file runs before the next starts: the output's split time,
+    /// capped at [`PCM_MAX_FILE`] for legs that reserve their index.
+    pub fn max_file_duration(&self) -> Option<std::time::Duration> {
+        let split = self.split_duration();
+        if self.reserves_index() {
+            Some(split.map_or(PCM_MAX_FILE, |d| d.min(PCM_MAX_FILE)))
+        } else {
+            split
+        }
+    }
+
+    /// Largest a file grows, when split by size.
+    pub fn split_bytes(&self) -> Option<u64> {
+        self.advanced.split_gb.map(|g| (g * 1e9) as u64)
     }
 
     pub fn keyframe_secs(&self) -> f64 {
@@ -795,6 +876,41 @@ mod tests {
         assert_eq!(mix.matrix.unwrap(), vec![vec![0.5, 0.0, 0.5, 0.0], vec![0.0, 0.5, 0.0, 0.5]]);
         p.source_audio = Some((6, true));
         assert_eq!(p.audio_mix(), Some(AudioMix { matrix: None, channels: 2 }));
+    }
+
+    #[test]
+    fn names_split_files() {
+        assert_eq!(with_segment("/r/{source}.{ext}"), "/r/{source}_{segment}.{ext}");
+        assert_eq!(with_segment("/r/a.b/name"), "/r/a.b/name_{segment}");
+        assert_eq!(with_segment("/r/{segment}/x.mov"), "/r/{segment}/x.mov");
+        let mut o = leg("a", Container::Mov, "/r/x.{ext}");
+        assert_eq!(plan_legs(std::slice::from_ref(&o), None).unwrap()[0].0, PathBuf::from("/r/x.mov"));
+        o.advanced.split_minutes = Some(30);
+        let legs = plan_legs(&[o], None).unwrap();
+        assert_eq!(legs[0].0, PathBuf::from("/r/x_001.mov"));
+        assert_eq!(legs[0].1.segment_template.as_deref(), Some("/r/x_{segment}.mov"));
+    }
+
+    #[test]
+    fn rolls_pcm_over_to_new_files() {
+        let mut o = leg("a", Container::Mov, "/r/x.{ext}");
+        o.codec = VideoCodec::ProRes422;
+        let legs = plan_legs(std::slice::from_ref(&o), None).unwrap();
+        // A plain first file; later ones numbered.
+        assert_eq!(legs[0].0, PathBuf::from("/r/x.mov"));
+        assert_eq!(legs[0].1.segment_template.as_deref(), Some("/r/x_{segment}.mov"));
+        assert_eq!(legs[0].1.max_file_duration(), Some(PCM_MAX_FILE));
+        o.advanced.split_minutes = Some(30);
+        let p = &plan_legs(std::slice::from_ref(&o), None).unwrap()[0].1;
+        assert_eq!(p.max_file_duration(), Some(std::time::Duration::from_secs(1800)));
+        o.advanced.split_minutes = Some(600);
+        let p = &plan_legs(std::slice::from_ref(&o), None).unwrap()[0].1;
+        assert_eq!(p.max_file_duration(), Some(PCM_MAX_FILE));
+        // AAC legs write fragments: no reserve, no rollover.
+        o.codec = VideoCodec::H264;
+        o.advanced.split_minutes = None;
+        let p = &plan_legs(&[o], None).unwrap()[0].1;
+        assert!(p.segment_template.is_none() && p.max_file_duration().is_none());
     }
 
     #[test]

@@ -95,6 +95,7 @@ pub fn spawn_emitter(state: Arc<AppState>) {
                         session_id: session.id,
                         source_id: session.source_id,
                         dropped_frames: session.dropped_frames,
+                        files: session.files,
                     });
                 }
                 for source in mgr.sources() {

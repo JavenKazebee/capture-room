@@ -171,10 +171,31 @@ now fails alone while the session's other legs keep recording.
   default `ssim` is cleared); VP9 realtime (`deadline=1`, `cpu-used=8`, `row-mt`).
 - **Audio:** 24-bit PCM beside ProRes and uncompressed video; AAC 256 kbps in MOV/MP4;
   Opus 160 kbps in MKV.
-- **Crash safety:** `qtmux`/`mp4mux` reserve the index at the front of the file
-  (`reserved-max-duration` 2 h, rewritten every 10 s), so a crash leaves a playable file
-  missing at most the last 10 s. The reserve costs about 16 MB per file (two copies of
-  550 B/s per track). MKV is readable after a crash without this.
+- **Crash safety:** a crash or power cut leaves every file playable, without a recovery
+  step. MOV/MP4 with compressed audio are written as 2 s fragments
+  (`fragment-mode=first-moov-then-finalise`) and rewritten as an ordinary file when the
+  leg finishes; a crash loses at most the fragment being written. PCM fragments can't be
+  read back (tested with ffmpeg and qtdemux), so MOV with PCM reserves the index at the
+  front instead (`reserved-max-duration` = the longest a file runs, rewritten every 10 s),
+  costing two copies of 550 B/s per track (~32 MB for 4 h). If that space fills, qtmux
+  stops the leg with an error rather than falling back (tested), so these legs always
+  record through `splitmuxsink` and start a new file at `PCM_MAX_FILE` (4 h) or their
+  split time, whichever is shorter; a leg that only rolls over keeps a plain first file
+  name and numbers the rest (`name_002.mov`…). 550 B/s is a worst case: 1080p30 ProRes +
+  PCM used about an eighth. splitmuxsink's `use-robust-muxing` was tried as the safety
+  net instead and didn't work (it split every second, or still overflowed). MKV is
+  readable as is.
+  `moov-recovery-file` + `qtmoovrecover` was tried first and rejected: files it rebuilt
+  from H.264 + AAC didn't decode.
+- **Splitting:** an output with a split time and/or size records through `splitmuxsink`
+  (given the leg's configured muxer), which starts each file at a keyframe — on a
+  keyframe request at the split time, or the next 2 s keyframe for a size limit. Files are
+  named from the path template with `{segment}` (001, 002…), added before the extension
+  when the template doesn't place it. Each new file is reported (`OnLegFile`), saved to
+  the session's `files` straight away so the list survives a crash, and sent live in
+  `recording.stats`. `vtenc_prores` marks every frame a delta unit, so its output has the
+  flag cleared: otherwise the keyframe table lists almost no frames and splitmuxsink
+  never finds one to split at.
 - **Interlacing:** non-ProRes legs pass through `deinterlace` (`mode=auto`: progressive
   video passes untouched). ProRes keeps interlacing, which it stores natively.
 - **Advanced settings:** each output carries `OutputAdvanced` (stored as JSON in

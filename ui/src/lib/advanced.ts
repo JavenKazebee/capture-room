@@ -29,6 +29,8 @@ export function defaultAdvanced(): OutputAdvanced {
     audio_bitrate_kbps: null,
     audio_channels: 'all',
     channel_pick: [],
+    split_minutes: null,
+    split_gb: null,
   }
 }
 
@@ -175,7 +177,15 @@ export function audioCodecOptions(leg: PresetOutputInput) {
 
 // ── Checks and summary ────────────────────────────────────────────────────────
 
-export type AdvancedField = 'encoder' | 'quality' | 'keyframe_secs' | 'audio_codec' | 'audio_bitrate_kbps' | 'channel_pick'
+export type AdvancedField =
+  | 'encoder'
+  | 'quality'
+  | 'keyframe_secs'
+  | 'audio_codec'
+  | 'audio_bitrate_kbps'
+  | 'channel_pick'
+  | 'split_minutes'
+  | 'split_gb'
 
 /** Client-side copies of the server's checks (`check_advanced`), for inline feedback. */
 export function advancedProblems(leg: PresetOutputInput) {
@@ -187,6 +197,9 @@ export function advancedProblems(leg: PresetOutputInput) {
   if (a.keyframe_secs != null && !(a.keyframe_secs >= 0.1 && a.keyframe_secs <= 60)) p.keyframe_secs = 'Use 0.1–60 seconds'
   if (a.audio_bitrate_kbps != null && !(a.audio_bitrate_kbps >= 32 && a.audio_bitrate_kbps <= 512))
     p.audio_bitrate_kbps = 'Use 32–512 kbps'
+  if (a.split_minutes != null && !(Number.isInteger(a.split_minutes) && a.split_minutes >= 1 && a.split_minutes <= 1440))
+    p.split_minutes = 'Use 1–1440 whole minutes'
+  if (a.split_gb != null && !(a.split_gb >= 0.1 && a.split_gb <= 10000)) p.split_gb = 'Use 0.1–10,000 GB'
   const audio = audioCodecProblem(a.audio_codec, leg.container)
   if (audio) p.audio_codec = audio
   if (a.audio_channels === 'pick') {
@@ -213,8 +226,17 @@ export function advancedSummary(leg: PresetOutputInput): string[] {
   if (a.audio_bitrate_kbps != null && resolvedAudio(leg) !== 'pcm') out.push(`${a.audio_bitrate_kbps} kbps audio`)
   if (a.audio_channels === 'stereo') out.push('Stereo mix')
   if (a.audio_channels === 'pick') out.push(`Channels ${formatChannels(a.channel_pick) || '?'}`)
+  const split = [a.split_minutes != null && formatMinutes(a.split_minutes), a.split_gb != null && `${a.split_gb} GB`].filter(Boolean)
+  if (split.length) out.push(`Split ${split.join(' or ')}`)
   return out
 }
+
+/** 90 → "90 min", 120 → "2 h". */
+export function formatMinutes(m: number) {
+  return m % 60 === 0 && m >= 60 ? `${m / 60} h` : `${m} min`
+}
+
+export const SPLIT_MINUTE_PRESETS = [15, 30, 60, 120] as const
 
 /** Drop choices a codec or container change made impossible, back to Auto. */
 export function fitAdvanced(leg: PresetOutputInput): OutputAdvanced {

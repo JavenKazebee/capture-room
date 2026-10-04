@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import { useNow } from '@vueuse/core'
 import { MousePointerClick, X } from '@lucide/vue'
 import { useRecordDeskStore } from '@/stores/recordDesk'
-import { useRecordingsStore, type RecordingSession } from '@/stores/recordings'
+import { outputFiles, useRecordingsStore, type RecordingSession } from '@/stores/recordings'
 import { usePresetsStore, blankLeg, presetLegs } from '@/stores/presets'
 import { useNodesStore } from '@/stores/nodes'
 import { formatDuration } from '@/lib/format'
@@ -201,8 +201,18 @@ const confirmStop = ref(false)
           />
           <div class="space-y-1">
             <div v-for="(p, i) in session.output_paths" :key="p" class="flex items-center gap-1 min-w-0 text-xs">
-              <span class="num truncate text-muted-foreground" :title="p">{{ p }}</span>
-              <CopyButton :value="p" />
+              <!-- The file being written now: the latest of a split output's. -->
+              <span class="num truncate text-muted-foreground" :title="outputFiles(session, i).join('\n')">
+                {{ outputFiles(session, i).at(-1) }}
+              </span>
+              <CopyButton :value="outputFiles(session, i).at(-1)!" />
+              <span
+                v-if="outputFiles(session, i).length > 1"
+                class="num shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground"
+                title="This output splits; it's writing this file number"
+              >
+                file {{ outputFiles(session, i).length }}
+              </span>
               <span
                 class="num ml-auto shrink-0"
                 :class="session.dropped_frames[i] ? 'text-warning' : 'text-muted-foreground'"
@@ -227,7 +237,7 @@ const confirmStop = ref(false)
         <section v-if="history.length" class="space-y-2">
           <h3 class="section-title">Recent recordings</h3>
           <ul class="space-y-1 text-xs">
-            <li v-for="r in history" :key="r.id" class="flex items-center gap-2" :title="r.error_message ?? r.output_paths.join('\n')">
+            <li v-for="r in history" :key="r.id" class="flex items-center gap-2" :title="r.error_message ?? r.files.flat().join('\n')">
               <StatusDot :status="r.status === 'error' ? 'error' : 'off'" />
               <span class="num text-muted-foreground">{{ startedAt(r) }}</span>
               <span class="num ml-auto">{{ elapsed(r) }}</span>

@@ -18,6 +18,7 @@ import {
   DEFAULT_SPEED,
   RATE_CONTROL_OPTIONS,
   SPEED_OPTIONS,
+  SPLIT_MINUTE_PRESETS,
   advancedProblems,
   advancedSummary,
   audioCodecOptions,
@@ -25,6 +26,7 @@ import {
   encoderChoiceProblem,
   encoderOnNodes,
   formatChannels,
+  formatMinutes,
   isProRes,
   parseChannels,
   resolvedAudio,
@@ -115,6 +117,33 @@ const channelTextBad = computed(() => channelText.value.trim() !== '' && !parseC
 watch(channelText, (text) => set('channel_pick', parseChannels(text) ?? []))
 
 const audio = computed(() => resolvedAudio(leg.value))
+
+// ── Files ─────────────────────────────────────────────────────────────────────
+
+const OFF = 'off'
+const CUSTOM = 'custom'
+const splitOptions = [
+  { value: OFF, label: 'Off' },
+  ...SPLIT_MINUTE_PRESETS.map((m) => ({ value: String(m), label: formatMinutes(m) })),
+  { value: CUSTOM, label: 'Custom…' },
+]
+const splitCustom = ref(a.value.split_minutes != null && !(SPLIT_MINUTE_PRESETS as readonly number[]).includes(a.value.split_minutes))
+const splitSelect = computed({
+  get: () => (splitCustom.value ? CUSTOM : a.value.split_minutes == null ? OFF : String(a.value.split_minutes)),
+  set: (v: string) => {
+    splitCustom.value = v === CUSTOM
+    if (v === OFF) set('split_minutes', null)
+    else if (v !== CUSTOM) set('split_minutes', Number(v))
+  },
+})
+const splitMinutes = computed({
+  get: () => a.value.split_minutes ?? '',
+  set: (v: string | number) => set('split_minutes', v === '' || v == null ? null : Number(v)),
+})
+const splitGb = computed({
+  get: () => a.value.split_gb ?? '',
+  set: (v: string | number) => set('split_gb', v === '' || v == null ? null : Number(v)),
+})
 </script>
 
 <template>
@@ -273,6 +302,44 @@ const audio = computed(() => resolvedAudio(leg.value))
             </div>
             <span v-if="channelTextBad" class="text-[11px] text-destructive">Use numbers 1–64 and ranges, e.g. 1-2, 5</span>
             <span v-else-if="problems.channel_pick" class="text-[11px] text-destructive">{{ problems.channel_pick }}</span>
+          </FormField>
+        </div>
+
+        <!-- Files -->
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 [&>*]:min-w-0">
+          <h4 class="group-title">Files</h4>
+
+          <FormField :help="FIELD_HELP.splitEvery">
+            <template #label>Split every <span v-if="changed('split_minutes')" class="dot" /></template>
+            <div class="flex gap-1.5">
+              <OptionSelect v-model="splitSelect" :options="splitOptions" :class="splitSelect === CUSTOM ? 'w-24 shrink-0' : ''" />
+              <Input
+                v-if="splitSelect === CUSTOM"
+                v-model="splitMinutes"
+                type="number"
+                min="1"
+                max="1440"
+                placeholder="min"
+                aria-label="Split every (minutes)"
+                class="num h-7 flex-1 min-w-0"
+                :aria-invalid="!!problems.split_minutes"
+              />
+            </div>
+            <span v-if="problems.split_minutes" class="text-[11px] text-destructive">{{ problems.split_minutes }}</span>
+          </FormField>
+
+          <FormField :help="FIELD_HELP.splitSize">
+            <template #label>Split at size (GB) <span v-if="changed('split_gb')" class="dot" /></template>
+            <Input
+              v-model="splitGb"
+              type="number"
+              min="0.1"
+              step="0.5"
+              placeholder="No limit"
+              class="num"
+              :aria-invalid="!!problems.split_gb"
+            />
+            <span v-if="problems.split_gb" class="text-[11px] text-destructive">{{ problems.split_gb }}</span>
           </FormField>
         </div>
       </div>

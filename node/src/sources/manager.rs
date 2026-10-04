@@ -13,7 +13,7 @@ use crate::api::types::{
 };
 use crate::pipeline::monitor::{MonitorPipeline, SourceFormat};
 use crate::pipeline::profile::RecordingProfile;
-use crate::pipeline::recording::{self, OnLegError, RecordingLeg};
+use crate::pipeline::recording::{self, OnLegError, OnLegFile, RecordingLeg};
 
 use super::ndi::NdiMonitor;
 use super::test::TestSource;
@@ -34,6 +34,10 @@ struct ActiveSession {
 impl ActiveSession {
     fn dropped_frames(&self) -> Vec<u64> {
         self.legs.iter().map(RecordingLeg::dropped_frames).collect()
+    }
+
+    fn files(&self) -> Vec<Vec<String>> {
+        self.legs.iter().map(RecordingLeg::files).collect()
     }
 }
 
@@ -104,6 +108,9 @@ pub struct SourceManager {
     stopping: HashMap<String, StopResult>,
     ndi_monitor: NdiMonitor,
     leg_failures: mpsc::UnboundedSender<LegFailure>,
+    /// Session ids whose legs opened a new file (a split), so the file list
+    /// can be saved.
+    leg_files: mpsc::UnboundedSender<String>,
 }
 
 impl SourceManager {
@@ -111,6 +118,7 @@ impl SourceManager {
         config: MonitorSettingsDto,
         ndi_monitor: NdiMonitor,
         leg_failures: mpsc::UnboundedSender<LegFailure>,
+        leg_files: mpsc::UnboundedSender<String>,
     ) -> Self {
         Self {
             config,
@@ -121,6 +129,7 @@ impl SourceManager {
             stopping: HashMap::new(),
             ndi_monitor,
             leg_failures,
+            leg_files,
         }
     }
 
@@ -266,7 +275,12 @@ impl SourceManager {
         let on_error: OnLegError = Arc::new(move |path, error| {
             let _ = failures.send(LegFailure { session_id: session_id.clone(), path: path.to_path_buf(), error });
         });
-        let recording_legs = recording::start_legs(monitor, &id[..8], legs, &on_error)?;
+        let files_tx = self.leg_files.clone();
+        let files_session = id.clone();
+        let on_file: OnLegFile = Arc::new(move || {
+            let _ = files_tx.send(files_session.clone());
+        });
+        let recording_legs = recording::start_legs(monitor, &id[..8], legs, &on_error, &on_file)?;
 
         let dto = RecordingSessionDto {
             id,
@@ -276,6 +290,7 @@ impl SourceManager {
             stopped_at: None,
             output_paths: legs.iter().map(|(p, _)| p.display().to_string()).collect(),
             dropped_frames: vec![0; legs.len()],
+            files: recording_legs.iter().map(RecordingLeg::files).collect(),
             status: RecordingStatus::Active,
             error_message: None,
         };
@@ -289,7 +304,7 @@ impl SourceManager {
     pub fn active_sessions(&self) -> Vec<RecordingSessionDto> {
         self.sessions
             .values()
-            .map(|s| RecordingSessionDto { dropped_frames: s.dropped_frames(), ..s.dto.clone() })
+            .map(|s| RecordingSessionDto { dropped_frames: s.dropped_frames(), files: s.files(), ..s.dto.clone() })
             .collect()
     }
 
@@ -373,7 +388,7 @@ impl SourceManager {
     fn take_session(&mut self, session_id: &str) -> Option<StopJob> {
         let session = self.sessions.remove(session_id)?;
         // Nothing is fed to the legs once they're stopping, so this is final.
-        let dto = RecordingSessionDto { dropped_frames: session.dropped_frames(), ..session.dto };
+        let dto = RecordingSessionDto { dropped_frames: session.dropped_frames(), files: session.files(), ..session.dto };
         let legs = session.legs;
         let (tx, rx) = watch::channel(None);
         self.stopping.insert(session_id.to_string(), rx);

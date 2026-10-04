@@ -80,7 +80,8 @@ async fn main() -> Result<()> {
         .await
         .expect("NDI monitor thread panicked");
     let (leg_failure_tx, leg_failure_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut source_manager = SourceManager::new(monitor_config, ndi_monitor, leg_failure_tx);
+    let (leg_file_tx, leg_file_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut source_manager = SourceManager::new(monitor_config, ndi_monitor, leg_failure_tx, leg_file_tx);
     source_manager.scan(&test_configs);
 
     for source in source_manager.sources() {
@@ -112,6 +113,7 @@ async fn main() -> Result<()> {
     ws::spawn_emitter(Arc::clone(&state));
     session::spawn_monitor_recovery(Arc::clone(&state));
     session::spawn_leg_failure_reporter(Arc::clone(&state), leg_failure_rx);
+    session::spawn_leg_file_recorder(Arc::clone(&state), leg_file_rx);
 
     // ── Controller (optional, toggleable at runtime) ──────────────────────────
     if controller_enabled {

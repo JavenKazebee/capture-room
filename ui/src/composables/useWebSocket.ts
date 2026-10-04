@@ -109,7 +109,7 @@ function handleEvent(event: NodeEvent) {
       break
 
     case 'recording.stats':
-      recordings.setDropped(nodeId, event.session_id, event.dropped_frames)
+      recordings.setStats(nodeId, event.session_id, event.dropped_frames, event.files)
       break
 
     case 'feed.status':

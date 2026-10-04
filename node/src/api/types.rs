@@ -143,6 +143,11 @@ pub struct RecordingSessionDto {
     #[sqlx(json)]
     #[cfg_attr(feature = "export-types", ts(type = "Array<number>"))]
     pub dropped_frames: Vec<u64>,
+    /// Every file each output leg has written, in order, ordered like
+    /// `output_paths`: one per leg unless it splits. Saved as each file
+    /// opens, so it survives a crash.
+    #[sqlx(json)]
+    pub files: Vec<Vec<String>>,
     pub status: RecordingStatus,
     pub error_message: Option<String>,
 }
@@ -259,6 +264,11 @@ pub struct OutputAdvanced {
     pub audio_channels: AudioChannels,
     /// 1-based source channels for [`AudioChannels::Pick`], in output order.
     pub channel_pick: Vec<u32>,
+    /// Start a new file every this many minutes. With `split_gb`, whichever
+    /// comes first. Both `None` = one file.
+    pub split_minutes: Option<u32>,
+    /// Start a new file at about this many GB.
+    pub split_gb: Option<f64>,
 }
 
 /// Which kind of encoder an output may use.
@@ -403,13 +413,14 @@ pub enum WsEvent {
         source_id: String,
         error: String,
     },
-    /// Live dropped-frame counts of an active session, once a second.
+    /// Live dropped-frame counts and files of an active session, once a second.
     #[serde(rename = "recording.stats")]
     RecordingStats {
         session_id: String,
         source_id: String,
         #[cfg_attr(feature = "export-types", ts(type = "Array<number>"))]
         dropped_frames: Vec<u64>,
+        files: Vec<Vec<String>>,
     },
     #[serde(rename = "feed.status")]
     FeedStatus {
