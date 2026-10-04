@@ -10,6 +10,8 @@ export const toggleVariants = cva(
       variant: {
         default: 'bg-transparent',
         outline: 'border-input hover:bg-muted border bg-transparent data-[state=on]:ring-1 data-[state=on]:ring-inset data-[state=on]:ring-primary/60 aria-pressed:ring-1 aria-pressed:ring-inset aria-pressed:ring-primary/60',
+        // A pill inside a ToggleGroup's filled track; the chosen one is raised.
+        segmented: 'h-full! min-w-0 rounded-[calc(var(--radius-md)-2px)]! border-0 bg-transparent hover:bg-transparent data-[state=on]:bg-background data-[state=on]:text-foreground data-[state=on]:shadow-sm data-[state=on]:hover:bg-background dark:data-[state=on]:bg-input/60 dark:data-[state=on]:hover:bg-input/60',
       },
       size: {
         default: 'h-7 min-w-7 px-2 has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5',

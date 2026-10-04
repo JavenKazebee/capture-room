@@ -58,7 +58,7 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
   const selectedSources = computed(() => sources.sources.filter((s) => selected.value.has(s.key)))
   const focused = computed(() => sources.sources.find((s) => s.key === focusedKey.value) ?? null)
 
-  /** Plain click: select just this one. Toggle (Ctrl/⌘ or the checkbox): add or remove it. */
+  /** Plain click: select just this one. Toggle (Ctrl/Cmd-click or the checkbox): add or remove it. */
   function select(key: string, mode: 'only' | 'toggle' = 'only') {
     const next = new Set(mode === 'toggle' ? selected.value : [])
     if (mode === 'toggle' && next.has(key)) {

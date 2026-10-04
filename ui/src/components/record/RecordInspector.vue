@@ -7,6 +7,7 @@ import { outputFiles, useRecordingsStore, type RecordingSession } from '@/stores
 import { usePresetsStore, blankLeg, presetLegs } from '@/stores/presets'
 import { useNodesStore } from '@/stores/nodes'
 import { formatDuration } from '@/lib/format'
+import { shortcut } from '@/lib/keys'
 import { legSummary } from '@/lib/codecs'
 import { fpsLabel, resolutionLabel } from '@/lib/sourceFormat'
 import { Badge } from '@/components/ui/badge'
@@ -252,7 +253,7 @@ const confirmStop = ref(false)
       <div class="space-y-2 text-xs text-muted-foreground max-w-56">
         <MousePointerClick class="size-5 mx-auto" />
         <p class="text-sm text-foreground">Select a feed to inspect it</p>
-        <p>Ctrl/⌘-click or Shift-click to select several, or press Ctrl+A for all.</p>
+        <p>{{ shortcut('Click') }} or Shift+Click to select several, or press {{ shortcut('A') }} for all.</p>
       </div>
     </div>
   </aside>

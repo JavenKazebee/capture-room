@@ -2,6 +2,7 @@
 import { computed, watch } from 'vue'
 import { useEventListener, useStorage } from '@vueuse/core'
 import { ChevronDown, ChevronUp } from '@lucide/vue'
+import { shortcut } from '@/lib/keys'
 import { useEventsStore } from '@/stores/events'
 import { useRecordingsStore } from '@/stores/recordings'
 import EventLog from './EventLog.vue'
@@ -99,7 +100,7 @@ function startResize(e: PointerEvent) {
         :title="open ? 'Close panel' : 'Open panel'"
         @click="toggle"
       >
-        <span class="opacity-60">Ctrl J</span>
+        <span class="opacity-60">{{ shortcut('J') }}</span>
         <ChevronDown v-if="open" class="size-3.5" />
         <ChevronUp v-else class="size-3.5" />
       </button>

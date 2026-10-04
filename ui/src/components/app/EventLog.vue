@@ -80,7 +80,7 @@ function resumeFollow() {
       <ToggleGroup
         v-model="shown"
         type="multiple"
-        variant="outline"
+        variant="segmented"
         size="sm"
       >
         <ToggleGroupItem

@@ -8,6 +8,7 @@ import { useRecordingsStore } from '@/stores/recordings'
 import { useRecordDeskStore, type StateFilter } from '@/stores/recordDesk'
 import { usePreferences, type TileOverlays } from '@/composables/usePreferences'
 import { wsStatus } from '@/composables/useWebSocket'
+import { shortcut } from '@/lib/keys'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
@@ -98,13 +99,12 @@ useEventListener('keydown', (e: KeyboardEvent) => {
       <ToggleGroup
         :model-value="desk.stateFilter"
         type="single"
-        variant="outline"
-        size="sm"
+        variant="segmented"
         @update:model-value="(v) => v && (desk.stateFilter = v as StateFilter)"
       >
-        <ToggleGroupItem value="all" class="h-7 px-2.5 text-xs">All</ToggleGroupItem>
-        <ToggleGroupItem value="live" class="h-7 px-2.5 text-xs">Live</ToggleGroupItem>
-        <ToggleGroupItem value="idle" class="h-7 px-2.5 text-xs">Idle</ToggleGroupItem>
+        <ToggleGroupItem value="all" class="px-2.5">All</ToggleGroupItem>
+        <ToggleGroupItem value="live" class="px-2.5">Live</ToggleGroupItem>
+        <ToggleGroupItem value="idle" class="px-2.5">Idle</ToggleGroupItem>
       </ToggleGroup>
 
       <div class="w-px h-5 bg-border mx-1" />
@@ -168,7 +168,7 @@ useEventListener('keydown', (e: KeyboardEvent) => {
         </Button>
       </template>
       <template v-else>
-        <span class="text-muted-foreground">Click a tile to inspect it · Ctrl/⌘-click or Shift-click to select several · Ctrl+A for all</span>
+        <span class="text-muted-foreground">Click a tile to inspect it · {{ shortcut('Click') }} or Shift+Click to select several · {{ shortcut('A') }} for all</span>
         <div class="flex-1" />
         <Button v-if="live" variant="outline" size="sm" class="h-7 gap-1.5 text-xs" @click="confirmStop = 'all'">
           <span class="size-2 rounded-[1px] bg-tally" /> Stop all ({{ live }})

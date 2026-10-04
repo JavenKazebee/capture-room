@@ -12,6 +12,7 @@ import { errorMessage } from '@/composables/useApi'
 import { notifyError } from '@/lib/notify'
 import { CODECS, clashingLegs, legProblems } from '@/lib/codecs'
 import { advancedProblems } from '@/lib/advanced'
+import { shortcut } from '@/lib/keys'
 import type { PresetDto } from '@/types/generated/PresetDto'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import { Button } from '@/components/ui/button'
@@ -288,7 +289,7 @@ watch(selected, (p) => p && !dirty.value && p.id === selectedId.value && loadPre
               <RotateCcw class="size-3.5" /> Revert
             </Button>
             <span v-if="problemCount" class="text-xs text-destructive">{{ problemCount }} to fix</span>
-            <Button size="sm" class="h-7 gap-1.5 text-xs" :disabled="!dirty || !!problemCount || saving" :title="problemCount ? 'Fix the highlighted fields first' : 'Save (Ctrl+S)'" @click="save">
+            <Button size="sm" class="h-7 gap-1.5 text-xs" :disabled="!dirty || !!problemCount || saving" :title="problemCount ? 'Fix the highlighted fields first' : `Save (${shortcut('S')})`" @click="save">
               <Loader2 v-if="saving" class="size-3.5 animate-spin" /> Save
             </Button>
           </template>

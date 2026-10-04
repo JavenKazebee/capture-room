@@ -175,10 +175,10 @@ const about = computed(() => [
               <div class="text-sm">Theme</div>
               <div class="text-xs text-muted-foreground">Dark is the primary theme.</div>
             </div>
-            <ToggleGroup :model-value="colorMode" @update:model-value="(v) => v && (colorMode = v as typeof colorMode)" type="single" variant="outline" size="sm">
-              <ToggleGroupItem value="dark">Dark</ToggleGroupItem>
-              <ToggleGroupItem value="light">Light</ToggleGroupItem>
-              <ToggleGroupItem value="auto">System</ToggleGroupItem>
+            <ToggleGroup :model-value="colorMode" @update:model-value="(v) => v && (colorMode = v as typeof colorMode)" type="single" variant="segmented">
+              <ToggleGroupItem value="dark" class="px-2.5">Dark</ToggleGroupItem>
+              <ToggleGroupItem value="light" class="px-2.5">Light</ToggleGroupItem>
+              <ToggleGroupItem value="auto" class="px-2.5">System</ToggleGroupItem>
             </ToggleGroup>
           </div>
           <div class="flex items-center justify-between gap-4 px-4 py-3">
@@ -186,10 +186,10 @@ const about = computed(() => [
               <div class="text-sm">Density</div>
               <div class="text-xs text-muted-foreground">Scales text and spacing across the whole UI.</div>
             </div>
-            <ToggleGroup :model-value="density" @update:model-value="(v) => v && (density = v as typeof density)" type="single" variant="outline" size="sm">
-              <ToggleGroupItem value="compact">Compact</ToggleGroupItem>
-              <ToggleGroupItem value="default">Default</ToggleGroupItem>
-              <ToggleGroupItem value="comfortable">Comfortable</ToggleGroupItem>
+            <ToggleGroup :model-value="density" @update:model-value="(v) => v && (density = v as typeof density)" type="single" variant="segmented">
+              <ToggleGroupItem value="compact" class="px-2.5">Compact</ToggleGroupItem>
+              <ToggleGroupItem value="default" class="px-2.5">Default</ToggleGroupItem>
+              <ToggleGroupItem value="comfortable" class="px-2.5">Comfortable</ToggleGroupItem>
             </ToggleGroup>
           </div>
         </div>

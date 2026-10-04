@@ -5,6 +5,7 @@ import { useNow } from '@vueuse/core'
 import { HardDrive, Search } from '@lucide/vue'
 import { wsStatus } from '@/composables/useWebSocket'
 import { formatBytes } from '@/lib/format'
+import { shortcut } from '@/lib/keys'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordingsStore } from '@/stores/recordings'
 import { useStorageStore } from '@/stores/storage'
@@ -68,7 +69,7 @@ const lowest = computed(() => {
       >
         <Search class="size-3.5" />
         <span class="flex-1 text-left">Search or run…</span>
-        <Kbd>Ctrl K</Kbd>
+        <Kbd>{{ shortcut('K') }}</Kbd>
       </button>
 
       <Tooltip v-if="wsStatus !== 'connected'">
