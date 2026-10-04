@@ -74,11 +74,19 @@ function loadPreset(p: PresetDto) {
   load(p.id, p.name, presetLegs(p).length ? presetLegs(p) : [blankLeg()])
 }
 
-// Switching away from unsaved changes asks first.
+// Switching away from unsaved changes asks first. The dialog closes itself
+// before its confirm fires, so closing must not drop the pending switch.
 const pendingSwitch = ref<(() => void) | null>(null)
+const confirmSwitch = ref(false)
 function guarded(fn: () => void) {
-  if (dirty.value) pendingSwitch.value = fn
-  else fn()
+  if (!dirty.value) return fn()
+  pendingSwitch.value = fn
+  confirmSwitch.value = true
+}
+function discardAndSwitch() {
+  const fn = pendingSwitch.value
+  pendingSwitch.value = null
+  fn?.()
 }
 
 function select(id: string) {
@@ -329,12 +337,11 @@ watch(selected, (p) => p && !dirty.value && p.id === selectedId.value && loadPre
       @confirm="destroy"
     />
     <ConfirmDialog
-      :open="!!pendingSwitch"
+      v-model:open="confirmSwitch"
       title="Discard unsaved changes?"
       description="Your edits to this preset haven't been saved."
       confirm-label="Discard"
-      @update:open="(v) => !v && (pendingSwitch = null)"
-      @confirm="() => { const fn = pendingSwitch; pendingSwitch = null; fn?.() }"
+      @confirm="discardAndSwitch"
     />
   </div>
 </template>
