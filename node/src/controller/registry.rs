@@ -77,14 +77,17 @@ impl NodeRegistry {
         self.entries.get(id).map(|n| n.url.clone())
     }
 
-    pub fn record_success(&mut self, id: &str, name: &str, uptime_secs: u64, version: &str) {
-        if let Some(e) = self.entries.get_mut(id) {
-            e.healthy = true;
-            e.fail_count = 0;
-            e.name = name.to_string();
-            e.uptime_secs = uptime_secs;
-            e.version = version.to_string();
-        }
+    /// Record a successful health check. Returns `true` if the node was
+    /// unhealthy until now.
+    pub fn record_success(&mut self, id: &str, name: &str, uptime_secs: u64, version: &str) -> bool {
+        let Some(e) = self.entries.get_mut(id) else { return false };
+        let recovered = !e.healthy;
+        e.healthy = true;
+        e.fail_count = 0;
+        e.name = name.to_string();
+        e.uptime_secs = uptime_secs;
+        e.version = version.to_string();
+        recovered
     }
 
     /// Record a failed health check. Returns the new consecutive failure count

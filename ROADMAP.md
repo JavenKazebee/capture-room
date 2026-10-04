@@ -159,7 +159,7 @@ TanStack Table, whose v9 API is brand new and more than these tables need.
   backend supports them — not before. ⌘K palette and toasts throughout.
 - **Shared patterns** (done): `PageHeader`, `ConfirmDialog`, `EditSheet` (replaces
   `FormModal`), `StatusDot`, `TallyBadge`, `KeyValueList`, `CopyButton`, `DataTable` +
-  `ColumnsMenu`.
+  `ColumnsMenu`, `StorageVolumeBar`.
 - **Views, one per pass:** ✅ Record workspace (filters, overlay toggles, tile size,
   Ctrl/Shift multi-select with bulk Record/Stop behind a confirm, per-feed preset
   remembered per browser, resizable inspector with outputs, session and history) →
@@ -169,8 +169,13 @@ TanStack Table, whose v9 API is brand new and more than these tables need.
   dirty tracking, revert, Ctrl+S, unsaved-changes guard; collapsible outputs with
   reorder/duplicate; container options explain incompatibilities; path token chips
   and a live resolved-path preview; client-side copies of the server's format and
-  same-file checks) → Nodes (cards, room for capacity
-  panel) → Settings (appearance, monitoring).
+  same-file checks) → ✅ Nodes (a card per node: status, inline rename, sources/recording/failed
+  counts, storage, Open in Record filtered to the node; controller switch in the toolbar with
+  a confirm when peers would disappear; add by address in a popover; remove only for nodes
+  added by address, since discovered ones come back; cards keep their height when a node goes
+  unreachable; a slot for the capacity panel; the controller now emits `node.offline` /
+  `node.online` on health changes, not just on prune) → Settings (appearance, monitoring —
+  monitoring moved here from Nodes as-is).
 - Recordings, Schedules and Logs views are kept out of the nav until they exist.
 
 ## 7. Follow-on

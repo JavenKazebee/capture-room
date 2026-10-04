@@ -1,271 +1,225 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { errorMessage, nodeApi } from '@/composables/useApi'
-import { formatBytes, formatUptime } from '@/lib/format'
+import { computed, ref, type ComponentPublicInstance } from 'vue'
+import { FetchError } from 'ofetch'
+import { toast } from 'vue-sonner'
+import { Plus } from '@lucide/vue'
+import { errorMessage } from '@/composables/useApi'
+import { reloadAll } from '@/composables/useWebSocket'
+import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
-import type { MonitorSettingsDto } from '@/types/generated/MonitorSettingsDto'
-import type { NodeSettingsDto } from '@/types/generated/NodeSettingsDto'
-import type { StorageVolumeDto } from '@/types/generated/StorageVolumeDto'
-import { Badge } from '@/components/ui/badge'
+import { useStorageStore } from '@/stores/storage'
+import type { NodeDto } from '@/types/generated/NodeDto'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import OptionSelect from '@/components/OptionSelect.vue'
+import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
+import { Switch } from '@/components/ui/switch'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import PageHeader from '@/components/common/PageHeader.vue'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import NodeCard from '@/components/nodes/NodeCard.vue'
 
 const store = useNodesStore()
+const storage = useStorageStore()
+
+const peers = computed(() => store.nodes.filter((n) => !n.is_self))
+
+async function refresh() {
+  await reloadAll()
+  await storage.load()
+}
+
+// ── Controller ────────────────────────────────────────────────────────────────
 
 const toggling = ref(false)
-const addNodeUrl = ref('')
-const addNodeError = ref('')
-const addNodeLoading = ref(false)
+const confirmDisable = ref(false)
+/** Peer names when the confirm opened, so its text doesn't change as they disappear. */
+const disabling = ref<string[]>([])
 
-/** Storage volumes per node id; `null` = failed to load. */
-const storage = reactive(new Map<string, StorageVolumeDto[] | null>())
-
-async function loadStorage(nodeId: string) {
-  storage.set(
-    nodeId,
-    await nodeApi(nodeId)<StorageVolumeDto[]>('/storage').catch(() => null),
-  )
+function onControllerToggle(on: boolean) {
+  if (!on && peers.value.length) {
+    disabling.value = peers.value.map((n) => n.name)
+    confirmDisable.value = true
+  } else {
+    setController(on)
+  }
 }
 
-async function load() {
-  await store.load()
-  await Promise.all(store.reachable.map((n) => loadStorage(n.id)))
-}
-
-async function toggleController() {
+async function setController(on: boolean) {
   if (toggling.value) return
   toggling.value = true
   try {
-    await store.setController(!store.isController)
-    await Promise.all(store.reachable.map((n) => loadStorage(n.id)))
+    await store.setController(on)
+    await refresh()
+  } catch (e) {
+    notifyError(`Couldn't turn the controller ${on ? 'on' : 'off'}`, e)
   } finally {
     toggling.value = false
   }
 }
 
+// ── Add by address ────────────────────────────────────────────────────────────
+
+const addOpen = ref(false)
+const addUrl = ref('')
+const addError = ref('')
+const adding = ref(false)
+
+const addAnchor = ref<ComponentPublicInstance | null>(null)
+
+/** Clicks on the button toggle the popover themselves; don't let them count as "outside". */
+function onAddInteractOutside(e: Event) {
+  if (addAnchor.value?.$el.contains(e.target as Node)) e.preventDefault()
+}
+
+function onAddOpen(open: boolean) {
+  addOpen.value = open
+  if (open) addError.value = ''
+}
+
 async function addNode() {
-  if (!addNodeUrl.value.trim() || addNodeLoading.value) return
-  addNodeError.value = ''
-  addNodeLoading.value = true
+  const url = addUrl.value.trim()
+  if (!url || adding.value) return
+  addError.value = ''
+  adding.value = true
+  const before = new Set(store.nodes.map((n) => n.id))
   try {
-    await store.add(addNodeUrl.value.trim())
-    addNodeUrl.value = ''
-    await Promise.all(store.reachable.map((n) => loadStorage(n.id)))
+    await store.add(url)
+    addUrl.value = ''
+    addOpen.value = false
+    const added = store.nodes.find((n) => !before.has(n.id))
+    toast.success(added ? `Added ${added.name}` : 'Node already listed')
+    await refresh()
   } catch (e) {
-    addNodeError.value = errorMessage(e, 'Failed to add node')
+    // 502: the controller couldn't reach the address; its message is reqwest's, not for people.
+    addError.value =
+      e instanceof FetchError && e.statusCode === 502
+        ? `Couldn't reach a Capture Room node at ${url}.`
+        : errorMessage(e, 'Failed to add node')
   } finally {
-    addNodeLoading.value = false
+    adding.value = false
   }
 }
 
-async function removeNode(id: string) {
-  await store.remove(id)
-  storage.delete(id)
+// ── Remove ────────────────────────────────────────────────────────────────────
+
+// Kept after the dialog closes so its title doesn't change mid-animation.
+const removing = ref<NodeDto | null>(null)
+const confirmRemove = ref(false)
+
+function askRemove(node: NodeDto) {
+  removing.value = node
+  confirmRemove.value = true
 }
 
-// ── Monitor settings (applied to every reachable node) ───────────────────────
-
-/** The form's draft: this node's settings once loaded, sent to every node on Apply. */
-const monitor = ref<MonitorSettingsDto | null>(null)
-const monitorSaving = ref(false)
-const monitorError = ref('')
-
-const THUMB_SIZES = [
-  { label: '320×180', value: '320x180' },
-  { label: '640×360', value: '640x360' },
-  { label: '1280×720', value: '1280x720' },
-]
-const THUMB_FPS = [1, 2, 5, 10].map((v) => ({ label: `${v} fps`, value: v }))
-const LEVEL_INTERVALS = [50, 100, 200, 500].map((v) => ({ label: `${v} ms`, value: v }))
-
-const thumbSize = computed({
-  get: () => (monitor.value ? `${monitor.value.thumb_width}x${monitor.value.thumb_height}` : ''),
-  set: (v: string) => {
-    const [w, h] = v.split('x').map(Number)
-    if (monitor.value) monitor.value = { ...monitor.value, thumb_width: w!, thumb_height: h! }
-  },
-})
-
-async function saveMonitorSettings() {
-  if (!monitor.value || monitorSaving.value) return
-  monitorSaving.value = true
-  monitorError.value = ''
+async function removeNode() {
+  const node = removing.value
+  if (!node) return
   try {
-    const body = { monitor: monitor.value }
-    const results = await Promise.allSettled(
-      store.reachable.map((n) =>
-        nodeApi(n.id)<NodeSettingsDto>('/settings', { method: 'PUT', body }),
-      ),
-    )
-    const failed = results.filter((r) => r.status === 'rejected').length
-    if (failed) monitorError.value = `Couldn't apply to ${failed} node${failed > 1 ? 's' : ''}.`
-    const first = results.find((r) => r.status === 'fulfilled')
-    if (first) {
-      monitor.value = first.value.monitor
-      if (store.self) store.self.monitor = first.value.monitor
-    }
-  } finally {
-    monitorSaving.value = false
+    await store.remove(node.id)
+    await refresh()
+  } catch (e) {
+    notifyError(`Couldn't remove ${node.name}`, e, node.id)
   }
 }
-
-function usedPct(v: StorageVolumeDto) {
-  return v.total_bytes ? Math.round(((v.total_bytes - v.available_bytes) / v.total_bytes) * 100) : 0
-}
-
-onMounted(async () => {
-  await load()
-  if (store.self) monitor.value = { ...store.self.monitor }
-})
-import PageHeader from '@/components/common/PageHeader.vue'
 </script>
 
 <template>
-  <PageHeader title="Nodes" :count="store.nodes.length" />
-  <div class="p-4 max-w-3xl">
-
-    <!-- This machine -->
-    <section class="rounded-lg border border-border bg-card p-4 mb-6">
-      <div class="flex items-start justify-between gap-4">
-        <div>
-          <h2 class="text-sm font-semibold mb-1">This machine</h2>
-          <p class="text-xs text-muted-foreground">
-            {{ store.self?.node_name }} ·
-            <span class="font-mono">{{ store.self?.node_id?.slice(0, 8) }}</span>
-          </p>
-        </div>
-        <Button
-          :variant="store.isController ? 'default' : 'outline'"
-          size="default"
-          :disabled="toggling || !store.self"
-          @click="toggleController"
-        >
-          {{ store.isController ? 'Controller: on' : 'Controller: off' }}
-        </Button>
-      </div>
-      <p class="mt-3 text-xs text-muted-foreground">
-        Every machine is a node: it can see and record its own sources and storage.
-        Turning on the controller also lets this machine find other nodes on the network
-        and control them from here. The change applies immediately.
-      </p>
-    </section>
-
-    <!-- Monitoring -->
-    <section v-if="monitor" class="rounded-lg border border-border bg-card p-4 mb-6">
-      <h2 class="text-sm font-semibold mb-3">Monitoring</h2>
-      <div class="flex items-center gap-2 flex-wrap">
-        <span class="text-xs text-muted-foreground">Thumbnail</span>
-        <OptionSelect v-model="thumbSize" :options="THUMB_SIZES" :disabled="monitorSaving" class="w-28" />
-        <OptionSelect v-model="monitor.thumb_fps" :options="THUMB_FPS" :disabled="monitorSaving" class="w-20" />
-        <span class="text-xs text-muted-foreground ml-2">Audio meter</span>
-        <OptionSelect
-          v-model="monitor.level_interval_ms"
-          :options="LEVEL_INTERVALS"
-          :disabled="monitorSaving"
-          class="w-20"
-        />
-        <Button size="sm" variant="outline" :disabled="monitorSaving" @click="saveMonitorSettings">
-          {{ monitorSaving ? 'Applying…' : 'Apply' }}
-        </Button>
-      </div>
-      <p v-if="monitorError" class="text-xs text-destructive mt-2">{{ monitorError }}</p>
-      <p class="mt-3 text-xs text-muted-foreground">
-        How often each source's thumbnail and audio meter update on the dashboard. Applied
-        to every reachable node.
-      </p>
-    </section>
-
-    <!-- Nodes -->
-    <section>
-      <h2 class="text-sm font-semibold mb-3">
-        {{ store.isController ? 'Controlled nodes' : 'Node' }}
-      </h2>
-
-      <div v-if="store.isController" class="mb-4">
-        <div class="flex gap-2">
-          <Input
-            v-model="addNodeUrl"
-            placeholder="192.168.1.x:7700"
-            class="font-mono text-xs"
-            @keydown.enter="addNode"
+  <PageHeader title="Nodes" :count="store.nodes.length">
+    <Tooltip>
+      <TooltipTrigger as-child>
+        <label class="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Switch
+            :model-value="store.isController"
+            :disabled="toggling || !store.self"
+            @update:model-value="onControllerToggle"
           />
-          <Button size="sm" :disabled="addNodeLoading || !addNodeUrl.trim()" @click="addNode">
-            {{ addNodeLoading ? 'Adding…' : 'Add node' }}
-          </Button>
-        </div>
-        <p v-if="addNodeError" class="text-xs text-destructive mt-2">{{ addNodeError }}</p>
-        <p class="text-xs text-muted-foreground mt-2">
-          Nodes on the same network are found automatically. Add one by address if it's on
-          another subnet.
-        </p>
-      </div>
-
-      <div class="rounded-lg border border-border bg-card divide-y divide-border">
-        <div v-for="node in store.nodes" :key="node.id" class="px-4 py-3">
-          <div class="flex items-center gap-3">
-            <span
-              class="w-2 h-2 rounded-full shrink-0"
-              :class="node.healthy ? 'bg-green-500' : 'bg-red-500'"
+          Controller
+        </label>
+      </TooltipTrigger>
+      <TooltipContent class="max-w-64">
+        Find other nodes on the network and control them from this machine. Applies immediately.
+      </TooltipContent>
+    </Tooltip>
+    <div class="w-px h-5 bg-border mx-1" />
+    <Popover :open="addOpen" @update:open="onAddOpen">
+      <!-- Anchored on a wrapper: a trigger or anchor can't nest inside the tooltip's trigger. -->
+      <PopoverAnchor ref="addAnchor" class="inline-flex">
+        <Tooltip :disabled="store.isController">
+          <TooltipTrigger as-child>
+            <!-- A disabled button gets no pointer events; the span keeps the tooltip working. -->
+            <span tabindex="-1">
+              <Button
+                size="sm"
+                class="h-7 gap-1.5 text-xs"
+                :disabled="!store.isController"
+                aria-haspopup="dialog"
+                :aria-expanded="addOpen"
+                @click="onAddOpen(!addOpen)"
+              >
+                <Plus class="size-3.5" /> Add node
+              </Button>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>Turn on Controller to add nodes.</TooltipContent>
+        </Tooltip>
+      </PopoverAnchor>
+      <PopoverContent align="end" class="w-80" @interact-outside="onAddInteractOutside">
+        <form class="space-y-2" @submit.prevent="addNode">
+          <div class="text-sm font-medium">Add node by address</div>
+          <p class="text-xs text-muted-foreground">
+            For a node on another subnet. Nodes on this network are found automatically.
+          </p>
+          <div class="flex gap-2">
+            <Input
+              v-model="addUrl"
+              placeholder="192.168.1.20:7700"
+              class="h-8 num text-xs"
+              :disabled="adding"
+              :aria-invalid="!!addError || undefined"
             />
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-2">
-                <span class="text-sm font-medium truncate">{{ node.name }}</span>
-                <Badge v-if="node.is_self" variant="outline">this machine</Badge>
-                <Badge v-else-if="node.manual" variant="secondary">added by address</Badge>
-              </div>
-              <div class="text-xs text-muted-foreground truncate">
-                {{ node.url || 'local' }}
-                <template v-if="node.healthy">
-                  · v{{ node.version }} · up {{ formatUptime(node.uptime_secs) }}
-                </template>
-                <template v-else> · unreachable</template>
-              </div>
-            </div>
-            <Button
-              v-if="!node.is_self && store.isController"
-              variant="outline"
-              size="sm"
-              @click="removeNode(node.id)"
-            >
-              Remove
+            <Button type="submit" size="sm" class="h-8 w-16" :disabled="adding || !addUrl.trim()">
+              {{ adding ? 'Adding…' : 'Add' }}
             </Button>
           </div>
+          <p class="text-xs text-destructive min-h-4">{{ addError }}</p>
+        </form>
+      </PopoverContent>
+    </Popover>
+  </PageHeader>
 
-          <!-- Storage -->
-          <div v-if="node.healthy" class="mt-3 pl-5 space-y-2">
-            <p v-if="storage.get(node.id) === null" class="text-xs text-destructive">
-              Couldn't read storage.
-            </p>
-            <div
-              v-for="vol in storage.get(node.id) ?? []"
-              :key="vol.mount_point"
-              class="text-xs"
-            >
-              <div class="flex justify-between gap-2 mb-1">
-                <span class="font-mono truncate" :title="[vol.mount_point, ...vol.other_mounts].join('\n')">
-                  {{ vol.mount_point }}
-                  <span class="text-muted-foreground font-sans">
-                    {{ vol.name && vol.name !== vol.mount_point ? `· ${vol.name}` : '' }}
-                    {{ vol.removable ? '· removable' : '' }}
-                    {{ vol.other_mounts.length ? `· +${vol.other_mounts.length} more mounts` : '' }}
-                  </span>
-                </span>
-                <span class="text-muted-foreground shrink-0">
-                  {{ formatBytes(vol.available_bytes) }} free of {{ formatBytes(vol.total_bytes) }}
-                </span>
-              </div>
-              <div class="h-1.5 rounded-full bg-muted overflow-hidden">
-                <div
-                  class="h-full rounded-full"
-                  :class="usedPct(vol) > 90 ? 'bg-destructive' : 'bg-primary'"
-                  :style="{ width: `${usedPct(vol)}%` }"
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
+  <div class="p-4 space-y-3">
+    <div class="grid gap-3 grid-cols-[repeat(auto-fill,minmax(24rem,1fr))]">
+      <NodeCard v-for="node in store.nodes" :key="node.id" :node="node" @remove="askRemove(node)" />
+    </div>
+    <p class="text-xs text-muted-foreground">
+      <template v-if="store.isController">
+        Nodes on this network appear automatically. Discovered nodes drop off about 15 seconds after
+        they go offline; nodes added by address stay listed until removed.
+      </template>
+      <template v-else>
+        This machine records its own sources. Turn on Controller to find other nodes on the network and
+        control them from here.
+      </template>
+    </p>
   </div>
+
+  <ConfirmDialog
+    v-model:open="confirmDisable"
+    title="Turn off controller?"
+    confirm-label="Turn off"
+    @confirm="setController(false)"
+  >
+    <template v-if="disabling.length === 1">{{ disabling[0] }} will disappear from this UI. Anything recording on it keeps recording.</template>
+    <template v-else>{{ disabling.length }} other nodes will disappear from this UI. Anything recording on them keeps recording.</template>
+  </ConfirmDialog>
+
+  <ConfirmDialog
+    v-model:open="confirmRemove"
+    :title="`Remove ${removing?.name ?? 'node'}?`"
+    confirm-label="Remove"
+    @confirm="removeNode"
+  >
+    It stops appearing here and won't be restored on restart. Anything recording on it keeps
+    recording. You can add it again by address.
+  </ConfirmDialog>
 </template>

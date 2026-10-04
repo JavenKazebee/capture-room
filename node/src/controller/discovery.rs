@@ -161,16 +161,22 @@ pub fn start_health_poller(ctx: Ctx) {
             for (id, result) in results {
                 match result {
                     Ok(status) if status.id == id => {
-                        reg.record_success(&id, &status.name, status.uptime_secs, &status.version);
+                        if reg.record_success(&id, &status.name, status.uptime_secs, &status.version) {
+                            info!(id = %id, "node reachable again");
+                            ctx.state.emit_controller(&WsEvent::NodeOnline { peer_id: id.clone() });
+                        }
                     }
                     _ => {
                         let (failures, manual) = reg.record_failure(&id);
                         if !manual && failures >= PRUNE_AFTER_FAILURES {
                             reg.remove(&id);
                             info!(id = %id, "node pruned after {failures} failed checks");
-                            ctx.state.emit_controller(&WsEvent::NodeOffline { peer_id: id.clone() });
+                            // Already reported offline on its first failure; this just
+                            // tells the UI to drop it.
+                            ctx.state.emit_controller(&WsEvent::NodeUpdated);
                         } else if failures == 1 {
                             warn!(id = %id, "node health check failed");
+                            ctx.state.emit_controller(&WsEvent::NodeOffline { peer_id: id.clone() });
                         }
                     }
                 }
