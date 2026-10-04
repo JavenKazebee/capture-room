@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
@@ -264,6 +264,16 @@ impl SourceManager {
             .monitors
             .get(source_id)
             .ok_or_else(|| anyhow::anyhow!("no monitor running for source {source_id}"))?;
+        // Paths were picked to be free, but another start may have taken one
+        // since (a template without `{source}`, two sources at once). Starting
+        // under this lock opens the files, so the check can't be raced.
+        // Recording into a file would truncate it; a failed start deletes it.
+        for (path, _) in legs {
+            let active = self.sessions.values().any(|s| s.dto.output_paths.iter().any(|p| Path::new(p) == path));
+            if active || path.exists() {
+                bail!("{} already exists", path.display());
+            }
+        }
 
         let id = Uuid::new_v4().to_string();
         let failures = self.leg_failures.clone();

@@ -374,8 +374,9 @@ async fn rescan_after(state: &Arc<AppState>, change: &str) {
 }
 
 /// Build `(resolved_path, RecordingProfile)` for every requested output leg.
-/// A template with `{take}` gets the first take number none of whose files
-/// exist yet.
+/// Never picks a file that already exists: a template with `{take}` gets the
+/// first take number none of whose files exist yet, any other gets the first
+/// `_2`, `_3`, … suffix that doesn't.
 async fn build_legs(state: &AppState, req: &StartRecordingRequest) -> ApiResult<Vec<(PathBuf, RecordingProfile)>> {
     let (source_name, format) = {
         let mgr = state.source_manager.read().await;
@@ -389,16 +390,21 @@ async fn build_legs(state: &AppState, req: &StartRecordingRequest) -> ApiResult<
         preset: req.preset_name.clone().unwrap_or_else(|| "default".into()),
         at: chrono::Local::now(),
         take: 1,
+        suffix: 1,
         source_resolution: format.size,
         source_framerate: format.rate,
         source_audio: format.audio,
     };
-    let uses_take = req.outputs.iter().any(|o| o.path_template.contains("{take}"));
+    // Each step changes the path that exists (its take, or every file's
+    // suffix), so this ends once it runs past the files on disk.
     loop {
         let legs = plan_legs(&req.outputs, Some(&vars)).map_err(|e| ApiError::BadRequest(e.into()))?;
-        if !uses_take || vars.take >= 999 || !legs.iter().any(|(path, _)| path.exists()) {
+        let Some(i) = legs.iter().position(|(path, _)| path.exists()) else {
             return Ok(legs);
-        }
-        vars.take += 1;
+        };
+        let counter = if req.outputs[i].path_template.contains("{take}") { &mut vars.take } else { &mut vars.suffix };
+        *counter = counter
+            .checked_add(1)
+            .ok_or_else(|| ApiError::BadRequest(format!("{} already exists", legs[i].0.display()).into()))?;
     }
 }

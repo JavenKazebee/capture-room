@@ -590,9 +590,11 @@ Templates are resolved on the node (`profile::plan_legs`). Two legs of one
 preset that would resolve to the same file are rejected when the preset is
 saved, and again when recording starts.
 
-Known gap: nothing checks for an existing file. `{datetime}` has one-second
-resolution, so stopping and restarting a source within the same second would overwrite
-the first file. Starting should refuse (or add a suffix) when the target exists.
+A recording never writes over an existing file. A template with `{take}` gets the first
+take number none of whose files exist; any other gets a `_2`, `_3`, … suffix on the file
+name (e.g. `{datetime}` restarted within the same second). Starting also refuses a path
+that exists or that an active recording writes to, checked under the source manager's
+lock, which catches two sources racing for one file (a template without `{source}`).
 
 Example (`/media/recordings/{date}/{node}/{source}_{datetime}_{output}.{ext}`):
 ```

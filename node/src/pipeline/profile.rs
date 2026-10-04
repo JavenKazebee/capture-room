@@ -18,6 +18,10 @@ pub struct PathVars {
     pub at: DateTime<Local>,
     /// `{take}`: the first number whose paths don't exist yet.
     pub take: u32,
+    /// Added to the file name as `_N` when it's 2 or more, on templates
+    /// without `{take}`, for files that already exist (e.g. `{datetime}`
+    /// restarted within the same second).
+    pub suffix: u32,
     /// The source's current format, for `{resolution}` and `{fps}` on an
     /// output that matches the source. `None` until it's negotiated.
     pub source_resolution: Option<(u32, u32)>,
@@ -111,6 +115,10 @@ pub fn plan_legs(
         }
         if let Some(v) = vars {
             path = v.expand(&path, &profile);
+            // A `{take}` template moves to the next take instead.
+            if v.suffix > 1 && !o.path_template.contains("{take}") {
+                path = before_extension(&path, &format!("_{}", v.suffix));
+            }
         }
         // `{segment}` is the file's number within a split recording; the
         // first file's path is what the leg is known by. A leg that only
@@ -164,13 +172,19 @@ fn with_segment(path: &str) -> String {
     if path.contains("{segment}") {
         return path.to_string();
     }
+    before_extension(path, "_{segment}")
+}
+
+/// `path` with `tag` added to its file name, before the extension (or at the
+/// end when there isn't one).
+fn before_extension(path: &str, tag: &str) -> String {
     let name_start = path.rfind('/').map_or(0, |i| i + 1);
     match path[name_start..].rfind('.') {
         Some(dot) if dot > 0 => {
             let at = name_start + dot;
-            format!("{}_{{segment}}{}", &path[..at], &path[at..])
+            format!("{}{tag}{}", &path[..at], &path[at..])
         }
-        _ => format!("{path}_{{segment}}"),
+        _ => format!("{path}{tag}"),
     }
 }
 
@@ -803,6 +817,7 @@ mod tests {
             preset: "Edit".into(),
             at: Local.with_ymd_and_hms(2026, 10, 3, 9, 5, 7).unwrap(),
             take: 3,
+            suffix: 1,
             source_resolution: Some((1920, 1080)),
             source_framerate: Some((30000, 1001)),
             source_audio: None,
@@ -820,6 +835,11 @@ mod tests {
         scaled.resolution = Some("1280x720".into());
         scaled.framerate = Some("25".into());
         assert_eq!(plan_legs(&[scaled], Some(&vars)).unwrap()[0].0, PathBuf::from("/r/1280x720_25"));
+        // A suffix goes on the file name, and on every file of a split leg.
+        let suffixed = PathVars { suffix: 2, ..vars };
+        let legs = plan_legs(&[leg("a", Container::Mov, "/r.d/{source}.{ext}")], Some(&suffixed)).unwrap();
+        assert_eq!(legs[0].0, PathBuf::from("/r.d/cam1_2.mov"));
+        assert_eq!(plan_legs(&[leg("a", Container::Mov, "/r.d/x")], Some(&suffixed)).unwrap()[0].0, PathBuf::from("/r.d/x_2"));
         assert_eq!(expand_home("/abs/~x"), PathBuf::from("/abs/~x"));
         assert_eq!(expand_home("~user/x"), PathBuf::from("~user/x"));
     }

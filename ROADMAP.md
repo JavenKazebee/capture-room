@@ -26,8 +26,7 @@ _Last updated: 2026-10-04_
 13. **Follow-on**, in rough priority order (see below)
 
 **Any time, small:** CI (fmt, clippy, tests, UI type-check), which doesn't need to wait
-for packaging; and refusing to overwrite an existing file when a recording starts
-(see File Naming in ARCHITECTURE.md).
+for packaging.
 
 Rationale for front-loading 1–2 ahead of NDI: a configurable TestSource plus the
 Sources view gives a real authoring/verification surface, and live monitoring forces
@@ -62,6 +61,8 @@ Design detail for all of these lives in ARCHITECTURE.md; the history is in git.
 - **6. Looping media file source** — a file on the node played in a loop as a live
   feed, picked through a node file browser. Configured sources (test and file) now share
   one `configured_sources` table and `/configured-sources` API.
+- **No overwriting on start (2026-10-04)** — an existing file gets a `_2` suffix
+  (or the next `{take}`); a path another recording holds is refused.
 - **Node registry persistence** — peers added by URL are stored and restored on start.
 
 ---
