@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::api::types::NodeDto;
+use crate::api::types::{NodeDto, NodeStatus};
 
 #[derive(Clone)]
 pub struct NodeEntry {
@@ -17,6 +17,8 @@ pub struct NodeEntry {
     /// Added by URL and persisted in the `nodes` table. Manual nodes are never
     /// pruned for being unreachable; mDNS ones are (they re-announce).
     pub manual: bool,
+    /// Video encoders the node reported; see `NodeStatus::encoders`.
+    pub encoders: Vec<String>,
     /// Stops this node's WS relay. Cancelled when the entry is removed, so a
     /// node that is removed and re-added never ends up with two relays.
     pub relay: CancellationToken,
@@ -33,6 +35,7 @@ impl From<&NodeEntry> for NodeDto {
             uptime_secs: n.uptime_secs,
             is_self: false,
             manual: n.manual,
+            encoders: n.encoders.clone(),
         }
     }
 }
@@ -79,14 +82,15 @@ impl NodeRegistry {
 
     /// Record a successful health check. Returns `true` if the node was
     /// unhealthy until now.
-    pub fn record_success(&mut self, id: &str, name: &str, uptime_secs: u64, version: &str) -> bool {
-        let Some(e) = self.entries.get_mut(id) else { return false };
+    pub fn record_success(&mut self, status: &NodeStatus) -> bool {
+        let Some(e) = self.entries.get_mut(&status.id) else { return false };
         let recovered = !e.healthy;
         e.healthy = true;
         e.fail_count = 0;
-        e.name = name.to_string();
-        e.uptime_secs = uptime_secs;
-        e.version = version.to_string();
+        e.name = status.name.clone();
+        e.uptime_secs = status.uptime_secs;
+        e.version = status.version.clone();
+        e.encoders = status.encoders.clone();
         recovered
     }
 

@@ -36,13 +36,16 @@ pub struct MonitorPipeline {
     level_el: gst::Element,
 }
 
-/// A source's negotiated video format; each part `None` until negotiated (or,
-/// for the rate, if it's variable).
+/// A source's negotiated format; each part `None` until negotiated (or, for
+/// the rate, if it's variable).
 #[derive(Debug, Clone, Copy, Default)]
-pub struct VideoFormat {
+pub struct SourceFormat {
     pub size: Option<(u32, u32)>,
     /// (numerator, denominator)
     pub rate: Option<(u32, u32)>,
+    /// Channel count, and whether the channels have positions (a channel
+    /// mask) rather than being plain numbered channels.
+    pub audio: Option<(u32, bool)>,
 }
 
 impl MonitorPipeline {
@@ -141,10 +144,20 @@ impl MonitorPipeline {
         (self.pipeline.clock(), self.pipeline.base_time())
     }
 
-    /// The video format the source is currently producing.
-    pub fn video_format(&self) -> VideoFormat {
-        let caps = self.video.appsink().static_pad("sink").and_then(|pad| pad.current_caps());
-        let Some(s) = caps.as_ref().and_then(|c| c.structure(0)) else { return VideoFormat::default() };
+    /// The format the source is currently producing.
+    pub fn source_format(&self) -> SourceFormat {
+        let current = |p: &StreamProducer| p.appsink().static_pad("sink").and_then(|pad| pad.current_caps());
+        let audio = current(&self.audio).and_then(|caps| {
+            let s = caps.structure(0)?;
+            let channels = s.get::<i32>("channels").ok().filter(|&c| c > 0)? as u32;
+            let mask = s.get::<gst::Bitmask>("channel-mask").map_or(0, |m| m.0);
+            // Mono and stereo without a mask have their standard positions.
+            Some((channels, mask != 0 || channels <= 2))
+        });
+        let caps = current(&self.video);
+        let Some(s) = caps.as_ref().and_then(|c| c.structure(0)) else {
+            return SourceFormat { audio, ..Default::default() };
+        };
         let size = match (s.get::<i32>("width"), s.get::<i32>("height")) {
             (Ok(w), Ok(h)) if w > 0 && h > 0 => Some((w as u32, h as u32)),
             _ => None,
@@ -154,7 +167,7 @@ impl MonitorPipeline {
             .ok()
             .filter(|f| f.numer() > 0 && f.denom() > 0)
             .map(|f| (f.numer() as u32, f.denom() as u32));
-        VideoFormat { size, rate }
+        SourceFormat { size, rate, audio }
     }
 
     /// Apply a new config to the running pipeline without restarting it.

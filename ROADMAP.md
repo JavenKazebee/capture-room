@@ -4,7 +4,7 @@ Active sequencing of work, decisions, and rationale. This complements
 [ARCHITECTURE.md](ARCHITECTURE.md) (the design spec) — when the two disagree on
 *order*, this file wins; ARCHITECTURE.md remains the source of truth for *design*.
 
-_Last updated: 2026-10-03_
+_Last updated: 2026-10-04_
 
 ---
 
@@ -14,9 +14,20 @@ _Last updated: 2026-10-03_
 2. ✅ **Live source monitoring**
 3. ✅ **NDI capture** (+ plugin build/packaging)
 4. ✅ **Multi-pipeline output per preset**
-5. **Benchmark + capacity estimator**
-6. **UI overhaul / dark mode** — woven through 1–5; design-token pass up front
-7. **Follow-on:** scheduler engine, higher-fps thumbnails, timecode, packaging/CI, additional source types
+5. ✅ **UI overhaul / dark mode**
+6. **Looping media file source** — prerequisite for the benchmark
+7. **Hardware encoders + encode sharing** — before the benchmark, so it measures the
+   encoders people will actually use
+8. **Benchmark + capacity estimator** (with storage headroom)
+9. **Recordings view** (+ browser preview via a playback proxy)
+10. **Playback** — playout channels, NDI output first
+11. **Clock sync across nodes** — prerequisite for multi-angle replay
+12. **Instant replay**
+13. **Follow-on**, in rough priority order (see below)
+
+**Any time, small:** CI (fmt, clippy, tests, UI type-check), which doesn't need to wait
+for packaging; and refusing to overwrite an existing file when a recording starts
+(see File Naming in ARCHITECTURE.md).
 
 Rationale for front-loading 1–2 ahead of NDI: a configurable TestSource plus the
 Sources view gives a real authoring/verification surface, and live monitoring forces
@@ -25,187 +36,148 @@ capture depends on anyway.
 
 ---
 
-## ✅ Node / controller simplification (2026-10-02)
+## Shipped
 
-Replaced the node/aggregator role split. Every instance is a node with a local-only
-API (`/api/v1/node/…`); the controller is a live toggle that adds discovery, a generic
-`/api/v1/nodes/{id}/…` forwarder and a merged event stream. Presets are sent inline
-with start commands, so preset sync and composite source ids are gone. Nodes also
-report their storage volumes.
+Design detail for all of these lives in ARCHITECTURE.md; the history is in git.
 
-## 1. ✅ Generic TestSource + Sources view
+- **Node / controller simplification (2026-10-02)** — every instance is a node with a
+  local-only API; the controller is a live toggle that adds discovery, a forwarder and a
+  merged event stream. Presets go inline with start commands, so nothing is synced.
+- **1. Generic TestSource + Sources view** — parameterized video/audio test feeds,
+  authored from the Sources view.
+- **2. Live source monitoring** — an always-on `MonitorPipeline` per source owns
+  thumbnails and meters; `SourceManager` is the single owner of capture state; live
+  reconfiguration; non-blocking stop.
+- **3. NDI capture** — `gst-plugin-ndi` statically linked; persistent device monitor;
+  users install the NDI Runtime themselves.
+- **4. Multi-pipeline output per preset** — N output legs, one pipeline each, fed by
+  `StreamProducer`s so a failing leg fails alone; failed-leg reporting and automatic
+  monitor restart (2026-10-03); per-leg dropped-frame counts (`recording.stats`);
+  crash-safe MOV/MP4 (index reserved at the front, rewritten every 10 s); encoder
+  fallback (VideoToolbox, then software).
+- **5. UI overhaul / dark mode** — design tokens, preferences, workspace shell (Record
+  and Setup), shared components, and a pass over every existing view.
+- **Node registry persistence** — peers added by URL are stored and restored on start.
 
-Turn `TestSource` from a fixed `videotestsrc`/`audiotestsrc` into a first-class,
-parameterized source.
+---
 
-- **Video:** selectable `videotestsrc` pattern (SMPTE bars, ball, snow, …),
-  resolution, fps, format.
-- **Audio:** tone / silence / pink noise, frequency, channel count.
-- **Plumbing:** a `TestSourceConfig` struct exposed via source config so the UI can
-  author test feeds.
-- **UI:** build out `SourcesView.vue` (placeholder today) — per-node source list,
-  connect/disconnect, capabilities, and test-source authoring.
-- Keep TestSource discoverable behind a `--dev` / config flag once NDI discovery lands.
+## 6. Looping media file source
 
-Touches: `node/src/sources/test.rs`, `node/src/sources/manager.rs`, `ui/src/views/SourcesView.vue`.
+`filesrc` / `uridecodebin`, seek to start on EOS. Pulled forward from the source-type
+list because the benchmark needs real footage: test patterns compress unrealistically
+(bars ≈ free, snow = worst case). Also useful for demos without hardware.
 
-## 2. ✅ Live source monitoring
+## 7. Hardware encoders + encode sharing
 
-**Biggest architectural change.** `ThumbnailStore` and `AudioMeter` are now owned by
-`MonitorPipeline` (`node/src/pipeline/monitor.rs`), so thumbnails and meters are always
-live — no recording required.
+- **Encoders:** VideoToolbox is in. Add NVENC (`nvh264enc` / `nvh265enc`), Intel QSV
+  (`qsvh264enc`, …) and VA-API (`vah264enc`, …) to `RecordingProfile::encoders`, with
+  the same build-first-that-works fallback. These set how many feeds one machine can
+  encode, so they come before the benchmark.
+- **Encode sharing:** legs with identical encode settings (codec, resolution, framerate,
+  bitrate, chroma) but different containers or paths share one encoder.
 
-- **Monitor pipeline per source.** `source bin → vtee + atee → [thumbnail branch] + [audio meter branch] + [video/audio StreamProducers]`. Recordings consume the producers from their own pipelines (see #4), so they never touch the monitor's tees.
-- **`SourceManager`** (`node/src/sources/manager.rs`) owns the sources, their `MonitorPipeline`s, and active recording sessions — single source of truth for all capture state.
-- **Live settings reconfiguration.** `MonitorPipeline::reconfigure()` updates GStreamer element properties in place (capsfilter caps, level interval) without stopping pipelines — applies immediately during recording.
-- **Non-blocking stop recording.** `begin_stop_recording` takes the session out of the manager under the write lock and hands back a `StopJob`; its legs drain to EOS on a spawned task (`node/src/session.rs`). The WS emitter (which holds a read lock every 100 ms) is never blocked during the multi-second drain.
-
-Touches: `node/src/pipeline/monitor.rs`, `node/src/sources/manager.rs`, `node/src/session.rs`, `node/src/api/node.rs`, `DashboardView.vue`.
-
-## 3. ✅ NDI capture
-
-Built on `gst-plugin-ndi` GStreamer elements (`ndisrc` / `ndisrcdemux`), statically
-linked into the binary. Follows the same source bin + `video`/`audio` ghost-pad contract
-as `TestSource`. Decklink remains deferred (no hardware).
-
-### What shipped
-
-- **`NdiSource`** (`node/src/sources/ndi.rs`) — bin with `ndisrc → ndisrcdemux`, dynamic
-  pad-added linking to `videoconvert`/`audioconvert`, ghost pads `video` and `audio`.
-- **`NdiMonitor`** — persistent `GstDeviceMonitor` started once at startup via
-  `spawn_blocking`. Avoids the NDI device provider singleton bug where `stop()`/`start()`
-  cycles silently no-op (the provider never clears its internal `FindInstance`).
-- **Static linking** — `gst-plugin-ndi` compiled as an rlib into the binary
-  (`plugin_register_static()` called at startup). No `libgstndi.so` to manage;
-  only `libndi.so` (the proprietary NDI runtime) remains as a user dependency.
-- **Recording fix** — recording legs run `videoconvert` (and `audioconvert` +
-  `audioresample`) ahead of the encoders. NDI provides UYVY; x264enc needs I420. Without
-  the converter, x264enc's RECONFIGURE event propagated upstream to ndisrc and caused an
-  "Internal data stream error" immediately on recording start.
-
-### Packaging / licensing
-
-`gst-plugin-ndi` is MPL-licensed and may be bundled. It dlopen's `libndi.so` at runtime;
-users must install the NDI Runtime separately (same pattern as OBS). We never distribute
-`libndi` itself.
-
-| Dependency | Who provides |
-|------------|-------------|
-| `gst-plugin-ndi` | compiled into binary (static) |
-| `libndi.so` | user installs NDI Runtime redistributable |
-
-## 4. ✅ Multi-pipeline output per preset
-
-Replaced the fixed primary / secondary / redundant output templates with **N output legs**
-per preset (e.g. H.264 MP4 to one path + ProRes MOV to another). A redundant copy is just
-another leg.
-
-### What shipped
-
-- **Schema:** `preset_outputs` table (name, codec, container, resolution, framerate,
-  bitrate, chroma, path_template, sort_order). Codec, container and chroma are closed
-  enums shared with the UI through ts-rs.
-- **One pipeline per leg.** Each leg is its own GStreamer pipeline fed by the monitor's
-  `StreamProducer`s (`node/src/pipeline/recording.rs`). A tee would pass a failing leg's
-  flow error back to the source and stop everything; a producer only logs it, so a bad
-  leg (codec the container rejects, full disk) fails alone.
-- **Failure handling (2026-10-03):** a failed leg is reported immediately
-  (`recording.leg_failed`, shown on the feed card) while the other legs keep recording;
-  if every leg fails the session stops itself. A failed source monitor is restarted
-  automatically (rescan every 5 s while one has failed), ending its recordings with
-  `source failed: …`.
-- **Start/stop:** all legs are built before any starts, so config errors open no files;
-  a failed start rolls back and deletes partial files. Stop drains every leg to EOS
-  concurrently with a timeout.
-- **UI:** the Presets view is a list-of-outputs editor; nodes keep no preset store —
-  outputs are sent inline with each start command.
-
-### Not done
-
-- Encode sharing: legs with identical profiles each run their own encoder.
-
-## 5. Benchmark + capacity estimator
+## 8. Benchmark + capacity estimator
 
 Not started (the empty `benchmark/` stub was removed).
 
-- Synthetic pipelines at increasing feed counts → measure **dropped frames, CPU, disk
-  write throughput, memory pressure**. Stop past a dropped-frame threshold.
+- Pipelines fed by looping media files (#6) at increasing feed counts → measure
+  **dropped frames, CPU, GPU/encoder load, disk write throughput, memory pressure**.
+  Stop past a dropped-frame threshold.
+- Count drops in both places: the leg's `appsrc` (shipped) and the source/monitor side,
+  which isn't counted yet.
 - Persist runs in `benchmark_results` (table already specced in ARCHITECTURE.md).
 - **Capacity estimator:** given a preset (incl. multi-leg) and feed count, predict
   sustainability from stored benchmarks — surfaced in the Nodes view.
-- Sequenced after #4 so benchmarks reflect realistic multi-leg presets.
+- **Storage headroom:** today a full disk only shows up as a failed leg. Show recording
+  time left per volume (free space ÷ bitrate of the legs writing to it), warn below a
+  threshold, and check space before a recording starts.
 
-## 6. UI overhaul / dark mode
+## 9. Recordings view
 
-Staying on shadcn-vue (reka-ui, Tailwind v4), plus `vue-sonner` for toasts. Tables use a
-small in-house `DataTable` (sort, filter, column visibility, grouping) rather than
-TanStack Table, whose v9 API is brand new and more than these tables need.
+Session history and the files each session produced, across nodes. Already planned in
+ARCHITECTURE.md; arguably more useful day to day than the scheduler.
 
-- **Design system** (done): dark-first OKLCH tokens in `ui/src/style.css`, light kept
-  in step, on slightly blue-gray tinted surfaces. `--primary` is sky-cyan (actions,
-  toggles, focus, selection, links). Solid red means "live": `--tally` is recording
-  only, `--destructive` a soft treatment behind a confirm, and `--brand` red is just
-  the logo's record light. Self-hosted Inter +
-  JetBrains Mono; `num` utility for technical values. Density = root font size.
-- **Preferences** (done): `usePreferences()` — theme, density, Multiview tile size and
-  overlays, inspector, table columns; per browser, surfaced in the view they affect.
-- **Workspace shell** (done): the tool will grow into recording, playback and instant
-  replay, so the shell is organized around workspaces (operating desks) rather than
-  pages. A top header holds identity, labeled workspace tabs and global status
-  (connection, nodes, lowest free storage, REC count, clock). Each workspace has a
-  toolbar row and its own panel layout. A tabbed bottom panel (Log / Recordings /
-  Storage, Ctrl+J) is shared. Today: **Record** and **Setup** (Sources, Presets, Nodes,
-  Settings behind a labeled side list). **Replay** and **Playback** join when the
-  backend supports them — not before. ⌘K palette and toasts throughout.
-- **Shared patterns** (done): `PageHeader`, `ConfirmDialog`, `EditSheet` (replaces
-  `FormModal`), `StatusDot`, `TallyBadge`, `KeyValueList`, `CopyButton`, `DataTable` +
-  `ColumnsMenu`, `StorageVolumeBar`.
-- **Views, one per pass:** ✅ Record workspace (filters, overlay toggles, tile size,
-  Ctrl/Shift multi-select with bulk Record/Stop behind a confirm, per-feed preset
-  remembered per browser, resizable inspector with outputs, session and history) →
-  ✅ Sources (DataTable grouped by node, column chooser, status incl. recording, edit in a
-  side sheet, confirmed delete, scan results as a toast, jump to Record) → ✅ Presets
-  (master-detail: list with usage counts + read-only built-in default; editor with
-  dirty tracking, revert, Ctrl+S, unsaved-changes guard; collapsible outputs with
-  reorder/duplicate; container options explain incompatibilities; path token chips
-  and a live resolved-path preview; client-side copies of the server's format and
-  same-file checks) → ✅ Nodes (a card per node: status, inline rename, sources/recording/failed
-  counts, storage, Open in Record filtered to the node; controller switch in the toolbar with
-  a confirm when peers would disappear; add by address in a popover; remove only for nodes
-  added by address, since discovered ones come back; cards keep their height when a node goes
-  unreachable; a slot for the capacity panel; the controller now emits `node.offline` /
-  `node.online` on health changes, not just on prune) → ✅ Settings (appearance; monitoring as
-  one setting for every node, with apply/revert, an unsaved-changes guard, per-node failures in
-  a toast and a warning when a node's values differ; About with version, node ID, API address
-  and controller status).
-- Recordings, Schedules and Logs views are kept out of the nav until they exist.
+- **Browser preview:** a preset output can be flagged as the playback proxy (H.264/AAC
+  MP4 — browsers can't play ProRes or PCM-in-MOV). Nodes serve files with HTTP range
+  requests; the controller's forwarder must stream them, not buffer.
+- Doubles as the media browser that Playback (#10) loads clips from.
 
-## 7. Follow-on
+## 10. Playback
 
-- **Scheduler engine** — runs on the controller and sends ordinary start/stop commands (with inline outputs) at the scheduled times. Nodes stay stateless about schedules.
-- **Higher-fps thumbnails via a subscription WebSocket** — today each thumbnail is a
-  `thumbnail.updated` event plus an HTTP GET (forwarded and buffered by the controller
-  for peers), capped at 10 fps by the 100 ms emitter tick. Request-per-frame doesn't
-  scale past ~10–15 fps with more than a handful of feeds (browsers allow 6 HTTP/1.1
-  connections per host, and every frame is a round trip through the controller).
-  Replace it with a dedicated thumbnail WebSocket:
-  - The client sends a subscription: which sources are on screen and at what fps.
-    Frames are pushed as binary messages (source key + JPEG), driven by the appsink
-    callback rather than the emitter tick. Unsubscribed or off-screen feeds cost nothing.
-  - On a controller, subscriptions are relayed to each peer for only the sources someone
-    is watching; peer frames are forwarded as they arrive.
-  - Makes ~25–30 fps practical (source-rate thumbnails, 29.97 included) and removes
-    `thumbnail.updated`, the UI's `thumbnailSeqs` cache-busting, and the thumbnail part
-    of the periodic emitter. Keep `GET /thumbnails/{id}` for one-off snapshots.
-  - Not MJPEG (`multipart/x-mixed-replace`): each open stream holds one of the
-    browser's 6 connections, so 7+ feeds would stall the page.
-  - Possible later complement: a click-to-watch full-size monitor for one feed using
-    real video (WebRTC, or H.264 over this WebSocket decoded with WebCodecs), with audio.
+A full playout system — capture in reverse. Design in ARCHITECTURE.md (Playback).
+
+- **`OutputSink` trait** mirroring `InputSource`; each output type is the counterpart of
+  a source type.
+- **Playout channels:** one always-running pipeline per output at a fixed format, black
+  and silence when idle, fed by per-clip player pipelines through `StreamProducer`s.
+  Gapless, frame-accurate cueing; thumbnails and meters like a source.
+- **Playlists** with in/out points and transport (cue, play, pause, stop, next, loop),
+  owned by the node running the channel.
+- **Output types, in order:** NDI (`ndisink`, no hardware needed) → SRT / RTSP → local
+  display / HDMI out → WHEP → Decklink / AJA.
+- Reuses file decoding from the looping media file source (#6).
+- **Playback workspace** in the UI.
+- Start with: one NDI channel playing a single file, then gapless playlists, then more
+  output types.
+
+## 11. Clock sync across nodes
+
+Design sketch in ARCHITECTURE.md (Timecode › Clock sync).
+
+- Nodes report their clock offset (NTP, or PTP where frame accuracy matters); the UI
+  warns when it's too large.
+- Network-synced GStreamer clock; frames stamped with wall-clock capture time.
+- **Synchronized start:** a start command can carry a wall-clock time, so bulk Record
+  across machines produces files that line up.
+
+## 12. Instant replay
+
+Builds on playback (#10) and clock sync (#11). Design in ARCHITECTURE.md (Instant Replay).
+
+- **Prototype first:** one source into a rolling buffer of all-intra segments, played
+  through a channel. The point is to test reverse playback, variable speed and
+  frame-stepping in GStreamer before designing the UI.
+- Then: replay buffers per source on a replay node (subscribing to the same NDI
+  sources), marks and clip list, variable-speed playout, clip export without
+  re-encoding, **Replay workspace**.
+- Replay buffers count against capacity; extend the benchmark to cover them and
+  playout channels.
+
+## 13. Follow-on
+
+Roughly in priority order.
+
+- **Authentication** — the API is open to anyone on the network, and any of them can
+  start or stop recordings. At least a shared token, before packaging.
+- **Packaging** — cross-platform builds via GitHub Actions; NDI packaging per
+  ARCHITECTURE.md.
 - **Timecode** — real LTC/VITC extraction; not started (TestSource fakes wall-clock TC).
-- **Packaging + GitHub Actions** — cross-platform builds; folds in the NDI packaging strategy above.
-- ✅ **Node registry persistence** — peers added by URL are stored in the `nodes` table and restored when the controller starts.
-- **Additional source types** (each is a new `InputSource` impl, additive):
-  - **RTSP** (`rtspsrc`) — IP cameras; easy, high value.
-  - **SRT** (`srtsrc`) — contribution feeds over unreliable networks.
-  - **HDMI/USB capture** (`v4l2src`).
-  - **SDI via Decklink** — already specced; needs hardware.
+- **Scheduler engine** — runs on the controller and sends ordinary start/stop commands
+  (with inline outputs) at the scheduled times. Nodes stay stateless about schedules.
+- **Higher-fps thumbnails via a subscription WebSocket** — replaces request-per-frame
+  thumbnails, which don't scale past ~10–15 fps with more than a handful of feeds.
+  Design in ARCHITECTURE.md (Thumbnails).
+- **Long recordings:** the MOV/MP4 crash-safety reserve covers 2 h; past that the index
+  goes at the end of the file as before. For all-day recordings, consider segmenting
+  (`splitmuxsink`) or a larger reserve.
+- **Additional source types** (each is a new `InputSource` impl, additive), in priority
+  order:
+  1. **RTSP** (`rtspsrc`) — IP cameras; easy, high value.
+  2. **Separate audio pairing** (decision first) — record a video source with audio from
+     another source (an audio interface, Dante Virtual Soundcard). Needs the source
+     contract to allow video-only and audio-only sources, plus a pairing in the source
+     config. Settle this before local devices, which have no paired audio.
+  3. **Local capture devices** — one source type for HDMI/USB capture cards (Cam Link,
+     Magewell), webcams and audio interfaces on every platform, discovered through a
+     `GstDeviceMonitor` (`Video/Source`, `Audio/Source`) like `NdiMonitor`. Replaces the
+     Linux-only `v4l2src` plan; the monitor yields `v4l2src` / `avfvideosrc` /
+     `mfvideosrc` elements per platform. On macOS and Windows screens also appear as
+     devices, which covers most of display capture (not under a service session, though).
+  4. **SRT** (`srtsrc`) — contribution feeds over unreliable networks.
+  5. **WHIP ingest** (`whipserversrc`, gst-plugins-rs) — accept WebRTC pushes from OBS
+     30+ and browsers. Statically linked like `gst-plugin-ndi`.
+  6. **SDI via Decklink** — already specced; needs hardware.
+  7. **SDI via AJA** (`ajasrc`, gst-plugins-bad ≥ 1.24) — alongside Decklink; needs
+     hardware.
+  8. **Web page** (`wpesrc`) — render an HTML page (graphics, scoreboards) as a feed.
+     Niche; WPE is Linux-only.

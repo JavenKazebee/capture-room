@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/composables/useApi'
+import { defaultAdvanced } from '@/lib/advanced'
 import type { PresetCreateRequest } from '@/types/generated/PresetCreateRequest'
 import type { PresetDto } from '@/types/generated/PresetDto'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
@@ -12,10 +13,12 @@ export function blankLeg(): PresetOutputInput {
     container: 'mov',
     resolution: null,
     framerate: null,
-    bitrate_kbps: 8000,
+    // null = Auto: sized by the node from the frame size and rate.
+    bitrate_kbps: null,
     chroma: '420',
     // `~` is the recording node's home directory, expanded on the node.
     path_template: '~/capture-room/{date}/{source}_{datetime}.{ext}',
+    advanced: defaultAdvanced(),
   }
 }
 

@@ -57,6 +57,7 @@ async fn get_status(State(state): State<Arc<AppState>>) -> Json<NodeStatus> {
         version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_secs: state.started_at.elapsed().as_secs(),
         is_controller: state.is_controller().await,
+        encoders: crate::pipeline::profile::available_encoders(),
     })
 }
 
@@ -339,7 +340,7 @@ async fn build_legs(state: &AppState, req: &StartRecordingRequest) -> ApiResult<
     let (source_name, format) = {
         let mgr = state.source_manager.read().await;
         let name = mgr.get_source(&req.source_id).map(|s| s.display_name().to_string());
-        (name.unwrap_or_else(|| req.source_id.clone()), mgr.video_format(&req.source_id))
+        (name.unwrap_or_else(|| req.source_id.clone()), mgr.source_format(&req.source_id))
     };
     let mut vars = PathVars {
         source: req.source_id.clone(),
@@ -350,6 +351,7 @@ async fn build_legs(state: &AppState, req: &StartRecordingRequest) -> ApiResult<
         take: 1,
         source_resolution: format.size,
         source_framerate: format.rate,
+        source_audio: format.audio,
     };
     let uses_take = req.outputs.iter().any(|o| o.path_template.contains("{take}"));
     loop {

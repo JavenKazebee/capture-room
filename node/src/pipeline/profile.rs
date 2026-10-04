@@ -1,8 +1,12 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, Local};
+use gstreamer as gst;
 
-use crate::api::types::{ChromaSubsampling, Container, PresetOutputInput, VideoCodec};
+use crate::api::types::{
+    AudioChannels, AudioCodecChoice, ChromaSubsampling, Container, Deinterlace, EncoderChoice, OutputAdvanced,
+    PresetOutputInput, RateControl, SpeedPreset, VideoCodec,
+};
 
 /// Values for the per-recording tokens of a path template.
 pub struct PathVars {
@@ -18,6 +22,9 @@ pub struct PathVars {
     /// output that matches the source. `None` until it's negotiated.
     pub source_resolution: Option<(u32, u32)>,
     pub source_framerate: Option<(u32, u32)>,
+    /// Channel count and whether they're positioned; see
+    /// [`RecordingProfile::source_audio`].
+    pub source_audio: Option<(u32, bool)>,
 }
 
 impl PathVars {
@@ -59,7 +66,12 @@ pub fn plan_legs(
 ) -> Result<Vec<(PathBuf, RecordingProfile)>, &'static str> {
     let mut legs: Vec<(PathBuf, RecordingProfile)> = Vec::with_capacity(outputs.len());
     for o in outputs {
-        let profile = RecordingProfile::from_output(o)?;
+        let mut profile = RecordingProfile::from_output(o)?;
+        if let Some(v) = vars {
+            profile.source_size = v.source_resolution;
+            profile.source_rate = v.source_framerate;
+            profile.source_audio = v.source_audio;
+        }
         let mut path = o
             .path_template
             .replace("{output}", &sanitize(&o.name))
@@ -131,9 +143,92 @@ pub struct RecordingProfile {
     pub resolution: Option<(u32, u32)>,
     /// `None` = match source framerate (num, den)
     pub framerate: Option<(u32, u32)>,
-    /// `None` = the encoder's default rate control
+    /// `None` = Auto: sized from the frame size and rate, see [`Self::bitrate`].
     pub bitrate_kbps: Option<u32>,
     pub chroma: ChromaSubsampling,
+    /// The source's format when recording starts (`None` when checking a
+    /// preset, or before the source has negotiated). Sizes Auto bitrate and
+    /// the keyframe interval for outputs that match the source.
+    pub source_size: Option<(u32, u32)>,
+    pub source_rate: Option<(u32, u32)>,
+    /// The source's audio channel count and whether they have positions
+    /// (stereo, 5.1…) rather than being plain numbered channels. Needed to
+    /// mix down or pick channels; `None` until known.
+    pub source_audio: Option<(u32, bool)>,
+    pub advanced: OutputAdvanced,
+}
+
+/// A video encoder element and what it needs around it. Each codec lists its
+/// candidates best first (see [`RecordingProfile::encoders`]); a leg uses the
+/// first one that builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoEncoder {
+    X264,
+    X265,
+    Vp9,
+    ProResKs,
+    /// VideoToolbox (macOS). `vtenc_h264`/`vtenc_h265` fall back to
+    /// VideoToolbox's software encoder themselves when the hardware is busy;
+    /// the `_hw` variants would fail instead.
+    VtH264,
+    VtH265,
+    VtProRes,
+    Uncompressed,
+}
+
+impl VideoEncoder {
+    pub fn element(self) -> &'static str {
+        match self {
+            Self::X264 => "x264enc",
+            Self::X265 => "x265enc",
+            Self::Vp9 => "vp9enc",
+            Self::ProResKs => "avenc_prores_ks",
+            Self::VtH264 => "vtenc_h264",
+            Self::VtH265 => "vtenc_h265",
+            Self::VtProRes => "vtenc_prores",
+            Self::Uncompressed => "identity",
+        }
+    }
+
+    pub fn is_hardware(self) -> bool {
+        matches!(self, Self::VtH264 | Self::VtH265 | Self::VtProRes)
+    }
+}
+
+/// How a leg's audio is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioFormat {
+    /// 24-bit PCM: what editors expect beside ProRes and uncompressed video.
+    Pcm24,
+    Aac { bitrate: u32 },
+    Opus { bitrate: u32 },
+}
+
+/// A change to the source's audio channels.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioMix {
+    /// `audioconvert`'s `mix-matrix`: a row of input gains per output
+    /// channel. `None` leaves the mapping to `audioconvert` (a positioned
+    /// downmix), or isn't known yet (a preset check, before the source's
+    /// channel count is).
+    pub matrix: Option<Vec<Vec<f32>>>,
+    pub channels: u32,
+}
+
+/// Keyframe spacing: short enough to scrub, cut and split files cleanly.
+pub const KEYFRAME_INTERVAL_SECS: f64 = 2.0;
+/// Constant-quality level when an output doesn't set one (1–100).
+pub const DEFAULT_QUALITY: u8 = 70;
+
+/// Every encoder recording can use that this node has, by element name.
+pub fn available_encoders() -> Vec<String> {
+    use VideoEncoder::*;
+    [VtH264, VtH265, VtProRes, X264, X265, Vp9, ProResKs]
+        .into_iter()
+        .map(VideoEncoder::element)
+        .filter(|name| gst::ElementFactory::find(name).is_some())
+        .map(String::from)
+        .collect()
 }
 
 impl RecordingProfile {
@@ -153,34 +248,105 @@ impl RecordingProfile {
                 .ok_or("framerate must look like 30, 29.97 or 30000/1001")?,
             bitrate_kbps: o.bitrate_kbps,
             chroma: o.chroma,
+            source_size: None,
+            source_rate: None,
+            source_audio: None,
+            advanced: o.advanced.clone(),
         })
+        .and_then(|p| p.check_advanced().map(|()| p))
     }
 
-    /// GStreamer element name for the video encoder.
-    pub fn video_encoder_element(&self) -> &'static str {
+    /// Reject Advanced settings no recording could use.
+    fn check_advanced(&self) -> Result<(), &'static str> {
+        let a = &self.advanced;
+        if self.encoders().is_empty() {
+            return Err(match a.encoder {
+                EncoderChoice::Hardware if self.prores_profile().is_none() && self.video_codec != VideoCodec::H264
+                    && self.video_codec != VideoCodec::H265 => "this codec has no hardware encoder",
+                EncoderChoice::Hardware => "hardware H.264/H.265 encoders take 4:2:0 only",
+                _ => "this codec has no software encoder",
+            });
+        }
+        if a.quality.is_some_and(|q| !(1..=100).contains(&q)) {
+            return Err("quality must be 1–100");
+        }
+        if a.keyframe_secs.is_some_and(|k| !(0.1..=60.0).contains(&k)) {
+            return Err("keyframe interval must be 0.1–60 seconds");
+        }
+        if a.audio_bitrate_kbps.is_some_and(|b| !(32..=512).contains(&b)) {
+            return Err("audio bitrate must be 32–512 kbps");
+        }
+        match (a.audio_codec, self.container) {
+            (AudioCodecChoice::Pcm, Container::Mp4) => return Err("PCM audio can only be recorded to .mov or .mkv"),
+            (AudioCodecChoice::Opus, Container::Mov | Container::Mp4) => {
+                return Err("Opus audio can only be recorded to .mkv")
+            }
+            _ => {}
+        }
+        if a.audio_channels == AudioChannels::Pick {
+            if a.channel_pick.is_empty() || a.channel_pick.iter().any(|c| !(1..=64).contains(c)) {
+                return Err("pick at least one channel, numbered 1–64");
+            }
+            if a.channel_pick.len() > 2 && self.audio_format() != AudioFormat::Pcm24 {
+                return Err("AAC and Opus take 1 or 2 picked channels; use PCM for more");
+            }
+        }
+        Ok(())
+    }
+
+    /// The encoders this leg can use, best first: hardware where the platform
+    /// has it, then software. VideoToolbox H.264/H.265 only take 4:2:0, so
+    /// 4:2:2 and 4:4:4 go straight to software.
+    pub fn encoders(&self) -> Vec<VideoEncoder> {
+        let all = self.encoders_for_codec();
+        all.iter()
+            .copied()
+            .filter(|e| match self.advanced.encoder {
+                EncoderChoice::Auto => true,
+                EncoderChoice::Hardware => e.is_hardware(),
+                // Uncompressed isn't encoded at all, so it fits either.
+                EncoderChoice::Software => !e.is_hardware(),
+            })
+            .filter(|e| self.advanced.encoder != EncoderChoice::Hardware || *e != VideoEncoder::Uncompressed)
+            .collect()
+    }
+
+    fn encoders_for_codec(&self) -> &'static [VideoEncoder] {
+        use VideoEncoder::*;
+        let yuv420 = self.chroma == ChromaSubsampling::Yuv420;
         match self.video_codec {
-            VideoCodec::H264 => "x264enc",
-            VideoCodec::H265 => "x265enc",
-            VideoCodec::Vp9 => "vp9enc",
+            VideoCodec::H264 if yuv420 => &[VtH264, X264],
+            VideoCodec::H264 => &[X264],
+            VideoCodec::H265 if yuv420 => &[VtH265, X265],
+            VideoCodec::H265 => &[X265],
+            VideoCodec::Vp9 => &[Vp9],
             VideoCodec::ProRes4444
             | VideoCodec::ProRes422Hq
             | VideoCodec::ProRes422
             | VideoCodec::ProRes422Lt
-            | VideoCodec::ProRes422Proxy => "avenc_prores_ks",
-            VideoCodec::Uncompressed => "identity",
+            | VideoCodec::ProRes422Proxy => &[VtProRes, ProResKs],
+            VideoCodec::Uncompressed => &[Uncompressed],
         }
     }
 
-    /// Raw format the encoder is fed, where the codec lets the user choose.
-    /// Without this the encoder follows the source's format, which is how
-    /// H.264 ended up as High 4:4:4 (unplayable in most players).
-    pub fn encoder_input_format(&self) -> Option<&'static str> {
-        match self.video_codec {
-            VideoCodec::H264 | VideoCodec::H265 => Some(match self.chroma {
-                ChromaSubsampling::Yuv420 => "I420",
-                ChromaSubsampling::Yuv422 => "Y42B",
-                ChromaSubsampling::Yuv444 => "Y444",
-            }),
+    /// Raw format `encoder` is fed. Without this the encoder follows the
+    /// source's format, which is how H.264 ended up as High 4:4:4 (unplayable
+    /// in most players), and how VideoToolbox ProRes would get 4:2:0 input.
+    pub fn encoder_input_format(&self, encoder: VideoEncoder) -> Option<&'static str> {
+        match encoder {
+            VideoEncoder::X264 | VideoEncoder::X265 | VideoEncoder::VtH264 | VideoEncoder::VtH265 => {
+                Some(match self.chroma {
+                    ChromaSubsampling::Yuv420 => "I420",
+                    ChromaSubsampling::Yuv422 => "Y42B",
+                    ChromaSubsampling::Yuv444 => "Y444",
+                })
+            }
+            // Profile 0 (4:2:0) is the VP9 everything plays; left to follow
+            // the source, an RGB source gave 4:4:4 Profile 1.
+            VideoEncoder::Vp9 => Some("I420"),
+            // 4:2:2 is what NDI sends, so this is usually no conversion at all.
+            VideoEncoder::VtProRes if self.video_codec == VideoCodec::ProRes4444 => Some("AYUV64"),
+            VideoEncoder::VtProRes => Some("UYVY"),
             _ => None,
         }
     }
@@ -205,11 +371,105 @@ impl RecordingProfile {
         }
     }
 
-    /// GStreamer audio encoder element appropriate for the container.
-    pub fn audio_encoder_element(&self) -> &'static str {
-        match self.container {
-            Container::Mov | Container::Mp4 => "avenc_aac",
-            Container::Mkv => "opusenc",
+    /// Auto audio: PCM beside ProRes and uncompressed video (both only go in
+    /// .mov/.mkv, which take it), otherwise the container's usual codec at a
+    /// rate fit for program audio.
+    pub fn audio_format(&self) -> AudioFormat {
+        let bitrate = |default: u32| self.advanced.audio_bitrate_kbps.unwrap_or(default) * 1000;
+        let codec = match self.advanced.audio_codec {
+            AudioCodecChoice::Auto => match (self.video_codec, self.container) {
+                (VideoCodec::H264 | VideoCodec::H265 | VideoCodec::Vp9, Container::Mov | Container::Mp4) => {
+                    AudioCodecChoice::Aac
+                }
+                (VideoCodec::H264 | VideoCodec::H265 | VideoCodec::Vp9, Container::Mkv) => AudioCodecChoice::Opus,
+                _ => AudioCodecChoice::Pcm,
+            },
+            chosen => chosen,
+        };
+        match codec {
+            AudioCodecChoice::Aac => AudioFormat::Aac { bitrate: bitrate(256) },
+            AudioCodecChoice::Opus => AudioFormat::Opus { bitrate: bitrate(160) },
+            _ => AudioFormat::Pcm24,
+        }
+    }
+
+    /// Whether PCM bound for .mov has to be relabelled as plain numbered
+    /// channels: qtmux takes PCM beyond stereo only that way, and otherwise
+    /// audioconvert quietly downmixes it to stereo (it won't relabel a
+    /// layout like 7.1 itself). Picked channels are numbered already.
+    pub fn relabel_pcm_channels(&self) -> bool {
+        self.container == Container::Mov
+            && self.audio_format() == AudioFormat::Pcm24
+            && self.advanced.audio_channels == AudioChannels::All
+            && self.source_audio.is_some_and(|(n, _)| n > 2)
+    }
+
+    /// Whether interlaced video is deinterlaced. ProRes keeps interlacing: it
+    /// stores it natively, and archives may want it.
+    pub fn deinterlace(&self) -> bool {
+        self.advanced.deinterlace == Deinterlace::Auto && self.prores_profile().is_none()
+    }
+
+    /// The x264/x265 `speed-preset` value.
+    pub fn speed_preset(&self) -> &'static str {
+        match self.advanced.speed_preset.unwrap_or(SpeedPreset::Veryfast) {
+            SpeedPreset::Ultrafast => "ultrafast",
+            SpeedPreset::Superfast => "superfast",
+            SpeedPreset::Veryfast => "veryfast",
+            SpeedPreset::Faster => "faster",
+            SpeedPreset::Fast => "fast",
+            SpeedPreset::Medium => "medium",
+            SpeedPreset::Slow => "slow",
+        }
+    }
+
+    pub fn rate_control(&self) -> RateControl {
+        self.advanced.rate_control
+    }
+
+    /// Constant-quality level, 1–100.
+    pub fn quality(&self) -> u8 {
+        self.advanced.quality.unwrap_or(DEFAULT_QUALITY)
+    }
+
+    pub fn keyframe_secs(&self) -> f64 {
+        self.advanced.keyframe_secs.unwrap_or(KEYFRAME_INTERVAL_SECS)
+    }
+
+    /// How the output changes the source's audio channels; `None` records
+    /// them as they are.
+    ///
+    /// Stereo lets `audioconvert` downmix positioned layouts (5.1…) itself;
+    /// plain numbered channels have no layout to follow, so odd channels go
+    /// left and even ones right. Picked channels the source doesn't have are
+    /// silent.
+    pub fn audio_mix(&self) -> Option<AudioMix> {
+        let a = &self.advanced;
+        let row = |inputs: u32, gains: &dyn Fn(u32) -> f32| (0..inputs).map(gains).collect::<Vec<f32>>();
+        match a.audio_channels {
+            AudioChannels::All => None,
+            AudioChannels::Stereo => match self.source_audio {
+                None | Some((_, true)) | Some((2, _)) => Some(AudioMix { matrix: None, channels: 2 }),
+                Some((1, _)) => Some(AudioMix { matrix: Some(vec![vec![1.0], vec![1.0]]), channels: 2 }),
+                Some((n, false)) => {
+                    let gain = 1.0 / n.div_ceil(2) as f32;
+                    let left = row(n, &|c| if c % 2 == 0 { gain } else { 0.0 });
+                    let right = row(n, &|c| if c % 2 == 1 { gain } else { 0.0 });
+                    Some(AudioMix { matrix: Some(vec![left, right]), channels: 2 })
+                }
+            },
+            AudioChannels::Pick => {
+                let out = a.channel_pick.len() as u32;
+                match self.source_audio {
+                    // A preset check: the matrix needs the source's channel count.
+                    None => Some(AudioMix { matrix: None, channels: out }),
+                    Some((n, _)) => {
+                        let rows =
+                            a.channel_pick.iter().map(|&p| row(n, &|c| if c + 1 == p { 1.0 } else { 0.0 })).collect();
+                        Some(AudioMix { matrix: Some(rows), channels: out })
+                    }
+                }
+            }
         }
     }
 
@@ -237,7 +497,8 @@ impl RecordingProfile {
         }
     }
 
-    /// Value of avenc_prores_ks's `profile` enum.
+    /// The ProRes profile: `avenc_prores_ks`'s `profile` and
+    /// `vtenc_prores`'s output `variant` share these names.
     pub fn prores_profile(&self) -> Option<&'static str> {
         match self.video_codec {
             VideoCodec::ProRes4444 => Some("4444"),
@@ -247,6 +508,41 @@ impl RecordingProfile {
             VideoCodec::ProRes422Proxy => Some("proxy"),
             _ => None,
         }
+    }
+
+    /// Frame size written: the output's, else the source's, else 1080p (a
+    /// preset check, or a source that hasn't negotiated yet).
+    pub fn frame_size(&self) -> (u32, u32) {
+        self.resolution.or(self.source_size).unwrap_or((1920, 1080))
+    }
+
+    /// Frame rate written, with the same fallbacks as [`Self::frame_size`].
+    pub fn frame_rate(&self) -> (u32, u32) {
+        self.framerate.or(self.source_rate).unwrap_or((30, 1))
+    }
+
+    /// Frames between keyframes.
+    pub fn keyframe_interval(&self) -> u32 {
+        let (n, d) = self.frame_rate();
+        (self.keyframe_secs() * n as f64 / d as f64).round().max(1.0) as u32
+    }
+
+    /// Video bitrate in kbps, for codecs that take one: the output's, or Auto
+    /// — scaled by pixels per second, about 12 Mbps for H.264 at 1080p30 and
+    /// 60% of that for H.265 and VP9, which compress better.
+    pub fn bitrate(&self) -> Option<u32> {
+        let bits_per_pixel = match self.video_codec {
+            VideoCodec::H264 => 0.19,
+            VideoCodec::H265 | VideoCodec::Vp9 => 0.115,
+            _ => return None,
+        };
+        Some(self.bitrate_kbps.unwrap_or_else(|| {
+            let (w, h) = self.frame_size();
+            let (n, d) = self.frame_rate();
+            let kbps = w as f64 * h as f64 * n as f64 / d as f64 * bits_per_pixel / 1000.0;
+            // Round to 500 kbps so the number reads like a choice.
+            ((kbps / 500.0).round() * 500.0).max(500.0) as u32
+        }))
     }
 }
 
@@ -353,6 +649,7 @@ mod tests {
             bitrate_kbps: None,
             chroma: ChromaSubsampling::Yuv420,
             path_template: template.into(),
+            advanced: OutputAdvanced::default(),
         }
     }
 
@@ -391,6 +688,7 @@ mod tests {
             take: 3,
             source_resolution: Some((1920, 1080)),
             source_framerate: Some((30000, 1001)),
+            source_audio: None,
         };
         let template = "~/rec/{year}/{month}/{day}/{source}_{source_name}_{preset}_{time}_{take}_{resolution}@{fps}_{codec}.{ext}";
         let legs = plan_legs(&[leg("a", Container::Mp4, template)], Some(&vars)).unwrap();
@@ -407,6 +705,96 @@ mod tests {
         assert_eq!(plan_legs(&[scaled], Some(&vars)).unwrap()[0].0, PathBuf::from("/r/1280x720_25"));
         assert_eq!(expand_home("/abs/~x"), PathBuf::from("/abs/~x"));
         assert_eq!(expand_home("~user/x"), PathBuf::from("~user/x"));
+    }
+
+    #[test]
+    fn sizes_auto_bitrate_and_keyframes() {
+        let mut p = RecordingProfile::from_output(&leg("a", Container::Mov, "x")).unwrap();
+        // Unknown source: sized for 1080p30.
+        assert_eq!(p.bitrate(), Some(12000));
+        assert_eq!(p.keyframe_interval(), 60);
+        p.source_size = Some((3840, 2160));
+        p.source_rate = Some((60000, 1001));
+        assert_eq!(p.bitrate(), Some(94500));
+        assert_eq!(p.keyframe_interval(), 120);
+        p.bitrate_kbps = Some(8000);
+        assert_eq!(p.bitrate(), Some(8000));
+        p.video_codec = VideoCodec::ProRes422Hq;
+        assert_eq!(p.bitrate(), None);
+    }
+
+    #[test]
+    fn picks_encoders_and_audio() {
+        let mut p = RecordingProfile::from_output(&leg("a", Container::Mov, "x")).unwrap();
+        assert_eq!(p.encoders(), [VideoEncoder::VtH264, VideoEncoder::X264]);
+        p.advanced.encoder = EncoderChoice::Software;
+        assert_eq!(p.encoders(), [VideoEncoder::X264]);
+        p.advanced.encoder = EncoderChoice::Auto;
+        assert_eq!(p.audio_format(), AudioFormat::Aac { bitrate: 256_000 });
+        p.chroma = ChromaSubsampling::Yuv422;
+        assert_eq!(p.encoders(), [VideoEncoder::X264]);
+        p.video_codec = VideoCodec::ProRes422;
+        assert_eq!(p.audio_format(), AudioFormat::Pcm24);
+        p.video_codec = VideoCodec::Vp9;
+        p.container = Container::Mkv;
+        assert_eq!(p.audio_format(), AudioFormat::Opus { bitrate: 160_000 });
+    }
+
+    #[test]
+    fn checks_advanced_settings() {
+        let check = |f: &dyn Fn(&mut PresetOutputInput)| {
+            let mut o = leg("a", Container::Mov, "x");
+            f(&mut o);
+            RecordingProfile::from_output(&o).map(|_| ())
+        };
+        assert!(check(&|_| {}).is_ok());
+        assert!(check(&|o| o.chroma = ChromaSubsampling::Yuv422).is_ok());
+        assert!(check(&|o| {
+            o.chroma = ChromaSubsampling::Yuv422;
+            o.advanced.encoder = EncoderChoice::Hardware;
+        })
+        .is_err());
+        assert!(check(&|o| {
+            o.codec = VideoCodec::Vp9;
+            o.container = Container::Mkv;
+            o.advanced.encoder = EncoderChoice::Hardware;
+        })
+        .is_err());
+        assert!(check(&|o| o.advanced.audio_codec = AudioCodecChoice::Opus).is_err());
+        assert!(check(&|o| o.advanced.keyframe_secs = Some(0.0)).is_err());
+        assert!(check(&|o| {
+            o.advanced.audio_channels = AudioChannels::Pick;
+            o.advanced.channel_pick = vec![1, 2, 3];
+        })
+        .is_err());
+        assert!(check(&|o| {
+            o.advanced.audio_codec = AudioCodecChoice::Pcm;
+            o.advanced.audio_channels = AudioChannels::Pick;
+            o.advanced.channel_pick = vec![1, 2, 3];
+        })
+        .is_ok());
+    }
+
+    #[test]
+    fn mixes_audio_channels() {
+        let mut p = RecordingProfile::from_output(&leg("a", Container::Mov, "x")).unwrap();
+        assert_eq!(p.audio_mix(), None);
+        p.source_audio = Some((3, true));
+        assert!(!p.relabel_pcm_channels());
+        p.video_codec = VideoCodec::ProRes422;
+        assert!(p.relabel_pcm_channels());
+        p.video_codec = VideoCodec::H264;
+        p.advanced.audio_channels = AudioChannels::Pick;
+        p.advanced.channel_pick = vec![3, 9];
+        p.source_audio = Some((4, false));
+        let mix = p.audio_mix().unwrap();
+        assert_eq!(mix.channels, 2);
+        assert_eq!(mix.matrix.unwrap(), vec![vec![0.0, 0.0, 1.0, 0.0], vec![0.0; 4]]);
+        p.advanced.audio_channels = AudioChannels::Stereo;
+        let mix = p.audio_mix().unwrap();
+        assert_eq!(mix.matrix.unwrap(), vec![vec![0.5, 0.0, 0.5, 0.0], vec![0.0, 0.5, 0.0, 0.5]]);
+        p.source_audio = Some((6, true));
+        assert_eq!(p.audio_mix(), Some(AudioMix { matrix: None, channels: 2 }));
     }
 
     #[test]

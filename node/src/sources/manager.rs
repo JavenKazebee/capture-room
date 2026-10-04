@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::api::types::{
     ChannelLevelDto, MonitorSettingsDto, RecordingSessionDto, RecordingStatus, TestSourceConfigDto,
 };
-use crate::pipeline::monitor::{MonitorPipeline, VideoFormat};
+use crate::pipeline::monitor::{MonitorPipeline, SourceFormat};
 use crate::pipeline::profile::RecordingProfile;
 use crate::pipeline::recording::{self, OnLegError, RecordingLeg};
 
@@ -237,9 +237,9 @@ impl SourceManager {
             .collect()
     }
 
-    /// The format `source_id`'s monitor is producing; see [`MonitorPipeline::video_format`].
-    pub fn video_format(&self, source_id: &str) -> VideoFormat {
-        self.monitors.get(source_id).map(|m| m.video_format()).unwrap_or_default()
+    /// The format `source_id`'s monitor is producing; see [`MonitorPipeline::source_format`].
+    pub fn source_format(&self, source_id: &str) -> SourceFormat {
+        self.monitors.get(source_id).map(|m| m.source_format()).unwrap_or_default()
     }
 
     // ── Recording ─────────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ import { useRecordDeskStore } from '@/stores/recordDesk'
 import { errorMessage } from '@/composables/useApi'
 import { notifyError } from '@/lib/notify'
 import { CODECS, clashingLegs, legProblems } from '@/lib/codecs'
+import { advancedProblems } from '@/lib/advanced'
 import type { PresetDto } from '@/types/generated/PresetDto'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import { Button } from '@/components/ui/button'
@@ -146,7 +147,9 @@ function moveOutput(i: number, dir: -1 | 1) {
 
 const clashes = computed(() => clashingLegs(draftLegs.value))
 const problemCount = computed(
-  () => draftLegs.value.filter((l, i) => clashes.value.has(i) || Object.keys(legProblems(l)).length).length + (draftName.value.trim() ? 0 : 1),
+  () => draftLegs.value.filter(
+      (l, i) => clashes.value.has(i) || Object.keys(legProblems(l)).length || Object.keys(advancedProblems(l)).length,
+    ).length + (draftName.value.trim() ? 0 : 1),
 )
 
 const preview = computed(() => ({

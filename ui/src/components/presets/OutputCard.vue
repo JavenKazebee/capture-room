@@ -26,7 +26,12 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import FormField from '@/components/FormField.vue'
+import HelpTip from '@/components/common/HelpTip.vue'
+import { FIELD_HELP } from '@/lib/fieldHelp'
 import OptionSelect from '@/components/OptionSelect.vue'
+import AdvancedSettings from '@/components/presets/AdvancedSettings.vue'
+import { advancedProblems, fitAdvanced } from '@/lib/advanced'
+import type { ChromaSubsampling } from '@/types/generated/ChromaSubsampling'
 
 const props = defineProps<{
   index: number
@@ -41,10 +46,14 @@ defineEmits<{ remove: []; duplicate: []; move: [dir: -1 | 1] }>()
 
 const open = ref(true)
 const problems = computed(() => legProblems(leg.value))
-const hasProblem = computed(() => props.clash || Object.keys(problems.value).length > 0)
+const hasProblem = computed(
+  () => props.clash || Object.keys(problems.value).length > 0 || Object.keys(advancedProblems(leg.value)).length > 0,
+)
 
+/** Apply a change; Advanced choices it made impossible fall back to Auto. */
 function patch(p: Partial<PresetOutputInput>) {
-  leg.value = { ...leg.value, ...p }
+  const next = { ...leg.value, ...p }
+  leg.value = { ...next, advanced: fitAdvanced(next) }
 }
 
 // ── Codec / container ─────────────────────────────────────────────────────────
@@ -201,13 +210,13 @@ const previewPath = computed(() => expandPath(leg.value, props.preview))
 
     <CollapsibleContent>
       <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 px-3 pb-3 pt-1 border-t border-border [&>*]:min-w-0">
-        <FormField label="Output name" class="col-span-2">
+        <FormField label="Output name" :help="FIELD_HELP.outputName" class="col-span-2">
           <Input v-model="leg.name" placeholder="Primary" />
         </FormField>
-        <FormField label="Codec">
+        <FormField label="Codec" :help="FIELD_HELP.codec">
           <OptionSelect :model-value="leg.codec" :options="CODEC_OPTIONS" @update:model-value="setCodec" />
         </FormField>
-        <FormField label="Container">
+        <FormField label="Container" :help="FIELD_HELP.container">
           <span v-if="onlyContainer" class="h-7 flex items-center text-xs">
             {{ CONTAINERS[onlyContainer] }}
             <span class="ml-1.5 text-muted-foreground">· only option for {{ CODECS[leg.codec] }}</span>
@@ -216,7 +225,7 @@ const previewPath = computed(() => expandPath(leg.value, props.preview))
           <span v-if="containerNote" class="text-[11px] text-muted-foreground">{{ containerNote }}</span>
         </FormField>
 
-        <FormField label="Resolution">
+        <FormField label="Resolution" :help="FIELD_HELP.resolution">
           <OptionSelect v-model="resolutionSelect" :options="resolutionOptions" />
           <div v-if="resolutionSelect === CUSTOM" class="flex items-center gap-1.5">
             <Input
@@ -241,7 +250,7 @@ const previewPath = computed(() => expandPath(leg.value, props.preview))
           </div>
           <span v-if="problems.resolution" class="text-[11px] text-destructive">{{ problems.resolution }}</span>
         </FormField>
-        <FormField label="Frame rate">
+        <FormField label="Frame rate" :help="FIELD_HELP.framerate">
           <OptionSelect v-model="framerateSelect" :options="framerateOptions" />
           <Input
             v-if="framerateSelect === CUSTOM"
@@ -253,24 +262,28 @@ const previewPath = computed(() => expandPath(leg.value, props.preview))
           />
           <span v-if="problems.framerate" class="text-[11px] text-destructive">{{ problems.framerate }}</span>
         </FormField>
-        <FormField v-if="hasBitrate(leg.codec)" label="Bitrate (kbps)">
-          <Input v-model="bitrate" type="number" min="0" placeholder="Encoder default" class="num" />
+        <FormField v-if="hasBitrate(leg.codec) && leg.advanced.rate_control === 'quality'" label="Bitrate" :help="FIELD_HELP.bitrateQuality">
+          <span class="h-7 flex items-center text-xs text-muted-foreground">Set by quality</span>
         </FormField>
-        <div v-else class="flex flex-col gap-1">
-          <span class="text-xs text-muted-foreground">Bitrate</span>
-          <span class="h-7 flex items-center text-xs text-muted-foreground">Set by the codec</span>
-        </div>
-        <FormField v-if="hasChroma(leg.codec)" label="Chroma">
-          <OptionSelect v-model="leg.chroma" :options="CHROMA_OPTIONS" />
+        <FormField v-else-if="hasBitrate(leg.codec)" label="Bitrate (kbps)" :help="FIELD_HELP.bitrate">
+          <Input v-model="bitrate" type="number" min="0" placeholder="Auto" class="num" />
         </FormField>
-        <div v-else class="flex flex-col gap-1">
-          <span class="text-xs text-muted-foreground">Chroma</span>
+        <FormField v-else label="Bitrate" :help="FIELD_HELP.bitrateFixed">
           <span class="h-7 flex items-center text-xs text-muted-foreground">Set by the codec</span>
-        </div>
+        </FormField>
+        <FormField v-if="hasChroma(leg.codec)" label="Chroma" :help="FIELD_HELP.chroma">
+          <OptionSelect :model-value="leg.chroma" :options="CHROMA_OPTIONS" @update:model-value="(c: ChromaSubsampling) => patch({ chroma: c })" />
+        </FormField>
+        <FormField v-else label="Chroma" :help="FIELD_HELP.chromaFixed">
+          <span class="h-7 flex items-center text-xs text-muted-foreground">Set by the codec</span>
+        </FormField>
 
         <!-- Path -->
         <div class="col-span-2 lg:col-span-4 flex flex-col gap-1.5">
-          <span class="text-xs text-muted-foreground">Path template <span class="opacity-60">· ~ is the recording node's home</span></span>
+          <span class="flex items-center gap-1 text-xs text-muted-foreground">
+            Path template <HelpTip :help="FIELD_HELP.pathTemplate" />
+            <span class="opacity-60">· ~ is the recording node's home</span>
+          </span>
           <Input ref="pathInput" v-model="leg.path_template" class="num" :aria-invalid="!!problems.path || clash" />
           <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
             <div v-for="g in PATH_TOKEN_GROUPS" :key="g.label" class="flex flex-wrap items-center gap-1">
@@ -298,6 +311,8 @@ const previewPath = computed(() => expandPath(leg.value, props.preview))
             Another output writes the same file — vary the path, container, or include {output}.
           </span>
         </div>
+
+        <AdvancedSettings v-model="leg" />
       </div>
     </CollapsibleContent>
   </Collapsible>

@@ -1,5 +1,5 @@
 <script setup lang="ts" generic="T extends string | number">
-import type { HTMLAttributes } from 'vue'
+import { computed, type HTMLAttributes } from 'vue'
 import { cn } from '@/lib/utils'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
@@ -8,19 +8,23 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
  * `disabled` with a `reason`, shown beside it so nothing is unavailable
  * without saying why.
  */
-defineProps<{
+const props = defineProps<{
   options: readonly { value: T; label: string; disabled?: boolean; reason?: string }[]
   disabled?: boolean
   class?: HTMLAttributes['class']
 }>()
 
 const model = defineModel<T>({ required: true })
+// Rendered from the current options: SelectValue alone keeps the label the
+// items had when last open, so a label that depends on other fields ("Auto
+// (AAC)") went stale while closed.
+const selectedLabel = computed(() => props.options.find((o) => o.value === model.value)?.label)
 </script>
 
 <template>
   <Select v-model="model" :disabled="disabled">
     <SelectTrigger :class="cn('w-full min-w-0 overflow-hidden *:data-[slot=select-value]:truncate', $props.class)">
-      <SelectValue />
+      <SelectValue>{{ selectedLabel }}</SelectValue>
     </SelectTrigger>
     <SelectContent>
       <SelectItem v-for="opt in options" :key="opt.value" :value="opt.value" :disabled="opt.disabled">

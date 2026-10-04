@@ -167,7 +167,7 @@ pub async fn presets_list(pool: &SqlitePool) -> Result<Vec<PresetDto>> {
     .await?;
     let outputs = sqlx::query_as::<_, PresetOutputDto>(
         "SELECT id, preset_id, name, codec, container, resolution, framerate,
-                bitrate_kbps, chroma, path_template, sort_order
+                bitrate_kbps, chroma, path_template, advanced, sort_order
          FROM preset_outputs ORDER BY preset_id, sort_order",
     )
     .fetch_all(pool)
@@ -247,8 +247,8 @@ async fn preset_outputs_replace(
         sqlx::query(
             "INSERT INTO preset_outputs
              (id, preset_id, name, codec, container, resolution, framerate,
-              bitrate_kbps, chroma, path_template, sort_order)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              bitrate_kbps, chroma, path_template, advanced, sort_order)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id)
         .bind(preset_id)
@@ -260,6 +260,7 @@ async fn preset_outputs_replace(
         .bind(o.bitrate_kbps)
         .bind(o.chroma)
         .bind(&o.path_template)
+        .bind(Json(&o.advanced))
         .bind(sort_order)
         .execute(&mut **tx)
         .await?;

@@ -25,8 +25,13 @@ use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
 use super::{capsfilter, make_el};
-use super::profile::RecordingProfile;
-use crate::api::types::{Container, VideoCodec};
+use super::profile::{AudioFormat, RecordingProfile, VideoEncoder};
+use crate::api::types::{Container, RateControl};
+
+/// How long a .mov/.mp4 keeps its index crash-safe, and how often it's
+/// rewritten. See where the muxer is configured in [`RecordingLeg::build_with`].
+const CRASH_SAFE_MAX: gst::ClockTime = gst::ClockTime::from_seconds(2 * 3600);
+const CRASH_SAFE_PERIOD: gst::ClockTime = gst::ClockTime::from_seconds(10);
 
 /// Called with the leg's output path and error message the first time a leg
 /// fails. Runs on a GStreamer streaming thread, so it must not block.
@@ -89,9 +94,35 @@ pub fn check_legs(legs: &[(PathBuf, RecordingProfile)]) -> Result<()> {
 }
 
 impl RecordingLeg {
-    /// Build and link the leg's pipeline, leaving it in NULL: the output file
-    /// isn't opened until [`Self::start`].
+    /// Build and link the leg's pipeline with the first of the profile's
+    /// encoders that this platform has and that links, leaving it in NULL:
+    /// the output file isn't opened until [`Self::start`].
     fn build(path: &Path, profile: &RecordingProfile, name: &str, on_error: OnLegError) -> Result<Self> {
+        let encoders = profile.encoders();
+        let mut last_err = None;
+        for (i, &encoder) in encoders.iter().enumerate() {
+            match Self::build_with(path, profile, encoder, name, Arc::clone(&on_error)) {
+                Ok(leg) => {
+                    info!(path = ?path, encoder = encoder.element(), hardware = encoder.is_hardware(), "recording leg built");
+                    return Ok(leg);
+                }
+                Err(e) if i + 1 < encoders.len() => {
+                    warn!(encoder = encoder.element(), error = %format!("{e:#}"), "encoder unavailable, trying the next");
+                    last_err = Some(e);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow!("no encoder for {:?}", profile.video_codec)))
+    }
+
+    fn build_with(
+        path: &Path,
+        profile: &RecordingProfile,
+        encoder: VideoEncoder,
+        name: &str,
+        on_error: OnLegError,
+    ) -> Result<Self> {
         let location = path.to_str().context("output path not valid UTF-8")?;
         let pipeline = gst::Pipeline::with_name(name);
         // Only errors and EOS are ever read from this bus; drop the rest so a
@@ -123,6 +154,11 @@ impl RecordingLeg {
         StreamProducer::configure_consumer(&audio_src);
 
         let mut video = vec![video_src.clone().upcast::<gst::Element>()];
+        // Interlaced sources are deinterlaced before scaling (`mode=auto`
+        // passes progressive video straight through).
+        if profile.deinterlace() {
+            video.push(make_el("deinterlace", "deint")?);
+        }
         if let Some((num, den)) = profile.framerate {
             // skip-to-first: otherwise videorate fills from the segment start
             // by duplicating the first frame.
@@ -155,13 +191,20 @@ impl RecordingLeg {
         }
         // Handles formats the encoder can't take directly (NDI UYVY → I420).
         video.push(make_el("videoconvert", "vconv")?);
-        if let Some(format) = profile.encoder_input_format() {
+        if let Some(format) = profile.encoder_input_format(encoder) {
             video.push(capsfilter(
                 "venc-caps",
                 gst::Caps::builder("video/x-raw").field("format", format).build(),
             )?);
         }
-        video.push(build_video_encoder(profile)?);
+        video.push(build_video_encoder(profile, encoder)?);
+        if let (VideoEncoder::VtProRes, Some(variant)) = (encoder, profile.prores_profile()) {
+            // vtenc_prores picks its profile from downstream caps.
+            video.push(capsfilter(
+                "venc-out-caps",
+                gst::Caps::builder("video/x-prores").field("variant", variant).build(),
+            )?);
+        }
         if let Some(parser) = profile.video_parser_element() {
             video.push(make_el(parser, "vparse")?);
         }
@@ -176,19 +219,72 @@ impl RecordingLeg {
             .property("max-size-buffers", 0u32)
             .build()
             .context("create audio queue")?;
-        let audio = vec![
-            audio_src.clone().upcast::<gst::Element>(),
-            aq,
-            make_el("audioconvert", "aconv")?,
-            make_el("audioresample", "aresample")?,
-            make_el(profile.audio_encoder_element(), "aenc")?,
-        ];
+        // A channel mix (stereo, picked channels) is audioconvert's matrix,
+        // which has to be set before it negotiates.
+        let aconv = make_el("audioconvert", "aconv")?;
+        let mix = profile.audio_mix();
+        if let Some(rows) = mix.as_ref().and_then(|m| m.matrix.as_ref()) {
+            let matrix = gst::Array::new(rows.iter().map(|row| gst::Array::new(row.iter().copied()).to_send_value()));
+            aconv.set_property("mix-matrix", matrix);
+        }
+        let mut audio = vec![audio_src.clone().upcast::<gst::Element>(), aq, aconv, make_el("audioresample", "aresample")?];
+        let pcm = profile.audio_format() == AudioFormat::Pcm24;
+        if mix.is_some() || pcm {
+            let mut caps = gst::Caps::builder("audio/x-raw");
+            if let Some(channels) = mix.map(|m| m.channels) {
+                caps = caps.field("channels", channels as i32);
+                // Mono needs no mask, stereo gets left/right, more are plain
+                // numbered channels.
+                match channels {
+                    1 => {}
+                    2 => caps = caps.field("channel-mask", gst::Bitmask::new(0x3)),
+                    _ => caps = caps.field("channel-mask", gst::Bitmask::new(0)),
+                }
+            }
+            if pcm {
+                caps = caps.field("format", "S24LE");
+            }
+            audio.push(capsfilter("aout-caps", caps.build())?);
+        }
+        if profile.relabel_pcm_channels() {
+            // Same samples, layout dropped: see `relabel_pcm_channels`.
+            audio.push(
+                gst::ElementFactory::make("capssetter")
+                    .name("apcm-relabel")
+                    .property("caps", gst::Caps::builder("audio/x-raw").field("channel-mask", gst::Bitmask::new(0)).build())
+                    .build()
+                    .context("create capssetter")?,
+            );
+        }
+        match profile.audio_format() {
+            AudioFormat::Pcm24 => {}
+            AudioFormat::Aac { bitrate } => {
+                let aenc = make_el("avenc_aac", "aenc")?;
+                set_property(&aenc, "bitrate", &bitrate.to_string())?;
+                audio.push(aenc);
+            }
+            AudioFormat::Opus { bitrate } => {
+                let aenc = make_el("opusenc", "aenc")?;
+                set_property(&aenc, "bitrate", &bitrate.to_string())?;
+                audio.push(aenc);
+            }
+        }
 
         let muxer = make_el(profile.muxer_element(), "mux")?;
-        if profile.container == Container::Mkv {
+        match profile.container {
             // Timestamps arrive as the monitor's running time; qtmux/mp4mux
             // start the file at zero on their own, matroskamux needs asking.
-            set_property(&muxer, "offset-to-zero", "true")?;
+            Container::Mkv => set_property(&muxer, "offset-to-zero", "true")?,
+            // Keep the index at the front of the file and rewrite it as
+            // recording goes, so a crash or power cut leaves a playable file
+            // missing at most the last update period. The space is reserved
+            // up front, twice over (qtmux alternates between two copies):
+            // 2 × 550 B/s per track, about 16 MB for 2 hours. Recording past
+            // that writes the index at the end, as without this.
+            Container::Mov | Container::Mp4 => {
+                set_property(&muxer, "reserved-max-duration", &CRASH_SAFE_MAX.nseconds().to_string())?;
+                set_property(&muxer, "reserved-moov-update-period", &CRASH_SAFE_PERIOD.nseconds().to_string())?;
+            }
         }
         let filesink = gst::ElementFactory::make("filesink")
             .name("sink")
@@ -359,20 +455,99 @@ fn link_to_muxer(
     Ok(())
 }
 
-fn build_video_encoder(profile: &RecordingProfile) -> Result<gst::Element> {
-    let venc = make_el(profile.video_encoder_element(), "venc")?;
-    if let Some(kbps) = profile.bitrate_kbps {
-        match profile.video_codec {
-            VideoCodec::H264 | VideoCodec::H265 => set_property(&venc, "bitrate", &kbps.to_string())?,
-            VideoCodec::Vp9 => set_property(&venc, "target-bitrate", &(kbps * 1000).to_string())?,
+/// Create `encoder` with the output's rate control (average bitrate unless
+/// set; Auto sizes the bitrate from the frame size and rate), keyframe
+/// interval, and speed preset — software encoders default fast enough to
+/// keep up live.
+///
+/// Quality 1–100 maps onto each encoder's own scale: x264/x265 CRF 41→11,
+/// VP9 `cq-level` 63→13, VideoToolbox `quality` 0.01→1.
+fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Result<gst::Element> {
+    let venc = make_el(encoder.element(), "venc")?;
+    let set = |name: &str, value: &str| set_property(&venc, name, value);
+    let rc = profile.rate_control();
+    let quality = f64::from(profile.quality());
+    let crf = (41.0 - 0.3 * quality).round().clamp(0.0, 51.0);
+    let bitrate = profile.bitrate();
+    let keyint = profile.keyframe_interval().to_string();
+    match encoder {
+        VideoEncoder::X264 => {
+            // No `tune=zerolatency`: that's for streaming, and costs quality.
+            set("speed-preset", profile.speed_preset())?;
+            set("key-int-max", &keyint)?;
+            match rc {
+                // `pass=cbr` (the default) is x264's ABR capped at the
+                // bitrate; a 1 s buffer lets it borrow bits for complex
+                // moments.
+                RateControl::Average => set("vbv-buf-capacity", "1000")?,
+                // HRD signalling makes x264 pad to a true constant rate.
+                RateControl::Constant => set("nal-hrd", "cbr")?,
+                RateControl::Quality => {
+                    set("pass", "qual")?;
+                    set("quantizer", &crf.to_string())?;
+                }
+            }
+        }
+        VideoEncoder::X265 => {
+            set("speed-preset", profile.speed_preset())?;
+            // GStreamer defaults to `ssim`, which tunes for a metric rather
+            // than for viewing; 0 is no tuning.
+            set("tune", "0")?;
+            set("key-int-max", &keyint)?;
+            match (rc, bitrate) {
+                (RateControl::Constant, Some(kbps)) => {
+                    set("option-string", &format!("vbv-maxrate={kbps}:vbv-bufsize={kbps}:strict-cbr=1"))?
+                }
+                (RateControl::Quality, _) => set("option-string", &format!("crf={crf}"))?,
+                _ => {}
+            }
+        }
+        VideoEncoder::Vp9 => {
+            // Realtime: libvpx's default "good" deadline can't keep up live.
+            set("deadline", "1")?;
+            set("cpu-used", "8")?;
+            set("row-mt", "true")?;
+            set("keyframe-max-dist", &keyint)?;
+            match rc {
+                RateControl::Average => {}
+                RateControl::Constant => set("end-usage", "cbr")?,
+                RateControl::Quality => {
+                    set("end-usage", "cq")?;
+                    set("cq-level", &(63.0 - 0.5 * quality).round().clamp(0.0, 63.0).to_string())?;
+                }
+            }
+        }
+        VideoEncoder::VtH264 | VideoEncoder::VtH265 => {
+            let interval = (profile.keyframe_secs() * 1e9) as u64;
+            set("max-keyframe-interval-duration", &interval.to_string())?;
+            match rc {
+                RateControl::Average => {}
+                RateControl::Constant => set("rate-control", "cbr")?,
+                // With no bitrate VideoToolbox encodes to `quality`.
+                RateControl::Quality => set("quality", &(quality / 100.0).to_string())?,
+            }
+        }
+        VideoEncoder::ProResKs => {
+            if let Some(prores) = profile.prores_profile() {
+                set("profile", prores)?;
+            }
+        }
+        VideoEncoder::VtProRes | VideoEncoder::Uncompressed => {}
+    }
+    if let Some(kbps) = bitrate {
+        match (encoder, rc) {
+            // In constant-quality mode VP9 treats the bitrate as a ceiling:
+            // give it room.
+            (VideoEncoder::Vp9, RateControl::Quality) => {
+                set("target-bitrate", &(u64::from(kbps) * 4000).to_string())?
+            }
+            (VideoEncoder::Vp9, _) => set("target-bitrate", &(u64::from(kbps) * 1000).to_string())?,
+            (_, RateControl::Quality) => {}
+            (VideoEncoder::X264 | VideoEncoder::X265 | VideoEncoder::VtH264 | VideoEncoder::VtH265, _) => {
+                set("bitrate", &kbps.to_string())?
+            }
             _ => {}
         }
-    }
-    if let Some(prores) = profile.prores_profile() {
-        set_property(&venc, "profile", prores)?;
-    }
-    if profile.video_codec == VideoCodec::H264 {
-        set_property(&venc, "tune", "zerolatency")?;
     }
     Ok(venc)
 }

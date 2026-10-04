@@ -106,6 +106,7 @@ pub async fn add_node(ctx: &Ctx, url: String, manual: bool) -> Result<Option<Nod
         uptime_secs: status.uptime_secs,
         fail_count: 0,
         manual,
+        encoders: status.encoders.clone(),
         relay: ctx.cancel.child_token(),
     };
 
@@ -161,7 +162,7 @@ pub fn start_health_poller(ctx: Ctx) {
             for (id, result) in results {
                 match result {
                     Ok(status) if status.id == id => {
-                        if reg.record_success(&id, &status.name, status.uptime_secs, &status.version) {
+                        if reg.record_success(&status) {
                             info!(id = %id, "node reachable again");
                             ctx.state.emit_controller(&WsEvent::NodeOnline { peer_id: id.clone() });
                         }

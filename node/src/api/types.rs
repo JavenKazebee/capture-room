@@ -14,6 +14,10 @@ pub struct NodeStatus {
     #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub uptime_secs: u64,
     pub is_controller: bool,
+    /// Video encoder elements this node has (of those recording can use), so
+    /// the UI can say what an output's Auto encoder resolves to here.
+    #[serde(default)]
+    pub encoders: Vec<String>,
 }
 
 // ── Sources ───────────────────────────────────────────────────────────────────
@@ -227,6 +231,107 @@ pub struct PresetOutputInput {
     pub bitrate_kbps: Option<u32>,
     pub chroma: ChromaSubsampling,
     pub path_template: String,
+    /// Fine-tuning; every field defaults to the recording defaults.
+    /// Stored as JSON.
+    #[serde(default)]
+    #[sqlx(json)]
+    pub advanced: OutputAdvanced,
+}
+
+/// An output's Advanced settings. Each defaults to what recording does
+/// without it (`None` / the first variant), so `{}` is a plain output.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct OutputAdvanced {
+    pub encoder: EncoderChoice,
+    pub rate_control: RateControl,
+    /// Constant-quality level, 1–100, higher is better. `None` = 70.
+    pub quality: Option<u8>,
+    /// x264/x265 speed preset. `None` = veryfast.
+    pub speed_preset: Option<SpeedPreset>,
+    /// Seconds between keyframes. `None` = 2.
+    pub keyframe_secs: Option<f64>,
+    pub deinterlace: Deinterlace,
+    pub audio_codec: AudioCodecChoice,
+    /// AAC/Opus bitrate. `None` = 256 kbps for AAC, 160 for Opus.
+    pub audio_bitrate_kbps: Option<u32>,
+    pub audio_channels: AudioChannels,
+    /// 1-based source channels for [`AudioChannels::Pick`], in output order.
+    pub channel_pick: Vec<u32>,
+}
+
+/// Which kind of encoder an output may use.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum EncoderChoice {
+    /// Hardware where the node has it, else software.
+    #[default]
+    Auto,
+    Hardware,
+    Software,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum RateControl {
+    /// Average bitrate: more bits for complex scenes, fewer for simple ones.
+    #[default]
+    Average,
+    /// Constant bitrate.
+    Constant,
+    /// Constant quality: the size follows the content.
+    Quality,
+}
+
+/// x264/x265 speed presets, fastest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum SpeedPreset {
+    Ultrafast,
+    Superfast,
+    Veryfast,
+    Faster,
+    Fast,
+    Medium,
+    Slow,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum Deinterlace {
+    /// Deinterlace interlaced sources (not ProRes); progressive passes through.
+    #[default]
+    Auto,
+    Off,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum AudioCodecChoice {
+    /// PCM beside ProRes/uncompressed, else AAC (.mov/.mp4) or Opus (.mkv).
+    #[default]
+    Auto,
+    Pcm,
+    Aac,
+    Opus,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum AudioChannels {
+    #[default]
+    All,
+    /// Mixed down to two channels.
+    Stereo,
+    /// The channels in `channel_pick`.
+    Pick,
 }
 
 /// A stored output leg, as kept in `preset_outputs` and as served.
@@ -411,6 +516,8 @@ pub struct NodeDto {
     pub is_self: bool,
     /// Whether this node was added by URL (persisted) rather than via mDNS.
     pub manual: bool,
+    /// See [`NodeStatus::encoders`]. Empty until the node has answered.
+    pub encoders: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

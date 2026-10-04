@@ -8,4 +8,8 @@ url: string, version: string, healthy: boolean, uptime_secs: number, is_self: bo
 /**
  * Whether this node was added by URL (persisted) rather than via mDNS.
  */
-manual: boolean, };
+manual: boolean, 
+/**
+ * See [`NodeStatus::encoders`]. Empty until the node has answered.
+ */
+encoders: Array<string>, };
