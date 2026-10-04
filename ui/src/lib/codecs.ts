@@ -197,6 +197,71 @@ export const PATH_TOKEN_GROUPS = [
   },
 ] as const
 
+export type PathToken = (typeof PATH_TOKEN_GROUPS)[number]['tokens'][number]
+
+const KNOWN_TOKENS = new Set<string>(PATH_TOKEN_GROUPS.flatMap((g) => g.tokens.map((t) => t.token)))
+
+/** The first `{...}` that isn't a token; mirrors `unknown_token` in `profile.rs`. */
+export function unknownToken(template: string) {
+  // The innermost braces: in "{a{date}", "{date}" is what gets checked.
+  return template.match(/\{[^{}]*\}/g)?.find((t) => !KNOWN_TOKENS.has(t)) ?? null
+}
+
+/** Where a template splits into the editor's two fields, and the extension it always ends with. */
+export const EXT_SUFFIX = '.{ext}'
+
+/**
+ * A template as a folder and a file name. Token values never contain `/`, so
+ * the last `/` always separates them. `name` is null when the template
+ * doesn't end in `.{ext}`, which the split editor can't show.
+ */
+export function splitTemplate(t: string) {
+  const slash = t.lastIndexOf('/')
+  const folder = slash === 0 ? '/' : t.slice(0, Math.max(slash, 0))
+  const file = t.slice(slash + 1)
+  return { folder, name: file.endsWith(EXT_SUFFIX) ? file.slice(0, -EXT_SUFFIX.length) : null, file }
+}
+
+export function joinTemplate(folder: string, name: string) {
+  const dir = folder === '/' ? '/' : folder.replace(/\/+$/, '')
+  return `${dir && dir !== '/' ? `${dir}/` : dir}${name}${EXT_SUFFIX}`
+}
+
+/** A template forced to end in `.{ext}`: a literal extension (`.mov`) is swapped for it. */
+export function withExtToken(t: string) {
+  const { folder, name, file } = splitTemplate(t)
+  return name !== null ? t : joinTemplate(folder, file.replace(/\.[A-Za-z0-9]{1,5}$/, ''))
+}
+
+/**
+ * Common layouts, written below the template's root: the leading folders
+ * without tokens (`~/capture-room`, `/Volumes/RAID/shoots`), which a pattern
+ * keeps so picking one doesn't move recordings to another drive.
+ */
+export const PATH_PATTERNS = [
+  { label: 'By date', path: '{date}/{source}_{time}' },
+  { label: 'By date, then source', path: '{date}/{source_name}/{source}_{time}' },
+  { label: 'By year / month / day', path: '{year}/{month}/{day}/{source}_{time}' },
+  { label: 'By source', path: '{source_name}/{date}_{time}' },
+  { label: 'By preset', path: '{preset}/{date}/{source}_{time}' },
+  { label: 'Numbered takes', path: '{date}/{source}_take{take}' },
+] as const
+
+export function templateRoot(t: string) {
+  const { folder } = splitTemplate(t)
+  const parts = folder.split('/')
+  const i = parts.findIndex((p) => p.includes('{'))
+  const root = (i < 0 ? parts : parts.slice(0, i)).join('/')
+  return root || (folder.startsWith('/') ? '/' : '~/capture-room')
+}
+
+/** A pattern applied below `t`'s root; several outputs also get `{output}` so they don't clash. */
+export function applyPattern(t: string, path: string, multipleOutputs: boolean) {
+  const root = templateRoot(t)
+  const rel = multipleOutputs ? `${path}_{output}` : path
+  return `${root === '/' ? '' : root}/${rel}${EXT_SUFFIX}`
+}
+
 const pad = (n: number) => String(n).padStart(2, '0')
 
 /** A name made safe as one path component; mirrors `sanitize` in `profile.rs`. */
@@ -272,7 +337,10 @@ export function legProblems(leg: PresetOutputInput) {
   if (res && !parseResolution(res)) p.resolution = 'Enter a width and height'
   const fps = leg.framerate?.trim()
   if (fps && !parseFramerate(fps)) p.framerate = 'Use a number or a fraction, e.g. 29.97 or 30000/1001'
+  const unknown = unknownToken(leg.path_template)
   if (!leg.path_template.trim()) p.path = 'A path is required'
+  else if (splitTemplate(leg.path_template).name === '') p.path = 'A file name is required'
+  else if (unknown) p.path = `${unknown} isn't a token — check the spelling, or pick one from the list`
   return p
 }
 

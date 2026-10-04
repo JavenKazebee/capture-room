@@ -19,7 +19,7 @@ use crate::api::types::{
     PresetOutputInput,
 };
 use crate::db;
-use crate::pipeline::profile::plan_legs;
+use crate::pipeline::profile::{plan_legs, unknown_token};
 use crate::pipeline::recording;
 use crate::state::AppState;
 use crate::ws;
@@ -174,6 +174,9 @@ fn validate_outputs(mut outputs: Vec<PresetOutputInput>) -> ApiResult<Vec<Preset
     for output in &mut outputs {
         output.resolution = blank_to_none(output.resolution.take());
         output.framerate = blank_to_none(output.framerate.take());
+        if let Some(token) = unknown_token(&output.path_template) {
+            return Err(ApiError::BadRequest(format!("{token} isn't a path template token").into()));
+        }
     }
     let legs = plan_legs(&outputs, None).map_err(|e| ApiError::BadRequest(e.into()))?;
     recording::check_legs(&legs).map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;

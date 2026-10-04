@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { ArrowDown, ArrowUp, ChevronRight, Copy, Trash2 } from '@lucide/vue'
 import type { Container } from '@/types/generated/Container'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
@@ -11,10 +11,8 @@ import {
   CONTAINERS,
   CONTAINERS_FOR,
   FRAMERATE_PRESETS,
-  PATH_TOKEN_GROUPS,
   RESOLUTION_PRESETS,
   containerOptions,
-  expandPath,
   framerateChoice,
   hasBitrate,
   hasChroma,
@@ -26,10 +24,10 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import FormField from '@/components/FormField.vue'
-import HelpTip from '@/components/common/HelpTip.vue'
 import { FIELD_HELP } from '@/lib/fieldHelp'
 import OptionSelect from '@/components/OptionSelect.vue'
 import AdvancedSettings from '@/components/presets/AdvancedSettings.vue'
+import PathTemplateField from '@/components/presets/PathTemplateField.vue'
 import { advancedProblems, fitAdvanced } from '@/lib/advanced'
 import type { ChromaSubsampling } from '@/types/generated/ChromaSubsampling'
 
@@ -148,23 +146,6 @@ const framerate = computed({
   set: (v: string | number) => patch({ framerate: String(v).trim() ? String(v) : null }),
 })
 
-// ── Path template ────────────────────────────────────────────────────────────
-
-const pathInput = ref<{ $el: HTMLInputElement } | null>(null)
-
-/** Insert a token at the cursor (or the end) and keep the cursor after it. */
-async function insertToken(token: string) {
-  const el = (pathInput.value?.$el as HTMLInputElement | undefined) ?? null
-  const t = leg.value.path_template
-  const start = el?.selectionStart ?? t.length
-  const end = el?.selectionEnd ?? t.length
-  leg.value = { ...leg.value, path_template: t.slice(0, start) + token + t.slice(end) }
-  await nextTick()
-  el?.focus()
-  el?.setSelectionRange(start + token.length, start + token.length)
-}
-
-const previewPath = computed(() => expandPath(leg.value, props.preview))
 </script>
 
 <template>
@@ -278,39 +259,14 @@ const previewPath = computed(() => expandPath(leg.value, props.preview))
           <span class="h-7 flex items-center text-xs text-muted-foreground">Set by the codec</span>
         </FormField>
 
-        <!-- Path -->
-        <div class="col-span-2 lg:col-span-4 flex flex-col gap-1.5">
-          <span class="flex items-center gap-1 text-xs text-muted-foreground">
-            Path template <HelpTip :help="FIELD_HELP.pathTemplate" />
-            <span class="opacity-60">· ~ is the recording node's home</span>
-          </span>
-          <Input ref="pathInput" v-model="leg.path_template" class="num" :aria-invalid="!!problems.path || clash" />
-          <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <div v-for="g in PATH_TOKEN_GROUPS" :key="g.label" class="flex flex-wrap items-center gap-1">
-              <span class="text-[10px] uppercase tracking-wider text-muted-foreground/70 mr-0.5">{{ g.label }}</span>
-              <Tooltip v-for="t in g.tokens" :key="t.token">
-                <TooltipTrigger as-child>
-                  <button
-                    type="button"
-                    class="num text-[11px] rounded border border-border px-1.5 py-0.5 text-muted-foreground hover:text-primary hover:border-primary/50"
-                    @click="insertToken(t.token)"
-                  >
-                    {{ t.token }}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>{{ t.help }}</TooltipContent>
-              </Tooltip>
-            </div>
-          </div>
-          <div class="text-xs flex gap-2 min-w-0">
-            <span class="text-muted-foreground shrink-0">Preview</span>
-            <span class="num break-all">{{ previewPath }}</span>
-          </div>
-          <span v-if="problems.path" class="text-[11px] text-destructive">{{ problems.path }}</span>
-          <span v-if="clash" class="text-[11px] text-destructive">
-            Another output writes the same file — vary the path, container, or include {output}.
-          </span>
-        </div>
+        <PathTemplateField
+          v-model="leg"
+          class="col-span-2 lg:col-span-4"
+          :clash="clash"
+          :problem="problems.path"
+          :multiple-outputs="count > 1"
+          :preview="preview"
+        />
 
         <AdvancedSettings v-model="leg" />
       </div>

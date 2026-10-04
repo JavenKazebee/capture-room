@@ -52,6 +52,32 @@ impl PathVars {
     }
 }
 
+/// Every token a path template can use; anything else in braces is a typo.
+const PATH_TOKENS: &[&str] = &[
+    "{source}", "{source_name}", "{node}", "{preset}", "{output}", "{codec}", "{resolution}", "{fps}", "{ext}",
+    "{date}", "{time}", "{datetime}", "{year}", "{month}", "{day}", "{take}", "{segment}",
+];
+
+/// The first `{...}` in a template that isn't a token, which would otherwise
+/// end up in the file name as typed.
+pub fn unknown_token(template: &str) -> Option<&str> {
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let close = open + rest[open..].find('}')?;
+        let candidate = &rest[open..=close];
+        // A nested `{` starts the next candidate: "{a{date}" checks "{date}".
+        if let Some(inner) = candidate[1..].rfind('{') {
+            rest = &rest[open + 1 + inner..];
+            continue;
+        }
+        if !PATH_TOKENS.contains(&candidate) {
+            return Some(candidate);
+        }
+        rest = &rest[close + 1..];
+    }
+    None
+}
+
 /// Build every leg's profile and output path, rejecting a format that doesn't
 /// parse or two legs that would write the same file.
 ///
@@ -745,6 +771,16 @@ mod tests {
         let mut prores = leg("a", Container::Mp4, "x");
         prores.codec = VideoCodec::ProRes422Hq;
         assert!(RecordingProfile::from_output(&prores).is_err());
+    }
+
+    #[test]
+    fn finds_unknown_tokens() {
+        assert_eq!(unknown_token("~/r/{date}/{source}_{take}.{ext}"), None);
+        assert_eq!(unknown_token("~/r/{datetme}.{ext}"), Some("{datetme}"));
+        assert_eq!(unknown_token("~/r/{a{date}.{ext}"), None);
+        assert_eq!(unknown_token("~/r/{date.{ext}"), None);
+        assert_eq!(unknown_token("~/r/{}.mov"), Some("{}"));
+        assert_eq!(unknown_token("~/r/plain.mov"), None);
     }
 
     #[test]

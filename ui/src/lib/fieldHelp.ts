@@ -91,9 +91,10 @@ export const FIELD_HELP = {
     body: 'Set by the codec: ProRes 422 variants are 4:2:2, ProRes 4444 is 4:4:4, and uncompressed video keeps what the source sends.',
   },
   pathTemplate: {
-    title: 'Path template',
-    body: "Where each recording is written on the node that records it, and what it's called. The {tokens} are filled in when recording starts; click one below to insert it. ~ is the node's home folder, and missing folders are created.",
+    title: 'Save to',
+    body: "Where each recording is written on the node that records it, and what it's called. The {tokens} are filled in when recording starts: type { or use the {} button to insert one. ~ is the node's home folder, and missing folders are created. The extension always matches the container.",
     options: [
+      { label: 'Patterns', text: 'Common layouts. They keep the start of your folder (the part before any token), so picking one never moves recordings to another drive.' },
       { label: '{take}', text: 'Use it to never overwrite: it counts up until the file name is free.' },
       { label: '{output}', text: 'Needed when several outputs would otherwise get the same file name.' },
       { label: '{segment}', text: 'The file number when an output splits (Advanced). Added before the extension if the template leaves it out.' },
