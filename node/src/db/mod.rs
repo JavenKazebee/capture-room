@@ -4,7 +4,7 @@ use std::str::FromStr;
 use tracing::info;
 
 use crate::api::types::{
-    MonitorSettingsDto, PresetDto, PresetOutputDto, RecordingSessionDto, RecordingStatus, TestSourceConfigDto,
+    ConfiguredSourceDto, MonitorSettingsDto, PresetDto, PresetOutputDto, RecordingSessionDto, RecordingStatus,
 };
 
 pub async fn init(db_path: &str) -> Result<SqlitePool> {
@@ -321,75 +321,48 @@ pub async fn node_delete(pool: &SqlitePool, id: &str) -> Result<()> {
     Ok(())
 }
 
-// ── test_sources ──────────────────────────────────────────────────────────────
+// ── configured_sources ────────────────────────────────────────────────────────
 
-const TEST_SOURCE_SELECT: &str = "SELECT id, name, pattern, width, height, fps_num, fps_den,
-                                         audio_signal, frequency, channels, created_at
-                                  FROM test_sources";
+const CONFIGURED_SOURCE_SELECT: &str = "SELECT id, name, config, created_at FROM configured_sources";
 
-pub async fn test_sources_list(pool: &SqlitePool) -> Result<Vec<TestSourceConfigDto>> {
-    let rows = sqlx::query_as::<_, TestSourceConfigDto>(&format!("{TEST_SOURCE_SELECT} ORDER BY created_at"))
-    .fetch_all(pool)
-    .await?;
+pub async fn configured_sources_list(pool: &SqlitePool) -> Result<Vec<ConfiguredSourceDto>> {
+    let rows = sqlx::query_as::<_, ConfiguredSourceDto>(&format!("{CONFIGURED_SOURCE_SELECT} ORDER BY created_at"))
+        .fetch_all(pool)
+        .await?;
     Ok(rows)
 }
 
-pub async fn test_source_get(pool: &SqlitePool, id: &str) -> Result<Option<TestSourceConfigDto>> {
-    let row = sqlx::query_as::<_, TestSourceConfigDto>(&format!("{TEST_SOURCE_SELECT} WHERE id = ?"))
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
+pub async fn configured_source_get(pool: &SqlitePool, id: &str) -> Result<Option<ConfiguredSourceDto>> {
+    let row = sqlx::query_as::<_, ConfiguredSourceDto>(&format!("{CONFIGURED_SOURCE_SELECT} WHERE id = ?"))
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
     Ok(row)
 }
 
-pub async fn test_source_insert(pool: &SqlitePool, row: &TestSourceConfigDto) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO test_sources
-         (id, name, pattern, width, height, fps_num, fps_den,
-          audio_signal, frequency, channels, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(&row.id)
-    .bind(&row.config.name)
-    .bind(row.config.pattern)
-    .bind(row.config.width)
-    .bind(row.config.height)
-    .bind(row.config.fps_num)
-    .bind(row.config.fps_den)
-    .bind(row.config.audio_signal)
-    .bind(row.config.frequency)
-    .bind(row.config.channels)
-    .bind(&row.created_at)
-    .execute(pool)
-    .await?;
+pub async fn configured_source_insert(pool: &SqlitePool, row: &ConfiguredSourceDto) -> Result<()> {
+    sqlx::query("INSERT INTO configured_sources (id, name, config, created_at) VALUES (?, ?, ?, ?)")
+        .bind(&row.id)
+        .bind(&row.name)
+        .bind(Json(&row.config))
+        .bind(&row.created_at)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
-pub async fn test_source_update(pool: &SqlitePool, row: &TestSourceConfigDto) -> Result<bool> {
-    let res = sqlx::query(
-        "UPDATE test_sources
-         SET name = ?, pattern = ?, width = ?, height = ?,
-             fps_num = ?, fps_den = ?, audio_signal = ?,
-             frequency = ?, channels = ?
-         WHERE id = ?",
-    )
-    .bind(&row.config.name)
-    .bind(row.config.pattern)
-    .bind(row.config.width)
-    .bind(row.config.height)
-    .bind(row.config.fps_num)
-    .bind(row.config.fps_den)
-    .bind(row.config.audio_signal)
-    .bind(row.config.frequency)
-    .bind(row.config.channels)
-    .bind(&row.id)
-    .execute(pool)
-    .await?;
+pub async fn configured_source_update(pool: &SqlitePool, row: &ConfiguredSourceDto) -> Result<bool> {
+    let res = sqlx::query("UPDATE configured_sources SET name = ?, config = ? WHERE id = ?")
+        .bind(&row.name)
+        .bind(Json(&row.config))
+        .bind(&row.id)
+        .execute(pool)
+        .await?;
     Ok(res.rows_affected() > 0)
 }
 
-pub async fn test_source_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
-    let res = sqlx::query("DELETE FROM test_sources WHERE id = ?")
+pub async fn configured_source_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
+    let res = sqlx::query("DELETE FROM configured_sources WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await?;

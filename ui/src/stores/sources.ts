@@ -3,9 +3,11 @@ import { ref, shallowReactive } from 'vue'
 import { nodeApi, sourceKey } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
 import type { ChannelLevelDto } from '@/types/generated/ChannelLevelDto'
-import type { TestSourceRequest } from '@/types/generated/TestSourceRequest'
+import type { ConfiguredSourceDto } from '@/types/generated/ConfiguredSourceDto'
+import type { ConfiguredSourceRequest } from '@/types/generated/ConfiguredSourceRequest'
+import type { DirListingDto } from '@/types/generated/DirListingDto'
 import type { SourceDto } from '@/types/generated/SourceDto'
-import type { TestSourceConfigDto } from '@/types/generated/TestSourceConfigDto'
+import type { SourceType } from '@/types/generated/SourceType'
 
 /** A node's source tagged with the node it lives on (`id` is only unique per node). */
 export type Source = SourceDto & {
@@ -20,6 +22,9 @@ export const audioLevels = shallowReactive(new Map<string, ChannelLevelDto[]>())
 
 // Thumbnail cache-bust counter incremented on each thumbnail.updated event
 export const thumbnailSeqs = shallowReactive(new Map<string, number>())
+
+/** Source types a node is configured with, rather than discovering them. */
+export const CONFIGURED_TYPES: readonly SourceType[] = ['test', 'file']
 
 export const useSourcesStore = defineStore('sources', () => {
   const nodes = useNodesStore()
@@ -65,12 +70,12 @@ export const useSourcesStore = defineStore('sources', () => {
     await Promise.all(nodes.reachable.map((n) => scan(n.id)))
   }
 
-  async function testConfigs(nodeId: string) {
-    return nodeApi(nodeId)<TestSourceConfigDto[]>('/test-sources')
+  async function configs(nodeId: string) {
+    return nodeApi(nodeId)<ConfiguredSourceDto[]>('/configured-sources')
   }
 
-  async function createTestSource(nodeId: string, input: TestSourceRequest) {
-    const created = await nodeApi(nodeId)<TestSourceConfigDto>('/test-sources', {
+  async function createSource(nodeId: string, input: ConfiguredSourceRequest) {
+    const created = await nodeApi(nodeId)<ConfiguredSourceDto>('/configured-sources', {
       method: 'POST',
       body: input,
     })
@@ -78,8 +83,8 @@ export const useSourcesStore = defineStore('sources', () => {
     return created
   }
 
-  async function updateTestSource(nodeId: string, id: string, input: TestSourceRequest) {
-    const updated = await nodeApi(nodeId)<TestSourceConfigDto>(`/test-sources/${id}`, {
+  async function updateSource(nodeId: string, id: string, input: ConfiguredSourceRequest) {
+    const updated = await nodeApi(nodeId)<ConfiguredSourceDto>(`/configured-sources/${id}`, {
       method: 'PUT',
       body: input,
     })
@@ -87,9 +92,14 @@ export const useSourcesStore = defineStore('sources', () => {
     return updated
   }
 
-  async function deleteTestSource(nodeId: string, id: string) {
-    await nodeApi(nodeId)(`/test-sources/${id}`, { method: 'DELETE' })
+  async function deleteSource(nodeId: string, id: string) {
+    await nodeApi(nodeId)(`/configured-sources/${id}`, { method: 'DELETE' })
     await refreshNode(nodeId)
+  }
+
+  /** A directory on the node (its home directory if `path` is omitted). */
+  async function listFiles(nodeId: string, path?: string) {
+    return nodeApi(nodeId)<DirListingDto>('/files', { query: path ? { path } : {} })
   }
 
   return {
@@ -98,9 +108,10 @@ export const useSourcesStore = defineStore('sources', () => {
     loadSources,
     scan,
     scanAll,
-    testConfigs,
-    createTestSource,
-    updateTestSource,
-    deleteTestSource,
+    configs,
+    createSource,
+    updateSource,
+    deleteSource,
+    listFiles,
   }
 })

@@ -242,6 +242,7 @@ dependencies = [
  "gst-plugin-ndi",
  "gstreamer 0.23.7",
  "gstreamer-app",
+ "gstreamer-pbutils",
  "gstreamer-utils",
  "mdns-sd",
  "mime_guess",
@@ -867,7 +868,7 @@ dependencies = [
  "glib 0.23.0-alpha",
  "gst-plugin-version-helper",
  "gstreamer 0.26.0-alpha",
- "gstreamer-audio",
+ "gstreamer-audio 0.26.0-alpha",
  "gstreamer-base 0.26.0-alpha",
  "gstreamer-video 0.26.0-alpha",
  "libloading",
@@ -964,16 +965,46 @@ dependencies = [
 
 [[package]]
 name = "gstreamer-audio"
+version = "0.23.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e7ec7e0374298897e669db7c79544bc44df12011985e7dd5f38644edaf2caf4"
+dependencies = [
+ "cfg-if",
+ "glib 0.20.12",
+ "gstreamer 0.23.7",
+ "gstreamer-audio-sys 0.23.6",
+ "gstreamer-base 0.23.6",
+ "libc",
+ "once_cell",
+ "smallvec",
+]
+
+[[package]]
+name = "gstreamer-audio"
 version = "0.26.0-alpha"
 source = "git+https://gitlab.freedesktop.org/gstreamer/gstreamer-rs?branch=main#7922e962b267bdb645443615a5ae84239c71f19c"
 dependencies = [
  "cfg-if",
  "glib 0.23.0-alpha",
  "gstreamer 0.26.0-alpha",
- "gstreamer-audio-sys",
+ "gstreamer-audio-sys 0.26.0-alpha",
  "gstreamer-base 0.26.0-alpha",
  "libc",
  "smallvec",
+]
+
+[[package]]
+name = "gstreamer-audio-sys"
+version = "0.23.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b5f3e09e7c04ec91d78c2a6ca78d50b574b9ed49fdf5e72f3693adca4306a87"
+dependencies = [
+ "glib-sys 0.20.10",
+ "gobject-sys 0.20.10",
+ "gstreamer-base-sys 0.23.6",
+ "gstreamer-sys 0.23.6",
+ "libc",
+ "system-deps",
 ]
 
 [[package]]
@@ -1037,6 +1068,36 @@ dependencies = [
  "glib-sys 0.23.0-alpha",
  "gobject-sys 0.23.0-alpha",
  "gstreamer-sys 0.26.0-alpha",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
+name = "gstreamer-pbutils"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acf4bf5857fa22f910634e86a5bce33b5581a9e90caa4e32fd4a20bdd4c83ed0"
+dependencies = [
+ "glib 0.20.12",
+ "gstreamer 0.23.7",
+ "gstreamer-audio 0.23.6",
+ "gstreamer-pbutils-sys",
+ "gstreamer-video 0.23.6",
+ "libc",
+ "thiserror",
+]
+
+[[package]]
+name = "gstreamer-pbutils-sys"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "304101f5fccbbe41e0169536777ddb7680c2c837e18575c22b30fc20cedfb76f"
+dependencies = [
+ "glib-sys 0.20.10",
+ "gobject-sys 0.20.10",
+ "gstreamer-audio-sys 0.23.6",
+ "gstreamer-sys 0.23.6",
+ "gstreamer-video-sys 0.23.6",
  "libc",
  "system-deps",
 ]

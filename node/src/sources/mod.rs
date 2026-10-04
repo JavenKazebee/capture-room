@@ -1,11 +1,12 @@
 use anyhow::{anyhow, Context, Result};
 use gstreamer::{self as gst, prelude::*};
 
+pub mod file;
 pub mod manager;
 pub mod ndi;
 pub mod test;
 
-use crate::api::types::{SourceCapabilitiesDto, SourceType};
+use crate::api::types::{ConfiguredSourceDto, SourceCapabilitiesDto, SourceConfig, SourceType};
 
 /// Every input source implements this trait.
 ///
@@ -32,6 +33,15 @@ pub trait InputSource: Send + Sync {
 
     /// Current timecode as `HH:MM:SS:FF`, if the source has one.
     fn timecode(&self) -> Option<String>;
+}
+
+/// The source a stored config describes.
+pub fn configured(dto: &ConfiguredSourceDto) -> Box<dyn InputSource> {
+    let (id, name) = (dto.id.clone(), dto.name.clone());
+    match &dto.config {
+        SourceConfig::Test(cfg) => Box::new(test::TestSource::new(id, name, cfg.clone())),
+        SourceConfig::File(cfg) => Box::new(file::FileSource::new(id, name, cfg.clone())),
+    }
 }
 
 /// Expose `element`'s static src pad on `bin` as the ghost pad `name`

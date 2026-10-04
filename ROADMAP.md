@@ -15,7 +15,7 @@ _Last updated: 2026-10-04_
 3. ✅ **NDI capture** (+ plugin build/packaging)
 4. ✅ **Multi-pipeline output per preset**
 5. ✅ **UI overhaul / dark mode**
-6. **Looping media file source** — prerequisite for the benchmark
+6. ✅ **Looping media file source**
 7. **Hardware encoders + encode sharing** — before the benchmark, so it measures the
    encoders people will actually use
 8. **Benchmark + capacity estimator** (with storage headroom)
@@ -53,19 +53,18 @@ Design detail for all of these lives in ARCHITECTURE.md; the history is in git.
 - **4. Multi-pipeline output per preset** — N output legs, one pipeline each, fed by
   `StreamProducer`s so a failing leg fails alone; failed-leg reporting and automatic
   monitor restart (2026-10-03); per-leg dropped-frame counts (`recording.stats`);
-  crash-safe MOV/MP4 (index reserved at the front, rewritten every 10 s); encoder
-  fallback (VideoToolbox, then software).
+  encoder fallback (VideoToolbox, then software). Crash-safe files and splitting
+  (2026-10-04): MOV/MP4 with compressed audio record as fragments, PCM legs reserve the
+  index at the front and roll over to a new file every 4 h, and an output can split by
+  time or size through `splitmuxsink` — so all-day recordings are covered.
 - **5. UI overhaul / dark mode** — design tokens, preferences, workspace shell (Record
   and Setup), shared components, and a pass over every existing view.
+- **6. Looping media file source** — a file on the node played in a loop as a live
+  feed, picked through a node file browser. Configured sources (test and file) now share
+  one `configured_sources` table and `/configured-sources` API.
 - **Node registry persistence** — peers added by URL are stored and restored on start.
 
 ---
-
-## 6. Looping media file source
-
-`filesrc` / `uridecodebin`, seek to start on EOS. Pulled forward from the source-type
-list because the benchmark needs real footage: test patterns compress unrealistically
-(bars ≈ free, snow = worst case). Also useful for demos without hardware.
 
 ## 7. Hardware encoders + encode sharing
 
@@ -157,9 +156,6 @@ Roughly in priority order.
 - **Higher-fps thumbnails via a subscription WebSocket** — replaces request-per-frame
   thumbnails, which don't scale past ~10–15 fps with more than a handful of feeds.
   Design in ARCHITECTURE.md (Thumbnails).
-- **Long recordings:** the MOV/MP4 crash-safety reserve covers 2 h; past that the index
-  goes at the end of the file as before. For all-day recordings, consider segmenting
-  (`splitmuxsink`) or a larger reserve.
 - **Additional source types** (each is a new `InputSource` impl, additive), in priority
   order:
   1. **RTSP** (`rtspsrc`) — IP cameras; easy, high value.

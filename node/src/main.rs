@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
     db::sessions_mark_crashed(&pool).await?;
 
     // ── Source manager ────────────────────────────────────────────────────────
-    let test_configs = db::test_sources_list(&pool).await?;
+    let configured = db::configured_sources_list(&pool).await?;
     let monitor_config = db::monitor_settings_get(&pool).await?;
     let ndi_monitor = tokio::task::spawn_blocking(sources::ndi::NdiMonitor::start)
         .await
@@ -82,7 +82,7 @@ async fn main() -> Result<()> {
     let (leg_failure_tx, leg_failure_rx) = tokio::sync::mpsc::unbounded_channel();
     let (leg_file_tx, leg_file_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut source_manager = SourceManager::new(monitor_config, ndi_monitor, leg_failure_tx, leg_file_tx);
-    source_manager.scan(&test_configs);
+    source_manager.scan(&configured);
 
     for source in source_manager.sources() {
         info!(

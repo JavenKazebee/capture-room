@@ -3,25 +3,24 @@ use chrono::Timelike;
 use gstreamer::{self as gst, prelude::*};
 
 use super::{add_ghost_pad, InputSource};
-use crate::api::types::{
-    AudioTestSignal, SourceCapabilitiesDto, SourceType, TestSourceConfigDto, TestSourceRequest, VideoTestPattern,
-};
+use crate::api::types::{AudioTestSignal, SourceCapabilitiesDto, SourceType, TestSourceConfig, VideoTestPattern};
 use crate::pipeline::{capsfilter, make_el};
 
 // ── TestSource ────────────────────────────────────────────────────────────────
 
 pub struct TestSource {
     id: String,
-    config: TestSourceRequest,
+    name: String,
+    config: TestSourceConfig,
 }
 
 impl TestSource {
-    pub fn new(dto: TestSourceConfigDto) -> Self {
-        Self { id: dto.id, config: dto.config }
+    pub fn new(id: String, name: String, config: TestSourceConfig) -> Self {
+        Self { id, name, config }
     }
 }
 
-fn build_bin(id: &str, cfg: &TestSourceRequest) -> Result<gst::Bin> {
+fn build_bin(id: &str, cfg: &TestSourceConfig) -> Result<gst::Bin> {
     let bin = gst::Bin::with_name(&format!("testsrc-bin-{id}"));
 
     // ── Video: videotestsrc → capsfilter → videoconvert ───────────────────────
@@ -66,7 +65,7 @@ impl InputSource for TestSource {
     }
 
     fn display_name(&self) -> &str {
-        &self.config.name
+        &self.name
     }
 
     fn source_type(&self) -> SourceType {
@@ -83,7 +82,7 @@ impl InputSource for TestSource {
     }
 
     fn fingerprint(&self) -> String {
-        format!("{:?}", self.config)
+        format!("{}|{:?}", self.name, self.config)
     }
 
     fn build_bin(&self) -> Result<gst::Element> {

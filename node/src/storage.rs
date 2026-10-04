@@ -1,8 +1,13 @@
-//! Storage volumes this node can record to.
+//! Storage volumes this node can record to, and browsing its filesystem for
+//! media files.
 
+use std::path::Path;
+
+use anyhow::{bail, Context, Result};
 use sysinfo::Disks;
 
-use crate::api::types::StorageVolumeDto;
+use crate::api::types::{DirEntryDto, DirListingDto, StorageVolumeDto};
+use crate::sources::file::MEDIA_EXTENSIONS;
 
 /// Filesystems that never hold recordings.
 const PSEUDO_FS: &[&str] = &[
@@ -65,6 +70,49 @@ fn merge_shared(mut volumes: Vec<StorageVolumeDto>) -> Vec<StorageVolumeDto> {
     }
     merged.sort_by(|a, b| a.mount_point.cmp(&b.mount_point));
     merged
+}
+
+/// List `dir` (the home directory if `None`): its subdirectories and media
+/// files, skipping hidden entries. Blocking: call from `spawn_blocking`.
+pub fn list_dir(dir: Option<&str>) -> Result<DirListingDto> {
+    let home = std::env::home_dir();
+    let dir = match dir.filter(|d| !d.is_empty()) {
+        Some(d) => Path::new(d).to_path_buf(),
+        None => home.clone().context("no home directory")?,
+    };
+    if !dir.is_absolute() {
+        bail!("path must be absolute");
+    }
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(&dir).with_context(|| format!("can't read {}", dir.display()))? {
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        // Follows symlinks, so a linked folder browses like a folder.
+        let Ok(meta) = std::fs::metadata(entry.path()) else { continue };
+        let is_media = Path::new(&name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| MEDIA_EXTENSIONS.contains(&e.to_lowercase().as_str()));
+        if !meta.is_dir() && !(meta.is_file() && is_media) {
+            continue;
+        }
+        entries.push(DirEntryDto {
+            name,
+            path: entry.path().display().to_string(),
+            is_dir: meta.is_dir(),
+            size: meta.is_file().then_some(meta.len()),
+        });
+    }
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    Ok(DirListingDto {
+        path: dir.display().to_string(),
+        parent: dir.parent().map(|p| p.display().to_string()),
+        home: home.map(|h| h.display().to_string()),
+        entries,
+    })
 }
 
 #[cfg(test)]

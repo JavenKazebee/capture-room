@@ -9,15 +9,14 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::api::types::{
-    ChannelLevelDto, MonitorSettingsDto, RecordingSessionDto, RecordingStatus, TestSourceConfigDto,
+    ChannelLevelDto, ConfiguredSourceDto, MonitorSettingsDto, RecordingSessionDto, RecordingStatus,
 };
 use crate::pipeline::monitor::{MonitorPipeline, SourceFormat};
 use crate::pipeline::profile::RecordingProfile;
 use crate::pipeline::recording::{self, OnLegError, OnLegFile, RecordingLeg};
 
 use super::ndi::NdiMonitor;
-use super::test::TestSource;
-use super::InputSource;
+use super::{configured, InputSource};
 
 // ── Stop / teardown handoff ───────────────────────────────────────────────────
 
@@ -168,18 +167,15 @@ impl SourceManager {
 
     // ── Scan ──────────────────────────────────────────────────────────────────
 
-    /// Rebuild the source list from test configs and the NDI sources currently
+    /// Rebuild the source list from configured sources and the NDI sources currently
     /// on the network. A source whose id and fingerprint are unchanged is kept
     /// as-is, monitor and recordings included — unless its monitor has failed
     /// or never started. Removed, changed or failed sources are torn down
     /// (returned for the caller to run); everything else gets a fresh monitor.
     /// Candidates are only descriptions, so a scan that changes nothing builds
     /// no GStreamer elements.
-    pub fn scan(&mut self, configs: &[TestSourceConfigDto]) -> Vec<Teardown> {
-        let mut candidates: Vec<Box<dyn InputSource>> = configs
-            .iter()
-            .map(|cfg| Box::new(TestSource::new(cfg.clone())) as Box<dyn InputSource>)
-            .collect();
+    pub fn scan(&mut self, configs: &[ConfiguredSourceDto]) -> Vec<Teardown> {
+        let mut candidates: Vec<Box<dyn InputSource>> = configs.iter().map(configured).collect();
         candidates.extend(
             self.ndi_monitor
                 .current_sources()

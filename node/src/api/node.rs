@@ -9,7 +9,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use axum::{
     body::Body,
-    extract::{ws::WebSocketUpgrade, Path as AxumPath, State},
+    extract::{ws::WebSocketUpgrade, Path as AxumPath, Query, State},
     http::{header, StatusCode},
     response::Response,
     routing::{get, post},
@@ -19,8 +19,9 @@ use tracing::error;
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
-    NodeSettingsDto, NodeStatus, RecordingSessionDto, RecordingStatus, SourceDto, StartRecordingRequest,
-    StorageVolumeDto, TestSourceConfigDto, TestSourceRequest, UpdateNodeSettingsRequest, WsEvent,
+    ConfiguredSourceDto, ConfiguredSourceRequest, DirListingDto, NodeSettingsDto, NodeStatus, RecordingSessionDto,
+    RecordingStatus, SourceConfig, SourceDto, StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest,
+    WsEvent,
 };
 use crate::db;
 use crate::pipeline::profile::{plan_legs, PathVars, RecordingProfile};
@@ -35,12 +36,16 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/status", get(get_status))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/storage", get(get_storage))
+        .route("/files", get(get_files))
         // Sources — static paths before dynamic {id}
         .route("/sources", get(get_sources))
         .route("/sources/scan", post(post_scan))
         .route("/sources/{id}", get(get_source))
-        .route("/test-sources", get(get_test_configs).post(post_test_config))
-        .route("/test-sources/{id}", axum::routing::put(put_test_config).delete(delete_test_config))
+        .route("/configured-sources", get(get_configured_sources).post(post_configured_source))
+        .route(
+            "/configured-sources/{id}",
+            axum::routing::put(put_configured_source).delete(delete_configured_source),
+        )
         .route("/recordings", get(get_recordings).post(post_recording))
         .route("/recordings/{id}", get(get_recording))
         .route("/recordings/{id}/stop", post(post_stop_recording))
@@ -123,52 +128,87 @@ async fn post_scan(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<Sou
     Ok(Json(sources_list(&*state.source_manager.read().await)))
 }
 
-// ── /test-sources ─────────────────────────────────────────────────────────────
+// ── /configured-sources ───────────────────────────────────────────────────────
 
-async fn get_test_configs(
+async fn get_configured_sources(
     State(state): State<Arc<AppState>>,
-) -> ApiResult<Json<Vec<TestSourceConfigDto>>> {
-    Ok(Json(db::test_sources_list(&state.db).await?))
+) -> ApiResult<Json<Vec<ConfiguredSourceDto>>> {
+    Ok(Json(db::configured_sources_list(&state.db).await?))
 }
 
-async fn post_test_config(
+/// Check a request, and probe a media file so the source knows its format.
+async fn validated(mut req: ConfiguredSourceRequest) -> ApiResult<ConfiguredSourceRequest> {
+    req.name = req.name.trim().to_string();
+    if req.name.is_empty() {
+        return Err(ApiError::BadRequest("name is required".into()));
+    }
+    if let SourceConfig::File(cfg) = &mut req.config {
+        cfg.path = cfg.path.trim().to_string();
+        let path = cfg.path.clone();
+        let media = tokio::task::spawn_blocking(move || crate::sources::file::probe(&path))
+            .await?
+            .map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
+        cfg.media = Some(media);
+    }
+    Ok(req)
+}
+
+async fn post_configured_source(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<TestSourceRequest>,
-) -> ApiResult<(StatusCode, Json<TestSourceConfigDto>)> {
-    let config = TestSourceConfigDto {
+    Json(req): Json<ConfiguredSourceRequest>,
+) -> ApiResult<(StatusCode, Json<ConfiguredSourceDto>)> {
+    let req = validated(req).await?;
+    let source = ConfiguredSourceDto {
         id: uuid::Uuid::new_v4().to_string(),
-        config: req,
+        name: req.name,
+        config: req.config,
         created_at: chrono::Utc::now().to_rfc3339(),
     };
-    db::test_source_insert(&state.db, &config).await?;
+    db::configured_source_insert(&state.db, &source).await?;
     rescan_after(&state, "create").await;
-    Ok((StatusCode::CREATED, Json(config)))
+    Ok((StatusCode::CREATED, Json(source)))
 }
 
-async fn put_test_config(
+async fn put_configured_source(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
-    Json(req): Json<TestSourceRequest>,
-) -> ApiResult<Json<TestSourceConfigDto>> {
-    const NOT_FOUND: ApiError = ApiError::NotFound("test source not found");
-    let existing = db::test_source_get(&state.db, &id).await?.ok_or(NOT_FOUND)?;
-    let config = TestSourceConfigDto { config: req, ..existing };
-    if !db::test_source_update(&state.db, &config).await? {
+    Json(req): Json<ConfiguredSourceRequest>,
+) -> ApiResult<Json<ConfiguredSourceDto>> {
+    const NOT_FOUND: ApiError = ApiError::NotFound("source not found");
+    let existing = db::configured_source_get(&state.db, &id).await?.ok_or(NOT_FOUND)?;
+    let req = validated(req).await?;
+    let source = ConfiguredSourceDto { name: req.name, config: req.config, ..existing };
+    if !db::configured_source_update(&state.db, &source).await? {
         return Err(NOT_FOUND);
     }
     rescan_after(&state, "update").await;
-    Ok(Json(config))
+    Ok(Json(source))
 }
 
-async fn delete_test_config(
+async fn delete_configured_source(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
 ) -> ApiResult<StatusCode> {
-    if !db::test_source_delete(&state.db, &id).await? {
-        return Err(ApiError::NotFound("test source not found"));
+    if !db::configured_source_delete(&state.db, &id).await? {
+        return Err(ApiError::NotFound("source not found"));
     }
     rescan_after(&state, "delete").await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ── /files ────────────────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct FilesQuery {
+    path: Option<String>,
+}
+
+/// A directory's folders and media files, for picking a file source.
+async fn get_files(Query(q): Query<FilesQuery>) -> ApiResult<Json<DirListingDto>> {
+    let listing = tokio::task::spawn_blocking(move || crate::storage::list_dir(q.path.as_deref()))
+        .await?
+        .map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
+    Ok(Json(listing))
 }
 
 // ── /recordings ───────────────────────────────────────────────────────────────

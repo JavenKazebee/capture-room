@@ -101,10 +101,10 @@ pub fn spawn_teardowns(state: &Arc<AppState>, teardowns: Vec<Teardown>) {
     }
 }
 
-/// Rescan sources: rebuild the list from the stored test configs and the NDI
+/// Rescan sources: rebuild the list from the configured sources and the NDI
 /// sources on the network, tearing down whatever went away, changed or failed.
 pub async fn rebuild_sources(state: &Arc<AppState>) -> anyhow::Result<()> {
-    let configs = db::test_sources_list(&state.db).await?;
+    let configs = db::configured_sources_list(&state.db).await?;
     let teardowns = state.source_manager.write().await.scan(&configs);
     spawn_teardowns(state, teardowns);
     Ok(())

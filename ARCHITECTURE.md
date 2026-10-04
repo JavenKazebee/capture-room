@@ -99,6 +99,9 @@ pub trait InputSource: Send + Sync {
 Initial implementations:
 - `TestSource` — ✅ implemented — `videotestsrc` + `audiotestsrc`, the reference pattern for all sources (`gst::Bin` with `"video"` / `"audio"` ghost pads)
 - `NdiSource` — ✅ implemented — built on the `gst-plugin-ndi` GStreamer elements (`ndisrc` + `ndisrcdemux`), not the raw NDI SDK FFI. Discovery via a persistent `GstDeviceMonitor`. Follows the same bin/ghost-pad contract as `TestSource`.
+- `FileSource` — ✅ implemented — a media file on the node played in a loop as a live feed (real footage for the benchmark, demos without hardware). The file plays in its own *player* pipeline (`uridecodebin` → appsinks, synced to the clock) that loops with segment seeks, so loops are gapless unless the file's streams differ in length. Its appsinks push into live `appsrc`s in the source bin, which restamp every buffer with the monitor's running time, so the monitor sees one continuous live feed. The player starts when the monitor first wants data and stops when the bin is disposed; its errors are posted on the monitor. A file without audio plays stereo silence; one without video is refused. The file is probed (`Discoverer`) when the source is saved, which rejects anything undecodable and gives the source its capabilities up front.
+
+**Configured vs discovered sources.** Test and file sources are *configured*: stored in `configured_sources` as a JSON config tagged with its `type` (`SourceConfig` in `api/types.rs`), and served from `/configured-sources`. A new configured type adds a `SourceConfig` variant and a case in `sources::configured`. NDI sources are *discovered* and not stored.
 - `DecklinkSource` — ⬜ deferred (no hardware) — Decklink SDK via FFI / `decklinkvideosrc`
 
 ---
@@ -436,8 +439,9 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 | GET | `/sources` | sources on this machine |
 | POST | `/sources/scan` | rescan |
 | GET | `/sources/{id}` | source details |
-| GET / POST | `/test-sources` | test source configs |
-| PUT / DELETE | `/test-sources/{id}` | |
+| GET / POST | `/configured-sources` | test and file source configs; saving a file source probes the file (400 if it can't be played) |
+| PUT / DELETE | `/configured-sources/{id}` | |
+| GET | `/files?path=` | folders and media files in a directory (home if no path), for picking a file source. Read-only |
 | GET / POST | `/recordings` | list / start. Start body: `{ source_id, preset_id?, outputs: [...] }` |
 | GET | `/recordings/{id}` | session details |
 | POST | `/recordings/{id}/stop` | stop (waits for EOS drain) |
@@ -493,7 +497,7 @@ Every instance has the same schema (see `node/migrations/`):
 
 - `node_config` — key/value: `uuid`, `name`, `controller_enabled`, `monitor_*`
 - `recording_sessions` — one row per session, `output_paths` as a JSON array
-- `test_sources` — test source configs
+- `configured_sources` — test and file source configs (`config` is JSON tagged with `type`)
 - `presets` + `preset_outputs` — used while acting as controller (or from the UI on a lone node)
 - `nodes` — peers added by URL on a controller (mDNS peers are not persisted)
 - `benchmark_results` — reserved
@@ -544,7 +548,7 @@ them — not before.
 | Workspace / view | Description |
 |------------------|-------------|
 | **Record** | Multiview of every feed across all nodes — thumbnail, name, timecode, recording state, audio meters, dropped frames; multi-select with bulk Record/Stop; inspector with outputs, session and history |
-| **Setup › Sources** | Sources grouped by node, capabilities, test source authoring |
+| **Setup › Sources** | Sources grouped by node, capabilities, test and file source authoring (with a browser for the node's files) |
 | **Setup › Presets** | Create and edit recording presets (outputs, path preview) |
 | **Setup › Nodes** | A card per node: health, sources, storage; controller toggle, add/remove nodes (benchmarks planned) |
 | **Setup › Settings** | Appearance; monitoring settings (thumbnail/meter rate, applied to all nodes); About |
@@ -684,6 +688,7 @@ capture-room/
 │   │   │   ├── mod.rs           # InputSource trait
 │   │   │   ├── manager.rs       # SourceManager — sources, per-source monitors, recording sessions
 │   │   │   ├── test.rs          # TestSource
+│   │   │   ├── file.rs          # FileSource (looping media file) + probe
 │   │   │   └── ndi.rs           # NdiSource + NDI device monitor
 │   │   ├── session.rs           # Background lifecycle: stops/teardowns, leg-failure reports, monitor recovery
 │   │   └── db/                  # sqlx migrations and queries

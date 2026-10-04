@@ -2,15 +2,18 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { Pencil, Radio, RefreshCw, Trash2 } from '@lucide/vue'
-import { useSourcesStore, type Source } from '@/stores/sources'
+import { FolderOpen, Pencil, Radio, RefreshCw, Trash2 } from '@lucide/vue'
+import { CONFIGURED_TYPES, useSourcesStore, type Source } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordingsStore } from '@/stores/recordings'
 import { useRecordDeskStore } from '@/stores/recordDesk'
 import { notifyError } from '@/lib/notify'
 import { errorMessage } from '@/composables/useApi'
 import { fpsLabel, resolutionLabel } from '@/lib/sourceFormat'
-import type { TestSourceRequest } from '@/types/generated/TestSourceRequest'
+import { formatDuration } from '@/lib/format'
+import type { TestSourceConfig } from '@/types/generated/TestSourceConfig'
+import type { MediaInfo } from '@/types/generated/MediaInfo'
+import type { ConfiguredSourceRequest } from '@/types/generated/ConfiguredSourceRequest'
 import type { AudioTestSignal } from '@/types/generated/AudioTestSignal'
 import type { VideoTestPattern } from '@/types/generated/VideoTestPattern'
 import { Button } from '@/components/ui/button'
@@ -28,6 +31,7 @@ import EditSheet from '@/components/common/EditSheet.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
+import FileBrowseDialog from '@/components/sources/FileBrowseDialog.vue'
 import { useStorage } from '@vueuse/core'
 
 const store = useSourcesStore()
@@ -75,7 +79,19 @@ function openInRecord(s: Source) {
   router.push('/record')
 }
 
-// ── Test source form ──────────────────────────────────────────────────────────
+// ── Source form ───────────────────────────────────────────────────────────────
+
+type Kind = ConfiguredSourceRequest['config']['type']
+
+const KIND_OPTIONS: { value: Kind; label: string }[] = [
+  { value: 'test', label: 'Test pattern' },
+  { value: 'file', label: 'Media file (looping)' },
+]
+
+const KIND_DESCRIPTIONS: Record<Kind, string> = {
+  test: 'A synthetic feed: a video pattern plus a test audio signal.',
+  file: "A media file on the node's disk, played in a loop as a live feed.",
+}
 
 const showForm = ref(false)
 const editingId = ref<string | null>(null)
@@ -130,9 +146,8 @@ const CHANNEL_OPTIONS = [
 
 const nodeOptions = computed(() => nodes.value.map((n) => ({ value: n.id, label: nodesStore.labelOf(n.id) })))
 
-function blankForm(): TestSourceRequest {
+function blankTest(): TestSourceConfig {
   return {
-    name: '',
     pattern: 'smpte',
     width: 1920,
     height: 1080,
@@ -144,7 +159,20 @@ function blankForm(): TestSourceRequest {
   }
 }
 
-const form = reactive<TestSourceRequest>(blankForm())
+const kind = ref<Kind>('test')
+const name = ref('')
+const form = reactive<TestSourceConfig>(blankTest())
+const filePath = ref('')
+/** What the node found in the file when it was last saved. */
+const fileMedia = ref<MediaInfo | null>(null)
+const browsing = ref(false)
+
+function mediaSummary(m: MediaInfo) {
+  const parts = [`${m.width}×${m.height}`, fpsLabel([m.fps_num, m.fps_den])]
+  parts.push(m.audio_channels ? `${m.audio_channels} ch audio` : 'no audio (plays silence)')
+  if (m.duration_ms != null) parts.push(`${formatDuration(m.duration_ms)} loop`)
+  return parts.join(' · ')
+}
 
 const resolutionKey = computed({
   get: () => `${form.width}x${form.height}`,
@@ -165,7 +193,11 @@ const framerateKey = computed({
 function openCreate() {
   editingId.value = null
   formNodeId.value = nodes.value.find((n) => n.is_self)?.id ?? nodes.value[0]?.id ?? ''
-  Object.assign(form, blankForm())
+  kind.value = 'test'
+  name.value = ''
+  Object.assign(form, blankTest())
+  filePath.value = ''
+  fileMedia.value = null
   formError.value = null
   showForm.value = true
 }
@@ -174,34 +206,49 @@ async function openEdit(src: Source) {
   formError.value = null
   let cfg
   try {
-    cfg = (await store.testConfigs(src.node_id)).find((c) => c.id === src.id)
+    cfg = (await store.configs(src.node_id)).find((c) => c.id === src.id)
   } catch (e) {
-    notifyError('Could not load test source config from node', e, src.node_id)
+    notifyError('Could not load the source config from its node', e, src.node_id)
     return
   }
   if (!cfg) return
   editingId.value = src.id
   formNodeId.value = src.node_id
-  const { id: _id, created_at: _created, ...config } = cfg
-  Object.assign(form, config)
+  name.value = cfg.name
+  kind.value = cfg.config.type
+  if (cfg.config.type === 'test') {
+    const { type: _type, ...test } = cfg.config
+    Object.assign(form, test)
+  } else {
+    filePath.value = cfg.config.path
+    fileMedia.value = cfg.config.media
+  }
   showForm.value = true
 }
 
 async function save() {
   if (saving.value) return
-  if (!form.name.trim()) {
+  if (!name.value.trim()) {
     formError.value = 'Name is required.'
     return
+  }
+  if (kind.value === 'file' && !filePath.value.trim()) {
+    formError.value = 'Choose a file.'
+    return
+  }
+  const req: ConfiguredSourceRequest = {
+    name: name.value,
+    config: kind.value === 'test' ? { type: 'test', ...form } : { type: 'file', path: filePath.value, media: null },
   }
   saving.value = true
   formError.value = null
   try {
     if (editingId.value) {
-      await store.updateTestSource(formNodeId.value, editingId.value, { ...form })
-      toast.success(`Saved ${form.name}`)
+      await store.updateSource(formNodeId.value, editingId.value, req)
+      toast.success(`Saved ${req.name}`)
     } else {
-      await store.createTestSource(formNodeId.value, { ...form })
-      toast.success(`Added ${form.name}`)
+      await store.createSource(formNodeId.value, req)
+      toast.success(`Added ${req.name}`)
     }
     showForm.value = false
   } catch (e) {
@@ -217,7 +264,7 @@ const deleting = ref<Source | null>(null)
 
 async function destroy(src: Source) {
   try {
-    await store.deleteTestSource(src.node_id, src.id)
+    await store.deleteSource(src.node_id, src.id)
     toast.success(`Deleted ${src.display_name}`)
   } catch (e) {
     notifyError(`Delete failed: ${src.display_name}`, e, src.node_id)
@@ -266,7 +313,7 @@ onMounted(async () => {
     <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" :disabled="scanning" @click="scan">
       <RefreshCw class="size-3.5" :class="scanning && 'animate-spin'" /> Scan
     </Button>
-    <Button size="sm" class="h-7 text-xs" @click="openCreate">Add test source</Button>
+    <Button size="sm" class="h-7 text-xs" @click="openCreate">Add source</Button>
   </PageHeader>
 
   <div class="p-4">
@@ -313,18 +360,18 @@ onMounted(async () => {
             </TooltipTrigger>
             <TooltipContent>Open in Record</TooltipContent>
           </Tooltip>
-          <template v-if="row.source_type === 'test'">
+          <template v-if="CONFIGURED_TYPES.includes(row.source_type)">
             <Tooltip>
               <TooltipTrigger as-child>
                 <button class="row-btn" @click="openEdit(row)"><Pencil class="size-3.5" /></button>
               </TooltipTrigger>
-              <TooltipContent>Edit test source</TooltipContent>
+              <TooltipContent>Edit source</TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger as-child>
                 <button class="row-btn hover:text-destructive! hover:bg-destructive/10!" @click="deleting = row"><Trash2 class="size-3.5" /></button>
               </TooltipTrigger>
-              <TooltipContent>Delete test source</TooltipContent>
+              <TooltipContent>Delete source</TooltipContent>
             </Tooltip>
           </template>
         </div>
@@ -334,7 +381,7 @@ onMounted(async () => {
         <template v-else-if="filter">No sources match the filter.</template>
         <template v-else>
           No sources yet. <button class="text-primary hover:underline" @click="scan">Scan for NDI sources</button>
-          or <button class="text-primary hover:underline" @click="openCreate">add a test source</button>.
+          or <button class="text-primary hover:underline" @click="openCreate">add a source</button>.
         </template>
       </template>
     </DataTable>
@@ -343,16 +390,16 @@ onMounted(async () => {
   <ConfirmDialog
     :open="!!deleting"
     :title="`Delete ${deleting?.display_name}?`"
-    description="The test source is removed from its node. Recordings already made are kept."
+    description="The source is removed from its node. Recordings already made are kept."
     @update:open="(v) => !v && (deleting = null)"
     @confirm="deleting && destroy(deleting)"
   />
 
-  <!-- Test source form -->
+  <!-- Source form -->
   <EditSheet
     v-if="showForm"
-    :title="editingId ? 'Edit test source' : 'New test source'"
-    description="A synthetic feed: a video pattern plus a test audio signal."
+    :title="editingId ? 'Edit source' : 'New source'"
+    :description="KIND_DESCRIPTIONS[kind]"
     :error="formError"
     :saving="saving"
     @close="showForm = false"
@@ -363,46 +410,80 @@ onMounted(async () => {
         <OptionSelect v-model="formNodeId" :options="nodeOptions" />
       </FormField>
 
+      <FormField v-if="!editingId" label="Type" class="col-span-2">
+        <OptionSelect v-model="kind" :options="KIND_OPTIONS" />
+      </FormField>
+
       <FormField label="Name" class="col-span-2">
-        <Input v-model="form.name" placeholder="Camera 1 sim" />
+        <Input v-model="name" :placeholder="kind === 'file' ? 'Camera 1 footage' : 'Camera 1 sim'" />
       </FormField>
 
-      <FormField label="Video pattern" class="col-span-2">
-        <OptionSelect v-model="form.pattern" :options="VIDEO_PATTERNS" />
-      </FormField>
+      <template v-if="kind === 'file'">
+        <FormField label="File" class="col-span-2">
+          <div class="flex gap-1.5">
+            <Input
+              v-model="filePath"
+              class="font-mono text-[0.6875rem]"
+              placeholder="/path/on/the/node/clip.mov"
+              @update:model-value="fileMedia = null"
+            />
+            <Button type="button" variant="outline" class="gap-1.5" @click="browsing = true">
+              <FolderOpen class="size-3.5" /> Browse
+            </Button>
+          </div>
+        </FormField>
+        <p class="col-span-2 text-xs text-muted-foreground">
+          <template v-if="fileMedia">{{ mediaSummary(fileMedia) }}</template>
+          <template v-else>The node checks the file when you save. Files without audio play silence.</template>
+        </p>
+      </template>
 
-      <FormField label="Resolution">
-        <OptionSelect v-model="resolutionKey" :options="RESOLUTION_OPTIONS" />
-      </FormField>
+      <template v-else>
+        <FormField label="Video pattern" class="col-span-2">
+          <OptionSelect v-model="form.pattern" :options="VIDEO_PATTERNS" />
+        </FormField>
 
-      <FormField label="Frame rate">
-        <OptionSelect v-model="framerateKey" :options="FRAMERATE_OPTIONS" />
-      </FormField>
+        <FormField label="Resolution">
+          <OptionSelect v-model="resolutionKey" :options="RESOLUTION_OPTIONS" />
+        </FormField>
 
-      <FormField label="Audio signal">
-        <OptionSelect v-model="form.audio_signal" :options="AUDIO_SIGNALS" />
-      </FormField>
+        <FormField label="Frame rate">
+          <OptionSelect v-model="framerateKey" :options="FRAMERATE_OPTIONS" />
+        </FormField>
 
-      <FormField>
-        <template #label>
-          Frequency (Hz)
-          <span v-if="form.audio_signal !== 'tone'" class="opacity-40">— n/a</span>
-        </template>
-        <Input
-          v-model.number="form.frequency"
-          type="number"
-          :disabled="form.audio_signal !== 'tone'"
-          placeholder="440"
-          min="20"
-          max="20000"
-        />
-      </FormField>
+        <FormField label="Audio signal">
+          <OptionSelect v-model="form.audio_signal" :options="AUDIO_SIGNALS" />
+        </FormField>
 
-      <FormField label="Audio channels">
-        <OptionSelect v-model="form.channels" :options="CHANNEL_OPTIONS" />
-      </FormField>
+        <FormField>
+          <template #label>
+            Frequency (Hz)
+            <span v-if="form.audio_signal !== 'tone'" class="opacity-40">— n/a</span>
+          </template>
+          <Input
+            v-model.number="form.frequency"
+            type="number"
+            :disabled="form.audio_signal !== 'tone'"
+            placeholder="440"
+            min="20"
+            max="20000"
+          />
+        </FormField>
+
+        <FormField label="Audio channels">
+          <OptionSelect v-model="form.channels" :options="CHANNEL_OPTIONS" />
+        </FormField>
+      </template>
     </div>
   </EditSheet>
+
+  <FileBrowseDialog
+    v-if="browsing"
+    :node-id="formNodeId"
+    :start="filePath"
+    @close="browsing = false"
+    @select="(p) => { filePath = p; fileMedia = null }"
+  />
 </template>
 
 <style scoped>

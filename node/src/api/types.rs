@@ -28,6 +28,7 @@ pub struct NodeStatus {
 pub enum SourceType {
     Test,
     Ndi,
+    File,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,13 +56,13 @@ pub struct SourceDto {
     pub capabilities: Option<SourceCapabilitiesDto>,
 }
 
-// ── Test source config ────────────────────────────────────────────────────────
+// ── Configured sources ────────────────────────────────────────────────────────
 //
-// Stored as text in `test_sources`; the serde and sqlx names must match.
+// Sources a node is told about, as opposed to ones it discovers (NDI). Stored
+// in `configured_sources`, the config as JSON tagged with its `type`.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-#[sqlx(rename_all = "kebab-case")]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub enum VideoTestPattern {
     Smpte,
@@ -70,16 +71,13 @@ pub enum VideoTestPattern {
     White,
     Ball,
     #[serde(rename = "smpte75")]
-    #[sqlx(rename = "smpte75")]
     Smpte75,
     #[serde(rename = "checkers-1")]
-    #[sqlx(rename = "checkers-1")]
     Checkers1,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-#[sqlx(rename_all = "kebab-case")]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub enum AudioTestSignal {
     Tone,
@@ -87,22 +85,19 @@ pub enum AudioTestSignal {
     PinkNoise,
 }
 
-/// A configured test source, as stored and as served.
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+/// What a configured source is, and its type's settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
-pub struct TestSourceConfigDto {
-    pub id: String,
-    #[serde(flatten)]
-    #[sqlx(flatten)]
-    pub config: TestSourceRequest,
-    pub created_at: String,
+pub enum SourceConfig {
+    Test(TestSourceConfig),
+    File(FileSourceConfig),
 }
 
-/// Body for creating or replacing a test source.
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+/// A synthetic feed: a video pattern plus a test audio signal.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
-pub struct TestSourceRequest {
-    pub name: String,
+pub struct TestSourceConfig {
     pub pattern: VideoTestPattern,
     pub width: u32,
     pub height: u32,
@@ -111,6 +106,77 @@ pub struct TestSourceRequest {
     pub audio_signal: AudioTestSignal,
     pub frequency: f64,
     pub channels: u32,
+}
+
+/// A media file on the node, played in a loop as a live feed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct FileSourceConfig {
+    /// Absolute path on the node.
+    pub path: String,
+    /// What the node found in the file when the source was saved. Filled in
+    /// by the node; ignored in requests.
+    #[serde(default)]
+    pub media: Option<MediaInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct MediaInfo {
+    pub width: u32,
+    pub height: u32,
+    pub fps_num: u32,
+    pub fps_den: u32,
+    /// 0 when the file has no audio (the source then plays silence).
+    pub audio_channels: u32,
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub duration_ms: Option<u64>,
+}
+
+/// A configured source, as stored and as served.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct ConfiguredSourceDto {
+    pub id: String,
+    pub name: String,
+    #[sqlx(json)]
+    pub config: SourceConfig,
+    pub created_at: String,
+}
+
+/// Body for creating or replacing a configured source.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct ConfiguredSourceRequest {
+    pub name: String,
+    pub config: SourceConfig,
+}
+
+// ── File browsing ─────────────────────────────────────────────────────────────
+
+/// A directory on the node, for picking a media file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct DirListingDto {
+    pub path: String,
+    /// `None` at the filesystem root.
+    pub parent: Option<String>,
+    /// The node user's home directory.
+    pub home: Option<String>,
+    /// Subdirectories, then media files, each sorted by name. Hidden entries
+    /// and other files are left out.
+    pub entries: Vec<DirEntryDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct DirEntryDto {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    /// File size; `None` for directories.
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub size: Option<u64>,
 }
 
 // ── Recordings ────────────────────────────────────────────────────────────────
