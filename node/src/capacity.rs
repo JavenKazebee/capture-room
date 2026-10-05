@@ -26,6 +26,7 @@ pub fn outputs_key(outputs: &[PresetOutputInput]) -> String {
         .map(|o| PresetOutputInput {
             name: String::new(),
             path_template: String::new(),
+            preview: false,
             advanced: OutputAdvanced { split_minutes: None, split_gb: None, ..o.advanced.clone() },
             ..o.clone()
         })
@@ -207,6 +208,7 @@ mod tests {
             bitrate_kbps: None,
             chroma: ChromaSubsampling::Yuv420,
             path_template: path.into(),
+            preview: false,
             advanced: OutputAdvanced::default(),
         }
     }

@@ -9,6 +9,12 @@ import type { VideoCodec } from "./VideoCodec";
  */
 export type PresetOutputDto = { id: string, preset_id: string, sort_order: number, name: string, codec: VideoCodec, container: Container, resolution: string | null, framerate: string | null, bitrate_kbps: number | null, chroma: ChromaSubsampling, path_template: string, 
 /**
+ * Preview recordings with this output when several are
+ * browser-playable. Left out when false, so it doesn't change the
+ * capacity key (`capacity::outputs_key`) of stored benchmark results.
+ */
+preview?: boolean, 
+/**
  * Fine-tuning; every field defaults to the recording defaults.
  * Stored as JSON.
  */

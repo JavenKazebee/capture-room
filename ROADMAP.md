@@ -17,7 +17,7 @@ _Last updated: 2026-10-04_
 5. ✅ **UI overhaul / dark mode**
 6. ✅ **Looping media file source**
 7. ✅ **Benchmark + capacity estimator** (with storage headroom)
-8. **Recordings view** (+ browser preview via a playback proxy)
+8. ✅ **Recordings view** (+ browser preview)
 9. **Playback** — playout channels, NDI output first
 10. **Clock sync across nodes** — prerequisite for multi-angle replay
 11. **Instant replay**
@@ -68,21 +68,18 @@ Design detail for all of these lives in ARCHITECTURE.md; the history is in git.
   Run from the node cards. Hardware encoders and encode sharing were dropped from the
   front of the queue (see Follow-on), so the benchmark measures VideoToolbox and
   software encoders for now: re-run it when new encoders land.
+- **8. Recordings view (2026-10-04)** — a Recordings workspace: session history across
+  nodes (filters, paged per node), a detail pane with a browser preview, each output's
+  files (play, download) and remove from history (files stay on disk). Sessions now keep
+  their source and preset names and each output's format; any H.264/AAC output in
+  .mp4/.mov previews, and a preset can mark the one to prefer. Nodes serve a session's
+  own files with range requests and the controller's forwarder streams them. Not yet:
+  previews of growing files, deleting files from disk (wait for authentication).
 - **No overwriting on start (2026-10-04)** — an existing file gets a `_2` suffix
   (or the next `{take}`); a path another recording holds is refused.
 - **Node registry persistence** — peers added by URL are stored and restored on start.
 
 ---
-
-## 8. Recordings view
-
-Session history and the files each session produced, across nodes. Already planned in
-ARCHITECTURE.md; arguably more useful day to day than the scheduler.
-
-- **Browser preview:** a preset output can be flagged as the playback proxy (H.264/AAC
-  MP4 — browsers can't play ProRes or PCM-in-MOV). Nodes serve files with HTTP range
-  requests; the controller's forwarder must stream them, not buffer.
-- Doubles as the media browser that Playback (#9) loads clips from.
 
 ## 9. Playback
 

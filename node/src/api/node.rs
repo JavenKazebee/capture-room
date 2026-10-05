@@ -9,19 +9,22 @@ use std::sync::Arc;
 use anyhow::Context;
 use axum::{
     body::Body,
-    extract::{ws::WebSocketUpgrade, Path as AxumPath, Query, State},
-    http::{header, StatusCode},
-    response::Response,
+    extract::{ws::WebSocketUpgrade, Path as AxumPath, Query, Request, State},
+    http::{header, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
+use serde::Deserialize;
+use tower::ServiceExt;
+use tower_http::services::ServeFile;
 use tracing::{error, info};
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     BenchmarkRequest, BenchmarkRunDto, CapacityCheckDto, CapacityCheckRequest, ConfiguredSourceDto,
     ConfiguredSourceRequest, DirListingDto, NodeCapacityDto, NodeSettingsDto, NodeStatus, RecordingSessionDto,
-    RecordingStatus, SourceConfig, SourceDto, StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest,
+    RecordingStatus, RecordingsQuery, SourceConfig, SourceDto, StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest,
     VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
@@ -51,7 +54,8 @@ pub fn router() -> Router<Arc<AppState>> {
             axum::routing::put(put_configured_source).delete(delete_configured_source),
         )
         .route("/recordings", get(get_recordings).post(post_recording))
-        .route("/recordings/{id}", get(get_recording))
+        .route("/recordings/{id}", get(get_recording).delete(delete_recording))
+        .route("/recordings/{id}/outputs/{output}/files/{file}", get(get_recording_file))
         .route("/recordings/{id}/stop", post(post_stop_recording))
         .route("/benchmarks", get(get_benchmarks).post(post_benchmark))
         .route("/benchmarks/{id}", get(get_benchmark).delete(delete_benchmark))
@@ -231,12 +235,20 @@ async fn get_files(Query(q): Query<FilesQuery>) -> ApiResult<Json<DirListingDto>
 
 // ── /recordings ───────────────────────────────────────────────────────────────
 
+const SESSION_NOT_FOUND: ApiError = ApiError::NotFound("session not found");
+
+/// Sessions newest first, a page at a time. The first page (no `before`)
+/// also carries every active session, with its live counts.
 async fn get_recordings(
     State(state): State<Arc<AppState>>,
+    Query(q): Query<RecordingsQuery>,
 ) -> ApiResult<Json<Vec<RecordingSessionDto>>> {
-    let active: Vec<RecordingSessionDto> =
-        state.source_manager.read().await.active_sessions();
-    let historical = db::sessions_list(&state.db)
+    let limit = q.limit.unwrap_or(100).clamp(1, 500);
+    let active: Vec<RecordingSessionDto> = match q.before {
+        None => state.source_manager.read().await.active_sessions(),
+        Some(_) => Vec::new(),
+    };
+    let historical = db::sessions_list(&state.db, q.before.as_deref(), limit)
         .await?
         .into_iter()
         .filter(|r| !active.iter().any(|a| a.id == r.id));
@@ -258,7 +270,95 @@ async fn get_recording(
         Some(s) => Some(s),
         None => db::session_get(&state.db, &id).await?,
     };
-    session.map(Json).ok_or(ApiError::NotFound("session not found"))
+    session.map(Json).ok_or(SESSION_NOT_FOUND)
+}
+
+/// Remove a finished session from history. Its files stay on disk.
+async fn delete_recording(State(state): State<Arc<AppState>>, AxumPath(id): AxumPath<String>) -> ApiResult<StatusCode> {
+    if state.source_manager.read().await.active_sessions().iter().any(|s| s.id == id) {
+        return Err(ApiError::Conflict("stop the recording before removing it"));
+    }
+    if !db::session_delete(&state.db, &id).await? {
+        return Err(SESSION_NOT_FOUND);
+    }
+    state.emit(&WsEvent::RecordingRemoved { session_id: id });
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct FileQuery {
+    /// Present (any value) to download rather than play.
+    download: Option<String>,
+}
+
+/// One of a finished session's files, by output and file index (a split
+/// output has several), with range requests so browsers can seek. Only the
+/// files a session recorded can be read here.
+async fn get_recording_file(
+    State(state): State<Arc<AppState>>,
+    AxumPath((id, output, file)): AxumPath<(String, usize, usize)>,
+    Query(q): Query<FileQuery>,
+    req: Request,
+) -> ApiResult<Response> {
+    if state.source_manager.read().await.active_sessions().iter().any(|s| s.id == id) {
+        return Err(ApiError::Conflict("still recording: files can be played once the recording stops"));
+    }
+    let session = db::session_get(&state.db, &id).await?.ok_or(SESSION_NOT_FOUND)?;
+    let path = session_file(&session, output, file).ok_or(ApiError::NotFound("no such file in this session"))?;
+    if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+        return Err(ApiError::NotFound("file is no longer on disk"));
+    }
+
+    // A playable .mov is served as MP4 (the same ISO base media format):
+    // Chrome and Firefox won't play `video/quicktime`.
+    let playable = session.outputs.get(output).is_some_and(|o| o.playable);
+    let mime = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("mp4") => "video/mp4",
+        Some("mov") if playable => "video/mp4",
+        Some("mov") => "video/quicktime",
+        Some("mkv") => "video/x-matroska",
+        _ => "application/octet-stream",
+    };
+    let mime: mime_guess::Mime = mime.parse()?;
+    let mut resp = ServeFile::new_with_mime(&path, &mime).oneshot(req).await?.into_response();
+    if q.download.is_some() {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if let Ok(v) = HeaderValue::from_str(&content_disposition(&name)) {
+            resp.headers_mut().insert(header::CONTENT_DISPOSITION, v);
+        }
+    }
+    Ok(resp)
+}
+
+/// The path of a session's `file`th file from output `output`: each output's
+/// recorded files, or its one planned path for sessions from before files
+/// were kept (or a leg that never opened one).
+fn session_file(session: &RecordingSessionDto, output: usize, file: usize) -> Option<PathBuf> {
+    let files = session.files.get(output).filter(|f| !f.is_empty());
+    let path = match files {
+        Some(files) => files.get(file)?,
+        None if file == 0 => session.output_paths.get(output)?,
+        None => return None,
+    };
+    Some(PathBuf::from(path))
+}
+
+/// `attachment` with the file's name, percent-encoded (RFC 6266/5987) so any
+/// name survives, plus a plain ASCII fallback.
+fn content_disposition(name: &str) -> String {
+    let ascii: String = name
+        .chars()
+        .map(|c| if c == ' ' || (c.is_ascii_graphic() && c != '"' && c != '\\') { c } else { '_' })
+        .collect();
+    let mut encoded = String::new();
+    for b in name.bytes() {
+        if b.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&b) {
+            encoded.push(b as char);
+        } else {
+            encoded.push_str(&format!("%{b:02X}"));
+        }
+    }
+    format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
 }
 
 async fn post_recording(
@@ -283,7 +383,14 @@ async fn post_recording(
 
     let preset_id = req.preset_id.clone().unwrap_or_default();
     let key = capacity::outputs_key(&req.outputs);
-    let session = state.source_manager.write().await.start_recording(&req.source_id, &preset_id, &legs, key)?;
+    let session = state.source_manager.write().await.start_recording(
+        &req.source_id,
+        &preset_id,
+        req.preset_name.as_deref(),
+        &req.outputs,
+        &legs,
+        key,
+    )?;
 
     if let Err(e) = db::session_insert(&state.db, &session).await {
         error!(error = %e, "persist session start");
@@ -583,5 +690,56 @@ async fn build_legs(state: &AppState, req: &StartRecordingRequest) -> ApiResult<
         *counter = counter
             .checked_add(1)
             .ok_or_else(|| ApiError::BadRequest(format!("{} already exists", legs[i].0.display()).into()))?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(output_paths: &[&str], files: Vec<Vec<&str>>) -> RecordingSessionDto {
+        RecordingSessionDto {
+            id: "s".into(),
+            source_id: "src".into(),
+            preset_id: String::new(),
+            source_name: None,
+            preset_name: None,
+            started_at: String::new(),
+            stopped_at: None,
+            outputs: Vec::new(),
+            output_paths: output_paths.iter().map(|p| p.to_string()).collect(),
+            dropped_frames: Vec::new(),
+            files: files.into_iter().map(|f| f.into_iter().map(String::from).collect()).collect(),
+            status: RecordingStatus::Stopped,
+            error_message: None,
+        }
+    }
+
+    #[test]
+    fn session_file_reads_only_the_sessions_files() {
+        let s = session(&["/a.mov", "/b_{segment}.mp4"], vec![vec!["/a.mov"], vec!["/b_001.mp4", "/b_002.mp4"]]);
+        assert_eq!(session_file(&s, 0, 0), Some(PathBuf::from("/a.mov")));
+        assert_eq!(session_file(&s, 1, 1), Some(PathBuf::from("/b_002.mp4")));
+        assert_eq!(session_file(&s, 1, 2), None);
+        assert_eq!(session_file(&s, 2, 0), None);
+    }
+
+    #[test]
+    fn session_file_falls_back_to_the_planned_path() {
+        let s = session(&["/a.mov"], Vec::new());
+        assert_eq!(session_file(&s, 0, 0), Some(PathBuf::from("/a.mov")));
+        assert_eq!(session_file(&s, 0, 1), None);
+    }
+
+    #[test]
+    fn content_disposition_encodes_any_name() {
+        assert_eq!(
+            content_disposition("cam 1.mov"),
+            "attachment; filename=\"cam 1.mov\"; filename*=UTF-8''cam%201.mov"
+        );
+        assert_eq!(
+            content_disposition("é\"x.mp4"),
+            "attachment; filename=\"__x.mp4\"; filename*=UTF-8''%C3%A9%22x.mp4"
+        );
     }
 }

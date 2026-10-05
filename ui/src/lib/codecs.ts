@@ -276,6 +276,20 @@ export function splits(leg: Pick<PresetOutputInput, 'advanced'>) {
 }
 
 /**
+ * Whether browsers play this output's files: H.264 4:2:0 with AAC audio
+ * (Auto picks AAC here) in .mp4 or .mov. Mirrors
+ * `RecordingProfile::browser_playable` in `profile.rs`.
+ */
+export function browserPlayable(leg: Pick<PresetOutputInput, 'codec' | 'container' | 'chroma' | 'advanced'>) {
+  return (
+    leg.codec === 'h264' &&
+    leg.chroma === '420' &&
+    (leg.container === 'mp4' || leg.container === 'mov') &&
+    (leg.advanced.audio_codec === 'auto' || leg.advanced.audio_codec === 'aac')
+  )
+}
+
+/**
  * A leg's template as recorded: a splitting leg without `{segment}` gets it
  * before the file name's extension. Mirrors `with_segment` in `profile.rs`.
  */

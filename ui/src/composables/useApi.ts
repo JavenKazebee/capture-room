@@ -20,6 +20,15 @@ export function thumbnailUrl(nodeId: string, sourceId: string) {
 }
 
 /**
+ * A finished session's file, by output and file index (a split output has
+ * several). Served with range requests, so a `<video>` can seek in it.
+ */
+export function recordingFileUrl(nodeId: string, sessionId: string, output: number, file: number, download = false) {
+  const url = `/api/v1/nodes/${encodeURIComponent(nodeId)}/recordings/${encodeURIComponent(sessionId)}/outputs/${output}/files/${file}`
+  return download ? `${url}?download=1` : url
+}
+
+/**
  * A failed request's message for display. The server replies with plain-text
  * error bodies; ofetch's own `message` is only "[POST] /url: 500 …".
  */

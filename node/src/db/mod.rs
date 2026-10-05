@@ -79,8 +79,8 @@ pub async fn monitor_settings_set(pool: &SqlitePool, m: &MonitorSettingsDto) -> 
 
 // ── recording_sessions ────────────────────────────────────────────────────────
 
-const SESSION_SELECT: &str = "SELECT id, source_id, preset_id, started_at, stopped_at,
-                                     output_paths, dropped_frames, files, status, error_message
+const SESSION_SELECT: &str = "SELECT id, source_id, preset_id, source_name, preset_name, started_at, stopped_at,
+                                     outputs, output_paths, dropped_frames, files, status, error_message
                               FROM recording_sessions";
 
 pub async fn sessions_mark_crashed(pool: &SqlitePool) -> Result<()> {
@@ -99,14 +99,18 @@ pub async fn sessions_mark_crashed(pool: &SqlitePool) -> Result<()> {
 pub async fn session_insert(pool: &SqlitePool, s: &RecordingSessionDto) -> Result<()> {
     sqlx::query(
         "INSERT INTO recording_sessions
-         (id, source_id, preset_id, started_at, stopped_at, output_paths, dropped_frames, files, status, error_message)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, source_id, preset_id, source_name, preset_name, started_at, stopped_at, outputs,
+          output_paths, dropped_frames, files, status, error_message)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.id)
     .bind(&s.source_id)
     .bind(&s.preset_id)
+    .bind(&s.source_name)
+    .bind(&s.preset_name)
     .bind(&s.started_at)
     .bind(&s.stopped_at)
+    .bind(Json(&s.outputs))
     .bind(Json(&s.output_paths))
     .bind(Json(&s.dropped_frames))
     .bind(Json(&s.files))
@@ -153,13 +157,24 @@ pub async fn session_update_files(pool: &SqlitePool, id: &str, files: &[Vec<Stri
     Ok(())
 }
 
-pub async fn sessions_list(pool: &SqlitePool) -> Result<Vec<RecordingSessionDto>> {
+/// Sessions newest first, `limit` at a time: those that started before
+/// `before` (RFC 3339, compared as text like every stored `started_at`), or
+/// the newest without it.
+pub async fn sessions_list(pool: &SqlitePool, before: Option<&str>, limit: u32) -> Result<Vec<RecordingSessionDto>> {
     let rows = sqlx::query_as::<_, RecordingSessionDto>(&format!(
-        "{SESSION_SELECT} ORDER BY started_at DESC LIMIT 100"
+        "{SESSION_SELECT} WHERE (?1 IS NULL OR started_at < ?1) ORDER BY started_at DESC LIMIT ?2"
     ))
+    .bind(before)
+    .bind(limit)
     .fetch_all(pool)
     .await?;
     Ok(rows)
+}
+
+/// Remove a session from history. Its files are left alone.
+pub async fn session_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
+    let res = sqlx::query("DELETE FROM recording_sessions WHERE id = ?").bind(id).execute(pool).await?;
+    Ok(res.rows_affected() > 0)
 }
 
 pub async fn session_get(pool: &SqlitePool, id: &str) -> Result<Option<RecordingSessionDto>> {
@@ -181,7 +196,7 @@ pub async fn presets_list(pool: &SqlitePool) -> Result<Vec<PresetDto>> {
     .await?;
     let outputs = sqlx::query_as::<_, PresetOutputDto>(
         "SELECT id, preset_id, name, codec, container, resolution, framerate,
-                bitrate_kbps, chroma, path_template, advanced, sort_order
+                bitrate_kbps, chroma, path_template, preview, advanced, sort_order
          FROM preset_outputs ORDER BY preset_id, sort_order",
     )
     .fetch_all(pool)
@@ -261,8 +276,8 @@ async fn preset_outputs_replace(
         sqlx::query(
             "INSERT INTO preset_outputs
              (id, preset_id, name, codec, container, resolution, framerate,
-              bitrate_kbps, chroma, path_template, advanced, sort_order)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              bitrate_kbps, chroma, path_template, preview, advanced, sort_order)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id)
         .bind(preset_id)
@@ -274,6 +289,7 @@ async fn preset_outputs_replace(
         .bind(o.bitrate_kbps)
         .bind(o.chroma)
         .bind(&o.path_template)
+        .bind(o.preview)
         .bind(Json(&o.advanced))
         .bind(sort_order)
         .execute(&mut **tx)

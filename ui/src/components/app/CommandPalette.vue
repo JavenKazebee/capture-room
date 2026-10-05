@@ -20,7 +20,8 @@ import {
 } from '@/components/ui/command'
 import { setupPages, workspaces } from './workspaces'
 
-const destinations = [workspaces[0]!, ...setupPages]
+/** Every page: the operating workspaces, then Setup's pages in place of Setup. */
+const destinations = [...workspaces.filter((w) => w.to !== '/setup'), ...setupPages]
 
 const open = defineModel<boolean>('open', { required: true })
 

@@ -3,7 +3,9 @@
 //! This is the only way the UI talks to a node's local API. Requests for this
 //! instance are served in-process by the node router; requests for a peer are
 //! forwarded over HTTP (controller only). Nothing here knows about individual
-//! endpoints — the method, query and body pass through untouched.
+//! endpoints — the method, query and body pass through untouched, and peer
+//! responses are streamed (recordings can be gigabytes) with range and caching
+//! headers passed both ways, so a browser can seek in a peer's file.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,9 +20,27 @@ use tower::ServiceExt;
 
 use crate::state::AppState;
 
-/// Long enough for a recording stop, which waits for the EOS drain.
+/// How long a peer may take to answer (with headers), long enough for a
+/// recording stop, which waits for the EOS drain. The body after that isn't
+/// timed: a file download takes as long as it takes.
 const PEER_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_BODY: usize = 16 * 1024 * 1024;
+
+/// Request headers passed to a peer.
+const REQUEST_HEADERS: [header::HeaderName; 5] =
+    [header::CONTENT_TYPE, header::RANGE, header::IF_RANGE, header::IF_MODIFIED_SINCE, header::IF_NONE_MATCH];
+
+/// Response headers passed back from a peer.
+const RESPONSE_HEADERS: [header::HeaderName; 8] = [
+    header::CONTENT_TYPE,
+    header::CONTENT_LENGTH,
+    header::CACHE_CONTROL,
+    header::ACCEPT_RANGES,
+    header::CONTENT_RANGE,
+    header::CONTENT_DISPOSITION,
+    header::LAST_MODIFIED,
+    header::ETAG,
+];
 
 pub async fn forward(
     State(state): State<Arc<AppState>>,
@@ -73,24 +93,24 @@ async fn forward_peer(state: &AppState, req: Request, url: &str) -> Response {
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
 
-    let mut out = state.http.request(parts.method, url).timeout(PEER_TIMEOUT).body(body);
-    if let Some(ct) = parts.headers.get(header::CONTENT_TYPE) {
-        out = out.header(header::CONTENT_TYPE, ct);
+    let mut out = state.http.request(parts.method, url).body(body);
+    for name in REQUEST_HEADERS {
+        if let Some(v) = parts.headers.get(&name) {
+            out = out.header(name, v);
+        }
     }
 
-    let resp = match out.send().await {
-        Ok(r) => r,
-        Err(e) => return (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+    let resp = match tokio::time::timeout(PEER_TIMEOUT, out.send()).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+        Err(_) => return (StatusCode::GATEWAY_TIMEOUT, "node didn't answer in time").into_response(),
     };
 
     let mut builder = Response::builder().status(resp.status());
-    for name in [header::CONTENT_TYPE, header::CACHE_CONTROL] {
+    for name in RESPONSE_HEADERS {
         if let Some(v) = resp.headers().get(&name) {
             builder = builder.header(name, v);
         }
     }
-    match resp.bytes().await {
-        Ok(bytes) => builder.body(Body::from(bytes)).unwrap(),
-        Err(e) => (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
-    }
+    builder.body(Body::from_stream(resp.bytes_stream())).unwrap()
 }

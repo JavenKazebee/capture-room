@@ -10,7 +10,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::api::types::{
-    ChannelLevelDto, ConfiguredSourceDto, MonitorSettingsDto, RecordingSessionDto, RecordingStatus,
+    ChannelLevelDto, ConfiguredSourceDto, MonitorSettingsDto, PresetOutputInput, RecordingSessionDto, RecordingStatus,
 };
 use crate::pipeline::monitor::{MonitorPipeline, SourceFormat};
 use crate::pipeline::profile::RecordingProfile;
@@ -256,10 +256,14 @@ impl SourceManager {
 
     /// Start a multi-leg recording session.
     /// `legs` is an ordered list of `(output_path, profile)` pairs, one per output leg.
+    /// Start recording `source_id` with `legs`, one per entry of `outputs`
+    /// (which supplies each leg's name and preview flag for the session).
     pub fn start_recording(
         &mut self,
         source_id: &str,
         preset_id: &str,
+        preset_name: Option<&str>,
+        outputs: &[PresetOutputInput],
         legs: &[(PathBuf, RecordingProfile)],
         outputs_key: String,
     ) -> Result<RecordingSessionDto> {
@@ -298,8 +302,11 @@ impl SourceManager {
             id,
             source_id: source_id.to_string(),
             preset_id: preset_id.to_string(),
+            source_name: self.get_source(source_id).map(|s| s.display_name().to_string()),
+            preset_name: preset_name.map(str::to_string),
             started_at: Utc::now().to_rfc3339(),
             stopped_at: None,
+            outputs: outputs.iter().zip(legs).map(|(o, (_, profile))| profile.session_output(&o.name, o.preview)).collect(),
             output_paths: legs.iter().map(|(p, _)| p.display().to_string()).collect(),
             dropped_frames: vec![0; legs.len()],
             files: recording_legs.iter().map(RecordingLeg::files).collect(),

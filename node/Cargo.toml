@@ -22,7 +22,7 @@ gstreamer-pbutils = "0.23"
 gst-plugin-ndi = { git = "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git", rev = "894e437dffa6851929ad48b85e7970943d650ed9", features = ["static"] }
 mdns-sd = "0.13"
 mime_guess = "2"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 rust-embed = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -37,3 +37,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ts-rs = { version = "10", optional = true, features = ["serde-json-impl"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 gstreamer-utils = "0.23"
+tower-http = { version = "0.6", features = ["fs"] }

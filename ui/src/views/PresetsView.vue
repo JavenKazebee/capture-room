@@ -144,8 +144,15 @@ function addOutput() {
 
 function duplicateOutput(i: number) {
   const leg = draftLegs.value[i]!
-  draftLegs.value.splice(i + 1, 0, { ...leg, name: `${leg.name} copy` })
+  draftLegs.value.splice(i + 1, 0, { ...leg, name: `${leg.name} copy`, preview: false })
   legKeys.value.splice(i + 1, 0, nextKey++)
+}
+
+/** Only one output is the preview: marking one unmarks the others. */
+function setPreview(i: number) {
+  draftLegs.value.forEach((leg, j) => {
+    if (j !== i && leg.preview) draftLegs.value[j] = { ...leg, preview: false }
+  })
 }
 
 function removeOutput(i: number) {
@@ -357,6 +364,7 @@ watch(selected, (p) => p && !dirty.value && p.id === selectedId.value && loadPre
               @remove="removeOutput(i)"
               @duplicate="duplicateOutput(i)"
               @move="(d) => moveOutput(i, d)"
+              @preview="setPreview(i)"
             />
           </fieldset>
           <p class="text-[11px] text-muted-foreground">

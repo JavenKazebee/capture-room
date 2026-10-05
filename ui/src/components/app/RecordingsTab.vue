@@ -3,17 +3,12 @@ import { computed } from 'vue'
 import { useNow } from '@vueuse/core'
 import { formatDuration } from '@/lib/format'
 import { useNodesStore } from '@/stores/nodes'
-import { usePresetsStore } from '@/stores/presets'
 import { outputFiles, useRecordingsStore, type RecordingSession } from '@/stores/recordings'
-import { useSourcesStore } from '@/stores/sources'
-import { sourceKey } from '@/composables/useApi'
 import StatusDot from '@/components/common/StatusDot.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
 
 const recordings = useRecordingsStore()
-const sources = useSourcesStore()
 const nodes = useNodesStore()
-const presets = usePresetsStore()
 const now = useNow({ interval: 1000 })
 
 /** Live sessions first, then the rest newest first. */
@@ -23,15 +18,6 @@ const rows = computed(() =>
     return b.started_at.localeCompare(a.started_at)
   }),
 )
-
-function sourceName(s: RecordingSession) {
-  return sources.sources.find((x) => x.key === sourceKey(s.node_id, s.source_id))?.display_name ?? s.source_id
-}
-
-function presetName(s: RecordingSession) {
-  if (s.preset_id === 'default' || !s.preset_id) return 'H.264 (default)'
-  return presets.presets.find((p) => p.id === s.preset_id)?.name ?? s.preset_id
-}
 
 function duration(s: RecordingSession) {
   const end = s.stopped_at ? new Date(s.stopped_at).getTime() : now.value.getTime()
@@ -69,9 +55,9 @@ const statusDot = { active: 'tally', stopped: 'off', error: 'error' } as const
           class="[&>td]:px-3 [&>td]:py-1 border-b border-border/60 align-top hover:bg-accent/40"
         >
           <td class="pt-2"><StatusDot :status="statusDot[s.status]" /></td>
-          <td class="font-medium">{{ sourceName(s) }}</td>
+          <td class="font-medium">{{ recordings.sourceNameOf(s) }}</td>
           <td v-if="nodes.nodes.length > 1" class="text-muted-foreground">{{ nodes.nameOf(s.node_id) }}</td>
-          <td class="text-muted-foreground">{{ presetName(s) }}</td>
+          <td class="text-muted-foreground">{{ recordings.presetNameOf(s) }}</td>
           <td class="num text-muted-foreground whitespace-nowrap">{{ started(s) }}</td>
           <td class="num text-right" :class="s.status === 'active' && 'text-tally font-medium'">{{ duration(s) }}</td>
           <td class="min-w-0">

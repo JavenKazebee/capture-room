@@ -228,4 +228,8 @@ export const FIELD_HELP = {
     body: 'Start a new file when the current one reaches about this size, e.g. to stay under a drive\'s or upload service\'s file size limit. With a time as well, whichever comes first. Files split at a keyframe, so they can run slightly over.',
     options: [{ label: 'Blank', text: 'No size limit.' }],
   },
+  preview: {
+    title: 'Preview in Recordings',
+    body: "Recordings plays this output's files in the browser. Only H.264 (4:2:0) with AAC audio in .mp4 or .mov plays in a browser, so the switch appears only on outputs like that. Without one marked, the first such output is used; a ProRes master with a small H.264 proxy beside it is the usual pairing.",
+  },
 } satisfies Record<string, FieldHelp>

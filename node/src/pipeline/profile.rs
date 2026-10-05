@@ -5,7 +5,7 @@ use gstreamer as gst;
 
 use crate::api::types::{
     AudioChannels, AudioCodecChoice, ChromaSubsampling, Container, Deinterlace, EncoderChoice, OutputAdvanced,
-    PresetOutputInput, RateControl, SpeedPreset, VideoCodec,
+    PresetOutputInput, RateControl, SessionAudio, SessionOutputDto, SpeedPreset, VideoCodec,
 };
 
 /// Values for the per-recording tokens of a path template.
@@ -594,6 +594,32 @@ impl RecordingProfile {
         }
     }
 
+    /// Whether browsers play this leg's files: H.264 4:2:0 (High 4:2:2 and
+    /// 4:4:4 aren't decoded) with AAC audio, in MP4 or MOV (Chrome and Firefox
+    /// play an H.264/AAC .mov as MP4).
+    pub fn browser_playable(&self) -> bool {
+        self.video_codec == VideoCodec::H264
+            && self.chroma == ChromaSubsampling::Yuv420
+            && matches!(self.container, Container::Mp4 | Container::Mov)
+            && matches!(self.audio_format(), AudioFormat::Aac { .. })
+    }
+
+    /// What a session keeps about this leg.
+    pub fn session_output(&self, name: &str, preview: bool) -> SessionOutputDto {
+        SessionOutputDto {
+            name: name.to_string(),
+            codec: self.video_codec,
+            container: self.container,
+            audio: match self.audio_format() {
+                AudioFormat::Pcm24 => SessionAudio::Pcm,
+                AudioFormat::Aac { .. } => SessionAudio::Aac,
+                AudioFormat::Opus { .. } => SessionAudio::Opus,
+            },
+            playable: self.browser_playable(),
+            preview,
+        }
+    }
+
     /// File extension for the output path template.
     pub fn file_extension(&self) -> &'static str {
         match self.container {
@@ -796,6 +822,22 @@ mod tests {
         assert_eq!(parse_framerate("30/0"), None);
     }
 
+    #[test]
+    fn browser_playable_needs_h264_420_with_aac_in_mp4_or_mov() {
+        let playable = |f: fn(&mut PresetOutputInput)| {
+            let mut o = leg("a", Container::Mov, "x");
+            f(&mut o);
+            RecordingProfile::from_output(&o).unwrap().browser_playable()
+        };
+        assert!(playable(|_| {}));
+        assert!(playable(|o| o.container = Container::Mp4));
+        assert!(!playable(|o| o.container = Container::Mkv));
+        assert!(!playable(|o| o.chroma = ChromaSubsampling::Yuv422));
+        assert!(!playable(|o| o.advanced.audio_codec = AudioCodecChoice::Pcm));
+        assert!(!playable(|o| o.codec = VideoCodec::ProRes422));
+        assert!(!playable(|o| o.codec = VideoCodec::H265));
+    }
+
     fn leg(name: &str, container: Container, template: &str) -> PresetOutputInput {
         PresetOutputInput {
             name: name.into(),
@@ -806,6 +848,7 @@ mod tests {
             bitrate_kbps: None,
             chroma: ChromaSubsampling::Yuv420,
             path_template: template.into(),
+            preview: false,
             advanced: OutputAdvanced::default(),
         }
     }

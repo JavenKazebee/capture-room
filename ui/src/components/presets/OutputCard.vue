@@ -5,6 +5,7 @@ import type { Container } from '@/types/generated/Container'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import type { VideoCodec } from '@/types/generated/VideoCodec'
 import {
+  browserPlayable,
   CHROMA_OPTIONS,
   CODECS,
   CODEC_OPTIONS,
@@ -22,6 +23,7 @@ import {
 } from '@/lib/codecs'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import FormField from '@/components/FormField.vue'
 import { FIELD_HELP } from '@/lib/fieldHelp'
@@ -40,7 +42,7 @@ const props = defineProps<{
   preview: { source: string; sourceName: string; node: string; preset: string }
 }>()
 const leg = defineModel<PresetOutputInput>({ required: true })
-defineEmits<{ remove: []; duplicate: []; move: [dir: -1 | 1] }>()
+defineEmits<{ remove: []; duplicate: []; move: [dir: -1 | 1]; preview: [] }>()
 
 const open = ref(true)
 const problems = computed(() => legProblems(leg.value))
@@ -48,11 +50,17 @@ const hasProblem = computed(
   () => props.clash || Object.keys(problems.value).length > 0 || Object.keys(advancedProblems(leg.value)).length > 0,
 )
 
-/** Apply a change; Advanced choices it made impossible fall back to Auto. */
+/**
+ * Apply a change; Advanced choices it made impossible fall back to Auto, and
+ * an output that no longer plays in a browser stops being the preview.
+ */
 function patch(p: Partial<PresetOutputInput>) {
   const next = { ...leg.value, ...p }
-  leg.value = { ...next, advanced: fitAdvanced(next) }
+  const advanced = fitAdvanced(next)
+  leg.value = { ...next, advanced, preview: !!next.preview && browserPlayable({ ...next, advanced }) }
 }
+
+const playable = computed(() => browserPlayable(leg.value))
 
 // ── Codec / container ─────────────────────────────────────────────────────────
 
@@ -267,6 +275,16 @@ const framerate = computed({
           :multiple-outputs="count > 1"
           :preview="preview"
         />
+
+        <FormField v-if="playable" label="Preview in Recordings" :help="FIELD_HELP.preview" class="col-span-2">
+          <label class="h-7 flex items-center gap-2 text-xs text-muted-foreground">
+            <Switch
+              :model-value="!!leg.preview"
+              @update:model-value="(on: boolean) => { patch({ preview: on }); if (on) $emit('preview') }"
+            />
+            {{ leg.preview ? 'Recordings plays this output' : 'Play this output in Recordings' }}
+          </label>
+        </FormField>
 
         <AdvancedSettings v-model="leg" />
       </div>

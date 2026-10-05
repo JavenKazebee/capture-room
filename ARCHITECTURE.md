@@ -456,10 +456,19 @@ are not stored on the node.
 
 ### Browser preview
 
-Separate from playout: previewing a recording in the browser (Recordings view) needs a
-browser-playable file. A preset output can be flagged as the **playback proxy** (H.264
-AAC MP4); nodes serve files with HTTP range requests, and the controller's forwarder
-streams them rather than buffering.
+Separate from playout: the Recordings view plays a finished session's files in the
+browser. A session stores each output's format when it starts (`outputs`), with
+`playable` set for what browsers decode: H.264 4:2:0 with AAC, in .mp4 or .mov
+(`RecordingProfile::browser_playable`; a playable .mov is served as `video/mp4`, which
+Chrome and Firefox need). The view previews the output its preset marked **Preview in
+Recordings** (`preview`, one per preset), else the first playable one; ProRes and PCM
+outputs can only be downloaded.
+
+Nodes serve a session's files with range requests (`tower-http`'s `ServeFile`), and only
+files the session recorded, by output and file index, never arbitrary paths. Files of an
+active session aren't served. The controller's forwarder streams peer responses and
+passes range and caching headers both ways; its timeout covers only the wait for the
+response headers, so a long download isn't cut off.
 
 ---
 
@@ -503,8 +512,9 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 | GET / POST | `/configured-sources` | test and file source configs; saving a file source probes the file (400 if it can't be played) |
 | PUT / DELETE | `/configured-sources/{id}` | |
 | GET | `/files?path=` | folders and media files in a directory (home if no path), for picking a file source. Read-only |
-| GET / POST | `/recordings` | list / start. Start body: `{ source_id, preset_id?, outputs: [...] }`. Refused onto a volume with under 1 GB free; cancels a running benchmark |
-| GET | `/recordings/{id}` | session details |
+| GET / POST | `/recordings` | list (`?before=&limit=`: newest first, 100 by default, at most 500, paged by `started_at`; the first page also carries active sessions) / start. Start body: `{ source_id, preset_id?, outputs: [...] }`. Refused onto a volume with under 1 GB free; cancels a running benchmark |
+| GET / DELETE | `/recordings/{id}` | session details / remove a finished session from history (files stay on disk; 409 while recording) |
+| GET / HEAD | `/recordings/{id}/outputs/{i}/files/{j}` | a finished session's file, with range requests; `?download` adds `Content-Disposition` (409 while recording) |
 | POST | `/recordings/{id}/stop` | stop (waits for EOS drain) |
 | GET / POST | `/benchmarks` | runs, newest first / start one: `{ outputs, media_path, max_feeds?, step_secs?, drop_threshold_pct?, preset_id?, preset_name? }` (409 while recording or benchmarking) |
 | GET / DELETE | `/benchmarks/{id}` | a run / delete it (not while running) |
@@ -541,6 +551,7 @@ All events are JSON with a `type` and the `node_id` they describe. `source_id` /
 | `recording.error` | session id, source id, error — the session ended in error |
 | `recording.leg_failed` | session id, source id, error (the session's accumulated message) — a leg failed; the session keeps recording on its other legs |
 | `recording.stats` | session id, source id, dropped frames per leg, ordered like `output_paths` (1 Hz while active) |
+| `recording.removed` | session id — removed from history |
 | `feed.status` | source id, timecode, monitor error (1 Hz) |
 | `audio.levels` | source id, channel peak/RMS values (~10fps) |
 | `thumbnail.updated` | source id (at the configured thumbnail fps) |
@@ -563,7 +574,9 @@ Rust structs used in API responses are annotated with `#[derive(TS)]` from the `
 Every instance has the same schema (see `node/migrations/`):
 
 - `node_config` — key/value: `uuid`, `name`, `controller_enabled`, `monitor_*`
-- `recording_sessions` — one row per session, `output_paths` as a JSON array
+- `recording_sessions` — one row per session, `output_paths` as a JSON array; the
+  source and preset names and each output's format are kept with it, so history reads the
+  same after either is renamed or removed
 - `configured_sources` — test and file source configs (`config` is JSON tagged with `type`)
 - `presets` + `preset_outputs` — used while acting as controller (or from the UI on a lone node)
 - `nodes` — peers added by URL on a controller (mDNS peers are not persisted)
@@ -615,11 +628,11 @@ them — not before.
 | Workspace / view | Description |
 |------------------|-------------|
 | **Record** | Multiview of every feed across all nodes — thumbnail, name, timecode, recording state, audio meters, dropped frames; multi-select with bulk Record/Stop (warning when a node nears its capacity or a volume would fill within the hour); inspector with outputs, session and history |
+| **Recordings** | Session history across nodes, filtered by text, status and node and paged per node ("load older"); detail pane with a browser preview, each output's files (play, download, copy path) and remove from history |
 | **Setup › Sources** | Sources grouped by node, capabilities, test and file source authoring (with a browser for the node's files) |
 | **Setup › Presets** | Create and edit recording presets (outputs, path preview) |
 | **Setup › Nodes** | A card per node: health, sources, storage (with time left while recording), capacity (benchmarked setups, load, running benchmark, history); controller toggle, add/remove nodes |
 | **Setup › Settings** | Appearance; monitoring settings (thumbnail/meter rate, applied to all nodes); About |
-| **Recordings** _(planned)_ | Session history and files, across nodes; browser preview via the playback proxy |
 | **Playback** _(planned)_ | Playout channels, playlists, transport |
 | **Replay** _(planned)_ | Replay buffers, marks and clips, variable-speed playout |
 | **Schedules** _(planned)_ | Create, edit, and view upcoming scheduled recordings |

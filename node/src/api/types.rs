@@ -198,8 +198,18 @@ pub struct RecordingSessionDto {
     pub id: String,
     pub source_id: String,
     pub preset_id: String,
+    /// The source's name when recording started. `None` for sessions
+    /// recorded before names were kept.
+    pub source_name: Option<String>,
+    /// The preset's name, as sent with the start. `None` without a preset
+    /// (or for older sessions).
+    pub preset_name: Option<String>,
     pub started_at: String,
     pub stopped_at: Option<String>,
+    /// What each output leg recorded, ordered like `output_paths`. Empty for
+    /// sessions recorded before this was kept.
+    #[sqlx(json)]
+    pub outputs: Vec<SessionOutputDto>,
     /// Ordered list of output file paths, one per preset output leg.
     /// Stored as a JSON array.
     #[sqlx(json)]
@@ -216,6 +226,42 @@ pub struct RecordingSessionDto {
     pub files: Vec<Vec<String>>,
     pub status: RecordingStatus,
     pub error_message: Option<String>,
+}
+
+/// One output leg of a session: its name and format, as recorded.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct SessionOutputDto {
+    pub name: String,
+    pub codec: VideoCodec,
+    pub container: Container,
+    pub audio: SessionAudio,
+    /// Whether browsers can play its files: H.264 4:2:0 with AAC audio in
+    /// MP4 or MOV.
+    pub playable: bool,
+    /// The preset marked this output as the one to preview with.
+    pub preview: bool,
+}
+
+/// The audio codec a leg wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum SessionAudio {
+    Pcm,
+    Aac,
+    Opus,
+}
+
+/// `GET /recordings` paging.
+#[derive(Debug, Default, Deserialize)]
+pub struct RecordingsQuery {
+    /// Only sessions that started before this (RFC 3339): the `started_at`
+    /// of the last session on the previous page. Active sessions are listed
+    /// only on the first page (without it).
+    pub before: Option<String>,
+    /// Page size; default 100, at most 500.
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -302,6 +348,12 @@ pub struct PresetOutputInput {
     pub bitrate_kbps: Option<u32>,
     pub chroma: ChromaSubsampling,
     pub path_template: String,
+    /// Preview recordings with this output when several are
+    /// browser-playable. Left out when false, so it doesn't change the
+    /// capacity key (`capacity::outputs_key`) of stored benchmark results.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "export-types", ts(as = "Option<bool>", optional))]
+    pub preview: bool,
     /// Fine-tuning; every field defaults to the recording defaults.
     /// Stored as JSON.
     #[serde(default)]
@@ -488,6 +540,9 @@ pub enum WsEvent {
         dropped_frames: Vec<u64>,
         files: Vec<Vec<String>>,
     },
+    /// A finished session was removed from history (its files are kept).
+    #[serde(rename = "recording.removed")]
+    RecordingRemoved { session_id: String },
     #[serde(rename = "feed.status")]
     FeedStatus {
         source_id: String,

@@ -10,6 +10,11 @@ export const router = createRouter({
       component: () => import('@/views/RecordView.vue'),
     },
     {
+      path: '/recordings',
+      name: 'recordings',
+      component: () => import('@/views/RecordingsView.vue'),
+    },
+    {
       path: '/setup',
       component: () => import('@/views/SetupLayout.vue'),
       redirect: '/setup/sources',
