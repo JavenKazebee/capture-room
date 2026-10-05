@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useNow } from '@vueuse/core'
+import { useClipboard, useNow } from '@vueuse/core'
 import { toast } from 'vue-sonner'
-import { Download, Play, Trash2, X } from '@lucide/vue'
+import { Download, Play, Share2, Trash2, X } from '@lucide/vue'
 import { recordingFileUrl } from '@/composables/useApi'
 import { formatDuration } from '@/lib/format'
 import { CODECS, CONTAINERS } from '@/lib/codecs'
@@ -22,6 +22,7 @@ defineEmits<{ close: [] }>()
 const recordings = useRecordingsStore()
 const nodes = useNodesStore()
 const now = useNow({ interval: 1000 })
+const clipboard = useClipboard({ legacy: true })
 
 const s = computed(() => props.session)
 const live = computed(() => s.value.status === 'active')
@@ -33,17 +34,62 @@ const playing = ref<{ output: number; file: number } | null>(
   previewOutput(props.session) === -1 ? null : { output: previewOutput(props.session), file: 0 },
 )
 const playError = ref(false)
+const video = ref<HTMLVideoElement>()
+/** Starts playback as soon as a file loads — only once someone picks a file, not on open. */
+const autoplay = ref(false)
 
 const playingUrl = computed(() =>
   playing.value && !live.value ? recordingFileUrl(s.value.node_id, s.value.id, playing.value.output, playing.value.file) : null,
 )
 
+/** What the player shows, for the caption under it. */
+const playingCaption = computed(() => {
+  if (!playingUrl.value || !playing.value) return null
+  const o = outputs.value[playing.value.output]
+  if (!o) return null
+  const file = o.files[playing.value.file]
+  return {
+    output: o.name,
+    file: file ? fileName(file) : '',
+    part: o.files.length > 1 ? `${playing.value.file + 1} of ${o.files.length}` : null,
+  }
+})
+
 function play(output: number, file: number) {
+  if (!canPlay(output)) return
+  if (playing.value?.output === output && playing.value.file === file && video.value && !playError.value) {
+    // Already loaded: play it from the start.
+    video.value.currentTime = 0
+    void video.value.play()
+    return
+  }
   playing.value = { output, file }
   playError.value = false
+  autoplay.value = true
 }
 
+const isPlaying = (output: number, file: number) => !live.value && playing.value?.output === output && playing.value.file === file
+
 const canPlay = (output: number) => !live.value && !!s.value.outputs[output]?.playable
+
+// ── Share ─────────────────────────────────────────────────────────────────────
+
+/** Shares a file's download link through the OS share sheet, or copies it where there isn't one. */
+async function share(output: number, file: number, path: string) {
+  const url = new URL(recordingFileUrl(s.value.node_id, s.value.id, output, file, true), window.location.origin).href
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: fileName(path), url })
+      return
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return
+      // Fall through to copying.
+    }
+  }
+  await clipboard.copy(url)
+  if (clipboard.copied.value) toast.success('Download link copied', { description: 'Anyone who can reach this Capture Room can open it.' })
+  else toast.error('Could not copy the link', { description: url })
+}
 
 /** Why there's no preview, when there isn't one. */
 const noPreview = computed(() => {
@@ -119,23 +165,33 @@ async function remove() {
     </div>
 
     <div class="flex-1 min-h-0 overflow-y-auto">
-      <!-- Preview -->
-      <div class="bg-black aspect-video grid place-items-center">
-        <video
-          v-if="playingUrl && !playError"
-          :key="playingUrl"
-          :src="playingUrl"
-          class="w-full h-full"
-          controls
-          preload="metadata"
-          @error="playError = true"
-        />
-        <p v-else class="px-6 text-center text-xs text-zinc-400">
-          <template v-if="playError">
-            This file couldn't be played. It may have been moved or deleted, or still be open from a crash.
-          </template>
-          <template v-else>{{ noPreview }}</template>
-        </p>
+      <!-- Preview: sticky so it stays in view while picking files below. -->
+      <div class="sticky top-0 z-10 bg-card border-b border-border">
+        <div class="bg-black aspect-video grid place-items-center">
+          <video
+            v-if="playingUrl && !playError"
+            ref="video"
+            :key="playingUrl"
+            :src="playingUrl"
+            :autoplay="autoplay"
+            class="w-full h-full"
+            controls
+            preload="metadata"
+            @error="playError = true"
+          />
+          <p v-else class="px-6 text-center text-xs text-zinc-400">
+            <template v-if="playError">
+              This file couldn't be played. It may have been moved or deleted, or still be open from a crash.
+            </template>
+            <template v-else>{{ noPreview }}</template>
+          </p>
+        </div>
+        <div v-if="playingCaption" class="flex items-center gap-1.5 px-3 h-7 text-[11px]">
+          <Play class="size-3 shrink-0 text-primary fill-current" />
+          <span class="font-medium shrink-0">{{ playingCaption.output }}</span>
+          <span class="num truncate text-muted-foreground" :title="playingCaption.file">{{ playingCaption.file }}</span>
+          <span v-if="playingCaption.part" class="num shrink-0 text-muted-foreground">· {{ playingCaption.part }}</span>
+        </div>
       </div>
 
       <div class="p-3 space-y-4">
@@ -159,15 +215,37 @@ async function remove() {
                 v-for="(f, j) in o.files"
                 :key="f"
                 class="flex items-center gap-1 px-2.5 py-1 text-xs"
-                :class="playing?.output === i && playing.file === j && !live && 'bg-accent/50'"
+                :class="[
+                  canPlay(i) && 'cursor-pointer hover:bg-accent/40',
+                  isPlaying(i, j) && 'bg-accent/60',
+                ]"
+                :role="canPlay(i) ? 'button' : undefined"
+                :tabindex="canPlay(i) ? 0 : undefined"
+                :aria-label="canPlay(i) ? `Play ${fileName(f)}` : undefined"
+                :aria-current="isPlaying(i, j) || undefined"
+                :title="!live && !canPlay(i) ? 'This format can\'t play in a browser. Download it to watch.' : undefined"
+                @click="play(i, j)"
+                @keydown.enter.self.prevent="play(i, j)"
+                @keydown.space.self.prevent="play(i, j)"
               >
-                <span class="num truncate flex-1 text-muted-foreground" :title="f">{{ fileName(f) }}</span>
-                <CopyButton :value="f" />
-                <Tooltip v-if="canPlay(i)">
+                <span class="w-3.5 shrink-0 grid place-items-center">
+                  <Play v-if="isPlaying(i, j)" class="size-3 text-primary fill-current" />
+                  <Play v-else-if="canPlay(i)" class="size-3 text-muted-foreground/50" />
+                </span>
+                <span
+                  class="num truncate flex-1"
+                  :class="isPlaying(i, j) ? 'text-foreground' : canPlay(i) || live ? 'text-muted-foreground' : 'text-muted-foreground/60'"
+                  :title="f"
+                >
+                  {{ fileName(f) }}
+                </span>
+                <span v-if="isPlaying(i, j)" class="text-[10px] font-medium uppercase tracking-wider text-primary shrink-0 mr-1">Playing</span>
+                <CopyButton :value="f" size="md" :label="`Copy path on ${nodes.labelOf(s.node_id)}`" />
+                <Tooltip v-if="!live">
                   <TooltipTrigger as-child>
-                    <button class="icon-btn" :aria-label="`Play ${fileName(f)}`" @click="play(i, j)"><Play class="size-3.5" /></button>
+                    <button class="icon-btn" :aria-label="`Share ${fileName(f)}`" @click.stop="share(i, j, f)"><Share2 class="size-3.5" /></button>
                   </TooltipTrigger>
-                  <TooltipContent>Play</TooltipContent>
+                  <TooltipContent>Share download link</TooltipContent>
                 </Tooltip>
                 <Tooltip v-if="!live">
                   <TooltipTrigger as-child>
@@ -176,6 +254,7 @@ async function remove() {
                       :href="recordingFileUrl(s.node_id, s.id, i, j, true)"
                       :aria-label="`Download ${fileName(f)}`"
                       download
+                      @click.stop
                     >
                       <Download class="size-3.5" />
                     </a>

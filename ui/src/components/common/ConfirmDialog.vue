@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -9,7 +8,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { buttonVariants } from '@/components/ui/button'
+import { Button } from '@/components/ui/button'
 
 /** Confirmation for a destructive action. Open it with `v-model:open`. */
 withDefaults(
@@ -18,6 +17,13 @@ withDefaults(
 )
 const open = defineModel<boolean>('open', { required: true })
 const emit = defineEmits<{ confirm: [] }>()
+
+// Emit before closing: reka's AlertDialogAction closes first, and callers that
+// clear their state on close (e.g. "Stop all") would then confirm against nothing.
+function confirm() {
+  emit('confirm')
+  open.value = false
+}
 </script>
 
 <template>
@@ -31,12 +37,7 @@ const emit = defineEmits<{ confirm: [] }>()
       </AlertDialogHeader>
       <AlertDialogFooter>
         <AlertDialogCancel>Cancel</AlertDialogCancel>
-        <AlertDialogAction
-          :class="buttonVariants({ variant: 'destructive' })"
-          @click="emit('confirm')"
-        >
-          {{ confirmLabel }}
-        </AlertDialogAction>
+        <Button variant="destructive" @click="confirm">{{ confirmLabel }}</Button>
       </AlertDialogFooter>
     </AlertDialogContent>
   </AlertDialog>
