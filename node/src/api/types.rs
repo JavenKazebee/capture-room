@@ -540,9 +540,12 @@ pub enum WsEvent {
         dropped_frames: Vec<u64>,
         files: Vec<Vec<String>>,
     },
-    /// A finished session was removed from history (its files are kept).
+    /// A finished session was removed from history, with or without its files.
     #[serde(rename = "recording.removed")]
     RecordingRemoved { session_id: String },
+    /// A finished session changed after it stopped: some of its files were deleted.
+    #[serde(rename = "recording.updated")]
+    RecordingUpdated { session: Box<RecordingSessionDto> },
     #[serde(rename = "feed.status")]
     FeedStatus {
         source_id: String,

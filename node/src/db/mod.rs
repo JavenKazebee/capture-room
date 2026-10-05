@@ -171,7 +171,8 @@ pub async fn sessions_list(pool: &SqlitePool, before: Option<&str>, limit: u32) 
     Ok(rows)
 }
 
-/// Remove a session from history. Its files are left alone.
+/// Remove a session from history. Its files are left alone; the API deletes
+/// them first when asked to.
 pub async fn session_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
     let res = sqlx::query("DELETE FROM recording_sessions WHERE id = ?").bind(id).execute(pool).await?;
     Ok(res.rows_affected() > 0)

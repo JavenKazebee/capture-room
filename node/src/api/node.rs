@@ -55,7 +55,10 @@ pub fn router() -> Router<Arc<AppState>> {
         )
         .route("/recordings", get(get_recordings).post(post_recording))
         .route("/recordings/{id}", get(get_recording).delete(delete_recording))
-        .route("/recordings/{id}/outputs/{output}/files/{file}", get(get_recording_file))
+        .route(
+            "/recordings/{id}/outputs/{output}/files/{file}",
+            get(get_recording_file).delete(delete_recording_file),
+        )
         .route("/recordings/{id}/stop", post(post_stop_recording))
         .route("/benchmarks", get(get_benchmarks).post(post_benchmark))
         .route("/benchmarks/{id}", get(get_benchmark).delete(delete_benchmark))
@@ -273,16 +276,103 @@ async fn get_recording(
     session.map(Json).ok_or(SESSION_NOT_FOUND)
 }
 
-/// Remove a finished session from history. Its files stay on disk.
-async fn delete_recording(State(state): State<Arc<AppState>>, AxumPath(id): AxumPath<String>) -> ApiResult<StatusCode> {
-    if state.source_manager.read().await.active_sessions().iter().any(|s| s.id == id) {
+/// Serializes edits to finished sessions' files, so two deletes can't both
+/// read a file list and each write back a copy missing only their own file.
+static FILE_EDITS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn is_active(state: &AppState, id: &str) -> bool {
+    state.source_manager.read().await.active_sessions().iter().any(|s| s.id == id)
+}
+
+#[derive(Deserialize)]
+struct DeleteRecordingQuery {
+    /// Present (any value) to delete the session's files from disk too.
+    files: Option<String>,
+}
+
+/// Remove a finished session from history; with `?files`, delete its files
+/// from disk first. If any can't be deleted the session stays, listing just
+/// the files still on disk, so none drop out of sight.
+async fn delete_recording(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Query(q): Query<DeleteRecordingQuery>,
+) -> ApiResult<StatusCode> {
+    if is_active(&state, &id).await {
         return Err(ApiError::Conflict("stop the recording before removing it"));
+    }
+    let _edit = FILE_EDITS.lock().await;
+    if q.files.is_some() {
+        let mut session = db::session_get(&state.db, &id).await?.ok_or(SESSION_NOT_FOUND)?;
+        let mut files = session_files(&session);
+        let mut failed = Vec::new();
+        for output in &mut files {
+            let mut kept = Vec::new();
+            for path in output.drain(..) {
+                if let Err(e) = remove_recording_file(&path).await {
+                    failed.push(format!("{path} ({e})"));
+                    kept.push(path);
+                }
+            }
+            *output = kept;
+        }
+        if !failed.is_empty() {
+            db::session_update_files(&state.db, &id, &files).await?;
+            session.files = files;
+            state.emit(&WsEvent::RecordingUpdated { session: Box::new(session) });
+            return Err(anyhow::anyhow!("could not delete {}", failed.join(", ")).into());
+        }
+        info!(session = %id, "deleted recording files");
     }
     if !db::session_delete(&state.db, &id).await? {
         return Err(SESSION_NOT_FOUND);
     }
     state.emit(&WsEvent::RecordingRemoved { session_id: id });
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct DeleteFileQuery {
+    /// The file's path as the client saw it. Indexes shift as files are
+    /// deleted, so a stale index is refused rather than deleting another file.
+    path: String,
+}
+
+/// Delete one of a finished session's files from disk and from its list. The
+/// session stays in history, even once it has no files left.
+async fn delete_recording_file(
+    State(state): State<Arc<AppState>>,
+    AxumPath((id, output, file)): AxumPath<(String, usize, usize)>,
+    Query(q): Query<DeleteFileQuery>,
+) -> ApiResult<Json<RecordingSessionDto>> {
+    if is_active(&state, &id).await {
+        return Err(ApiError::Conflict("stop the recording before deleting its files"));
+    }
+    let _edit = FILE_EDITS.lock().await;
+    let mut session = db::session_get(&state.db, &id).await?.ok_or(SESSION_NOT_FOUND)?;
+    let mut files = session_files(&session);
+    let list = files
+        .get_mut(output)
+        .filter(|l| file < l.len())
+        .ok_or(ApiError::NotFound("no such file in this session"))?;
+    if list[file] != q.path {
+        return Err(ApiError::Conflict("this session's files changed: refresh and try again"));
+    }
+    let path = list.remove(file);
+    remove_recording_file(&path).await.with_context(|| format!("delete {path}"))?;
+    info!(session = %id, path = %path, "deleted recording file");
+    db::session_update_files(&state.db, &id, &files).await?;
+    session.files = files;
+    state.emit(&WsEvent::RecordingUpdated { session: Box::new(session.clone()) });
+    Ok(Json(session))
+}
+
+/// Delete one recorded file; one already gone counts as deleted.
+async fn remove_recording_file(path: &str) -> std::io::Result<()> {
+    match tokio::fs::remove_file(path).await {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        r => r,
+    }
 }
 
 #[derive(Deserialize)]
@@ -300,7 +390,7 @@ async fn get_recording_file(
     Query(q): Query<FileQuery>,
     req: Request,
 ) -> ApiResult<Response> {
-    if state.source_manager.read().await.active_sessions().iter().any(|s| s.id == id) {
+    if is_active(&state, &id).await {
         return Err(ApiError::Conflict("still recording: files can be played once the recording stops"));
     }
     let session = db::session_get(&state.db, &id).await?.ok_or(SESSION_NOT_FOUND)?;
@@ -330,15 +420,23 @@ async fn get_recording_file(
     Ok(resp)
 }
 
-/// The path of a session's `file`th file from output `output`: each output's
-/// recorded files, or its one planned path for sessions from before files
-/// were kept (or a leg that never opened one).
+/// Each output's files: those it recorded, or its one planned path for
+/// sessions from before files were kept. An output can have none: a leg that
+/// never opened a file, or one whose files were all deleted.
+fn session_files(session: &RecordingSessionDto) -> Vec<Vec<String>> {
+    if session.files.is_empty() {
+        session.output_paths.iter().map(|p| vec![p.clone()]).collect()
+    } else {
+        session.files.clone()
+    }
+}
+
+/// The path of a session's `file`th file from output `output` (see [`session_files`]).
 fn session_file(session: &RecordingSessionDto, output: usize, file: usize) -> Option<PathBuf> {
-    let files = session.files.get(output).filter(|f| !f.is_empty());
-    let path = match files {
-        Some(files) => files.get(file)?,
-        None if file == 0 => session.output_paths.get(output)?,
-        None => return None,
+    let path = if session.files.is_empty() {
+        session.output_paths.get(output).filter(|_| file == 0)?
+    } else {
+        session.files.get(output)?.get(file)?
     };
     Some(PathBuf::from(path))
 }
@@ -729,6 +827,15 @@ mod tests {
         let s = session(&["/a.mov"], Vec::new());
         assert_eq!(session_file(&s, 0, 0), Some(PathBuf::from("/a.mov")));
         assert_eq!(session_file(&s, 0, 1), None);
+    }
+
+    #[test]
+    fn an_output_without_files_has_none() {
+        // All of its files deleted: the planned path mustn't stand in for them.
+        let s = session(&["/a.mov", "/b.mov"], vec![vec![], vec!["/b.mov"]]);
+        assert_eq!(session_file(&s, 0, 0), None);
+        assert_eq!(session_files(&s), vec![Vec::<String>::new(), vec!["/b.mov".to_string()]]);
+        assert_eq!(session_file(&s, 1, 0), Some(PathBuf::from("/b.mov")));
     }
 
     #[test]

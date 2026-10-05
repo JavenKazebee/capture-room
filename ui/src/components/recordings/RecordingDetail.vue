@@ -29,17 +29,30 @@ const live = computed(() => s.value.status === 'active')
 
 // ── Player ────────────────────────────────────────────────────────────────────
 
-/** The file playing: an output and one of its files (a split output has several). */
-const playing = ref<{ output: number; file: number } | null>(
-  previewOutput(props.session) === -1 ? null : { output: previewOutput(props.session), file: 0 },
+/**
+ * The file playing: an output and one of its files (a split output has
+ * several), by path, since deleting a file shifts the indexes after it.
+ */
+const playing = ref<{ output: number; path: string } | null>(initialPlaying())
+function initialPlaying() {
+  const output = previewOutput(props.session)
+  const path = output === -1 ? undefined : outputFiles(props.session, output)[0]
+  return path === undefined ? null : { output, path }
+}
+/** The playing file's index in its output, `-1` once it's been deleted. */
+const playingFile = computed(() =>
+  playing.value ? (outputs.value[playing.value.output]?.files.indexOf(playing.value.path) ?? -1) : -1,
 )
+const playingDeleted = computed(() => !!playing.value && playingFile.value === -1)
 const playError = ref(false)
 const video = ref<HTMLVideoElement>()
 /** Starts playback as soon as a file loads — only once someone picks a file, not on open. */
 const autoplay = ref(false)
 
 const playingUrl = computed(() =>
-  playing.value && !live.value ? recordingFileUrl(s.value.node_id, s.value.id, playing.value.output, playing.value.file) : null,
+  playing.value && !live.value && playingFile.value !== -1
+    ? recordingFileUrl(s.value.node_id, s.value.id, playing.value.output, playingFile.value)
+    : null,
 )
 
 /** What the player shows, for the caption under it. */
@@ -47,28 +60,29 @@ const playingCaption = computed(() => {
   if (!playingUrl.value || !playing.value) return null
   const o = outputs.value[playing.value.output]
   if (!o) return null
-  const file = o.files[playing.value.file]
   return {
     output: o.name,
-    file: file ? fileName(file) : '',
-    part: o.files.length > 1 ? `${playing.value.file + 1} of ${o.files.length}` : null,
+    file: fileName(playing.value.path),
+    part: o.files.length > 1 ? `${playingFile.value + 1} of ${o.files.length}` : null,
   }
 })
 
 function play(output: number, file: number) {
   if (!canPlay(output)) return
-  if (playing.value?.output === output && playing.value.file === file && video.value && !playError.value) {
+  if (isPlaying(output, file) && video.value && !playError.value) {
     // Already loaded: play it from the start.
     video.value.currentTime = 0
     void video.value.play()
     return
   }
-  playing.value = { output, file }
+  const path = outputs.value[output]?.files[file]
+  if (path === undefined) return
+  playing.value = { output, path }
   playError.value = false
   autoplay.value = true
 }
 
-const isPlaying = (output: number, file: number) => !live.value && playing.value?.output === output && playing.value.file === file
+const isPlaying = (output: number, file: number) => !live.value && playing.value?.output === output && playingFile.value === file
 
 const canPlay = (output: number) => !live.value && !!s.value.outputs[output]?.playable
 
@@ -142,9 +156,13 @@ const outputs = computed(() =>
 
 const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path
 
-// ── Remove ────────────────────────────────────────────────────────────────────
+// ── Remove / delete ───────────────────────────────────────────────────────────
 
 const confirmRemove = ref(false)
+const confirmDeleteAll = ref(false)
+
+const fileCount = computed(() => outputs.value.reduce((n, o) => n + o.files.length, 0))
+const filesLabel = (n: number) => `${n} file${n === 1 ? '' : 's'}`
 
 async function remove() {
   try {
@@ -152,6 +170,36 @@ async function remove() {
     toast.success('Removed from history', { description: 'Its files are still on disk.' })
   } catch (e) {
     notifyError('Could not remove the recording', e, s.value.node_id)
+  }
+}
+
+async function deleteAll() {
+  const count = fileCount.value
+  try {
+    await recordings.remove(s.value.node_id, s.value.id, { files: true })
+    toast.success(`Deleted ${filesLabel(count)}`, { description: 'The recording was removed from history.' })
+  } catch (e) {
+    notifyError('Could not delete every file. The recording stays, listing those left', e, s.value.node_id)
+  }
+}
+
+/** The single file awaiting confirmation to delete. */
+const deleting = ref<{ output: number; file: number; path: string } | null>(null)
+const confirmDeleteFile = computed({
+  get: () => deleting.value !== null,
+  set: (open) => {
+    if (!open) deleting.value = null
+  },
+})
+
+async function deleteFile() {
+  const d = deleting.value
+  if (!d) return
+  try {
+    await recordings.deleteFile(s.value.node_id, s.value.id, d.output, d.file, d.path)
+    toast.success(`Deleted ${fileName(d.path)}`)
+  } catch (e) {
+    notifyError(`Could not delete ${fileName(d.path)}`, e, s.value.node_id)
   }
 }
 </script>
@@ -180,7 +228,8 @@ async function remove() {
             @error="playError = true"
           />
           <p v-else class="px-6 text-center text-xs text-zinc-400">
-            <template v-if="playError">
+            <template v-if="playingDeleted">This file was deleted.</template>
+            <template v-else-if="playError">
               This file couldn't be played. It may have been moved or deleted, or still be open from a crash.
             </template>
             <template v-else>{{ noPreview }}</template>
@@ -261,12 +310,25 @@ async function remove() {
                   </TooltipTrigger>
                   <TooltipContent>Download</TooltipContent>
                 </Tooltip>
+                <Tooltip v-if="!live">
+                  <TooltipTrigger as-child>
+                    <button
+                      class="icon-btn hover:text-destructive!"
+                      :aria-label="`Delete ${fileName(f)}`"
+                      @click.stop="deleting = { output: i, file: j, path: f }"
+                    >
+                      <Trash2 class="size-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>Delete file</TooltipContent>
+                </Tooltip>
               </li>
+              <li v-if="!o.files.length" class="px-2.5 py-1 text-xs italic text-muted-foreground/60">No files</li>
             </ul>
           </div>
         </section>
 
-        <div class="pt-2 border-t border-border">
+        <div class="pt-2 border-t border-border flex flex-wrap gap-2">
           <Tooltip>
             <TooltipTrigger as-child>
               <!-- Wrapped so the tooltip still shows while the button is disabled. -->
@@ -286,6 +348,18 @@ async function remove() {
               {{ live ? 'Stop the recording first' : "Removes the session from this list. Its files stay on disk." }}
             </TooltipContent>
           </Tooltip>
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <span class="inline-block">
+                <Button variant="destructive" size="sm" class="h-7 gap-1.5 text-xs" :disabled="live" @click="confirmDeleteAll = true">
+                  <Trash2 class="size-3.5" /> Delete files
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              {{ live ? 'Stop the recording first' : 'Deletes every file from disk and removes the session from history.' }}
+            </TooltipContent>
+          </Tooltip>
         </div>
       </div>
     </div>
@@ -296,6 +370,20 @@ async function remove() {
       description="The session disappears from Recordings on every client. Its files are not deleted and stay on disk."
       confirm-label="Remove"
       @confirm="remove"
+    />
+    <ConfirmDialog
+      v-model:open="confirmDeleteAll"
+      :title="`Delete ${recordings.sourceNameOf(s)}'s recording and its files?`"
+      :description="`${filesLabel(fileCount)} on ${nodes.labelOf(s.node_id)} will be permanently deleted from disk, and the session removed from Recordings on every client. This can't be undone.`"
+      :confirm-label="`Delete ${filesLabel(fileCount)}`"
+      @confirm="deleteAll"
+    />
+    <ConfirmDialog
+      v-model:open="confirmDeleteFile"
+      :title="`Delete ${deleting ? fileName(deleting.path) : ''}?`"
+      :description="`The file will be permanently deleted from ${nodes.labelOf(s.node_id)}'s disk. This can't be undone. The session stays in history.`"
+      confirm-label="Delete file"
+      @confirm="deleteFile"
     />
   </aside>
 </template>

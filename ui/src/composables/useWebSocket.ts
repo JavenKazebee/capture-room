@@ -113,6 +113,10 @@ function handleEvent(event: NodeEvent) {
       recordings.removeLocal(nodeId, event.session_id)
       break
 
+    case 'recording.updated':
+      recordings.upsert(nodeId, event.session)
+      break
+
     case 'recording.stats':
       recordings.setStats(nodeId, event.session_id, event.dropped_frames, event.files)
       break

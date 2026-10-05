@@ -15,10 +15,15 @@ import type { StartRecordingRequest } from '@/types/generated/StartRecordingRequ
  */
 export type RecordingSession = RecordingSessionDto & { node_id: string }
 
-/** Each output's files: its one path, or every file a split output wrote. */
-export function outputFiles(s: Pick<RecordingSessionDto, 'output_paths' | 'files'>, i: number): string[] {
-  const files = s.files[i]
-  return files?.length ? files : [s.output_paths[i]!]
+/**
+ * Each output's files: every file it wrote (none once they're all deleted), or
+ * its planned path while it hasn't opened one yet or for sessions from before
+ * files were kept.
+ */
+export function outputFiles(s: Pick<RecordingSessionDto, 'output_paths' | 'files' | 'status'>, i: number): string[] {
+  if (!s.files.length) return [s.output_paths[i]!]
+  const files = s.files[i] ?? []
+  return files.length || s.status !== 'active' ? files : [s.output_paths[i]!]
 }
 
 /**
@@ -171,10 +176,35 @@ export const useRecordingsStore = defineStore('recordings', () => {
     }
   }
 
-  /** Remove a finished session from history; its files stay on disk. */
-  async function remove(nodeId: string, sessionId: string) {
-    await nodeApi(nodeId)(`/recordings/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+  /**
+   * Remove a finished session from history. With `files`, its files are
+   * deleted from disk first; if some can't be, the session stays, listing
+   * only those still on disk.
+   */
+  async function remove(nodeId: string, sessionId: string, { files = false } = {}) {
+    const path = `/recordings/${encodeURIComponent(sessionId)}`
+    try {
+      await nodeApi(nodeId)(path, { method: 'DELETE', query: files ? { files: 1 } : undefined })
+    } catch (e) {
+      if (files) {
+        const dto = await nodeApi(nodeId)<RecordingSessionDto>(path).catch(() => null)
+        if (dto) upsert(nodeId, dto)
+      }
+      throw e
+    }
     removeLocal(nodeId, sessionId)
+  }
+
+  /**
+   * Delete one of a finished session's files from disk; the session stays.
+   * `path` guards against the list having changed since it was shown.
+   */
+  async function deleteFile(nodeId: string, sessionId: string, output: number, file: number, path: string) {
+    const dto = await nodeApi(nodeId)<RecordingSessionDto>(
+      `/recordings/${encodeURIComponent(sessionId)}/outputs/${output}/files/${file}`,
+      { method: 'DELETE', query: { path } },
+    )
+    upsert(nodeId, dto)
   }
 
   function removeLocal(nodeId: string, sessionId: string) {
@@ -241,6 +271,7 @@ export const useRecordingsStore = defineStore('recordings', () => {
     loadingOlder,
     loadOlder,
     remove,
+    deleteFile,
     removeLocal,
     sourceNameOf,
     presetNameOf,

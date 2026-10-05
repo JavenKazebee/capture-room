@@ -63,8 +63,11 @@ const statusDot = { active: 'tally', stopped: 'off', error: 'error' } as const
           <td class="min-w-0">
             <div v-for="(p, i) in s.output_paths" :key="p" class="min-w-0">
               <div class="flex items-center gap-1 min-w-0">
-                <span class="num truncate text-muted-foreground" :title="outputFiles(s, i)[0]">{{ outputFiles(s, i)[0] }}</span>
-                <CopyButton :value="outputFiles(s, i)[0]!" />
+                <template v-if="outputFiles(s, i)[0]">
+                  <span class="num truncate text-muted-foreground" :title="outputFiles(s, i)[0]">{{ outputFiles(s, i)[0] }}</span>
+                  <CopyButton :value="outputFiles(s, i)[0]!" />
+                </template>
+                <span v-else class="text-muted-foreground/60 italic">No files</span>
                 <span
                   v-if="s.dropped_frames[i]"
                   class="num shrink-0 text-warning"
