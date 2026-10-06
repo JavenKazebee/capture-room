@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::api::types::{NodeDto, NodeStatus};
+use crate::api::types::{NodeDto, NodeStatus, SourceTypeSupport};
 
 #[derive(Clone)]
 pub struct NodeEntry {
@@ -19,6 +19,8 @@ pub struct NodeEntry {
     pub manual: bool,
     /// Video encoders the node reported; see `NodeStatus::encoders`.
     pub encoders: Vec<String>,
+    /// See `NodeStatus::source_types`.
+    pub source_types: Vec<SourceTypeSupport>,
     /// Stops this node's WS relay. Cancelled when the entry is removed, so a
     /// node that is removed and re-added never ends up with two relays.
     pub relay: CancellationToken,
@@ -36,6 +38,7 @@ impl From<&NodeEntry> for NodeDto {
             is_self: false,
             manual: n.manual,
             encoders: n.encoders.clone(),
+            source_types: n.source_types.clone(),
         }
     }
 }
@@ -93,6 +96,7 @@ impl NodeRegistry {
         e.uptime_secs = status.uptime_secs;
         e.version = status.version.clone();
         e.encoders = status.encoders.clone();
+        e.source_types = status.source_types.clone();
         recovered
     }
 

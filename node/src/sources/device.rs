@@ -8,7 +8,7 @@ use tracing::warn;
 use super::live::{self, LinkTracker, LiveAudio, LiveInput};
 use super::InputSource;
 use crate::api::types::{
-    AudioPlan, DeviceDto, DeviceKind, DeviceSourceConfig, LinkState, LiveVideoFormat,
+    AudioPlan, DeviceDto, DeviceKind, DeviceMode, DeviceSourceConfig, LinkState, LiveVideoFormat,
     SourceCapabilitiesDto, SourceType,
 };
 use crate::pipeline::{capsfilter, make_el};
@@ -17,8 +17,8 @@ use crate::pipeline::{capsfilter, make_el};
 /// Windows; macOS lists them as video sources.
 const CLASSES: &[&str] = &["Video/Source", "Audio/Source", "Source/Monitor"];
 
-/// Formats listed per video device, at most.
-const MAX_FORMATS: usize = 12;
+/// Modes listed per video device, at most.
+const MAX_MODES: usize = 32;
 
 // ── Device monitor ────────────────────────────────────────────────────────────
 
@@ -50,14 +50,19 @@ impl LocalDevices {
 
     pub fn list(&self) -> Vec<DeviceDto> {
         let mut seen = BTreeSet::new();
-        self.monitor
-            .devices()
+        let devices = self.monitor.devices();
+        let has_pulse = devices.iter().any(is_pulse);
+        let mut list: Vec<(bool, DeviceDto)> = devices
             .into_iter()
             .filter(usable)
-            .map(|d| describe(&d))
+            .filter(|d| !(has_pulse && is_alsa(d)))
+            .map(|d| (is_monitor(&d), describe(&d)))
             // A device two providers both list keeps its first entry.
-            .filter(|d| seen.insert(d.key.clone()))
-            .collect()
+            .filter(|(_, d)| seen.insert(d.key.clone()))
+            .collect();
+        // Real inputs before monitors of outputs (what the machine plays).
+        list.sort_by_key(|(monitor, _)| *monitor);
+        list.into_iter().map(|(_, d)| d).collect()
     }
 
     fn find(&self, key: &str) -> Option<gst::Device> {
@@ -180,6 +185,24 @@ fn device_key(device: &gst::Device) -> String {
     )
 }
 
+fn is_pulse(device: &gst::Device) -> bool {
+    device.type_().name().starts_with("GstPulse")
+}
+
+/// ALSA's raw devices duplicate PulseAudio's, and opening one directly
+/// would fight the sound server for the card.
+fn is_alsa(device: &gst::Device) -> bool {
+    device.type_().name().starts_with("GstAlsa")
+}
+
+/// A monitor of an audio output: the sound the machine plays.
+fn is_monitor(device: &gst::Device) -> bool {
+    device
+        .properties()
+        .and_then(|p| p.get::<String>("device.class").ok())
+        .is_some_and(|c| c == "monitor")
+}
+
 fn kind(device: &gst::Device) -> DeviceKind {
     let class = device.device_class();
     if class.contains("Monitor") || device.display_name().to_lowercase().contains("screen") {
@@ -205,35 +228,69 @@ fn describe(device: &gst::Device) -> DeviceDto {
         .unwrap_or_default();
     let caps = device.caps();
     let kind = kind(device);
-    let mut formats = Vec::new();
+    let mut modes: Vec<DeviceMode> = Vec::new();
     let mut channels = None;
     for s in caps.iter().flat_map(|c| c.iter()) {
         if s.name().starts_with("audio/") {
-            channels = channels.max(max_int(s, "channels"));
-        } else if let (Some(w), Some(h)) = (max_int(s, "width"), max_int(s, "height")) {
-            let fps = max_fraction(s, "framerate")
-                .map(|f| format!(" {}fps", (f.numer() as f64 / f.denom() as f64).round()))
-                .unwrap_or_default();
-            let format = match s.get::<&str>("format") {
-                Ok(f) => format!(" {f}"),
-                Err(_) if s.name() != "video/x-raw" => {
-                    format!(" {}", s.name().trim_start_matches("image/"))
-                }
-                Err(_) => String::new(),
-            };
-            let entry = format!("{w}x{h}{fps}{format}");
-            if !formats.contains(&entry) && formats.len() < MAX_FORMATS {
-                formats.push(entry);
+            // A fixed count; a range (PulseAudio's 1–32) says nothing.
+            channels = channels.max(s.get::<i32>("channels").ok().map(|c| c as u32));
+            continue;
+        }
+        let (Some(width), Some(height)) = (max_int(s, "width"), max_int(s, "height")) else {
+            continue;
+        };
+        let format = match s.get::<&str>("format") {
+            Ok(f) => f.to_string(),
+            Err(_) => s.name().trim_start_matches("image/").to_string(),
+        };
+        let rates = rates(s);
+        let rates = if rates.is_empty() {
+            vec![(0, 1)]
+        } else {
+            rates
+        };
+        for (fps_num, fps_den) in rates {
+            match modes.iter_mut().find(|m| {
+                (m.width, m.height, m.fps_num, m.fps_den) == (width, height, fps_num, fps_den)
+            }) {
+                Some(m) if !m.formats.contains(&format) => m.formats.push(format.clone()),
+                Some(_) => {}
+                None => modes.push(DeviceMode {
+                    width,
+                    height,
+                    fps_num,
+                    fps_den,
+                    formats: vec![format.clone()],
+                }),
             }
         }
     }
+    // Largest and fastest first.
+    modes.sort_by(|a, b| {
+        let fps = |m: &DeviceMode| m.fps_num as f64 / m.fps_den.max(1) as f64;
+        (b.width * b.height)
+            .cmp(&(a.width * a.height))
+            .then(fps(b).total_cmp(&fps(a)))
+    });
+    modes.truncate(MAX_MODES);
+    // The device's own count, where the caps only give a range.
+    let declared = props.as_ref().and_then(|p| {
+        p.get::<String>("audio.channels")
+            .ok()
+            .and_then(|c| c.parse().ok())
+            .or_else(|| p.get::<i32>("audio.channels").ok().map(|c| c as u32))
+    });
+    let channels = match kind {
+        DeviceKind::Audio => declared.or(channels).or(Some(2)),
+        _ => None,
+    };
     DeviceDto {
         key: device_key(device),
         name: device.display_name().to_string(),
         kind,
         api,
         channels,
-        formats,
+        modes,
     }
 }
 
@@ -256,23 +313,27 @@ fn max_int(s: &gst::StructureRef, name: &str) -> Option<u32> {
     None
 }
 
-fn max_fraction(s: &gst::StructureRef, name: &str) -> Option<gst::Fraction> {
-    let v = s.value(name).ok()?;
+/// The frame rates a caps structure offers: each of a list, or the top of
+/// a range.
+fn rates(s: &gst::StructureRef) -> Vec<(u32, u32)> {
+    let Ok(v) = s.value("framerate") else {
+        return Vec::new();
+    };
+    let frac = |f: gst::Fraction| (f.numer().max(0) as u32, f.denom().max(1) as u32);
     if let Ok(f) = v.get::<gst::Fraction>() {
-        return Some(f);
+        return vec![frac(f)];
     }
     if let Ok(r) = v.get::<gst::FractionRange>() {
-        return Some(r.max());
+        return vec![frac(r.max())];
     }
     if let Ok(l) = v.get::<gst::List>() {
         return l
             .iter()
             .filter_map(|v| v.get::<gst::Fraction>().ok())
-            .max_by(|a, b| {
-                (a.numer() as i64 * b.denom() as i64).cmp(&(b.numer() as i64 * a.denom() as i64))
-            });
+            .map(frac)
+            .collect();
     }
-    None
+    Vec::new()
 }
 
 // ── Capture element ───────────────────────────────────────────────────────────
@@ -417,6 +478,11 @@ pub fn validate(cfg: &mut DeviceSourceConfig, devices: &LocalDevices) -> Result<
         return Err(format!("{} is an audio device", device.name));
     }
     cfg.video_device_name = device.name;
+    if let Some(f) = &cfg.format {
+        if f.width == 0 || f.height == 0 || f.fps_num == 0 || f.fps_den == 0 {
+            return Err("the format needs a size and frame rate".into());
+        }
+    }
     validate_audio(&cfg.audio, devices)
 }
 

@@ -289,7 +289,20 @@ pub struct DeviceDto {
     pub api: String,
     /// Audio devices: input channels.
     pub channels: Option<u32>,
-    /// Video devices: the formats offered, like `1920x1080 60fps YUY2`.
+    /// Video devices: the sizes and rates offered, largest first.
+    pub modes: Vec<DeviceMode>,
+}
+
+/// A size and rate a video device offers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct DeviceMode {
+    pub width: u32,
+    pub height: u32,
+    /// 0/1 when the device doesn't say.
+    pub fps_num: u32,
+    pub fps_den: u32,
+    /// Pixel formats it comes in (`YUY2`, `NV12`; `jpeg` for MJPEG).
     pub formats: Vec<String>,
 }
 
@@ -1035,6 +1048,9 @@ pub struct NodeDto {
     pub manual: bool,
     /// See [`NodeStatus::encoders`]. Empty until the node has answered.
     pub encoders: Vec<String>,
+    /// See [`NodeStatus::source_types`]. Empty until the node has answered.
+    #[serde(default)]
+    pub source_types: Vec<SourceTypeSupport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

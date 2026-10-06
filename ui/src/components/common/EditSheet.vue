@@ -20,6 +20,8 @@ defineProps<{
   error?: string | null
   saving?: boolean
   wide?: boolean
+  /** Hide Save, for a step that has nothing to save yet. */
+  noSave?: boolean
 }>()
 
 const emit = defineEmits<{ close: []; save: [] }>()
@@ -44,7 +46,7 @@ const emit = defineEmits<{ close: []; save: [] }>()
       <SheetFooter class="border-t border-border flex-row items-center justify-end gap-2">
         <p v-if="error" class="mr-auto text-xs text-destructive">{{ error }}</p>
         <Button variant="outline" :disabled="saving" @click="emit('close')">Cancel</Button>
-        <Button :disabled="saving" class="gap-1.5" @click="emit('save')">
+        <Button v-if="!noSave" :disabled="saving" class="gap-1.5" @click="emit('save')">
           <Loader2 v-if="saving" class="size-3.5 animate-spin" />
           Save
         </Button>

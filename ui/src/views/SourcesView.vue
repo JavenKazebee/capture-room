@@ -2,8 +2,8 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { FolderOpen, Pencil, Plus, Radio, RefreshCw, Trash2 } from '@lucide/vue'
-import { CONFIGURED_TYPES, useSourcesStore, type Source } from '@/stores/sources'
+import { ChevronLeft, FolderOpen, Pencil, Plus, Radio, RefreshCw, Trash2 } from '@lucide/vue'
+import { CONFIGURED_TYPES, useSourcesStore, type ConfiguredKind, type Source } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordingsStore } from '@/stores/recordings'
 import { useRecordDeskStore } from '@/stores/recordDesk'
@@ -34,6 +34,16 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import FileBrowseDialog from '@/components/sources/FileBrowseDialog.vue'
+import SourceTypeCards from '@/components/sources/SourceTypeCards.vue'
+import StreamFields from '@/components/sources/StreamFields.vue'
+import DeviceFields from '@/components/sources/DeviceFields.vue'
+import WhipFields from '@/components/sources/WhipFields.vue'
+import { useNodeDevices } from '@/composables/useNodeDevices'
+import { LINK } from '@/lib/linkState'
+import { FRAMERATES, FRAMERATE_OPTIONS, RESOLUTIONS, RESOLUTION_OPTIONS } from '@/lib/videoPresets'
+import type { StreamSourceConfig } from '@/types/generated/StreamSourceConfig'
+import type { DeviceSourceConfig } from '@/types/generated/DeviceSourceConfig'
+import type { WhipSourceConfig } from '@/types/generated/WhipSourceConfig'
 import { useStorage } from '@vueuse/core'
 
 const store = useSourcesStore()
@@ -50,16 +60,27 @@ const groupByNode = useStorage('cr.sources.groupByNode', true)
 
 // ── Table ─────────────────────────────────────────────────────────────────────
 
-type Status = { key: 'live' | 'failed' | 'ok' | 'off'; label: string; dot: 'tally' | 'error' | 'ok' | 'off' }
+type Status = {
+  key: 'live' | 'failed' | 'signal' | 'ok' | 'off'
+  label: string
+  dot: 'tally' | 'error' | 'warn' | 'ok' | 'off'
+  /** A live source that isn't delivering frames, while recording. */
+  note?: { label: string; dot: 'warn' | 'off' }
+}
 
 function status(s: Source): Status {
-  if (recordings.activeForSource(s.node_id, s.id)) return { key: 'live', label: 'Recording', dot: 'tally' }
+  const link = s.connected && s.link ? LINK[s.link] : null
+  if (recordings.activeForSource(s.node_id, s.id)) {
+    const note = link && link.dot !== 'ok' ? { label: link.label, dot: link.dot } : undefined
+    return { key: 'live', label: 'Recording', dot: 'tally', note }
+  }
   if (s.error) return { key: 'failed', label: 'Failed', dot: 'error' }
+  if (link) return { key: link.dot === 'ok' ? 'ok' : link.dot === 'warn' ? 'signal' : 'off', label: link.label, dot: link.dot }
   if (s.connected) return { key: 'ok', label: 'Connected', dot: 'ok' }
   return { key: 'off', label: 'Not connected', dot: 'off' }
 }
 
-const STATUS_ORDER = { live: 0, failed: 1, ok: 2, off: 3 }
+const STATUS_ORDER = { live: 0, failed: 1, signal: 2, ok: 3, off: 4 }
 
 const columns: Column<Source>[] = [
   { id: 'status', label: 'Status', value: (s) => STATUS_ORDER[status(s).key], class: 'w-px' },
@@ -83,21 +104,31 @@ function openInRecord(s: Source) {
 
 // ── Source form ───────────────────────────────────────────────────────────────
 
-type Kind = ConfiguredSourceRequest['config']['type']
+type Kind = ConfiguredKind
 
-const KIND_OPTIONS: { value: Kind; label: string }[] = [
-  { value: 'test', label: 'Test pattern' },
-  { value: 'file', label: 'Media file (looping)' },
-]
+const NAME_PLACEHOLDERS: Record<Kind, string> = {
+  test: 'Camera 1 sim',
+  file: 'Camera 1 footage',
+  stream: 'Stage cam (RTSP)',
+  device: 'Cam Link 1',
+  whip: 'Remote guest',
+}
+
+/** As they read after "New" / "Edit". */
+const KIND_TITLES: Record<Kind, string> = {
+  test: 'test pattern',
+  file: 'media file',
+  stream: 'network stream',
+  device: 'capture device',
+  whip: 'WHIP ingest',
+}
 
 const KIND_DESCRIPTIONS: Record<Kind, string> = {
   test: 'A synthetic feed: a video pattern plus a test audio signal.',
   file: "A media file on the node's disk, played in a loop as a live feed.",
-  // Not in the add menu yet: authored through the API until the Sources
-  // view pass.
-  stream: 'A network stream: RTSP, SRT, RTMP, HLS or UDP.',
-  device: 'A capture device on the node, with audio from another device.',
-  whip: 'WebRTC pushed to the node over WHIP (OBS, browsers).',
+  stream: 'A network stream. If it drops, the feed plays black and silence and recordings keep going until it reconnects.',
+  device: 'A camera, capture card or screen on the node, with audio from one of its audio inputs.',
+  whip: 'An endpoint on the node that OBS or a browser publishes WebRTC to. Black and silence while nobody publishes.',
 }
 
 const showForm = ref(false)
@@ -122,28 +153,6 @@ const AUDIO_SIGNALS: { value: AudioTestSignal; label: string }[] = [
   { value: 'pink-noise', label: 'Pink noise' },
 ]
 
-const RESOLUTIONS = [
-  { w: 1920, h: 1080, label: '1080p' },
-  { w: 1280, h: 720,  label: '720p' },
-  { w: 3840, h: 2160, label: '4K UHD' },
-  { w: 720,  h: 576,  label: 'SD PAL' },
-  { w: 720,  h: 486,  label: 'SD NTSC' },
-]
-const RESOLUTION_OPTIONS = RESOLUTIONS.map((r) => ({
-  value: `${r.w}x${r.h}`,
-  label: `${r.label} (${r.w}×${r.h})`,
-}))
-
-const FRAMERATES = [
-  { n: 25,    d: 1,    label: '25 fps' },
-  { n: 30,    d: 1,    label: '30 fps' },
-  { n: 50,    d: 1,    label: '50 fps' },
-  { n: 60,    d: 1,    label: '60 fps' },
-  { n: 24000, d: 1001, label: '23.976 fps' },
-  { n: 30000, d: 1001, label: '29.97 fps' },
-]
-const FRAMERATE_OPTIONS = FRAMERATES.map((r) => ({ value: `${r.n}/${r.d}`, label: r.label }))
-
 const CHANNEL_OPTIONS = [
   { value: 1, label: 'Mono' },
   { value: 2, label: 'Stereo' },
@@ -166,13 +175,55 @@ function blankTest(): TestSourceConfig {
   }
 }
 
-const kind = ref<Kind>('test')
+/** `null` while picking the type of a new source. */
+const kind = ref<Kind | null>('test')
 const name = ref('')
 const form = reactive<TestSourceConfig>(blankTest())
 const filePath = ref('')
 /** What the node found in the file when it was last saved. */
 const fileMedia = ref<MediaInfo | null>(null)
 const browsing = ref(false)
+
+function blankStream(): StreamSourceConfig {
+  return { url: '', latency_ms: 200, rtsp_transport: 'auto', audio: { from: 'source', channels: 2 }, format: null }
+}
+function blankDevice(): DeviceSourceConfig {
+  return { video_device: '', video_device_name: '', audio: { from: 'silence', channels: 2 }, format: null }
+}
+function blankWhip(): WhipSourceConfig {
+  return { port: 8890, audio: { from: 'source', channels: 2 }, format: null }
+}
+const stream = ref<StreamSourceConfig>(blankStream())
+const device = ref<DeviceSourceConfig>(blankDevice())
+const whip = ref<WhipSourceConfig>(blankWhip())
+
+const formNode = computed(() => nodesStore.nodes.find((n) => n.id === formNodeId.value))
+/** The node's address as senders on the network see it. */
+const formHost = computed(() => {
+  const url = formNode.value?.url
+  if (url) {
+    try {
+      return new URL(url).hostname
+    } catch {
+      // Fall through to the UI's own host.
+    }
+  }
+  return window.location.hostname
+})
+const protocols = computed(
+  () => formNode.value?.source_types.find((t) => t.source_type === 'stream')?.protocols ?? ['rtsp', 'srt', 'rtmp', 'http', 'https', 'udp'],
+)
+/** Kinds the node can't run, and why. */
+const unavailable = computed(() => {
+  const out: Partial<Record<Kind, string>> = {}
+  for (const t of formNode.value?.source_types ?? []) {
+    if (t.missing.length && t.source_type !== 'ndi') {
+      out[t.source_type] = `Not available: this node lacks ${t.missing.join(', ')}`
+    }
+  }
+  return out
+})
+const nodeDevices = useNodeDevices(formNodeId)
 
 function mediaSummary(m: MediaInfo) {
   const parts = [`${m.width}×${m.height}`, fpsLabel([m.fps_num, m.fps_den])]
@@ -200,13 +251,28 @@ const framerateKey = computed({
 function openCreate() {
   editingId.value = null
   formNodeId.value = nodes.value.find((n) => n.is_self)?.id ?? nodes.value[0]?.id ?? ''
-  kind.value = 'test'
+  kind.value = null
   name.value = ''
   Object.assign(form, blankTest())
   filePath.value = ''
   fileMedia.value = null
+  stream.value = blankStream()
+  device.value = blankDevice()
+  whip.value = blankWhip()
   formError.value = null
   showForm.value = true
+}
+
+function pickKind(k: Kind) {
+  kind.value = k
+  formError.value = null
+  if (k === 'device' || k === 'stream' || k === 'whip') nodeDevices.refresh().then(() => {
+    // Preselect the first camera for a new device source.
+    if (k === 'device' && !device.value.video_device) {
+      const first = nodeDevices.devices.value.find((d) => d.kind !== 'audio')
+      if (first) device.value = { ...device.value, video_device: first.key }
+    }
+  })
 }
 
 async function openEdit(src: Source) {
@@ -218,20 +284,69 @@ async function openEdit(src: Source) {
     notifyError('Could not load the source config from its node', e, src.node_id)
     return
   }
-  // No form for live sources yet.
-  if (!cfg || (cfg.config.type !== 'test' && cfg.config.type !== 'file')) return
+  if (!cfg) return
   editingId.value = src.id
   formNodeId.value = src.node_id
   name.value = cfg.name
   kind.value = cfg.config.type
-  if (cfg.config.type === 'test') {
-    const { type: _type, ...test } = cfg.config
+  const c = cfg.config
+  if (c.type === 'test') {
+    const { type: _type, ...test } = c
     Object.assign(form, test)
+  } else if (c.type === 'file') {
+    filePath.value = c.path
+    fileMedia.value = c.media
+  } else if (c.type === 'stream') {
+    const { type: _type, ...rest } = c
+    stream.value = rest
+  } else if (c.type === 'device') {
+    const { type: _type, ...rest } = c
+    device.value = rest
   } else {
-    filePath.value = cfg.config.path
-    fileMedia.value = cfg.config.media
+    const { type: _type, ...rest } = c
+    whip.value = rest
   }
   showForm.value = true
+  if (c.type === 'stream' || c.type === 'device' || c.type === 'whip') nodeDevices.refresh()
+}
+
+/** What's missing before the node is asked, or null. The node checks the rest. */
+function formProblem(): string | null {
+  switch (kind.value) {
+    case 'file':
+      return filePath.value.trim() ? null : 'Choose a file.'
+    case 'stream':
+      return stream.value.url.trim() ? audioProblem(stream.value.audio) : 'Enter the stream URL.'
+    case 'device':
+      return device.value.video_device ? audioProblem(device.value.audio) : 'Pick a video device.'
+    case 'whip':
+      return whip.value.port >= 1024 && whip.value.port <= 65535
+        ? audioProblem(whip.value.audio)
+        : 'Use a port from 1024 to 65535.'
+    default:
+      return null
+  }
+}
+
+function audioProblem(audio: StreamSourceConfig['audio']) {
+  if (audio.from !== 'device') return null
+  if (!audio.device_key) return 'Pick an audio input.'
+  return audio.channels.length ? null : 'Pick at least one audio channel.'
+}
+
+function formConfig(): ConfiguredSourceRequest['config'] {
+  switch (kind.value) {
+    case 'file':
+      return { type: 'file', path: filePath.value, media: null }
+    case 'stream':
+      return { type: 'stream', ...stream.value, url: stream.value.url.trim() }
+    case 'device':
+      return { type: 'device', ...device.value }
+    case 'whip':
+      return { type: 'whip', ...whip.value }
+    default:
+      return { type: 'test', ...form }
+  }
 }
 
 async function save() {
@@ -240,14 +355,12 @@ async function save() {
     formError.value = 'Name is required.'
     return
   }
-  if (kind.value === 'file' && !filePath.value.trim()) {
-    formError.value = 'Choose a file.'
+  const problem = formProblem()
+  if (problem) {
+    formError.value = problem
     return
   }
-  const req: ConfiguredSourceRequest = {
-    name: name.value,
-    config: kind.value === 'test' ? { type: 'test', ...form } : { type: 'file', path: filePath.value, media: null },
-  }
+  const req: ConfiguredSourceRequest = { name: name.value, config: formConfig() }
   saving.value = true
   formError.value = null
   try {
@@ -343,6 +456,13 @@ onMounted(async () => {
         <span class="flex items-center gap-1.5 whitespace-nowrap" :class="status(row).key === 'live' && 'text-tally font-medium'">
           <StatusDot :status="status(row).dot" /> {{ status(row).label }}
         </span>
+        <span
+          v-if="status(row).note"
+          class="flex items-center gap-1.5 whitespace-nowrap text-xs"
+          :class="status(row).note!.dot === 'warn' ? 'text-warning' : 'text-muted-foreground'"
+        >
+          <StatusDot :status="status(row).note!.dot" /> {{ status(row).note!.label }}
+        </span>
       </template>
       <template #cell-name="{ row }">
         <div class="font-medium text-sm">{{ row.display_name }}</div>
@@ -354,7 +474,7 @@ onMounted(async () => {
       <template #cell-node="{ row }">{{ nodesStore.labelOf(row.node_id) }}</template>
       <template #cell-resolution="{ row }">
         <template v-if="row.capabilities">{{ resolutionLabel(row.capabilities) }}</template>
-        <span v-else class="text-muted-foreground font-sans" title="NDI sources negotiate their format when connected">on connect</span>
+        <span v-else class="text-muted-foreground font-sans" title="NDI and live sources get their format when they connect">on connect</span>
       </template>
       <template #cell-fps="{ row }">{{ row.capabilities ? fpsLabel(row.capabilities.max_framerate) : '—' }}</template>
       <template #cell-audio="{ row }">{{ row.capabilities ? `${row.capabilities.audio_channels} ch` : '—' }}</template>
@@ -411,10 +531,11 @@ onMounted(async () => {
   <!-- Source form -->
   <EditSheet
     v-if="showForm"
-    :title="editingId ? 'Edit source' : 'New source'"
-    :description="KIND_DESCRIPTIONS[kind]"
+    :title="`${editingId ? 'Edit' : 'New'} ${kind ? KIND_TITLES[kind] : 'source'}`"
+    :description="kind ? KIND_DESCRIPTIONS[kind] : 'What kind of source?'"
     :error="formError"
     :saving="saving"
+    :no-save="!kind"
     @close="showForm = false"
     @save="save"
   >
@@ -423,13 +544,38 @@ onMounted(async () => {
         <OptionSelect v-model="formNodeId" :options="nodeOptions" />
       </FormField>
 
-      <FormField v-if="!editingId" label="Type" class="col-span-2">
-        <OptionSelect v-model="kind" :options="KIND_OPTIONS" />
+      <template v-if="!kind">
+        <SourceTypeCards class="col-span-2" :unavailable="unavailable" @pick="pickKind" />
+      </template>
+      <button
+        v-else-if="!editingId"
+        type="button"
+        class="col-span-2 -mt-1 flex items-center gap-0.5 text-xs text-muted-foreground hover:text-foreground w-fit"
+        @click="kind = null"
+      >
+        <ChevronLeft class="size-3.5" /> Other source types
+      </button>
+
+      <FormField v-if="kind" label="Name" class="col-span-2">
+        <Input v-model="name" :placeholder="NAME_PLACEHOLDERS[kind]" />
       </FormField>
 
-      <FormField label="Name" class="col-span-2">
-        <Input v-model="name" :placeholder="kind === 'file' ? 'Camera 1 footage' : 'Camera 1 sim'" />
-      </FormField>
+      <StreamFields
+        v-if="kind === 'stream'"
+        v-model="stream"
+        :protocols="protocols"
+        :host="formHost"
+        :devices="nodeDevices.devices.value"
+      />
+      <DeviceFields
+        v-else-if="kind === 'device'"
+        v-model="device"
+        :devices="nodeDevices.devices.value"
+        :loading="nodeDevices.loading.value"
+        :error="nodeDevices.error.value"
+        @refresh="nodeDevices.refresh"
+      />
+      <WhipFields v-else-if="kind === 'whip'" v-model="whip" :host="formHost" :devices="nodeDevices.devices.value" />
 
       <template v-if="kind === 'file'">
         <FormField label="File" class="col-span-2">
@@ -451,7 +597,7 @@ onMounted(async () => {
         </p>
       </template>
 
-      <template v-else>
+      <template v-else-if="kind === 'test'">
         <FormField label="Video pattern" class="col-span-2">
           <OptionSelect v-model="form.pattern" :options="VIDEO_PATTERNS" />
         </FormField>

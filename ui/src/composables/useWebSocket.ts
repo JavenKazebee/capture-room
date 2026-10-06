@@ -122,7 +122,7 @@ function handleEvent(event: NodeEvent) {
       break
 
     case 'feed.status':
-      sources.updateStatus(nodeId, event.source_id, event.timecode, event.error)
+      sources.updateStatus(nodeId, event.source_id, event.timecode, event.error, event.link)
       break
 
     case 'audio.levels':
@@ -211,9 +211,21 @@ function logEvent(event: NodeEvent) {
     case 'feed.status': {
       // Only transitions: the status event repeats every tick.
       const prev = useSourcesStore().sources.find((s) => s.key === sourceKey(node_id, event.source_id))
-      if (!prev || prev.error === event.error) break
-      if (event.error) log('error', `Source failed: ${prev.display_name}`, { node_id, detail: event.error })
-      else log('info', `Source recovered: ${prev.display_name}`, { node_id })
+      if (!prev) break
+      if (prev.error !== event.error) {
+        if (event.error) log('error', `Source failed: ${prev.display_name}`, { node_id, detail: event.error })
+        else log('info', `Source recovered: ${prev.display_name}`, { node_id })
+      }
+      // Live sources: lost and regained signal (not the first connect).
+      if (prev.link && event.link && prev.link !== event.link) {
+        if (prev.link === 'live' && event.link === 'reconnecting') {
+          log('warn', `Signal lost: ${prev.display_name} — reconnecting, recording black`, { node_id })
+        } else if (prev.link === 'live' && event.link === 'waiting') {
+          log('info', `Sender disconnected: ${prev.display_name}`, { node_id })
+        } else if (event.link === 'live') {
+          log('info', `Signal: ${prev.display_name} is live`, { node_id })
+        }
+      }
       break
     }
   }

@@ -66,6 +66,7 @@ impl Controller {
                 fail_count: 0,
                 manual: true,
                 encoders: Vec::new(),
+                source_types: Vec::new(),
                 relay: ctx.cancel.child_token(),
             };
             let relay = entry.relay.clone();

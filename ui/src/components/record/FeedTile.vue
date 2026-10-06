@@ -10,6 +10,7 @@ import { useEventsStore } from '@/stores/events'
 import { usePreferences } from '@/composables/usePreferences'
 import { formatDuration } from '@/lib/format'
 import { fpsLabel } from '@/lib/sourceFormat'
+import { LINK } from '@/lib/linkState'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import AudioMeter from '@/components/AudioMeter.vue'
@@ -48,6 +49,12 @@ const now = useNow({ interval: 1000 })
 const duration = computed(() =>
   session.value ? formatDuration(now.value.getTime() - new Date(session.value.started_at).getTime()) : '',
 )
+
+/** A live source that isn't delivering frames (it plays black and silence). */
+const noSignal = computed(() => {
+  const link = props.source.link
+  return link && link !== 'live' && !props.source.error ? LINK[link] : null
+})
 
 const format = computed(() => {
   const c = props.source.capabilities
@@ -103,6 +110,13 @@ watch(session, (now, prev) => {
               @error="thumb.onError"
             />
             <div v-else class="absolute inset-0 grid place-items-center text-zinc-500 text-xs">No signal</div>
+            <div
+              v-if="noSignal"
+              class="absolute inset-0 flex flex-col items-center justify-center gap-0.5 px-4 text-center text-xs bg-black/60"
+            >
+              <span :class="noSignal.dot === 'warn' ? 'text-warning font-medium' : 'text-zinc-300'">{{ noSignal.message }}</span>
+              <span v-if="session" class="text-zinc-400">Recording black and silence</span>
+            </div>
 
             <!-- Selection checkbox (top-left) -->
             <button
@@ -119,10 +133,17 @@ watch(session, (now, prev) => {
             </button>
 
             <!-- Live (top-right) -->
-            <div v-if="session" class="absolute top-1.5 right-1.5 flex flex-col items-end gap-1">
-              <TallyBadge :duration="duration" />
+            <div v-if="session || noSignal" class="absolute top-1.5 right-1.5 flex flex-col items-end gap-1">
+              <TallyBadge v-if="session" :duration="duration" />
               <span
-                v-if="totalDropped(session)"
+                v-if="noSignal"
+                class="rounded-sm px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                :class="noSignal.dot === 'warn' ? 'bg-warning text-black' : 'bg-black/70 text-zinc-300'"
+              >
+                {{ noSignal.short }}
+              </span>
+              <span
+                v-if="session && totalDropped(session)"
                 class="rounded-sm bg-warning px-1.5 py-0.5 text-[10px] font-semibold text-black num"
                 title="Video frames dropped because an encoder couldn't keep up"
               >

@@ -5,7 +5,9 @@ import { useNodesStore } from '@/stores/nodes'
 import type { ChannelLevelDto } from '@/types/generated/ChannelLevelDto'
 import type { ConfiguredSourceDto } from '@/types/generated/ConfiguredSourceDto'
 import type { ConfiguredSourceRequest } from '@/types/generated/ConfiguredSourceRequest'
+import type { DeviceDto } from '@/types/generated/DeviceDto'
 import type { DirListingDto } from '@/types/generated/DirListingDto'
+import type { LinkState } from '@/types/generated/LinkState'
 import type { SourceDto } from '@/types/generated/SourceDto'
 import type { SourceType } from '@/types/generated/SourceType'
 
@@ -24,7 +26,8 @@ export const audioLevels = shallowReactive(new Map<string, ChannelLevelDto[]>())
 export const thumbnailSeqs = shallowReactive(new Map<string, number>())
 
 /** Source types a node is configured with, rather than discovering them. */
-export const CONFIGURED_TYPES: readonly SourceType[] = ['test', 'file']
+export type ConfiguredKind = Exclude<SourceType, 'ndi'>
+export const CONFIGURED_TYPES: readonly SourceType[] = ['test', 'file', 'stream', 'device', 'whip']
 
 export const useSourcesStore = defineStore('sources', () => {
   const nodes = useNodesStore()
@@ -34,13 +37,20 @@ export const useSourcesStore = defineStore('sources', () => {
     return list.map((s) => ({ ...s, node_id: nodeId, key: sourceKey(nodeId, s.id) }))
   }
 
-  /** Apply a `feed.status` event: the current timecode and monitor error. */
-  function updateStatus(nodeId: string, sourceId: string, tc: string | null, error: string | null) {
+  /** Apply a `feed.status` event: the current timecode, monitor error and link state. */
+  function updateStatus(
+    nodeId: string,
+    sourceId: string,
+    tc: string | null,
+    error: string | null,
+    link: LinkState | null,
+  ) {
     const key = sourceKey(nodeId, sourceId)
     const s = sources.value.find((s) => s.key === key)
     if (!s) return
     s.timecode = tc
     s.error = error
+    s.link = link
   }
 
   /** Replace one node's sources, keeping the others. */
@@ -102,8 +112,14 @@ export const useSourcesStore = defineStore('sources', () => {
     return nodeApi(nodeId)<DirListingDto>('/files', { query: path ? { path } : {} })
   }
 
+  /** Capture devices on the node, for device sources and audio pairing. */
+  async function listDevices(nodeId: string) {
+    return nodeApi(nodeId)<DeviceDto[]>('/devices')
+  }
+
   return {
     sources,
+    listDevices,
     updateStatus,
     loadSources,
     scan,

@@ -112,6 +112,7 @@ pub async fn add_node(ctx: &Ctx, url: String, manual: bool) -> Result<Option<Nod
         fail_count: 0,
         manual,
         encoders: status.encoders.clone(),
+        source_types: status.source_types.clone(),
         relay: ctx.cancel.child_token(),
     };
 
