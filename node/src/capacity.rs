@@ -10,7 +10,8 @@
 //! than this assumes), so it's a guide, not a guarantee.
 
 use crate::api::types::{
-    BenchmarkRunDto, BenchmarkStatus, CapacityVerdict, OutputAdvanced, PresetOutputInput, ProfileCapacityDto,
+    BenchmarkRunDto, BenchmarkStatus, CapacityVerdict, OutputAdvanced, PresetOutputInput,
+    ProfileCapacityDto,
 };
 use crate::pipeline::monitor::SourceFormat;
 
@@ -27,7 +28,11 @@ pub fn outputs_key(outputs: &[PresetOutputInput]) -> String {
             name: String::new(),
             path_template: String::new(),
             preview: false,
-            advanced: OutputAdvanced { split_minutes: None, split_gb: None, ..o.advanced.clone() },
+            advanced: OutputAdvanced {
+                split_minutes: None,
+                split_gb: None,
+                ..o.advanced.clone()
+            },
             ..o.clone()
         })
         .collect();
@@ -106,10 +111,15 @@ impl Capacity {
     /// or failed one never found its limit.
     pub fn from_runs(runs: &[BenchmarkRunDto]) -> Self {
         let mut profiles: Vec<Profile> = Vec::new();
-        for run in runs.iter().filter(|r| r.status == BenchmarkStatus::Completed && !r.steps.is_empty()) {
+        for run in runs
+            .iter()
+            .filter(|r| r.status == BenchmarkStatus::Completed && !r.steps.is_empty())
+        {
             let key = outputs_key(&run.outputs);
             let m = &run.media;
-            if profiles.iter().any(|p| p.key == key && p.matches_format((m.width, m.height), (m.fps_num, m.fps_den))) {
+            if profiles.iter().any(|p| {
+                p.key == key && p.matches_format((m.width, m.height), (m.fps_num, m.fps_den))
+            }) {
                 continue;
             }
             // A full step at the answer measures what a feed writes when the
@@ -131,7 +141,10 @@ impl Capacity {
                 output_bytes_per_sec: step.output_bytes_per_sec.clone(),
                 dto: ProfileCapacityDto {
                     run_id: run.id.clone(),
-                    finished_at: run.finished_at.clone().unwrap_or_else(|| run.started_at.clone()),
+                    finished_at: run
+                        .finished_at
+                        .clone()
+                        .unwrap_or_else(|| run.started_at.clone()),
                     preset_name: run.preset_name.clone(),
                     outputs: run.outputs.clone(),
                     media: run.media.clone(),
@@ -196,7 +209,9 @@ impl Capacity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::types::{BenchmarkStepDto, ChromaSubsampling, Container, MediaInfo, VideoCodec};
+    use crate::api::types::{
+        BenchmarkStepDto, ChromaSubsampling, Container, MediaInfo, VideoCodec,
+    };
 
     fn output(name: &str, path: &str) -> PresetOutputInput {
         PresetOutputInput {
@@ -213,7 +228,12 @@ mod tests {
         }
     }
 
-    fn run(id: &str, (w, h, n, d): (u32, u32, u32, u32), sustainable: u32, passed: &[bool]) -> BenchmarkRunDto {
+    fn run(
+        id: &str,
+        (w, h, n, d): (u32, u32, u32, u32),
+        sustainable: u32,
+        passed: &[bool],
+    ) -> BenchmarkRunDto {
         BenchmarkRunDto {
             id: id.into(),
             started_at: format!("2026-10-0{}T00:00:00Z", id.len()),
@@ -223,7 +243,14 @@ mod tests {
             preset_name: None,
             outputs: vec![output("Main", "~/a/{source}.{ext}")],
             media_path: "/f.mov".into(),
-            media: MediaInfo { width: w, height: h, fps_num: n, fps_den: d, audio_channels: 2, duration_ms: None },
+            media: MediaInfo {
+                width: w,
+                height: h,
+                fps_num: n,
+                fps_den: d,
+                audio_channels: 2,
+                duration_ms: None,
+            },
             max_feeds: passed.len() as u32,
             step_secs: 20,
             drop_threshold_pct: 0.5,
@@ -254,7 +281,11 @@ mod tests {
     }
 
     fn format(w: u32, h: u32, n: u32, d: u32) -> SourceFormat {
-        SourceFormat { size: Some((w, h)), rate: Some((n, d)), audio: None }
+        SourceFormat {
+            size: Some((w, h)),
+            rate: Some((n, d)),
+            audio: None,
+        }
     }
 
     #[test]
@@ -271,7 +302,12 @@ mod tests {
     #[test]
     fn exact_format_wins_and_others_scale() {
         let cap = Capacity::from_runs(&[
-            run("hd", (1920, 1080, 30, 1), 4, &[true, true, true, true, false]),
+            run(
+                "hd",
+                (1920, 1080, 30, 1),
+                4,
+                &[true, true, true, true, false],
+            ),
             run("uhd", (3840, 2160, 30, 1), 1, &[true, false]),
         ]);
         let key = outputs_key(&[output("x", "y")]);
@@ -298,7 +334,12 @@ mod tests {
         // Newest first: the 3-feed result replaces the older 5-feed one.
         let cap = Capacity::from_runs(&[
             run("newer", (1920, 1080, 30, 1), 3, &[true, true, true, false]),
-            run("old", (1920, 1080, 30, 1), 5, &[true, true, true, true, true, false]),
+            run(
+                "old",
+                (1920, 1080, 30, 1),
+                5,
+                &[true, true, true, true, true, false],
+            ),
         ]);
         assert_eq!(cap.profiles().len(), 1);
         assert_eq!(cap.profiles()[0].sustainable_feeds, 3);
@@ -306,19 +347,36 @@ mod tests {
 
     #[test]
     fn load_and_verdict() {
-        let cap = Capacity::from_runs(&[run("hd", (1920, 1080, 30, 1), 4, &[true, true, true, true, false])]);
+        let cap = Capacity::from_runs(&[run(
+            "hd",
+            (1920, 1080, 30, 1),
+            4,
+            &[true, true, true, true, false],
+        )]);
         let key = outputs_key(&[output("x", "y")]);
         let hd = format(1920, 1080, 30, 1);
 
         let load = cap.load([(key.as_str(), hd); 3]);
         assert!((load.load - 0.75).abs() < 1e-9);
         assert_eq!(load.verdict(), CapacityVerdict::Fits);
-        assert_eq!(cap.load([(key.as_str(), hd); 4]).verdict(), CapacityVerdict::Tight);
-        assert_eq!(cap.load([(key.as_str(), hd); 5]).verdict(), CapacityVerdict::Over);
-        assert_eq!(cap.load([(key.as_str(), hd), ("other", hd)]).verdict(), CapacityVerdict::Unknown);
+        assert_eq!(
+            cap.load([(key.as_str(), hd); 4]).verdict(),
+            CapacityVerdict::Tight
+        );
+        assert_eq!(
+            cap.load([(key.as_str(), hd); 5]).verdict(),
+            CapacityVerdict::Over
+        );
+        assert_eq!(
+            cap.load([(key.as_str(), hd), ("other", hd)]).verdict(),
+            CapacityVerdict::Unknown
+        );
 
         // Even one feed failed: one feed is already over.
         let cap = Capacity::from_runs(&[run("hd", (1920, 1080, 30, 1), 0, &[false])]);
-        assert_eq!(cap.load([(key.as_str(), hd)]).verdict(), CapacityVerdict::Over);
+        assert_eq!(
+            cap.load([(key.as_str(), hd)]).verdict(),
+            CapacityVerdict::Over
+        );
     }
 }

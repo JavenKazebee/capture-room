@@ -83,7 +83,11 @@ impl Controller {
             }
         };
 
-        *slot = Some(Controller { registry: ctx.registry, cancel: ctx.cancel, mdns_browser });
+        *slot = Some(Controller {
+            registry: ctx.registry,
+            cancel: ctx.cancel,
+            mdns_browser,
+        });
         info!("controller enabled");
         Ok(())
     }

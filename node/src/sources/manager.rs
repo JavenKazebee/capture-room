@@ -10,7 +10,8 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::api::types::{
-    ChannelLevelDto, ConfiguredSourceDto, MonitorSettingsDto, PresetOutputInput, RecordingSessionDto, RecordingStatus,
+    ChannelLevelDto, ConfiguredSourceDto, MonitorSettingsDto, PresetOutputInput,
+    RecordingSessionDto, RecordingStatus,
 };
 use crate::pipeline::monitor::{MonitorPipeline, SourceFormat};
 use crate::pipeline::profile::RecordingProfile;
@@ -144,7 +145,10 @@ impl SourceManager {
     }
 
     pub fn get_source(&self, id: &str) -> Option<&dyn InputSource> {
-        self.sources.iter().find(|s| s.id() == id).map(|s| s.as_ref())
+        self.sources
+            .iter()
+            .find(|s| s.id() == id)
+            .map(|s| s.as_ref())
     }
 
     pub fn is_monitored(&self, source_id: &str) -> bool {
@@ -161,7 +165,9 @@ impl SourceManager {
 
     /// Whether a source is being monitored and its monitor hasn't failed.
     fn is_healthy(&self, source_id: &str) -> bool {
-        self.monitors.get(source_id).is_some_and(|m| m.error().is_none())
+        self.monitors
+            .get(source_id)
+            .is_some_and(|m| m.error().is_none())
     }
 
     /// Whether any source lacks a healthy monitor — it failed, or never
@@ -188,8 +194,11 @@ impl SourceManager {
                 .map(|s| Box::new(s) as Box<dyn InputSource>),
         );
 
-        let mut old: HashMap<String, Box<dyn InputSource>> =
-            self.sources.drain(..).map(|s| (s.id().to_string(), s)).collect();
+        let mut old: HashMap<String, Box<dyn InputSource>> = self
+            .sources
+            .drain(..)
+            .map(|s| (s.id().to_string(), s))
+            .collect();
         let mut gone = Vec::new();
         let mut added = Vec::new();
         for candidate in candidates {
@@ -199,7 +208,10 @@ impl SourceManager {
                 continue;
             }
             match old.remove(&id) {
-                Some(existing) if existing.fingerprint() == candidate.fingerprint() && self.is_healthy(&id) => {
+                Some(existing)
+                    if existing.fingerprint() == candidate.fingerprint()
+                        && self.is_healthy(&id) =>
+                {
                     self.sources.push(existing);
                     continue;
                 }
@@ -249,7 +261,10 @@ impl SourceManager {
 
     /// The format `source_id`'s monitor is producing; see [`MonitorPipeline::source_format`].
     pub fn source_format(&self, source_id: &str) -> SourceFormat {
-        self.monitors.get(source_id).map(|m| m.source_format()).unwrap_or_default()
+        self.monitors
+            .get(source_id)
+            .map(|m| m.source_format())
+            .unwrap_or_default()
     }
 
     // ── Recording ─────────────────────────────────────────────────────────────
@@ -279,7 +294,10 @@ impl SourceManager {
         // under this lock opens the files, so the check can't be raced.
         // Recording into a file would truncate it; a failed start deletes it.
         for (path, _) in legs {
-            let active = self.sessions.values().any(|s| s.dto.output_paths.iter().any(|p| Path::new(p) == path));
+            let active = self
+                .sessions
+                .values()
+                .any(|s| s.dto.output_paths.iter().any(|p| Path::new(p) == path));
             if active || path.exists() {
                 bail!("{} already exists", path.display());
             }
@@ -289,7 +307,11 @@ impl SourceManager {
         let failures = self.leg_failures.clone();
         let session_id = id.clone();
         let on_error: OnLegError = Arc::new(move |path, error| {
-            let _ = failures.send(LegFailure { session_id: session_id.clone(), path: path.to_path_buf(), error });
+            let _ = failures.send(LegFailure {
+                session_id: session_id.clone(),
+                path: path.to_path_buf(),
+                error,
+            });
         });
         let files_tx = self.leg_files.clone();
         let files_session = id.clone();
@@ -302,11 +324,17 @@ impl SourceManager {
             id,
             source_id: source_id.to_string(),
             preset_id: preset_id.to_string(),
-            source_name: self.get_source(source_id).map(|s| s.display_name().to_string()),
+            source_name: self
+                .get_source(source_id)
+                .map(|s| s.display_name().to_string()),
             preset_name: preset_name.map(str::to_string),
             started_at: Utc::now().to_rfc3339(),
             stopped_at: None,
-            outputs: outputs.iter().zip(legs).map(|(o, (_, profile))| profile.session_output(&o.name, o.preview)).collect(),
+            outputs: outputs
+                .iter()
+                .zip(legs)
+                .map(|(o, (_, profile))| profile.session_output(&o.name, o.preview))
+                .collect(),
             output_paths: legs.iter().map(|(p, _)| p.display().to_string()).collect(),
             dropped_frames: vec![0; legs.len()],
             files: recording_legs.iter().map(RecordingLeg::files).collect(),
@@ -317,7 +345,13 @@ impl SourceManager {
         info!(id = %dto.id, source = source_id, legs = legs.len(), "recording started");
         self.sessions.insert(
             dto.id.clone(),
-            ActiveSession { legs: recording_legs, dto: dto.clone(), failed_legs: 0, outputs_key, started: Instant::now() },
+            ActiveSession {
+                legs: recording_legs,
+                dto: dto.clone(),
+                failed_legs: 0,
+                outputs_key,
+                started: Instant::now(),
+            },
         );
         Ok(dto)
     }
@@ -326,7 +360,11 @@ impl SourceManager {
     pub fn active_sessions(&self) -> Vec<RecordingSessionDto> {
         self.sessions
             .values()
-            .map(|s| RecordingSessionDto { dropped_frames: s.dropped_frames(), files: s.files(), ..s.dto.clone() })
+            .map(|s| RecordingSessionDto {
+                dropped_frames: s.dropped_frames(),
+                files: s.files(),
+                ..s.dto.clone()
+            })
             .collect()
     }
 
@@ -342,7 +380,10 @@ impl SourceManager {
     /// Every active session's outputs key and its source's format, to add
     /// up against the node's benchmarked capacity.
     pub fn active_feeds(&self) -> Vec<(String, SourceFormat)> {
-        self.sessions.values().map(|s| (s.outputs_key.clone(), self.source_format(&s.dto.source_id))).collect()
+        self.sessions
+            .values()
+            .map(|s| (s.outputs_key.clone(), self.source_format(&s.dto.source_id)))
+            .collect()
     }
 
     /// Take a session out of the active set and hand back the detach work.
@@ -425,7 +466,11 @@ impl SourceManager {
     fn take_session(&mut self, session_id: &str) -> Option<StopJob> {
         let session = self.sessions.remove(session_id)?;
         // Nothing is fed to the legs once they're stopping, so this is final.
-        let dto = RecordingSessionDto { dropped_frames: session.dropped_frames(), files: session.files(), ..session.dto };
+        let dto = RecordingSessionDto {
+            dropped_frames: session.dropped_frames(),
+            files: session.files(),
+            ..session.dto
+        };
         let legs = session.legs;
         let (tx, rx) = watch::channel(None);
         self.stopping.insert(session_id.to_string(), rx);
@@ -441,7 +486,14 @@ impl SourceManager {
             .filter(|(_, s)| s.dto.source_id == source_id)
             .map(|(id, _)| id.clone())
             .collect();
-        let stops = session_ids.iter().filter_map(|id| self.take_session(id)).collect();
-        Some(Teardown { source_id: source_id.to_string(), pipeline, stops })
+        let stops = session_ids
+            .iter()
+            .filter_map(|id| self.take_session(id))
+            .collect();
+        Some(Teardown {
+            source_id: source_id.to_string(),
+            pipeline,
+            stops,
+        })
     }
 }

@@ -24,8 +24,8 @@ use gstreamer_utils::{ConsumptionLink, StreamProducer};
 use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
-use super::{capsfilter, make_el};
 use super::profile::{segment_number, AudioFormat, RecordingProfile, VideoEncoder, PCM_MAX_FILE};
+use super::{capsfilter, make_el};
 use crate::api::types::{Container, RateControl};
 
 /// Crash safety for .mov/.mp4 (see where the muxer is configured in
@@ -91,7 +91,13 @@ pub fn start_legs(
         .iter()
         .enumerate()
         .map(|(i, (path, profile))| {
-            RecordingLeg::build(path, profile, &format!("rec-{tag}-{i}"), Arc::clone(on_error), Arc::clone(on_file))
+            RecordingLeg::build(
+                path,
+                profile,
+                &format!("rec-{tag}-{i}"),
+                Arc::clone(on_error),
+                Arc::clone(on_file),
+            )
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -116,7 +122,13 @@ pub fn check_legs(legs: &[(PathBuf, RecordingProfile)]) -> Result<()> {
     let on_error: OnLegError = Arc::new(|_, _| {});
     let on_file: OnLegFile = Arc::new(|| {});
     for (i, (path, profile)) in legs.iter().enumerate() {
-        RecordingLeg::build(path, profile, &format!("check-{i}"), Arc::clone(&on_error), Arc::clone(&on_file))?;
+        RecordingLeg::build(
+            path,
+            profile,
+            &format!("check-{i}"),
+            Arc::clone(&on_error),
+            Arc::clone(&on_file),
+        )?;
     }
     Ok(())
 }
@@ -135,7 +147,14 @@ impl RecordingLeg {
         let encoders = profile.encoders();
         let mut last_err = None;
         for (i, &encoder) in encoders.iter().enumerate() {
-            match Self::build_with(path, profile, encoder, name, Arc::clone(&on_error), Arc::clone(&on_file)) {
+            match Self::build_with(
+                path,
+                profile,
+                encoder,
+                name,
+                Arc::clone(&on_error),
+                Arc::clone(&on_file),
+            ) {
                 Ok(leg) => {
                     info!(path = ?path, encoder = encoder.element(), hardware = encoder.is_hardware(), "recording leg built");
                     return Ok(leg);
@@ -166,8 +185,10 @@ impl RecordingLeg {
         // `stop` finds them too.
         let reported = AtomicBool::new(false);
         let error_path = path.to_path_buf();
-        pipeline.bus().context("recording pipeline has no bus")?.set_sync_handler(move |_, msg| {
-            match msg.view() {
+        pipeline
+            .bus()
+            .context("recording pipeline has no bus")?
+            .set_sync_handler(move |_, msg| match msg.view() {
                 gst::MessageView::Error(err) => {
                     if !reported.swap(true, Ordering::Relaxed) {
                         on_error(&error_path, leg_error(err));
@@ -176,8 +197,7 @@ impl RecordingLeg {
                 }
                 gst::MessageView::Eos(_) => gst::BusSyncReply::Pass,
                 _ => gst::BusSyncReply::Drop,
-            }
-        });
+            });
 
         // Live, time format, and a 500 ms queue that drops the oldest buffers
         // if the encoder can't keep up — so a slow encoder only drops frames
@@ -229,7 +249,9 @@ impl RecordingLeg {
         if let Some(format) = profile.encoder_input_format(encoder) {
             video.push(capsfilter(
                 "venc-caps",
-                gst::Caps::builder("video/x-raw").field("format", format).build(),
+                gst::Caps::builder("video/x-raw")
+                    .field("format", format)
+                    .build(),
             )?);
         }
         let venc = build_video_encoder(profile, encoder)?;
@@ -238,19 +260,23 @@ impl RecordingLeg {
             // are all keyframes: left as is, the muxer's keyframe table lists
             // almost none of them and splitmuxsink never finds a frame to
             // split at.
-            venc.static_pad("src").context("encoder src pad")?.add_probe(gst::PadProbeType::BUFFER, |_, info| {
-                if let Some(gst::PadProbeData::Buffer(buffer)) = info.data.as_mut() {
-                    buffer.make_mut().unset_flags(gst::BufferFlags::DELTA_UNIT);
-                }
-                gst::PadProbeReturn::Ok
-            });
+            venc.static_pad("src")
+                .context("encoder src pad")?
+                .add_probe(gst::PadProbeType::BUFFER, |_, info| {
+                    if let Some(gst::PadProbeData::Buffer(buffer)) = info.data.as_mut() {
+                        buffer.make_mut().unset_flags(gst::BufferFlags::DELTA_UNIT);
+                    }
+                    gst::PadProbeReturn::Ok
+                });
         }
         video.push(venc);
         if let (VideoEncoder::VtProRes, Some(variant)) = (encoder, profile.prores_profile()) {
             // vtenc_prores picks its profile from downstream caps.
             video.push(capsfilter(
                 "venc-out-caps",
-                gst::Caps::builder("video/x-prores").field("variant", variant).build(),
+                gst::Caps::builder("video/x-prores")
+                    .field("variant", variant)
+                    .build(),
             )?);
         }
         if let Some(parser) = profile.video_parser_element() {
@@ -272,10 +298,18 @@ impl RecordingLeg {
         let aconv = make_el("audioconvert", "aconv")?;
         let mix = profile.audio_mix();
         if let Some(rows) = mix.as_ref().and_then(|m| m.matrix.as_ref()) {
-            let matrix = gst::Array::new(rows.iter().map(|row| gst::Array::new(row.iter().copied()).to_send_value()));
+            let matrix = gst::Array::new(
+                rows.iter()
+                    .map(|row| gst::Array::new(row.iter().copied()).to_send_value()),
+            );
             aconv.set_property("mix-matrix", matrix);
         }
-        let mut audio = vec![audio_src.clone().upcast::<gst::Element>(), aq, aconv, make_el("audioresample", "aresample")?];
+        let mut audio = vec![
+            audio_src.clone().upcast::<gst::Element>(),
+            aq,
+            aconv,
+            make_el("audioresample", "aresample")?,
+        ];
         let pcm = profile.audio_format() == AudioFormat::Pcm24;
         if mix.is_some() || pcm {
             let mut caps = gst::Caps::builder("audio/x-raw");
@@ -299,7 +333,12 @@ impl RecordingLeg {
             audio.push(
                 gst::ElementFactory::make("capssetter")
                     .name("apcm-relabel")
-                    .property("caps", gst::Caps::builder("audio/x-raw").field("channel-mask", gst::Bitmask::new(0)).build())
+                    .property(
+                        "caps",
+                        gst::Caps::builder("audio/x-raw")
+                            .field("channel-mask", gst::Bitmask::new(0))
+                            .build(),
+                    )
                     .build()
                     .context("create capssetter")?,
             );
@@ -331,12 +370,26 @@ impl RecordingLeg {
                 // Longest file plus slack: the file splits at a keyframe
                 // after the limit.
                 let longest = profile.max_file_duration().unwrap_or(PCM_MAX_FILE);
-                let reserve = gst::ClockTime::from_nseconds(longest.as_nanos() as u64 + CRASH_SAFE_PERIOD.nseconds());
-                set_property(&muxer, "reserved-max-duration", &reserve.nseconds().to_string())?;
-                set_property(&muxer, "reserved-moov-update-period", &CRASH_SAFE_PERIOD.nseconds().to_string())?;
+                let reserve = gst::ClockTime::from_nseconds(
+                    longest.as_nanos() as u64 + CRASH_SAFE_PERIOD.nseconds(),
+                );
+                set_property(
+                    &muxer,
+                    "reserved-max-duration",
+                    &reserve.nseconds().to_string(),
+                )?;
+                set_property(
+                    &muxer,
+                    "reserved-moov-update-period",
+                    &CRASH_SAFE_PERIOD.nseconds().to_string(),
+                )?;
             }
             Container::Mov | Container::Mp4 => {
-                set_property(&muxer, "fragment-duration", &CRASH_SAFE_FRAGMENT.mseconds().to_string())?;
+                set_property(
+                    &muxer,
+                    "fragment-duration",
+                    &CRASH_SAFE_FRAGMENT.mseconds().to_string(),
+                )?;
                 set_property(&muxer, "fragment-mode", "first-moov-then-finalise")?;
             }
         }
@@ -446,8 +499,10 @@ impl RecordingLeg {
             return Err(anyhow!("{}: {reason}", self.location.display()));
         }
 
-        self.links.push(monitor.video.add_consumer(&self.video_src)?);
-        self.links.push(monitor.audio.add_consumer(&self.audio_src)?);
+        self.links
+            .push(monitor.video.add_consumer(&self.video_src)?);
+        self.links
+            .push(monitor.audio.add_consumer(&self.audio_src)?);
         info!(path = ?self.location, "recording leg started");
         Ok(())
     }
@@ -468,7 +523,10 @@ impl RecordingLeg {
         let _ = self.video_src.end_of_stream();
         let _ = self.audio_src.end_of_stream();
 
-        let bus = self.pipeline.bus().context("recording pipeline has no bus")?;
+        let bus = self
+            .pipeline
+            .bus()
+            .context("recording pipeline has no bus")?;
         let wait = gst::ClockTime::from_nseconds(timeout.as_nanos() as u64);
         let msg = tokio::task::spawn_blocking(move || {
             bus.timed_pop_filtered(wait, &[gst::MessageType::Eos, gst::MessageType::Error])
@@ -516,7 +574,12 @@ impl RecordingLeg {
 
     /// Every file the leg has written so far.
     pub fn files(&self) -> Vec<String> {
-        self.files.lock().unwrap().iter().map(|f| f.display().to_string()).collect()
+        self.files
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|f| f.display().to_string())
+            .collect()
     }
 
     /// The video encoder element the leg uses.
@@ -543,9 +606,11 @@ fn leg_error(err: &gst::message::Error) -> String {
 /// with the real reason only in the debug text ("… reason not-negotiated
 /// (-4)"); surface it.
 fn describe_error(err: &gst::message::Error) -> String {
-    let reason = err
-        .debug()
-        .and_then(|d| d.split("reason ").nth(1).map(|r| r.split(' ').next().unwrap_or(r).to_string()));
+    let reason = err.debug().and_then(|d| {
+        d.split("reason ")
+            .nth(1)
+            .map(|r| r.split(' ').next().unwrap_or(r).to_string())
+    });
     match reason.as_deref() {
         Some("not-negotiated") => format!(
             "{} (not-negotiated: the encoder's output isn't accepted by this container or format)",
@@ -575,7 +640,10 @@ fn link_to_muxer(
     let incompatible = || {
         anyhow!(
             "{} output can't be muxed into .{} ({kind})",
-            encoder.factory().map(|f| f.name().to_string()).unwrap_or_default(),
+            encoder
+                .factory()
+                .map(|f| f.name().to_string())
+                .unwrap_or_default(),
             profile.file_extension(),
         )
     };
@@ -628,9 +696,10 @@ fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Res
             set("tune", "0")?;
             set("key-int-max", &keyint)?;
             match (rc, bitrate) {
-                (RateControl::Constant, Some(kbps)) => {
-                    set("option-string", &format!("vbv-maxrate={kbps}:vbv-bufsize={kbps}:strict-cbr=1"))?
-                }
+                (RateControl::Constant, Some(kbps)) => set(
+                    "option-string",
+                    &format!("vbv-maxrate={kbps}:vbv-bufsize={kbps}:strict-cbr=1"),
+                )?,
                 (RateControl::Quality, _) => set("option-string", &format!("crf={crf}"))?,
                 _ => {}
             }
@@ -646,7 +715,10 @@ fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Res
                 RateControl::Constant => set("end-usage", "cbr")?,
                 RateControl::Quality => {
                     set("end-usage", "cq")?;
-                    set("cq-level", &(63.0 - 0.5 * quality).round().clamp(0.0, 63.0).to_string())?;
+                    set(
+                        "cq-level",
+                        &(63.0 - 0.5 * quality).round().clamp(0.0, 63.0).to_string(),
+                    )?;
                 }
             }
         }
@@ -676,9 +748,13 @@ fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Res
             }
             (VideoEncoder::Vp9, _) => set("target-bitrate", &(u64::from(kbps) * 1000).to_string())?,
             (_, RateControl::Quality) => {}
-            (VideoEncoder::X264 | VideoEncoder::X265 | VideoEncoder::VtH264 | VideoEncoder::VtH265, _) => {
-                set("bitrate", &kbps.to_string())?
-            }
+            (
+                VideoEncoder::X264
+                | VideoEncoder::X265
+                | VideoEncoder::VtH264
+                | VideoEncoder::VtH265,
+                _,
+            ) => set("bitrate", &kbps.to_string())?,
             _ => {}
         }
     }
@@ -689,7 +765,10 @@ fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Res
 /// differ between platforms, so a missing one is an error instead.
 fn set_property(el: &gst::Element, name: &str, value: &str) -> Result<()> {
     if el.find_property(name).is_none() {
-        anyhow::bail!("{} has no `{name}` property", el.factory().map(|f| f.name()).unwrap_or_default());
+        anyhow::bail!(
+            "{} has no `{name}` property",
+            el.factory().map(|f| f.name()).unwrap_or_default()
+        );
     }
     el.set_property_from_str(name, value);
     Ok(())

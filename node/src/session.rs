@@ -38,7 +38,11 @@ pub async fn run_stop(state: Arc<AppState>, job: StopJob, source_error: Option<S
     dto.stopped_at = Some(chrono::Utc::now().to_rfc3339());
     // A failed source is the root cause of anything its legs report. Each
     // leg's error names its output path, so all of them are kept.
-    let leg_errors: Vec<String> = results.into_iter().filter_map(Result::err).map(|e| e.to_string()).collect();
+    let leg_errors: Vec<String> = results
+        .into_iter()
+        .filter_map(Result::err)
+        .map(|e| e.to_string())
+        .collect();
     let error = source_error
         .map(|e| format!("source failed: {e}"))
         .or_else(|| (!leg_errors.is_empty()).then(|| leg_errors.join("; ")));
@@ -88,11 +92,21 @@ pub async fn run_stop(state: Arc<AppState>, job: StopJob, source_error: Option<S
 /// Run each teardown on its own task: finish the monitor's recordings, then
 /// stop its pipeline (which also frees the source bin for a new monitor).
 pub fn spawn_teardowns(state: &Arc<AppState>, teardowns: Vec<Teardown>) {
-    for Teardown { source_id, pipeline, stops } in teardowns {
+    for Teardown {
+        source_id,
+        pipeline,
+        stops,
+    } in teardowns
+    {
         let state = Arc::clone(state);
         tokio::spawn(async move {
             let source_error = pipeline.error();
-            join_all(stops.into_iter().map(|job| run_stop(Arc::clone(&state), job, source_error.clone()))).await;
+            join_all(
+                stops
+                    .into_iter()
+                    .map(|job| run_stop(Arc::clone(&state), job, source_error.clone())),
+            )
+            .await;
             match pipeline.stop() {
                 Ok(()) => info!(source = %source_id, "monitor stopped"),
                 Err(e) => warn!(source = %source_id, error = %e, "error stopping monitor pipeline"),
@@ -137,7 +151,10 @@ pub fn spawn_monitor_recovery(state: Arc<AppState>) {
 /// only when the session is stopped. The session's other legs keep recording;
 /// once every leg has failed nothing is being recorded, so the session is
 /// stopped (and finishes as `error`).
-pub fn spawn_leg_failure_reporter(state: Arc<AppState>, mut failures: mpsc::UnboundedReceiver<LegFailure>) {
+pub fn spawn_leg_failure_reporter(
+    state: Arc<AppState>,
+    mut failures: mpsc::UnboundedReceiver<LegFailure>,
+) {
     tokio::spawn(async move {
         while let Some(failure) = failures.recv().await {
             let session_id = failure.session_id.clone();
@@ -168,7 +185,10 @@ pub fn spawn_leg_failure_reporter(state: Arc<AppState>, mut failures: mpsc::Unbo
 /// Save a running session's file list whenever a leg opens a new file (a
 /// split), so the Recordings tab lists every file even after a crash. Stops
 /// save the final list themselves.
-pub fn spawn_leg_file_recorder(state: Arc<AppState>, mut sessions: mpsc::UnboundedReceiver<String>) {
+pub fn spawn_leg_file_recorder(
+    state: Arc<AppState>,
+    mut sessions: mpsc::UnboundedReceiver<String>,
+) {
     tokio::spawn(async move {
         while let Some(session_id) = sessions.recv().await {
             let files = state

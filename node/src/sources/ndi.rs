@@ -32,7 +32,8 @@ fn build_bin(id: &str, ndi_name: &str, url_address: &str) -> Result<gst::Bin> {
     let vconv = make_el("videoconvert", &format!("ndi-vconv-{id}"))?;
     let aconv = make_el("audioconvert", &format!("ndi-aconv-{id}"))?;
 
-    bin.add_many([&src, &demux, &vconv, &aconv]).context("add elements to NDI bin")?;
+    bin.add_many([&src, &demux, &vconv, &aconv])
+        .context("add elements to NDI bin")?;
     src.link(&demux).context("link ndisrc → ndisrcdemux")?;
 
     let vconv_weak = vconv.downgrade();
@@ -46,7 +47,9 @@ fn build_bin(id: &str, ndi_name: &str, url_address: &str) -> Result<gst::Bin> {
         } else {
             return;
         };
-        let Some(sink) = conv.upgrade().and_then(|c| c.static_pad("sink")) else { return };
+        let Some(sink) = conv.upgrade().and_then(|c| c.static_pad("sink")) else {
+            return;
+        };
         if !sink.is_linked() {
             if let Err(e) = pad.link(&sink) {
                 warn!("NDI {name} pad link failed: {e:?}");
@@ -120,7 +123,13 @@ fn ndi_source_id(ndi_name: &str) -> String {
     let slug: String = ndi_name
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     format!("ndi-{slug}")
 }

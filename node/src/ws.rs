@@ -86,7 +86,10 @@ pub fn spawn_emitter(state: Arc<AppState>) {
             let mgr = state.source_manager.read().await;
 
             for (source_id, channels) in mgr.all_audio_levels() {
-                state.emit(&WsEvent::AudioLevels { source_id, channels });
+                state.emit(&WsEvent::AudioLevels {
+                    source_id,
+                    channels,
+                });
             }
 
             if tick.is_multiple_of(10) {
@@ -112,7 +115,9 @@ pub fn spawn_emitter(state: Arc<AppState>) {
             if tick.is_multiple_of((10 / fps).max(1)) {
                 for source in mgr.sources() {
                     if mgr.is_monitored(source.id()) {
-                        state.emit(&WsEvent::ThumbnailUpdated { source_id: source.id().to_string() });
+                        state.emit(&WsEvent::ThumbnailUpdated {
+                            source_id: source.id().to_string(),
+                        });
                     }
                 }
             }

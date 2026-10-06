@@ -4,8 +4,9 @@ use chrono::{DateTime, Local};
 use gstreamer as gst;
 
 use crate::api::types::{
-    AudioChannels, AudioCodecChoice, ChromaSubsampling, Container, Deinterlace, EncoderChoice, OutputAdvanced,
-    PresetOutputInput, RateControl, SessionAudio, SessionOutputDto, SpeedPreset, VideoCodec,
+    AudioChannels, AudioCodecChoice, ChromaSubsampling, Container, Deinterlace, EncoderChoice,
+    OutputAdvanced, PresetOutputInput, RateControl, SessionAudio, SessionOutputDto, SpeedPreset,
+    VideoCodec,
 };
 
 /// Values for the per-recording tokens of a path template.
@@ -34,8 +35,14 @@ pub struct PathVars {
 impl PathVars {
     fn expand(&self, template: &str, profile: &RecordingProfile) -> String {
         let at = &self.at;
-        let resolution = profile.resolution.or(self.source_resolution).map_or("source".into(), format_resolution);
-        let fps = profile.framerate.or(self.source_framerate).map_or("source".into(), format_framerate);
+        let resolution = profile
+            .resolution
+            .or(self.source_resolution)
+            .map_or("source".into(), format_resolution);
+        let fps = profile
+            .framerate
+            .or(self.source_framerate)
+            .map_or("source".into(), format_framerate);
         [
             ("{source}", sanitize(&self.source)),
             ("{source_name}", sanitize(&self.source_name)),
@@ -52,14 +59,31 @@ impl PathVars {
             ("{fps}", fps),
         ]
         .iter()
-        .fold(template.to_string(), |path, (token, value)| path.replace(token, value))
+        .fold(template.to_string(), |path, (token, value)| {
+            path.replace(token, value)
+        })
     }
 }
 
 /// Every token a path template can use; anything else in braces is a typo.
 const PATH_TOKENS: &[&str] = &[
-    "{source}", "{source_name}", "{node}", "{preset}", "{output}", "{codec}", "{resolution}", "{fps}", "{ext}",
-    "{date}", "{time}", "{datetime}", "{year}", "{month}", "{day}", "{take}", "{segment}",
+    "{source}",
+    "{source_name}",
+    "{node}",
+    "{preset}",
+    "{output}",
+    "{codec}",
+    "{resolution}",
+    "{fps}",
+    "{ext}",
+    "{date}",
+    "{time}",
+    "{datetime}",
+    "{year}",
+    "{month}",
+    "{day}",
+    "{take}",
+    "{segment}",
 ];
 
 /// The first `{...}` in a template that isn't a token, which would otherwise
@@ -129,12 +153,18 @@ pub fn plan_legs(
             profile.segment_template = Some(expand_home(&template).to_string_lossy().into_owned());
             path = template;
         } else if profile.reserves_index() {
-            profile.segment_template = Some(expand_home(&with_segment(&path)).to_string_lossy().into_owned());
+            profile.segment_template = Some(
+                expand_home(&with_segment(&path))
+                    .to_string_lossy()
+                    .into_owned(),
+            );
         }
         let path = expand_home(&path.replace("{segment}", &segment_number(0)));
         if legs.iter().any(|(p, _)| *p == path) {
-            return Err("two outputs would write the same file; give each its own path template, \
-                        container, or {output} name");
+            return Err(
+                "two outputs would write the same file; give each its own path template, \
+                        container, or {output} name",
+            );
         }
         legs.push((path, profile));
     }
@@ -147,7 +177,13 @@ fn sanitize(value: &str) -> String {
     let s: String = value
         .trim()
         .chars()
-        .map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '-' } else { c })
+        .map(|c| {
+            if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '-'
+            } else {
+                c
+            }
+        })
         .collect();
     match s.as_str() {
         "" | "." | ".." => "_".into(),
@@ -276,8 +312,12 @@ impl VideoEncoder {
 pub enum AudioFormat {
     /// 24-bit PCM: what editors expect beside ProRes and uncompressed video.
     Pcm24,
-    Aac { bitrate: u32 },
-    Opus { bitrate: u32 },
+    Aac {
+        bitrate: u32,
+    },
+    Opus {
+        bitrate: u32,
+    },
 }
 
 /// A change to the source's audio channels.
@@ -343,8 +383,13 @@ impl RecordingProfile {
         let a = &self.advanced;
         if self.encoders().is_empty() {
             return Err(match a.encoder {
-                EncoderChoice::Hardware if self.prores_profile().is_none() && self.video_codec != VideoCodec::H264
-                    && self.video_codec != VideoCodec::H265 => "this codec has no hardware encoder",
+                EncoderChoice::Hardware
+                    if self.prores_profile().is_none()
+                        && self.video_codec != VideoCodec::H264
+                        && self.video_codec != VideoCodec::H265 =>
+                {
+                    "this codec has no hardware encoder"
+                }
                 EncoderChoice::Hardware => "hardware H.264/H.265 encoders take 4:2:0 only",
                 _ => "this codec has no software encoder",
             });
@@ -361,11 +406,15 @@ impl RecordingProfile {
         if a.split_gb.is_some_and(|g| !(0.1..=10_000.0).contains(&g)) {
             return Err("split at 0.1–10,000 GB");
         }
-        if a.audio_bitrate_kbps.is_some_and(|b| !(32..=512).contains(&b)) {
+        if a.audio_bitrate_kbps
+            .is_some_and(|b| !(32..=512).contains(&b))
+        {
             return Err("audio bitrate must be 32–512 kbps");
         }
         match (a.audio_codec, self.container) {
-            (AudioCodecChoice::Pcm, Container::Mp4) => return Err("PCM audio can only be recorded to .mov or .mkv"),
+            (AudioCodecChoice::Pcm, Container::Mp4) => {
+                return Err("PCM audio can only be recorded to .mov or .mkv")
+            }
             (AudioCodecChoice::Opus, Container::Mov | Container::Mp4) => {
                 return Err("Opus audio can only be recorded to .mkv")
             }
@@ -395,7 +444,9 @@ impl RecordingProfile {
                 // Uncompressed isn't encoded at all, so it fits either.
                 EncoderChoice::Software => !e.is_hardware(),
             })
-            .filter(|e| self.advanced.encoder != EncoderChoice::Hardware || *e != VideoEncoder::Uncompressed)
+            .filter(|e| {
+                self.advanced.encoder != EncoderChoice::Hardware || *e != VideoEncoder::Uncompressed
+            })
             .collect()
     }
 
@@ -422,13 +473,14 @@ impl RecordingProfile {
     /// in most players), and how VideoToolbox ProRes would get 4:2:0 input.
     pub fn encoder_input_format(&self, encoder: VideoEncoder) -> Option<&'static str> {
         match encoder {
-            VideoEncoder::X264 | VideoEncoder::X265 | VideoEncoder::VtH264 | VideoEncoder::VtH265 => {
-                Some(match self.chroma {
-                    ChromaSubsampling::Yuv420 => "I420",
-                    ChromaSubsampling::Yuv422 => "Y42B",
-                    ChromaSubsampling::Yuv444 => "Y444",
-                })
-            }
+            VideoEncoder::X264
+            | VideoEncoder::X265
+            | VideoEncoder::VtH264
+            | VideoEncoder::VtH265 => Some(match self.chroma {
+                ChromaSubsampling::Yuv420 => "I420",
+                ChromaSubsampling::Yuv422 => "Y42B",
+                ChromaSubsampling::Yuv444 => "Y444",
+            }),
             // Profile 0 (4:2:0) is the VP9 everything plays; left to follow
             // the source, an RGB source gave 4:4:4 Profile 1.
             VideoEncoder::Vp9 => Some("I420"),
@@ -466,17 +518,24 @@ impl RecordingProfile {
         let bitrate = |default: u32| self.advanced.audio_bitrate_kbps.unwrap_or(default) * 1000;
         let codec = match self.advanced.audio_codec {
             AudioCodecChoice::Auto => match (self.video_codec, self.container) {
-                (VideoCodec::H264 | VideoCodec::H265 | VideoCodec::Vp9, Container::Mov | Container::Mp4) => {
-                    AudioCodecChoice::Aac
+                (
+                    VideoCodec::H264 | VideoCodec::H265 | VideoCodec::Vp9,
+                    Container::Mov | Container::Mp4,
+                ) => AudioCodecChoice::Aac,
+                (VideoCodec::H264 | VideoCodec::H265 | VideoCodec::Vp9, Container::Mkv) => {
+                    AudioCodecChoice::Opus
                 }
-                (VideoCodec::H264 | VideoCodec::H265 | VideoCodec::Vp9, Container::Mkv) => AudioCodecChoice::Opus,
                 _ => AudioCodecChoice::Pcm,
             },
             chosen => chosen,
         };
         match codec {
-            AudioCodecChoice::Aac => AudioFormat::Aac { bitrate: bitrate(256) },
-            AudioCodecChoice::Opus => AudioFormat::Opus { bitrate: bitrate(160) },
+            AudioCodecChoice::Aac => AudioFormat::Aac {
+                bitrate: bitrate(256),
+            },
+            AudioCodecChoice::Opus => AudioFormat::Opus {
+                bitrate: bitrate(160),
+            },
             _ => AudioFormat::Pcm24,
         }
     }
@@ -527,7 +586,9 @@ impl RecordingProfile {
 
     /// Longest a file runs, when split by time.
     pub fn split_duration(&self) -> Option<std::time::Duration> {
-        self.advanced.split_minutes.map(|m| std::time::Duration::from_secs(u64::from(m) * 60))
+        self.advanced
+            .split_minutes
+            .map(|m| std::time::Duration::from_secs(u64::from(m) * 60))
     }
 
     /// Whether the leg reserves its index at the front of the file for crash
@@ -554,7 +615,9 @@ impl RecordingProfile {
     }
 
     pub fn keyframe_secs(&self) -> f64 {
-        self.advanced.keyframe_secs.unwrap_or(KEYFRAME_INTERVAL_SECS)
+        self.advanced
+            .keyframe_secs
+            .unwrap_or(KEYFRAME_INTERVAL_SECS)
     }
 
     /// How the output changes the source's audio channels; `None` records
@@ -566,28 +629,47 @@ impl RecordingProfile {
     /// silent.
     pub fn audio_mix(&self) -> Option<AudioMix> {
         let a = &self.advanced;
-        let row = |inputs: u32, gains: &dyn Fn(u32) -> f32| (0..inputs).map(gains).collect::<Vec<f32>>();
+        let row =
+            |inputs: u32, gains: &dyn Fn(u32) -> f32| (0..inputs).map(gains).collect::<Vec<f32>>();
         match a.audio_channels {
             AudioChannels::All => None,
             AudioChannels::Stereo => match self.source_audio {
-                None | Some((_, true)) | Some((2, _)) => Some(AudioMix { matrix: None, channels: 2 }),
-                Some((1, _)) => Some(AudioMix { matrix: Some(vec![vec![1.0], vec![1.0]]), channels: 2 }),
+                None | Some((_, true)) | Some((2, _)) => Some(AudioMix {
+                    matrix: None,
+                    channels: 2,
+                }),
+                Some((1, _)) => Some(AudioMix {
+                    matrix: Some(vec![vec![1.0], vec![1.0]]),
+                    channels: 2,
+                }),
                 Some((n, false)) => {
                     let gain = 1.0 / n.div_ceil(2) as f32;
                     let left = row(n, &|c| if c % 2 == 0 { gain } else { 0.0 });
                     let right = row(n, &|c| if c % 2 == 1 { gain } else { 0.0 });
-                    Some(AudioMix { matrix: Some(vec![left, right]), channels: 2 })
+                    Some(AudioMix {
+                        matrix: Some(vec![left, right]),
+                        channels: 2,
+                    })
                 }
             },
             AudioChannels::Pick => {
                 let out = a.channel_pick.len() as u32;
                 match self.source_audio {
                     // A preset check: the matrix needs the source's channel count.
-                    None => Some(AudioMix { matrix: None, channels: out }),
+                    None => Some(AudioMix {
+                        matrix: None,
+                        channels: out,
+                    }),
                     Some((n, _)) => {
-                        let rows =
-                            a.channel_pick.iter().map(|&p| row(n, &|c| if c + 1 == p { 1.0 } else { 0.0 })).collect();
-                        Some(AudioMix { matrix: Some(rows), channels: out })
+                        let rows = a
+                            .channel_pick
+                            .iter()
+                            .map(|&p| row(n, &|c| if c + 1 == p { 1.0 } else { 0.0 }))
+                            .collect();
+                        Some(AudioMix {
+                            matrix: Some(rows),
+                            channels: out,
+                        })
                     }
                 }
             }
@@ -671,7 +753,9 @@ impl RecordingProfile {
     /// Frames between keyframes.
     pub fn keyframe_interval(&self) -> u32 {
         let (n, d) = self.frame_rate();
-        (self.keyframe_secs() * n as f64 / d as f64).round().max(1.0) as u32
+        (self.keyframe_secs() * n as f64 / d as f64)
+            .round()
+            .max(1.0) as u32
     }
 
     /// Video bitrate in kbps, for codecs that take one: the output's, or Auto
@@ -710,7 +794,9 @@ impl RecordingProfile {
         };
         let video = match (self.bitrate(), prores_mbps) {
             (Some(kbps), _) => kbps as f64 * 1000.0 / 8.0,
-            (None, Some(mbps)) => mbps * 1e6 / 8.0 * pixels_per_sec / (1920.0 * 1080.0 * 30000.0 / 1001.0),
+            (None, Some(mbps)) => {
+                mbps * 1e6 / 8.0 * pixels_per_sec / (1920.0 * 1080.0 * 30000.0 / 1001.0)
+            }
             (None, None) => {
                 let bytes_per_pixel = match self.chroma {
                     ChromaSubsampling::Yuv420 => 1.5,
@@ -720,7 +806,11 @@ impl RecordingProfile {
                 pixels_per_sec * bytes_per_pixel
             }
         };
-        let channels = self.audio_mix().map(|m| m.channels).or(self.source_audio.map(|(n, _)| n)).unwrap_or(2);
+        let channels = self
+            .audio_mix()
+            .map(|m| m.channels)
+            .or(self.source_audio.map(|(n, _)| n))
+            .unwrap_or(2);
         let audio = match self.audio_format() {
             AudioFormat::Pcm24 => 48_000.0 * 3.0 * channels as f64,
             AudioFormat::Aac { bitrate } | AudioFormat::Opus { bitrate } => bitrate as f64 / 8.0,
@@ -740,7 +830,9 @@ fn incompatible(codec: VideoCodec, container: Container) -> Option<&'static str>
         (ProRes4444 | ProRes422Hq | ProRes422 | ProRes422Lt | ProRes422Proxy, Container::Mp4) => {
             Some("ProRes can only be recorded to .mov or .mkv")
         }
-        (Uncompressed, Container::Mp4) => Some("uncompressed video can only be recorded to .mov or .mkv"),
+        (Uncompressed, Container::Mp4) => {
+            Some("uncompressed video can only be recorded to .mov or .mkv")
+        }
         _ => None,
     }
 }
@@ -769,7 +861,10 @@ fn parse_resolution(s: &str) -> Option<(u32, u32)> {
 fn parse_framerate(s: &str) -> Option<(u32, u32)> {
     let s = s.trim();
     if s.contains('.') && !s.contains('/') {
-        let fps: f64 = s.parse().ok().filter(|f: &f64| f.is_finite() && *f > 0.0 && *f <= 1000.0)?;
+        let fps: f64 = s
+            .parse()
+            .ok()
+            .filter(|f: &f64| f.is_finite() && *f > 0.0 && *f <= 1000.0)?;
         let whole = fps.round();
         if (fps - whole).abs() < 1e-9 {
             return Some((whole as u32, 1));
@@ -787,7 +882,11 @@ fn parse_framerate(s: &str) -> Option<(u32, u32)> {
 }
 
 fn gcd(a: u32, b: u32) -> u32 {
-    if b == 0 { a } else { gcd(b, a % b) }
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
 }
 
 fn nonzero_pair(a: &str, b: &str) -> Option<(u32, u32)> {
@@ -827,7 +926,9 @@ mod tests {
         let playable = |f: fn(&mut PresetOutputInput)| {
             let mut o = leg("a", Container::Mov, "x");
             f(&mut o);
-            RecordingProfile::from_output(&o).unwrap().browser_playable()
+            RecordingProfile::from_output(&o)
+                .unwrap()
+                .browser_playable()
         };
         assert!(playable(|_| {}));
         assert!(playable(|o| o.container = Container::Mp4));
@@ -879,11 +980,26 @@ mod tests {
     #[test]
     fn rejects_colliding_paths() {
         let t = "/rec/{source}_{datetime}.{ext}";
-        assert!(plan_legs(&[leg("a", Container::Mov, t), leg("b", Container::Mov, t)], None).is_err());
+        assert!(plan_legs(
+            &[leg("a", Container::Mov, t), leg("b", Container::Mov, t)],
+            None
+        )
+        .is_err());
         // Different extensions or output names keep them apart.
-        assert!(plan_legs(&[leg("a", Container::Mov, t), leg("b", Container::Mkv, t)], None).is_ok());
+        assert!(plan_legs(
+            &[leg("a", Container::Mov, t), leg("b", Container::Mkv, t)],
+            None
+        )
+        .is_ok());
         let named = "/rec/{source}_{output}.{ext}";
-        assert!(plan_legs(&[leg("a", Container::Mov, named), leg("b", Container::Mov, named)], None).is_ok());
+        assert!(plan_legs(
+            &[
+                leg("a", Container::Mov, named),
+                leg("b", Container::Mov, named)
+            ],
+            None
+        )
+        .is_ok());
     }
 
     #[test]
@@ -913,12 +1029,22 @@ mod tests {
         let mut scaled = leg("a", Container::Mp4, "/r/{resolution}_{fps}");
         scaled.resolution = Some("1280x720".into());
         scaled.framerate = Some("25".into());
-        assert_eq!(plan_legs(&[scaled], Some(&vars)).unwrap()[0].0, PathBuf::from("/r/1280x720_25"));
+        assert_eq!(
+            plan_legs(&[scaled], Some(&vars)).unwrap()[0].0,
+            PathBuf::from("/r/1280x720_25")
+        );
         // A suffix goes on the file name, and on every file of a split leg.
         let suffixed = PathVars { suffix: 2, ..vars };
-        let legs = plan_legs(&[leg("a", Container::Mov, "/r.d/{source}.{ext}")], Some(&suffixed)).unwrap();
+        let legs = plan_legs(
+            &[leg("a", Container::Mov, "/r.d/{source}.{ext}")],
+            Some(&suffixed),
+        )
+        .unwrap();
         assert_eq!(legs[0].0, PathBuf::from("/r.d/cam1_2.mov"));
-        assert_eq!(plan_legs(&[leg("a", Container::Mov, "/r.d/x")], Some(&suffixed)).unwrap()[0].0, PathBuf::from("/r.d/x_2"));
+        assert_eq!(
+            plan_legs(&[leg("a", Container::Mov, "/r.d/x")], Some(&suffixed)).unwrap()[0].0,
+            PathBuf::from("/r.d/x_2")
+        );
         assert_eq!(expand_home("/abs/~x"), PathBuf::from("/abs/~x"));
         assert_eq!(expand_home("~user/x"), PathBuf::from("~user/x"));
     }
@@ -1005,25 +1131,46 @@ mod tests {
         p.source_audio = Some((4, false));
         let mix = p.audio_mix().unwrap();
         assert_eq!(mix.channels, 2);
-        assert_eq!(mix.matrix.unwrap(), vec![vec![0.0, 0.0, 1.0, 0.0], vec![0.0; 4]]);
+        assert_eq!(
+            mix.matrix.unwrap(),
+            vec![vec![0.0, 0.0, 1.0, 0.0], vec![0.0; 4]]
+        );
         p.advanced.audio_channels = AudioChannels::Stereo;
         let mix = p.audio_mix().unwrap();
-        assert_eq!(mix.matrix.unwrap(), vec![vec![0.5, 0.0, 0.5, 0.0], vec![0.0, 0.5, 0.0, 0.5]]);
+        assert_eq!(
+            mix.matrix.unwrap(),
+            vec![vec![0.5, 0.0, 0.5, 0.0], vec![0.0, 0.5, 0.0, 0.5]]
+        );
         p.source_audio = Some((6, true));
-        assert_eq!(p.audio_mix(), Some(AudioMix { matrix: None, channels: 2 }));
+        assert_eq!(
+            p.audio_mix(),
+            Some(AudioMix {
+                matrix: None,
+                channels: 2
+            })
+        );
     }
 
     #[test]
     fn names_split_files() {
-        assert_eq!(with_segment("/r/{source}.{ext}"), "/r/{source}_{segment}.{ext}");
+        assert_eq!(
+            with_segment("/r/{source}.{ext}"),
+            "/r/{source}_{segment}.{ext}"
+        );
         assert_eq!(with_segment("/r/a.b/name"), "/r/a.b/name_{segment}");
         assert_eq!(with_segment("/r/{segment}/x.mov"), "/r/{segment}/x.mov");
         let mut o = leg("a", Container::Mov, "/r/x.{ext}");
-        assert_eq!(plan_legs(std::slice::from_ref(&o), None).unwrap()[0].0, PathBuf::from("/r/x.mov"));
+        assert_eq!(
+            plan_legs(std::slice::from_ref(&o), None).unwrap()[0].0,
+            PathBuf::from("/r/x.mov")
+        );
         o.advanced.split_minutes = Some(30);
         let legs = plan_legs(&[o], None).unwrap();
         assert_eq!(legs[0].0, PathBuf::from("/r/x_001.mov"));
-        assert_eq!(legs[0].1.segment_template.as_deref(), Some("/r/x_{segment}.mov"));
+        assert_eq!(
+            legs[0].1.segment_template.as_deref(),
+            Some("/r/x_{segment}.mov")
+        );
     }
 
     #[test]
@@ -1033,11 +1180,17 @@ mod tests {
         let legs = plan_legs(std::slice::from_ref(&o), None).unwrap();
         // A plain first file; later ones numbered.
         assert_eq!(legs[0].0, PathBuf::from("/r/x.mov"));
-        assert_eq!(legs[0].1.segment_template.as_deref(), Some("/r/x_{segment}.mov"));
+        assert_eq!(
+            legs[0].1.segment_template.as_deref(),
+            Some("/r/x_{segment}.mov")
+        );
         assert_eq!(legs[0].1.max_file_duration(), Some(PCM_MAX_FILE));
         o.advanced.split_minutes = Some(30);
         let p = &plan_legs(std::slice::from_ref(&o), None).unwrap()[0].1;
-        assert_eq!(p.max_file_duration(), Some(std::time::Duration::from_secs(1800)));
+        assert_eq!(
+            p.max_file_duration(),
+            Some(std::time::Duration::from_secs(1800))
+        );
         o.advanced.split_minutes = Some(600);
         let p = &plan_legs(std::slice::from_ref(&o), None).unwrap()[0].1;
         assert_eq!(p.max_file_duration(), Some(PCM_MAX_FILE));
@@ -1066,7 +1219,13 @@ mod tests {
     #[test]
     fn blank_means_match_source() {
         assert_eq!(parse_optional(&None, parse_resolution), Some(None));
-        assert_eq!(parse_optional(&Some("  ".into()), parse_resolution), Some(None));
-        assert_eq!(parse_optional(&Some("1920*1080".into()), parse_resolution), None);
+        assert_eq!(
+            parse_optional(&Some("  ".into()), parse_resolution),
+            Some(None)
+        );
+        assert_eq!(
+            parse_optional(&Some("1920*1080".into()), parse_resolution),
+            None
+        );
     }
 }

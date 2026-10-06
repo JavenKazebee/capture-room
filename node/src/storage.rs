@@ -59,7 +59,9 @@ pub fn list_volumes() -> Vec<StorageVolumeDto> {
 /// with the shortest mount point. Only device paths are compared: elsewhere
 /// `name` is a volume label, which two different drives can share.
 fn merge_shared(mut volumes: Vec<StorageVolumeDto>) -> Vec<StorageVolumeDto> {
-    volumes.sort_by(|a, b| (a.mount_point.len(), &a.mount_point).cmp(&(b.mount_point.len(), &b.mount_point)));
+    volumes.sort_by(|a, b| {
+        (a.mount_point.len(), &a.mount_point).cmp(&(b.mount_point.len(), &b.mount_point))
+    });
     let mut merged: Vec<StorageVolumeDto> = Vec::new();
     for v in volumes {
         let same = |e: &&mut StorageVolumeDto| {
@@ -82,7 +84,9 @@ fn merge_shared(mut volumes: Vec<StorageVolumeDto>) -> Vec<StorageVolumeDto> {
 pub fn volume_of(path: &Path, volumes: &[StorageVolumeDto]) -> Option<usize> {
     let existing = path.ancestors().find(|p| p.exists())?;
     let mounts = |v: &StorageVolumeDto| {
-        std::iter::once(v.mount_point.clone()).chain(v.other_mounts.clone()).collect::<Vec<_>>()
+        std::iter::once(v.mount_point.clone())
+            .chain(v.other_mounts.clone())
+            .collect::<Vec<_>>()
     };
     #[cfg(unix)]
     {
@@ -123,8 +127,15 @@ pub fn leg_write_rates(legs: &[(Vec<String>, Duration)]) -> Vec<(PathBuf, u64)> 
     legs.iter()
         .filter(|(files, elapsed)| !files.is_empty() && *elapsed >= MIN_MEASURE)
         .map(|(files, elapsed)| {
-            let bytes: u64 = files.iter().filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.len()).sum();
-            (PathBuf::from(files.last().unwrap()), (bytes as f64 / elapsed.as_secs_f64()) as u64)
+            let bytes: u64 = files
+                .iter()
+                .filter_map(|f| std::fs::metadata(f).ok())
+                .map(|m| m.len())
+                .sum();
+            (
+                PathBuf::from(files.last().unwrap()),
+                (bytes as f64 / elapsed.as_secs_f64()) as u64,
+            )
         })
         .collect()
 }
@@ -161,12 +172,14 @@ pub fn list_dir(dir: Option<&str>) -> Result<DirListingDto> {
             continue;
         }
         // Follows symlinks, so a linked folder browses like a folder.
-        let Ok(meta) = std::fs::metadata(entry.path()) else { continue };
+        let Ok(meta) = std::fs::metadata(entry.path()) else {
+            continue;
+        };
         let is_media = Path::new(&name)
             .extension()
             .and_then(|e| e.to_str())
             .is_some_and(|e| MEDIA_EXTENSIONS.contains(&e.to_lowercase().as_str()));
-        if !meta.is_dir() && !(meta.is_file() && is_media) {
+        if !(meta.is_dir() || meta.is_file() && is_media) {
             continue;
         }
         entries.push(DirEntryDto {
@@ -176,7 +189,11 @@ pub fn list_dir(dir: Option<&str>) -> Result<DirListingDto> {
             size: meta.is_file().then_some(meta.len()),
         });
     }
-    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
     Ok(DirListingDto {
         path: dir.display().to_string(),
         parent: dir.parent().map(|p| p.display().to_string()),
@@ -219,7 +236,11 @@ mod tests {
 
     #[test]
     fn keeps_drives_that_only_share_a_label() {
-        let merged = merge_shared(vec![vol("BACKUP", "D:\\"), vol("BACKUP", "E:\\"), vol("", "F:\\")]);
+        let merged = merge_shared(vec![
+            vol("BACKUP", "D:\\"),
+            vol("BACKUP", "E:\\"),
+            vol("", "F:\\"),
+        ]);
         assert_eq!(merged.len(), 3);
     }
 }

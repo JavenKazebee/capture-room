@@ -23,19 +23,19 @@ use tracing::{error, info};
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     BenchmarkRequest, BenchmarkRunDto, CapacityCheckDto, CapacityCheckRequest, ConfiguredSourceDto,
-    ConfiguredSourceRequest, DirListingDto, NodeCapacityDto, NodeSettingsDto, NodeStatus, RecordingSessionDto,
-    RecordingStatus, RecordingsQuery, SourceConfig, SourceDto, StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest,
-    VolumeCheckDto, WsEvent,
+    ConfiguredSourceRequest, DirListingDto, NodeCapacityDto, NodeSettingsDto, NodeStatus,
+    RecordingSessionDto, RecordingStatus, RecordingsQuery, SourceConfig, SourceDto,
+    StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
 use crate::capacity::{self, Capacity};
 use crate::db;
-use crate::storage;
 use crate::pipeline::profile::{plan_legs, PathVars, RecordingProfile};
 use crate::session;
 use crate::sources::manager::{SourceManager, StopOutcome, StopResult};
 use crate::sources::InputSource;
 use crate::state::AppState;
+use crate::storage;
 use crate::ws;
 
 pub fn router() -> Router<Arc<AppState>> {
@@ -48,20 +48,29 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/sources", get(get_sources))
         .route("/sources/scan", post(post_scan))
         .route("/sources/{id}", get(get_source))
-        .route("/configured-sources", get(get_configured_sources).post(post_configured_source))
+        .route(
+            "/configured-sources",
+            get(get_configured_sources).post(post_configured_source),
+        )
         .route(
             "/configured-sources/{id}",
             axum::routing::put(put_configured_source).delete(delete_configured_source),
         )
         .route("/recordings", get(get_recordings).post(post_recording))
-        .route("/recordings/{id}", get(get_recording).delete(delete_recording))
+        .route(
+            "/recordings/{id}",
+            get(get_recording).delete(delete_recording),
+        )
         .route(
             "/recordings/{id}/outputs/{output}/files/{file}",
             get(get_recording_file).delete(delete_recording_file),
         )
         .route("/recordings/{id}/stop", post(post_stop_recording))
         .route("/benchmarks", get(get_benchmarks).post(post_benchmark))
-        .route("/benchmarks/{id}", get(get_benchmark).delete(delete_benchmark))
+        .route(
+            "/benchmarks/{id}",
+            get(get_benchmark).delete(delete_benchmark),
+        )
         .route("/benchmarks/{id}/cancel", post(post_cancel_benchmark))
         .route("/capacity", get(get_capacity))
         .route("/capacity/check", post(post_capacity_check))
@@ -101,14 +110,22 @@ async fn put_settings(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UpdateNodeSettingsRequest>,
 ) -> ApiResult<Json<NodeSettingsDto>> {
-    if let Some(name) = req.name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) {
+    if let Some(name) = req
+        .name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+    {
         db::config_set(&state.db, "name", &name).await?;
         *state.node_name.write().unwrap() = name;
     }
     if let Some(monitor) = req.monitor {
         let monitor = monitor.clamped();
         db::monitor_settings_set(&state.db, &monitor).await?;
-        state.source_manager.write().await.apply_monitor_config(monitor);
+        state
+            .source_manager
+            .write()
+            .await
+            .apply_monitor_config(monitor);
     }
     state.emit(&WsEvent::NodeUpdated);
     Ok(Json(settings_dto(&state).await))
@@ -132,7 +149,10 @@ async fn get_storage(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<S
 // ── /sources ──────────────────────────────────────────────────────────────────
 
 fn sources_list(mgr: &SourceManager) -> Vec<SourceDto> {
-    mgr.sources().iter().map(|s| source_to_dto(mgr, s.as_ref())).collect()
+    mgr.sources()
+        .iter()
+        .map(|s| source_to_dto(mgr, s.as_ref()))
+        .collect()
 }
 
 async fn get_sources(State(state): State<Arc<AppState>>) -> Json<Vec<SourceDto>> {
@@ -144,7 +164,9 @@ async fn get_source(
     AxumPath(id): AxumPath<String>,
 ) -> ApiResult<Json<SourceDto>> {
     let mgr = state.source_manager.read().await;
-    let source = mgr.get_source(&id).ok_or(ApiError::NotFound("source not found"))?;
+    let source = mgr
+        .get_source(&id)
+        .ok_or(ApiError::NotFound("source not found"))?;
     Ok(Json(source_to_dto(&mgr, source)))
 }
 
@@ -200,9 +222,15 @@ async fn put_configured_source(
     Json(req): Json<ConfiguredSourceRequest>,
 ) -> ApiResult<Json<ConfiguredSourceDto>> {
     const NOT_FOUND: ApiError = ApiError::NotFound("source not found");
-    let existing = db::configured_source_get(&state.db, &id).await?.ok_or(NOT_FOUND)?;
+    let existing = db::configured_source_get(&state.db, &id)
+        .await?
+        .ok_or(NOT_FOUND)?;
     let req = validated(req).await?;
-    let source = ConfiguredSourceDto { name: req.name, config: req.config, ..existing };
+    let source = ConfiguredSourceDto {
+        name: req.name,
+        config: req.config,
+        ..existing
+    };
     if !db::configured_source_update(&state.db, &source).await? {
         return Err(NOT_FOUND);
     }
@@ -281,7 +309,13 @@ async fn get_recording(
 static FILE_EDITS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn is_active(state: &AppState, id: &str) -> bool {
-    state.source_manager.read().await.active_sessions().iter().any(|s| s.id == id)
+    state
+        .source_manager
+        .read()
+        .await
+        .active_sessions()
+        .iter()
+        .any(|s| s.id == id)
 }
 
 #[derive(Deserialize)]
@@ -303,7 +337,9 @@ async fn delete_recording(
     }
     let _edit = FILE_EDITS.lock().await;
     if q.files.is_some() {
-        let mut session = db::session_get(&state.db, &id).await?.ok_or(SESSION_NOT_FOUND)?;
+        let mut session = db::session_get(&state.db, &id)
+            .await?
+            .ok_or(SESSION_NOT_FOUND)?;
         let mut files = session_files(&session);
         let mut failed = Vec::new();
         for output in &mut files {
@@ -319,7 +355,9 @@ async fn delete_recording(
         if !failed.is_empty() {
             db::session_update_files(&state.db, &id, &files).await?;
             session.files = files;
-            state.emit(&WsEvent::RecordingUpdated { session: Box::new(session) });
+            state.emit(&WsEvent::RecordingUpdated {
+                session: Box::new(session),
+            });
             return Err(anyhow::anyhow!("could not delete {}", failed.join(", ")).into());
         }
         info!(session = %id, "deleted recording files");
@@ -346,24 +384,34 @@ async fn delete_recording_file(
     Query(q): Query<DeleteFileQuery>,
 ) -> ApiResult<Json<RecordingSessionDto>> {
     if is_active(&state, &id).await {
-        return Err(ApiError::Conflict("stop the recording before deleting its files"));
+        return Err(ApiError::Conflict(
+            "stop the recording before deleting its files",
+        ));
     }
     let _edit = FILE_EDITS.lock().await;
-    let mut session = db::session_get(&state.db, &id).await?.ok_or(SESSION_NOT_FOUND)?;
+    let mut session = db::session_get(&state.db, &id)
+        .await?
+        .ok_or(SESSION_NOT_FOUND)?;
     let mut files = session_files(&session);
     let list = files
         .get_mut(output)
         .filter(|l| file < l.len())
         .ok_or(ApiError::NotFound("no such file in this session"))?;
     if list[file] != q.path {
-        return Err(ApiError::Conflict("this session's files changed: refresh and try again"));
+        return Err(ApiError::Conflict(
+            "this session's files changed: refresh and try again",
+        ));
     }
     let path = list.remove(file);
-    remove_recording_file(&path).await.with_context(|| format!("delete {path}"))?;
+    remove_recording_file(&path)
+        .await
+        .with_context(|| format!("delete {path}"))?;
     info!(session = %id, path = %path, "deleted recording file");
     db::session_update_files(&state.db, &id, &files).await?;
     session.files = files;
-    state.emit(&WsEvent::RecordingUpdated { session: Box::new(session.clone()) });
+    state.emit(&WsEvent::RecordingUpdated {
+        session: Box::new(session.clone()),
+    });
     Ok(Json(session))
 }
 
@@ -391,10 +439,15 @@ async fn get_recording_file(
     req: Request,
 ) -> ApiResult<Response> {
     if is_active(&state, &id).await {
-        return Err(ApiError::Conflict("still recording: files can be played once the recording stops"));
+        return Err(ApiError::Conflict(
+            "still recording: files can be played once the recording stops",
+        ));
     }
-    let session = db::session_get(&state.db, &id).await?.ok_or(SESSION_NOT_FOUND)?;
-    let path = session_file(&session, output, file).ok_or(ApiError::NotFound("no such file in this session"))?;
+    let session = db::session_get(&state.db, &id)
+        .await?
+        .ok_or(SESSION_NOT_FOUND)?;
+    let path = session_file(&session, output, file)
+        .ok_or(ApiError::NotFound("no such file in this session"))?;
     if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
         return Err(ApiError::NotFound("file is no longer on disk"));
     }
@@ -402,7 +455,12 @@ async fn get_recording_file(
     // A playable .mov is served as MP4 (the same ISO base media format):
     // Chrome and Firefox won't play `video/quicktime`.
     let playable = session.outputs.get(output).is_some_and(|o| o.playable);
-    let mime = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+    let mime = match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
         Some("mp4") => "video/mp4",
         Some("mov") if playable => "video/mp4",
         Some("mov") => "video/quicktime",
@@ -410,9 +468,15 @@ async fn get_recording_file(
         _ => "application/octet-stream",
     };
     let mime: mime_guess::Mime = mime.parse()?;
-    let mut resp = ServeFile::new_with_mime(&path, &mime).oneshot(req).await?.into_response();
+    let mut resp = ServeFile::new_with_mime(&path, &mime)
+        .oneshot(req)
+        .await?
+        .into_response();
     if q.download.is_some() {
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         if let Ok(v) = HeaderValue::from_str(&content_disposition(&name)) {
             resp.headers_mut().insert(header::CONTENT_DISPOSITION, v);
         }
@@ -425,7 +489,11 @@ async fn get_recording_file(
 /// never opened a file, or one whose files were all deleted.
 fn session_files(session: &RecordingSessionDto) -> Vec<Vec<String>> {
     if session.files.is_empty() {
-        session.output_paths.iter().map(|p| vec![p.clone()]).collect()
+        session
+            .output_paths
+            .iter()
+            .map(|p| vec![p.clone()])
+            .collect()
     } else {
         session.files.clone()
     }
@@ -446,7 +514,13 @@ fn session_file(session: &RecordingSessionDto, output: usize, file: usize) -> Op
 fn content_disposition(name: &str) -> String {
     let ascii: String = name
         .chars()
-        .map(|c| if c == ' ' || (c.is_ascii_graphic() && c != '"' && c != '\\') { c } else { '_' })
+        .map(|c| {
+            if c == ' ' || (c.is_ascii_graphic() && c != '"' && c != '\\') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let mut encoded = String::new();
     for b in name.bytes() {
@@ -464,13 +538,17 @@ async fn post_recording(
     Json(req): Json<StartRecordingRequest>,
 ) -> ApiResult<(StatusCode, Json<RecordingSessionDto>)> {
     if req.outputs.is_empty() {
-        return Err(ApiError::BadRequest("at least one output is required".into()));
+        return Err(ApiError::BadRequest(
+            "at least one output is required".into(),
+        ));
     }
     let legs = build_legs(&state, &req).await?;
     check_free_space(&legs).await?;
     for (path, _) in &legs {
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.with_context(|| format!("create {}", parent.display()))?;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("create {}", parent.display()))?;
         }
     }
     // Real recordings win: a benchmark would compete with this one (and its
@@ -508,14 +586,18 @@ async fn check_free_space(legs: &[(PathBuf, RecordingProfile)]) -> ApiResult<()>
         let volumes = storage::list_volumes();
         paths.iter().find_map(|p| {
             let v = &volumes[storage::volume_of(p, &volumes)?];
-            (v.available_bytes < storage::MIN_FREE_TO_RECORD).then(|| (v.mount_point.clone(), v.available_bytes))
+            (v.available_bytes < storage::MIN_FREE_TO_RECORD)
+                .then(|| (v.mount_point.clone(), v.available_bytes))
         })
     })
     .await?;
     match full {
         Some((mount, free)) => Err(ApiError::BadRequest(
-            format!("{mount} is nearly full ({:.1} GB free); free up space or record somewhere else", free as f64 / 1e9)
-                .into(),
+            format!(
+                "{mount} is nearly full ({:.1} GB free); free up space or record somewhere else",
+                free as f64 / 1e9
+            )
+            .into(),
         )),
         None => Ok(()),
     }
@@ -551,7 +633,9 @@ async fn post_stop_recording(
         StopOutcome::Join(rx) => await_stop_result(rx).await,
         StopOutcome::NotFound => stop_orphaned(&state, &id).await?,
     };
-    session.map(Json).ok_or(ApiError::NotFound("session not found"))
+    session
+        .map(Json)
+        .ok_or(ApiError::NotFound("session not found"))
 }
 
 /// A session with no in-memory record, e.g. left `active` by a crash: mark it
@@ -563,7 +647,16 @@ async fn stop_orphaned(state: &AppState, id: &str) -> anyhow::Result<Option<Reco
     };
     if session.status == RecordingStatus::Active {
         let stopped_at = chrono::Utc::now().to_rfc3339();
-        db::session_update_stop(&state.db, id, &stopped_at, RecordingStatus::Stopped, None, None, None).await?;
+        db::session_update_stop(
+            &state.db,
+            id,
+            &stopped_at,
+            RecordingStatus::Stopped,
+            None,
+            None,
+            None,
+        )
+        .await?;
         session.stopped_at = Some(stopped_at);
         session.status = RecordingStatus::Stopped;
         session.error_message = None;
@@ -573,7 +666,9 @@ async fn stop_orphaned(state: &AppState, id: &str) -> anyhow::Result<Option<Reco
 
 // ── /benchmarks ───────────────────────────────────────────────────────────────
 
-async fn get_benchmarks(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<BenchmarkRunDto>>> {
+async fn get_benchmarks(
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<Json<Vec<BenchmarkRunDto>>> {
     Ok(Json(db::benchmarks_list(&state.db).await?))
 }
 
@@ -581,14 +676,20 @@ async fn get_benchmark(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
 ) -> ApiResult<Json<BenchmarkRunDto>> {
-    db::benchmark_get(&state.db, &id).await?.map(Json).ok_or(ApiError::NotFound("benchmark not found"))
+    db::benchmark_get(&state.db, &id)
+        .await?
+        .map(Json)
+        .ok_or(ApiError::NotFound("benchmark not found"))
 }
 
 async fn post_benchmark(
     State(state): State<Arc<AppState>>,
     Json(req): Json<BenchmarkRequest>,
 ) -> ApiResult<(StatusCode, Json<BenchmarkRunDto>)> {
-    Ok((StatusCode::CREATED, Json(benchmark::start(&state, req).await?)))
+    Ok((
+        StatusCode::CREATED,
+        Json(benchmark::start(&state, req).await?),
+    ))
 }
 
 /// Cancel a running benchmark; answers once it has torn down.
@@ -607,7 +708,9 @@ async fn delete_benchmark(
     AxumPath(id): AxumPath<String>,
 ) -> ApiResult<StatusCode> {
     if benchmark::running_id(&state).as_deref() == Some(id.as_str()) {
-        return Err(ApiError::Conflict("cancel the benchmark before deleting it"));
+        return Err(ApiError::Conflict(
+            "cancel the benchmark before deleting it",
+        ));
     }
     if !db::benchmark_delete(&state.db, &id).await? {
         return Err(ApiError::NotFound("benchmark not found"));
@@ -622,7 +725,8 @@ async fn get_capacity(State(state): State<Arc<AppState>>) -> ApiResult<Json<Node
     let capacity = Capacity::from_runs(&runs);
     let feeds = state.source_manager.read().await.active_feeds();
     let load = capacity.load(feeds.iter().map(|(key, format)| (key.as_str(), *format)));
-    let running = benchmark::running_id(&state).and_then(|id| runs.into_iter().find(|r| r.id == id));
+    let running =
+        benchmark::running_id(&state).and_then(|id| runs.into_iter().find(|r| r.id == id));
     Ok(Json(NodeCapacityDto {
         profiles: capacity.profiles(),
         active_feeds: feeds.len() as u32,
@@ -642,7 +746,11 @@ async fn post_capacity_check(
     let key = capacity::outputs_key(&req.outputs);
     let (active, formats, active_legs) = {
         let mgr = state.source_manager.read().await;
-        let formats: Vec<_> = req.source_ids.iter().map(|id| mgr.source_format(id)).collect();
+        let formats: Vec<_> = req
+            .source_ids
+            .iter()
+            .map(|id| mgr.source_format(id))
+            .collect();
         (mgr.active_feeds(), formats, mgr.active_leg_files())
     };
     let active_iter = || active.iter().map(|(k, f)| (k.as_str(), *f));
@@ -665,7 +773,9 @@ async fn post_capacity_check(
             .map(|m| m.output_bytes_per_sec)
             .filter(|rates| rates.len() == legs.len());
         for (i, (path, profile)) in legs.into_iter().enumerate() {
-            let rate = measured.as_ref().map_or_else(|| profile.estimated_bytes_per_sec(), |rates| rates[i]);
+            let rate = measured
+                .as_ref()
+                .map_or_else(|| profile.estimated_bytes_per_sec(), |rates| rates[i]);
             new_writes.push((path, rate));
         }
     }
@@ -674,7 +784,10 @@ async fn post_capacity_check(
         let mut writes = storage::leg_write_rates(&active_legs);
         writes.extend(new_writes.iter().cloned());
         storage::apply_write_rates(&mut volumes, &writes);
-        let mut touched: Vec<usize> = new_writes.iter().filter_map(|(p, _)| storage::volume_of(p, &volumes)).collect();
+        let mut touched: Vec<usize> = new_writes
+            .iter()
+            .filter_map(|(p, _)| storage::volume_of(p, &volumes))
+            .collect();
         touched.sort_unstable();
         touched.dedup();
         touched
@@ -708,7 +821,11 @@ async fn get_thumbnail(
     State(state): State<Arc<AppState>>,
     AxumPath(source_id): AxumPath<String>,
 ) -> Response {
-    let bytes = state.source_manager.read().await.thumbnail_bytes(&source_id);
+    let bytes = state
+        .source_manager
+        .read()
+        .await
+        .thumbnail_bytes(&source_id);
     match bytes {
         Some(jpeg) => Response::builder()
             .status(StatusCode::OK)
@@ -725,10 +842,7 @@ async fn get_thumbnail(
 
 // ── /ws (this node's events only) ─────────────────────────────────────────────
 
-async fn ws_handler(
-    State(state): State<Arc<AppState>>,
-    upgrade: WebSocketUpgrade,
-) -> Response {
+async fn ws_handler(State(state): State<Arc<AppState>>, upgrade: WebSocketUpgrade) -> Response {
     let rx = state.node_tx.subscribe();
     upgrade.on_upgrade(move |socket| ws::handle(socket, rx))
 }
@@ -759,11 +873,19 @@ async fn rescan_after(state: &Arc<AppState>, change: &str) {
 /// Never picks a file that already exists: a template with `{take}` gets the
 /// first take number none of whose files exist yet, any other gets the first
 /// `_2`, `_3`, … suffix that doesn't.
-async fn build_legs(state: &AppState, req: &StartRecordingRequest) -> ApiResult<Vec<(PathBuf, RecordingProfile)>> {
+async fn build_legs(
+    state: &AppState,
+    req: &StartRecordingRequest,
+) -> ApiResult<Vec<(PathBuf, RecordingProfile)>> {
     let (source_name, format) = {
         let mgr = state.source_manager.read().await;
-        let name = mgr.get_source(&req.source_id).map(|s| s.display_name().to_string());
-        (name.unwrap_or_else(|| req.source_id.clone()), mgr.source_format(&req.source_id))
+        let name = mgr
+            .get_source(&req.source_id)
+            .map(|s| s.display_name().to_string());
+        (
+            name.unwrap_or_else(|| req.source_id.clone()),
+            mgr.source_format(&req.source_id),
+        )
     };
     let mut vars = PathVars {
         source: req.source_id.clone(),
@@ -780,14 +902,19 @@ async fn build_legs(state: &AppState, req: &StartRecordingRequest) -> ApiResult<
     // Each step changes the path that exists (its take, or every file's
     // suffix), so this ends once it runs past the files on disk.
     loop {
-        let legs = plan_legs(&req.outputs, Some(&vars)).map_err(|e| ApiError::BadRequest(e.into()))?;
+        let legs =
+            plan_legs(&req.outputs, Some(&vars)).map_err(|e| ApiError::BadRequest(e.into()))?;
         let Some(i) = legs.iter().position(|(path, _)| path.exists()) else {
             return Ok(legs);
         };
-        let counter = if req.outputs[i].path_template.contains("{take}") { &mut vars.take } else { &mut vars.suffix };
-        *counter = counter
-            .checked_add(1)
-            .ok_or_else(|| ApiError::BadRequest(format!("{} already exists", legs[i].0.display()).into()))?;
+        let counter = if req.outputs[i].path_template.contains("{take}") {
+            &mut vars.take
+        } else {
+            &mut vars.suffix
+        };
+        *counter = counter.checked_add(1).ok_or_else(|| {
+            ApiError::BadRequest(format!("{} already exists", legs[i].0.display()).into())
+        })?;
     }
 }
 
@@ -807,7 +934,10 @@ mod tests {
             outputs: Vec::new(),
             output_paths: output_paths.iter().map(|p| p.to_string()).collect(),
             dropped_frames: Vec::new(),
-            files: files.into_iter().map(|f| f.into_iter().map(String::from).collect()).collect(),
+            files: files
+                .into_iter()
+                .map(|f| f.into_iter().map(String::from).collect())
+                .collect(),
             status: RecordingStatus::Stopped,
             error_message: None,
         }
@@ -815,7 +945,10 @@ mod tests {
 
     #[test]
     fn session_file_reads_only_the_sessions_files() {
-        let s = session(&["/a.mov", "/b_{segment}.mp4"], vec![vec!["/a.mov"], vec!["/b_001.mp4", "/b_002.mp4"]]);
+        let s = session(
+            &["/a.mov", "/b_{segment}.mp4"],
+            vec![vec!["/a.mov"], vec!["/b_001.mp4", "/b_002.mp4"]],
+        );
         assert_eq!(session_file(&s, 0, 0), Some(PathBuf::from("/a.mov")));
         assert_eq!(session_file(&s, 1, 1), Some(PathBuf::from("/b_002.mp4")));
         assert_eq!(session_file(&s, 1, 2), None);
@@ -834,7 +967,10 @@ mod tests {
         // All of its files deleted: the planned path mustn't stand in for them.
         let s = session(&["/a.mov", "/b.mov"], vec![vec![], vec!["/b.mov"]]);
         assert_eq!(session_file(&s, 0, 0), None);
-        assert_eq!(session_files(&s), vec![Vec::<String>::new(), vec!["/b.mov".to_string()]]);
+        assert_eq!(
+            session_files(&s),
+            vec![Vec::<String>::new(), vec!["/b.mov".to_string()]]
+        );
         assert_eq!(session_file(&s, 1, 0), Some(PathBuf::from("/b.mov")));
     }
 

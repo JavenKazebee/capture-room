@@ -4,7 +4,8 @@ use std::str::FromStr;
 use tracing::info;
 
 use crate::api::types::{
-    BenchmarkRunDto, BenchmarkStatus, ConfiguredSourceDto, MonitorSettingsDto, PresetDto, PresetOutputDto, RecordingSessionDto, RecordingStatus,
+    BenchmarkRunDto, BenchmarkStatus, ConfiguredSourceDto, MonitorSettingsDto, PresetDto,
+    PresetOutputDto, RecordingSessionDto, RecordingStatus,
 };
 
 pub async fn init(db_path: &str) -> Result<SqlitePool> {
@@ -30,12 +31,10 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
 // ── node_config ───────────────────────────────────────────────────────────────
 
 pub async fn config_get(pool: &SqlitePool, key: &str) -> Result<Option<String>> {
-    let row = sqlx::query_scalar::<_, String>(
-        "SELECT value FROM node_config WHERE key = ?",
-    )
-    .bind(key)
-    .fetch_optional(pool)
-    .await?;
+    let row = sqlx::query_scalar::<_, String>("SELECT value FROM node_config WHERE key = ?")
+        .bind(key)
+        .fetch_optional(pool)
+        .await?;
     Ok(row)
 }
 
@@ -61,10 +60,18 @@ pub async fn monitor_settings_get(pool: &SqlitePool) -> Result<MonitorSettingsDt
     let def = MonitorSettingsDto::default();
     // Clamped so values stored under older, looser limits are brought in range.
     Ok(MonitorSettingsDto {
-        thumb_fps: get(pool, "monitor_thumb_fps").await?.unwrap_or(def.thumb_fps),
-        thumb_width: get(pool, "monitor_thumb_width").await?.unwrap_or(def.thumb_width),
-        thumb_height: get(pool, "monitor_thumb_height").await?.unwrap_or(def.thumb_height),
-        level_interval_ms: get(pool, "monitor_level_ms").await?.unwrap_or(def.level_interval_ms),
+        thumb_fps: get(pool, "monitor_thumb_fps")
+            .await?
+            .unwrap_or(def.thumb_fps),
+        thumb_width: get(pool, "monitor_thumb_width")
+            .await?
+            .unwrap_or(def.thumb_width),
+        thumb_height: get(pool, "monitor_thumb_height")
+            .await?
+            .unwrap_or(def.thumb_height),
+        level_interval_ms: get(pool, "monitor_level_ms")
+            .await?
+            .unwrap_or(def.level_interval_ms),
     }
     .clamped())
 }
@@ -148,7 +155,11 @@ pub async fn session_update_stop(
 }
 
 /// Record the files a running session's legs have written so far.
-pub async fn session_update_files(pool: &SqlitePool, id: &str, files: &[Vec<String>]) -> Result<()> {
+pub async fn session_update_files(
+    pool: &SqlitePool,
+    id: &str,
+    files: &[Vec<String>],
+) -> Result<()> {
     sqlx::query("UPDATE recording_sessions SET files = ? WHERE id = ?")
         .bind(Json(files))
         .bind(id)
@@ -160,7 +171,11 @@ pub async fn session_update_files(pool: &SqlitePool, id: &str, files: &[Vec<Stri
 /// Sessions newest first, `limit` at a time: those that started before
 /// `before` (RFC 3339, compared as text like every stored `started_at`), or
 /// the newest without it.
-pub async fn sessions_list(pool: &SqlitePool, before: Option<&str>, limit: u32) -> Result<Vec<RecordingSessionDto>> {
+pub async fn sessions_list(
+    pool: &SqlitePool,
+    before: Option<&str>,
+    limit: u32,
+) -> Result<Vec<RecordingSessionDto>> {
     let rows = sqlx::query_as::<_, RecordingSessionDto>(&format!(
         "{SESSION_SELECT} WHERE (?1 IS NULL OR started_at < ?1) ORDER BY started_at DESC LIMIT ?2"
     ))
@@ -174,15 +189,18 @@ pub async fn sessions_list(pool: &SqlitePool, before: Option<&str>, limit: u32) 
 /// Remove a session from history. Its files are left alone; the API deletes
 /// them first when asked to.
 pub async fn session_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
-    let res = sqlx::query("DELETE FROM recording_sessions WHERE id = ?").bind(id).execute(pool).await?;
+    let res = sqlx::query("DELETE FROM recording_sessions WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(res.rows_affected() > 0)
 }
 
 pub async fn session_get(pool: &SqlitePool, id: &str) -> Result<Option<RecordingSessionDto>> {
     let row = sqlx::query_as::<_, RecordingSessionDto>(&format!("{SESSION_SELECT} WHERE id = ?"))
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
     Ok(row)
 }
 
@@ -259,7 +277,10 @@ pub async fn preset_update(
 
 /// Delete a preset; its outputs go with it (`ON DELETE CASCADE`).
 pub async fn preset_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
-    let res = sqlx::query("DELETE FROM presets WHERE id = ?").bind(id).execute(pool).await?;
+    let res = sqlx::query("DELETE FROM presets WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(res.rows_affected() > 0)
 }
 
@@ -273,7 +294,13 @@ async fn preset_outputs_replace(
         .bind(preset_id)
         .execute(&mut **tx)
         .await?;
-    for PresetOutputDto { id, preset_id, output: o, sort_order } in outputs {
+    for PresetOutputDto {
+        id,
+        preset_id,
+        output: o,
+        sort_order,
+    } in outputs
+    {
         sqlx::query(
             "INSERT INTO preset_outputs
              (id, preset_id, name, codec, container, resolution, framerate,
@@ -340,35 +367,48 @@ pub async fn node_delete(pool: &SqlitePool, id: &str) -> Result<()> {
 
 // ── configured_sources ────────────────────────────────────────────────────────
 
-const CONFIGURED_SOURCE_SELECT: &str = "SELECT id, name, config, created_at FROM configured_sources";
+const CONFIGURED_SOURCE_SELECT: &str =
+    "SELECT id, name, config, created_at FROM configured_sources";
 
 pub async fn configured_sources_list(pool: &SqlitePool) -> Result<Vec<ConfiguredSourceDto>> {
-    let rows = sqlx::query_as::<_, ConfiguredSourceDto>(&format!("{CONFIGURED_SOURCE_SELECT} ORDER BY created_at"))
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query_as::<_, ConfiguredSourceDto>(&format!(
+        "{CONFIGURED_SOURCE_SELECT} ORDER BY created_at"
+    ))
+    .fetch_all(pool)
+    .await?;
     Ok(rows)
 }
 
-pub async fn configured_source_get(pool: &SqlitePool, id: &str) -> Result<Option<ConfiguredSourceDto>> {
-    let row = sqlx::query_as::<_, ConfiguredSourceDto>(&format!("{CONFIGURED_SOURCE_SELECT} WHERE id = ?"))
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
+pub async fn configured_source_get(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<Option<ConfiguredSourceDto>> {
+    let row = sqlx::query_as::<_, ConfiguredSourceDto>(&format!(
+        "{CONFIGURED_SOURCE_SELECT} WHERE id = ?"
+    ))
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
     Ok(row)
 }
 
 pub async fn configured_source_insert(pool: &SqlitePool, row: &ConfiguredSourceDto) -> Result<()> {
-    sqlx::query("INSERT INTO configured_sources (id, name, config, created_at) VALUES (?, ?, ?, ?)")
-        .bind(&row.id)
-        .bind(&row.name)
-        .bind(Json(&row.config))
-        .bind(&row.created_at)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO configured_sources (id, name, config, created_at) VALUES (?, ?, ?, ?)",
+    )
+    .bind(&row.id)
+    .bind(&row.name)
+    .bind(Json(&row.config))
+    .bind(&row.created_at)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
-pub async fn configured_source_update(pool: &SqlitePool, row: &ConfiguredSourceDto) -> Result<bool> {
+pub async fn configured_source_update(
+    pool: &SqlitePool,
+    row: &ConfiguredSourceDto,
+) -> Result<bool> {
     let res = sqlx::query("UPDATE configured_sources SET name = ?, config = ? WHERE id = ?")
         .bind(&row.name)
         .bind(Json(&row.config))
@@ -414,10 +454,12 @@ pub async fn benchmarks_list(pool: &SqlitePool) -> Result<Vec<BenchmarkRunDto>> 
 }
 
 pub async fn benchmark_get(pool: &SqlitePool, id: &str) -> Result<Option<BenchmarkRunDto>> {
-    let row = sqlx::query_scalar::<_, Json<BenchmarkRunDto>>("SELECT run FROM benchmark_results WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
+    let row = sqlx::query_scalar::<_, Json<BenchmarkRunDto>>(
+        "SELECT run FROM benchmark_results WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
     Ok(row.map(|r| r.0))
 }
 
@@ -431,9 +473,11 @@ pub async fn benchmark_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
 
 /// Runs still marked running: on startup, ones a crash or restart cut short.
 pub async fn benchmarks_running(pool: &SqlitePool) -> Result<Vec<BenchmarkRunDto>> {
-    let rows = sqlx::query_scalar::<_, Json<BenchmarkRunDto>>("SELECT run FROM benchmark_results WHERE status = ?")
-        .bind(BenchmarkStatus::Running)
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query_scalar::<_, Json<BenchmarkRunDto>>(
+        "SELECT run FROM benchmark_results WHERE status = ?",
+    )
+    .bind(BenchmarkStatus::Running)
+    .fetch_all(pool)
+    .await?;
     Ok(rows.into_iter().map(|r| r.0).collect())
 }

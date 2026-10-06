@@ -114,7 +114,10 @@ impl MonitorPipeline {
                             msg = %err.error(),
                             "monitor pipeline error"
                         );
-                        error_ref.lock().unwrap().get_or_insert_with(|| err.error().to_string());
+                        error_ref
+                            .lock()
+                            .unwrap()
+                            .get_or_insert_with(|| err.error().to_string());
                     }
                     gst::MessageView::Warning(w) => {
                         warn!(msg = %w.error(), "monitor pipeline warning");
@@ -133,7 +136,9 @@ impl MonitorPipeline {
         // threads. We deliberately do NOT wait on pipeline.state(): that
         // blocks, and new() runs under the SourceManager write lock — blocking
         // would starve the WS emitter. Later errors are reported by the bus task.
-        pipeline.set_state(gst::State::Playing).map_err(|e| anyhow!("set PLAYING: {e:?}"))?;
+        pipeline
+            .set_state(gst::State::Playing)
+            .map_err(|e| anyhow!("set PLAYING: {e:?}"))?;
 
         Ok(Self {
             pipeline,
@@ -175,7 +180,10 @@ impl MonitorPipeline {
     }
 
     pub fn stop(&self) -> Result<()> {
-        self.pipeline.set_state(gst::State::Null).map(|_| ()).map_err(|e| anyhow!("set NULL: {e:?}"))
+        self.pipeline
+            .set_state(gst::State::Null)
+            .map(|_| ())
+            .map_err(|e| anyhow!("set NULL: {e:?}"))
     }
 
     /// The clock and base time a consumer pipeline should share, so buffer
@@ -186,7 +194,11 @@ impl MonitorPipeline {
 
     /// The format the source is currently producing.
     pub fn source_format(&self) -> SourceFormat {
-        let current = |p: &StreamProducer| p.appsink().static_pad("sink").and_then(|pad| pad.current_caps());
+        let current = |p: &StreamProducer| {
+            p.appsink()
+                .static_pad("sink")
+                .and_then(|pad| pad.current_caps())
+        };
         let audio = current(&self.audio).and_then(|caps| {
             let s = caps.structure(0)?;
             let channels = s.get::<i32>("channels").ok().filter(|&c| c > 0)? as u32;
@@ -196,7 +208,10 @@ impl MonitorPipeline {
         });
         let caps = current(&self.video);
         let Some(s) = caps.as_ref().and_then(|c| c.structure(0)) else {
-            return SourceFormat { audio, ..Default::default() };
+            return SourceFormat {
+                audio,
+                ..Default::default()
+            };
         };
         let size = match (s.get::<i32>("width"), s.get::<i32>("height")) {
             (Ok(w), Ok(h)) if w > 0 && h > 0 => Some((w as u32, h as u32)),
@@ -214,9 +229,12 @@ impl MonitorPipeline {
     /// The level interval and thumbnail caps are updated in-place; GStreamer
     /// re-negotiates the affected branches within the current pipeline run.
     pub fn reconfigure(&self, config: &MonitorSettingsDto) {
-        self.level_el.set_property("interval", level_interval_ns(config));
-        self.thumb_rate_caps.set_property("caps", thumb_rate_caps(config));
-        self.thumb_scale_caps.set_property("caps", thumb_scale_caps(config));
+        self.level_el
+            .set_property("interval", level_interval_ns(config));
+        self.thumb_rate_caps
+            .set_property("caps", thumb_rate_caps(config));
+        self.thumb_scale_caps
+            .set_property("caps", thumb_scale_caps(config));
     }
 }
 
@@ -292,7 +310,12 @@ fn add_level_branch(
     let fakesink = make_el("fakesink", "level-sink")?;
     fakesink.set_property("sync", false);
 
-    let chain = [make_el("queue", "lq")?, make_el("audioconvert", "level-conv")?, level.clone(), fakesink];
+    let chain = [
+        make_el("queue", "lq")?,
+        make_el("audioconvert", "level-conv")?,
+        level.clone(),
+        fakesink,
+    ];
     pipeline.add_many(&chain).context("add level branch")?;
     gst::Element::link_many(&chain).context("link level branch")?;
     link_tee(atee, &chain[0])?;
@@ -303,15 +326,23 @@ fn add_level_branch(
 /// tee → queue → appsink, wrapped in a [`StreamProducer`] that fans buffers
 /// out to recording pipelines. A consumer's errors are only logged by the
 /// producer — they never travel back up to the tee.
-fn add_producer_branch(pipeline: &gst::Pipeline, tee: &gst::Element, kind: &str) -> Result<StreamProducer> {
+fn add_producer_branch(
+    pipeline: &gst::Pipeline,
+    tee: &gst::Element,
+    kind: &str,
+) -> Result<StreamProducer> {
     let queue = make_el("queue", &format!("{kind}-producer-queue"))?;
     let appsink = gst_app::AppSink::builder()
         .name(format!("{kind}-producer"))
         // Forward as soon as buffers arrive; recordings don't render.
         .sync(false)
         .build();
-    pipeline.add_many([&queue, appsink.upcast_ref()]).with_context(|| format!("add {kind} producer"))?;
-    queue.link(&appsink).with_context(|| format!("link {kind} queue → producer"))?;
+    pipeline
+        .add_many([&queue, appsink.upcast_ref()])
+        .with_context(|| format!("add {kind} producer"))?;
+    queue
+        .link(&appsink)
+        .with_context(|| format!("link {kind} queue → producer"))?;
     link_tee(tee, &queue)?;
     Ok(StreamProducer::from(&appsink))
 }
@@ -332,10 +363,14 @@ fn count_buffers(producer: &StreamProducer) -> Result<Arc<FrameCount>> {
         skipped_ns: AtomicU64::new(0),
     });
     let counter = Arc::clone(&count);
-    producer.appsink().static_pad("sink").context("producer sink pad")?.add_probe(
-        gst::PadProbeType::BUFFER,
-        move |_, info| {
-            let Some(buffer) = info.buffer() else { return gst::PadProbeReturn::Ok };
+    producer
+        .appsink()
+        .static_pad("sink")
+        .context("producer sink pad")?
+        .add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+            let Some(buffer) = info.buffer() else {
+                return gst::PadProbeReturn::Ok;
+            };
             if let Some(pts) = buffer.pts() {
                 let prev = counter.last_pts.swap(pts.nseconds(), Ordering::AcqRel);
                 if buffer.flags().contains(gst::BufferFlags::DISCONT) && prev != u64::MAX {
@@ -347,13 +382,14 @@ fn count_buffers(producer: &StreamProducer) -> Result<Arc<FrameCount>> {
             }
             counter.frames.fetch_add(1, Ordering::Release);
             gst::PadProbeReturn::Ok
-        },
-    );
+        });
     Ok(count)
 }
 
 fn thumb_rate_caps(config: &MonitorSettingsDto) -> gst::Caps {
-    gst::Caps::builder("video/x-raw").field("framerate", gst::Fraction::new(config.thumb_fps, 1)).build()
+    gst::Caps::builder("video/x-raw")
+        .field("framerate", gst::Fraction::new(config.thumb_fps, 1))
+        .build()
 }
 
 fn thumb_scale_caps(config: &MonitorSettingsDto) -> gst::Caps {

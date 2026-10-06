@@ -513,8 +513,8 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 | PUT / DELETE | `/configured-sources/{id}` | |
 | GET | `/files?path=` | folders and media files in a directory (home if no path), for picking a file source. Read-only |
 | GET / POST | `/recordings` | list (`?before=&limit=`: newest first, 100 by default, at most 500, paged by `started_at`; the first page also carries active sessions) / start. Start body: `{ source_id, preset_id?, outputs: [...] }`. Refused onto a volume with under 1 GB free; cancels a running benchmark |
-| GET / DELETE | `/recordings/{id}` | session details / remove a finished session from history (files stay on disk; 409 while recording) |
-| GET / HEAD | `/recordings/{id}/outputs/{i}/files/{j}` | a finished session's file, with range requests; `?download` adds `Content-Disposition` (409 while recording) |
+| GET / DELETE | `/recordings/{id}` | session details / remove a finished session from history; `?files` deletes its files from disk first, and if any can't be deleted the session stays, listing those still on disk (409 while recording) |
+| GET / HEAD / DELETE | `/recordings/{id}/outputs/{i}/files/{j}` | a finished session's file, with range requests; `?download` adds `Content-Disposition` / delete it from disk and the session's list (`?path=` must match, so a stale index is refused; the session stays in history). 409 while recording |
 | POST | `/recordings/{id}/stop` | stop (waits for EOS drain) |
 | GET / POST | `/benchmarks` | runs, newest first / start one: `{ outputs, media_path, max_feeds?, step_secs?, drop_threshold_pct?, preset_id?, preset_name? }` (409 while recording or benchmarking) |
 | GET / DELETE | `/benchmarks/{id}` | a run / delete it (not while running) |
@@ -699,7 +699,8 @@ One port per machine, configurable, default `7700`. Set via config file or `--po
 Plain HTTP/WebSocket over LAN. No TLS required for v1 (trusted network assumed).
 
 **Threat model, stated plainly:** there is no authentication. Anyone who can reach port
-7700 on any node can start and stop recordings, change settings, and (through a
+7700 on any node can start and stop recordings, change settings, delete recorded
+files, and (through a
 controller) do the same on every peer. Before packaging, at least a shared token
 (sent by the UI, checked by every node, and passed on by the controller's forwarder and
 relay).

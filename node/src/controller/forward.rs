@@ -27,8 +27,13 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_BODY: usize = 16 * 1024 * 1024;
 
 /// Request headers passed to a peer.
-const REQUEST_HEADERS: [header::HeaderName; 5] =
-    [header::CONTENT_TYPE, header::RANGE, header::IF_RANGE, header::IF_MODIFIED_SINCE, header::IF_NONE_MATCH];
+const REQUEST_HEADERS: [header::HeaderName; 5] = [
+    header::CONTENT_TYPE,
+    header::RANGE,
+    header::IF_RANGE,
+    header::IF_MODIFIED_SINCE,
+    header::IF_NONE_MATCH,
+];
 
 /// Response headers passed back from a peer.
 const RESPONSE_HEADERS: [header::HeaderName; 8] = [
@@ -47,7 +52,11 @@ pub async fn forward(
     Path((node_id, path)): Path<(String, String)>,
     req: Request,
 ) -> Response {
-    let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    let query = req
+        .uri()
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
 
     if node_id == state.node_id {
         // The node router's paths are relative to `/api/v1/node`.
@@ -103,7 +112,9 @@ async fn forward_peer(state: &AppState, req: Request, url: &str) -> Response {
     let resp = match tokio::time::timeout(PEER_TIMEOUT, out.send()).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => return (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
-        Err(_) => return (StatusCode::GATEWAY_TIMEOUT, "node didn't answer in time").into_response(),
+        Err(_) => {
+            return (StatusCode::GATEWAY_TIMEOUT, "node didn't answer in time").into_response()
+        }
     };
 
     let mut builder = Response::builder().status(resp.status());
@@ -112,5 +123,7 @@ async fn forward_peer(state: &AppState, req: Request, url: &str) -> Response {
             builder = builder.header(name, v);
         }
     }
-    builder.body(Body::from_stream(resp.bytes_stream())).unwrap()
+    builder
+        .body(Body::from_stream(resp.bytes_stream()))
+        .unwrap()
 }

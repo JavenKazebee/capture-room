@@ -83,7 +83,9 @@ impl NodeRegistry {
     /// Record a successful health check. Returns `true` if the node was
     /// unhealthy until now.
     pub fn record_success(&mut self, status: &NodeStatus) -> bool {
-        let Some(e) = self.entries.get_mut(&status.id) else { return false };
+        let Some(e) = self.entries.get_mut(&status.id) else {
+            return false;
+        };
         let recovered = !e.healthy;
         e.healthy = true;
         e.fail_count = 0;

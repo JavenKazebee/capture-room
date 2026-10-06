@@ -3,7 +3,9 @@ use chrono::Timelike;
 use gstreamer::{self as gst, prelude::*};
 
 use super::{add_ghost_pad, InputSource};
-use crate::api::types::{AudioTestSignal, SourceCapabilitiesDto, SourceType, TestSourceConfig, VideoTestPattern};
+use crate::api::types::{
+    AudioTestSignal, SourceCapabilitiesDto, SourceType, TestSourceConfig, VideoTestPattern,
+};
 use crate::pipeline::{capsfilter, make_el};
 
 // ── TestSource ────────────────────────────────────────────────────────────────
@@ -32,10 +34,17 @@ fn build_bin(id: &str, cfg: &TestSourceConfig) -> Result<gst::Bin> {
         gst::Caps::builder("video/x-raw")
             .field("width", cfg.width as i32)
             .field("height", cfg.height as i32)
-            .field("framerate", gst::Fraction::new(cfg.fps_num as i32, cfg.fps_den as i32))
+            .field(
+                "framerate",
+                gst::Fraction::new(cfg.fps_num as i32, cfg.fps_den as i32),
+            )
             .build(),
     )?;
-    let video = [vsrc, vcaps, make_el("videoconvert", &format!("vconv-{id}"))?];
+    let video = [
+        vsrc,
+        vcaps,
+        make_el("videoconvert", &format!("vconv-{id}"))?,
+    ];
 
     // ── Audio: audiotestsrc → audioconvert → capsfilter ───────────────────────
     let asrc = make_el("audiotestsrc", &format!("asrc-{id}"))?;
@@ -46,11 +55,18 @@ fn build_bin(id: &str, cfg: &TestSourceConfig) -> Result<gst::Bin> {
     }
     let acaps = capsfilter(
         &format!("acaps-{id}"),
-        gst::Caps::builder("audio/x-raw").field("channels", cfg.channels as i32).build(),
+        gst::Caps::builder("audio/x-raw")
+            .field("channels", cfg.channels as i32)
+            .build(),
     )?;
-    let audio = [asrc, make_el("audioconvert", &format!("aconv-{id}"))?, acaps];
+    let audio = [
+        asrc,
+        make_el("audioconvert", &format!("aconv-{id}"))?,
+        acaps,
+    ];
 
-    bin.add_many(video.iter().chain(&audio)).context("add elements to test bin")?;
+    bin.add_many(video.iter().chain(&audio))
+        .context("add elements to test bin")?;
     gst::Element::link_many(&video).context("link test video chain")?;
     gst::Element::link_many(&audio).context("link test audio chain")?;
     add_ghost_pad(&bin, &video[2], "video")?;
@@ -95,7 +111,12 @@ impl InputSource for TestSource {
         // nanosecond() exceeds 1e9 during a leap second; keep frames in range.
         let frac = (now.nanosecond() as f64 / 1_000_000_000.0).min(0.999_999);
         let frames = (frac * fps) as u32;
-        Some(format!("{:02}:{:02}:{:02}:{frames:02}", now.hour(), now.minute(), now.second()))
+        Some(format!(
+            "{:02}:{:02}:{:02}:{frames:02}",
+            now.hour(),
+            now.minute(),
+            now.second()
+        ))
     }
 }
 

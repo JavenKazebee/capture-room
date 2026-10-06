@@ -65,7 +65,11 @@ pub(crate) fn capsfilter(name: &str, caps: gst::Caps) -> Result<gst::Element> {
 pub(super) fn link_tee(tee: &gst::Element, sink: &gst::Element) -> Result<()> {
     tee.request_pad_simple("src_%u")
         .with_context(|| format!("{} request pad", tee.name()))?
-        .link(&sink.static_pad("sink").with_context(|| format!("{} sink pad", sink.name()))?)
+        .link(
+            &sink
+                .static_pad("sink")
+                .with_context(|| format!("{} sink pad", sink.name()))?,
+        )
         .with_context(|| format!("link {} → {}", tee.name(), sink.name()))?;
     Ok(())
 }
@@ -75,14 +79,21 @@ pub(super) fn link_tee(tee: &gst::Element, sink: &gst::Element) -> Result<()> {
 pub(super) fn handle_level_message(s: &gst::StructureRef, meter: &AudioMeter) {
     use gstreamer::glib;
 
-    let Ok(peak_arr) = s.get::<glib::ValueArray>("peak") else { return };
-    let Ok(rms_arr) = s.get::<glib::ValueArray>("rms") else { return };
+    let Ok(peak_arr) = s.get::<glib::ValueArray>("peak") else {
+        return;
+    };
+    let Ok(rms_arr) = s.get::<glib::ValueArray>("rms") else {
+        return;
+    };
 
     let channels = peak_arr
         .iter()
         .zip(rms_arr.iter())
         .filter_map(|(p, r)| {
-            Some(ChannelLevelDto { peak_db: p.get::<f64>().ok()?, rms_db: r.get::<f64>().ok()? })
+            Some(ChannelLevelDto {
+                peak_db: p.get::<f64>().ok()?,
+                rms_db: r.get::<f64>().ok()?,
+            })
         })
         .collect();
 

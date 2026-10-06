@@ -47,11 +47,14 @@ pub fn configured(dto: &ConfiguredSourceDto) -> Box<dyn InputSource> {
 /// Expose `element`'s static src pad on `bin` as the ghost pad `name`
 /// (`"video"` or `"audio"`, per the [`InputSource`] contract).
 fn add_ghost_pad(bin: &gst::Bin, element: &gst::Element, name: &str) -> Result<()> {
-    let target = element.static_pad("src").with_context(|| format!("{} src pad", element.name()))?;
+    let target = element
+        .static_pad("src")
+        .with_context(|| format!("{} src pad", element.name()))?;
     let ghost = gst::GhostPad::builder_with_target(&target)
         .map_err(|e| anyhow!("{name} ghost pad: {e}"))?
         .name(name)
         .build();
-    bin.add_pad(&ghost).with_context(|| format!("add {name} ghost pad"))?;
+    bin.add_pad(&ghost)
+        .with_context(|| format!("add {name} ghost pad"))?;
     Ok(())
 }

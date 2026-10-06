@@ -586,7 +586,12 @@ pub struct MonitorSettingsDto {
 
 impl Default for MonitorSettingsDto {
     fn default() -> Self {
-        Self { thumb_fps: 1, thumb_width: 320, thumb_height: 180, level_interval_ms: 100 }
+        Self {
+            thumb_fps: 1,
+            thumb_width: 320,
+            thumb_height: 180,
+            level_interval_ms: 100,
+        }
     }
 }
 

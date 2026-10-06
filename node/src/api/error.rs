@@ -33,7 +33,9 @@ impl IntoResponse for ApiError {
             Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg).into_response(),
             Self::Conflict(msg) => (StatusCode::CONFLICT, msg).into_response(),
             Self::BadGateway(msg) => (StatusCode::BAD_GATEWAY, msg).into_response(),
-            Self::Internal(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+            Self::Internal(e) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response()
+            }
         }
     }
 }

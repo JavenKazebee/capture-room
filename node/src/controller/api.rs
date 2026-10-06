@@ -15,8 +15,8 @@ use axum::{
 use super::{discovery, forward, Controller, CONFIG_KEY};
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
-    AddNodeRequest, ControllerToggleRequest, NodeDto, PresetCreateRequest, PresetDto, PresetOutputDto,
-    PresetOutputInput,
+    AddNodeRequest, ControllerToggleRequest, NodeDto, PresetCreateRequest, PresetDto,
+    PresetOutputDto, PresetOutputInput,
 };
 use crate::db;
 use crate::pipeline::profile::{plan_legs, unknown_token};
@@ -31,7 +31,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/v1/nodes/{id}", delete(delete_node))
         .route("/api/v1/nodes/{id}/{*path}", any(forward::forward))
         .route("/api/v1/presets", get(get_presets).post(post_preset))
-        .route("/api/v1/presets/{id}", put(put_preset).delete(delete_preset))
+        .route(
+            "/api/v1/presets/{id}",
+            put(put_preset).delete(delete_preset),
+        )
         .route("/ws", get(ws_handler))
 }
 
@@ -104,7 +107,10 @@ async fn post_node(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn delete_node(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+async fn delete_node(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
     let registry = match state.controller.read().await.as_ref() {
         Some(c) => Arc::clone(&c.registry),
         None => return Err(NOT_CONTROLLER),
@@ -152,11 +158,16 @@ async fn put_preset(
 ) -> ApiResult<Json<PresetDto>> {
     let outputs = output_dtos(&id, validate_outputs(req.outputs)?);
     let now = chrono::Utc::now().to_rfc3339();
-    let preset = db::preset_update(&state.db, &id, &req.name, &now, outputs).await?.ok_or(PRESET_NOT_FOUND)?;
+    let preset = db::preset_update(&state.db, &id, &req.name, &now, outputs)
+        .await?
+        .ok_or(PRESET_NOT_FOUND)?;
     Ok(Json(preset))
 }
 
-async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+async fn delete_preset(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
     if !db::preset_delete(&state.db, &id).await? {
         return Err(PRESET_NOT_FOUND);
     }
@@ -175,7 +186,9 @@ fn validate_outputs(mut outputs: Vec<PresetOutputInput>) -> ApiResult<Vec<Preset
         output.resolution = blank_to_none(output.resolution.take());
         output.framerate = blank_to_none(output.framerate.take());
         if let Some(token) = unknown_token(&output.path_template) {
-            return Err(ApiError::BadRequest(format!("{token} isn't a path template token").into()));
+            return Err(ApiError::BadRequest(
+                format!("{token} isn't a path template token").into(),
+            ));
         }
     }
     let legs = plan_legs(&outputs, None).map_err(|e| ApiError::BadRequest(e.into()))?;

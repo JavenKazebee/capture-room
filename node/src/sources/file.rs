@@ -14,7 +14,8 @@ use crate::pipeline::{capsfilter, make_el};
 
 /// Extensions the file browser lists as media files.
 pub const MEDIA_EXTENSIONS: &[&str] = &[
-    "mov", "mp4", "m4v", "mkv", "webm", "mxf", "avi", "mts", "m2ts", "ts", "mpg", "mpeg", "flv", "wmv",
+    "mov", "mp4", "m4v", "mkv", "webm", "mxf", "avi", "mts", "m2ts", "ts", "mpg", "mpeg", "flv",
+    "wmv",
 ];
 
 /// Channels of the silence played for a file without audio.
@@ -41,7 +42,12 @@ impl FileSource {
     }
 
     fn media(&self) -> Result<&MediaInfo> {
-        self.config.media.as_ref().ok_or_else(|| anyhow!("{} hasn't been probed; save the source again", self.config.path))
+        self.config.media.as_ref().ok_or_else(|| {
+            anyhow!(
+                "{} hasn't been probed; save the source again",
+                self.config.path
+            )
+        })
     }
 }
 
@@ -64,7 +70,11 @@ impl InputSource for FileSource {
             max_width: media.width,
             max_height: media.height,
             max_framerate: [media.fps_num, media.fps_den],
-            audio_channels: if media.audio_channels > 0 { media.audio_channels } else { SILENCE_CHANNELS },
+            audio_channels: if media.audio_channels > 0 {
+                media.audio_channels
+            } else {
+                SILENCE_CHANNELS
+            },
         })
     }
 
@@ -93,12 +103,19 @@ pub fn probe(path: &str) -> Result<MediaInfo> {
     if !p.is_file() {
         bail!("{path} is not a file");
     }
-    let discoverer = gst_pbutils::Discoverer::new(gst::ClockTime::from_seconds(10)).context("create discoverer")?;
-    let info = discoverer.discover_uri(&uri(path)?).map_err(|e| anyhow!("can't read {path}: {e}"))?;
+    let discoverer = gst_pbutils::Discoverer::new(gst::ClockTime::from_seconds(10))
+        .context("create discoverer")?;
+    let info = discoverer
+        .discover_uri(&uri(path)?)
+        .map_err(|e| anyhow!("can't read {path}: {e}"))?;
     if info.result() != gst_pbutils::DiscovererResult::Ok {
         bail!("can't read {path}: {:?}", info.result());
     }
-    let video = info.video_streams().into_iter().next().ok_or_else(|| anyhow!("{path} has no video"))?;
+    let video = info
+        .video_streams()
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("{path} has no video"))?;
     if video.is_image() {
         bail!("{path} is a still image");
     }
@@ -114,7 +131,9 @@ pub fn probe(path: &str) -> Result<MediaInfo> {
 }
 
 fn uri(path: &str) -> Result<String> {
-    Ok(glib::filename_to_uri(path, None).with_context(|| format!("make a URI for {path}"))?.to_string())
+    Ok(glib::filename_to_uri(path, None)
+        .with_context(|| format!("make a URI for {path}"))?
+        .to_string())
 }
 
 // ── Monitor side ──────────────────────────────────────────────────────────────
@@ -129,7 +148,8 @@ fn build_bin(id: &str, path: &str, media: &MediaInfo) -> Result<gst::Bin> {
     // ── Video: appsrc → videoconvert ──────────────────────────────────────────
     let vsrc = live_appsrc(&format!("file-vsrc-{id}"), latency);
     let vconv = make_el("videoconvert", &format!("file-vconv-{id}"))?;
-    bin.add_many([vsrc.upcast_ref(), &vconv]).context("add file video elements")?;
+    bin.add_many([vsrc.upcast_ref(), &vconv])
+        .context("add file video elements")?;
     vsrc.link(&vconv).context("link file video")?;
     add_ghost_pad(&bin, &vconv, "video")?;
 
@@ -137,7 +157,8 @@ fn build_bin(id: &str, path: &str, media: &MediaInfo) -> Result<gst::Bin> {
     let asrc = if media.audio_channels > 0 {
         let asrc = live_appsrc(&format!("file-asrc-{id}"), latency);
         let aconv = make_el("audioconvert", &format!("file-aconv-{id}"))?;
-        bin.add_many([asrc.upcast_ref(), &aconv]).context("add file audio elements")?;
+        bin.add_many([asrc.upcast_ref(), &aconv])
+            .context("add file audio elements")?;
         asrc.link(&aconv).context("link file audio")?;
         add_ghost_pad(&bin, &aconv, "audio")?;
         Some(asrc)
@@ -147,9 +168,15 @@ fn build_bin(id: &str, path: &str, media: &MediaInfo) -> Result<gst::Bin> {
         silence.set_property_from_str("wave", "silence");
         let caps = capsfilter(
             &format!("file-acaps-{id}"),
-            gst::Caps::builder("audio/x-raw").field("channels", SILENCE_CHANNELS as i32).build(),
+            gst::Caps::builder("audio/x-raw")
+                .field("channels", SILENCE_CHANNELS as i32)
+                .build(),
         )?;
-        let audio = [silence, make_el("audioconvert", &format!("file-aconv-{id}"))?, caps];
+        let audio = [
+            silence,
+            make_el("audioconvert", &format!("file-aconv-{id}"))?,
+            caps,
+        ];
         bin.add_many(&audio).context("add file silence")?;
         gst::Element::link_many(&audio).context("link file silence")?;
         add_ghost_pad(&bin, &audio[2], "audio")?;
@@ -179,7 +206,12 @@ fn build_bin(id: &str, path: &str, media: &MediaInfo) -> Result<gst::Bin> {
 
     // Report the player's errors on the monitor, and loop it at the end.
     let bus = player.bus().context("player has no bus")?;
-    let bus_task = tokio::spawn(watch_player(bus, player.downgrade(), vsrc.downgrade(), path.to_string()));
+    let bus_task = tokio::spawn(watch_player(
+        bus,
+        player.downgrade(),
+        vsrc.downgrade(),
+        path.to_string(),
+    ));
 
     // The player lives as long as the bin: the monitor drops the bin when it
     // stops, which stops the player.
@@ -222,7 +254,13 @@ fn build_player(
     decode.set_property("uri", uri(path)?);
     player.add(&decode).context("add uridecodebin")?;
 
-    let video = add_forward_chain(&player, &format!("{id}-video"), &["queue", "videoconvert"], "video/x-raw", vsrc)?;
+    let video = add_forward_chain(
+        &player,
+        &format!("{id}-video"),
+        &["queue", "videoconvert"],
+        "video/x-raw",
+        vsrc,
+    )?;
     let audio = asrc
         .map(|asrc| {
             add_forward_chain(
@@ -240,7 +278,10 @@ fn build_player(
     let player_weak = player.downgrade();
     decode.connect_pad_added(move |_, pad| {
         let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
-        let kind = caps.structure(0).map(|s| s.name().as_str()).unwrap_or_default();
+        let kind = caps
+            .structure(0)
+            .map(|s| s.name().as_str())
+            .unwrap_or_default();
         let chain = if kind.starts_with("video/") {
             video.upgrade()
         } else if kind.starts_with("audio/") {
@@ -250,18 +291,28 @@ fn build_player(
         };
         // The first video and audio streams feed the source; drain any other
         // so the demuxer doesn't stop on an unlinked pad.
-        let sink = match chain.and_then(|c| c.static_pad("sink")).filter(|p| !p.is_linked()) {
+        let sink = match chain
+            .and_then(|c| c.static_pad("sink"))
+            .filter(|p| !p.is_linked())
+        {
             Some(sink) => sink,
             None => {
-                let Some(player) = player_weak.upgrade() else { return };
-                let Ok(fake) = gst::ElementFactory::make("fakesink").property("sync", true).property("async", false).build()
+                let Some(player) = player_weak.upgrade() else {
+                    return;
+                };
+                let Ok(fake) = gst::ElementFactory::make("fakesink")
+                    .property("sync", true)
+                    .property("async", false)
+                    .build()
                 else {
                     return;
                 };
                 if player.add(&fake).is_err() || fake.sync_state_with_parent().is_err() {
                     return;
                 }
-                let Some(sink) = fake.static_pad("sink") else { return };
+                let Some(sink) = fake.static_pad("sink") else {
+                    return;
+                };
                 debug!(pad = %pad.name(), kind, "file stream not used");
                 sink
             }
@@ -300,14 +351,18 @@ fn add_forward_chain(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
                 let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                let Some(target) = target.upgrade() else { return Err(gst::FlowError::Flushing) };
+                let Some(target) = target.upgrade() else {
+                    return Err(gst::FlowError::Flushing);
+                };
                 forward(&sample, &target, &last_pts);
                 Ok(gst::FlowSuccess::Ok)
             })
             .build(),
     );
     chain.push(sink.upcast());
-    player.add_many(&chain).with_context(|| format!("add {name} chain"))?;
+    player
+        .add_many(&chain)
+        .with_context(|| format!("add {name} chain"))?;
     gst::Element::link_many(&chain).with_context(|| format!("link {name} chain"))?;
     Ok(chain.swap_remove(0))
 }
@@ -319,8 +374,12 @@ fn add_forward_chain(
 /// falling behind. `last_pts` is the file timestamp of the previous buffer.
 fn forward(sample: &gst::Sample, target: &gst_app::AppSrc, last_pts: &AtomicU64) {
     // Not playing yet, or stopping.
-    let Some(now) = target.current_running_time() else { return };
-    let Some(mut buffer) = sample.buffer_owned() else { return };
+    let Some(now) = target.current_running_time() else {
+        return;
+    };
+    let Some(mut buffer) = sample.buffer_owned() else {
+        return;
+    };
     let looped = buffer.pts().is_some_and(|pts| {
         let prev = last_pts.swap(pts.nseconds(), Ordering::Relaxed);
         prev != u64::MAX && pts.nseconds() <= prev
@@ -391,10 +450,18 @@ async fn watch_player(
 }
 
 /// Post a player error on the monitor, and stop the player.
-fn report(path: &str, error: &str, report_to: &glib::WeakRef<gst_app::AppSrc>, player: &glib::WeakRef<gst::Pipeline>) {
+fn report(
+    path: &str,
+    error: &str,
+    report_to: &glib::WeakRef<gst_app::AppSrc>,
+    player: &glib::WeakRef<gst::Pipeline>,
+) {
     warn!(path = %path, error = %error, "file player error");
     if let Some(src) = report_to.upgrade() {
-        src.post_error_message(gst::error_msg!(gst::StreamError::Failed, ("{path}: {error}")));
+        src.post_error_message(gst::error_msg!(
+            gst::StreamError::Failed,
+            ("{path}: {error}")
+        ));
     }
     if let Some(player) = player.upgrade() {
         let _ = player.set_state(gst::State::Null);

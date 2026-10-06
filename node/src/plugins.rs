@@ -9,12 +9,28 @@ const REQUIRED: &[Package] = &[
     Package {
         name: "gst-plugins-base",
         hint: "",
-        elements: &["videoconvert", "audioconvert", "audioresample", "videoscale", "videotestsrc", "audiotestsrc"],
+        elements: &[
+            "videoconvert",
+            "audioconvert",
+            "audioresample",
+            "videoscale",
+            "videotestsrc",
+            "audiotestsrc",
+        ],
     },
     Package {
         name: "gst-plugins-good",
         hint: "pacman -S gst-plugins-good  /  apt install gstreamer1.0-plugins-good",
-        elements: &["qtmux", "mp4mux", "matroskamux", "opusenc", "vp9enc", "jpegenc", "level", "videorate"],
+        elements: &[
+            "qtmux",
+            "mp4mux",
+            "matroskamux",
+            "opusenc",
+            "vp9enc",
+            "jpegenc",
+            "level",
+            "videorate",
+        ],
     },
     Package {
         name: "gst-plugins-ugly",
@@ -32,7 +48,11 @@ const REQUIRED: &[Package] = &[
         elements: &["avenc_prores_ks", "avenc_aac"],
     },
     // Statically linked.
-    Package { name: "gst-plugin-ndi", hint: "", elements: &["ndisrc", "ndisrcdemux"] },
+    Package {
+        name: "gst-plugin-ndi",
+        hint: "",
+        elements: &["ndisrc", "ndisrcdemux"],
+    },
 ];
 
 struct Package {
@@ -57,7 +77,11 @@ pub fn check_required_plugins() -> Result<()> {
         if missing.is_empty() {
             continue;
         }
-        msg.push_str(&format!("\n  {}  (provides: {})\n", package.name, missing.join(", ")));
+        msg.push_str(&format!(
+            "\n  {}  (provides: {})\n",
+            package.name,
+            missing.join(", ")
+        ));
         if !package.hint.is_empty() {
             msg.push_str(&format!("    install: {}\n", package.hint));
         }

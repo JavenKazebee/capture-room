@@ -70,7 +70,10 @@ async fn main() -> Result<()> {
     if args.controller {
         db::config_set(&pool, controller::CONFIG_KEY, "true").await?;
     }
-    let controller_enabled = db::config_get(&pool, controller::CONFIG_KEY).await?.as_deref() == Some("true");
+    let controller_enabled = db::config_get(&pool, controller::CONFIG_KEY)
+        .await?
+        .as_deref()
+        == Some("true");
     info!(id = %node_id, name = %node_name, controller = controller_enabled, "identity");
 
     db::sessions_mark_crashed(&pool).await?;
@@ -84,7 +87,8 @@ async fn main() -> Result<()> {
         .expect("NDI monitor thread panicked");
     let (leg_failure_tx, leg_failure_rx) = tokio::sync::mpsc::unbounded_channel();
     let (leg_file_tx, leg_file_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut source_manager = SourceManager::new(monitor_config, ndi_monitor, leg_failure_tx, leg_file_tx);
+    let mut source_manager =
+        SourceManager::new(monitor_config, ndi_monitor, leg_failure_tx, leg_file_tx);
     source_manager.scan(&configured);
 
     for source in source_manager.sources() {
@@ -125,7 +129,9 @@ async fn main() -> Result<()> {
     }
 
     let _mdns = controller::discovery::register_mdns_service(&node_id, &node_name, args.port)
-        .inspect_err(|e| warn!(error = %e, "mDNS registration failed; add this node to a controller by URL"))
+        .inspect_err(
+            |e| warn!(error = %e, "mDNS registration failed; add this node to a controller by URL"),
+        )
         .ok();
 
     // ── HTTP server ───────────────────────────────────────────────────────────

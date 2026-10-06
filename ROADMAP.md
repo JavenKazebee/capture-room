@@ -4,7 +4,7 @@ Active sequencing of work, decisions, and rationale. This complements
 [ARCHITECTURE.md](ARCHITECTURE.md) (the design spec) — when the two disagree on
 *order*, this file wins; ARCHITECTURE.md remains the source of truth for *design*.
 
-_Last updated: 2026-10-04_
+_Last updated: 2026-10-06_
 
 ---
 
@@ -22,9 +22,6 @@ _Last updated: 2026-10-04_
 10. **Clock sync across nodes** — prerequisite for multi-angle replay
 11. **Instant replay**
 12. **Follow-on**, in rough priority order (see below)
-
-**Any time, small:** CI (fmt, clippy, tests, UI type-check), which doesn't need to wait
-for packaging.
 
 Rationale for front-loading 1–2 ahead of NDI: a configurable TestSource plus the
 Sources view gives a real authoring/verification surface, and live monitoring forces
@@ -73,10 +70,17 @@ Design detail for all of these lives in ARCHITECTURE.md; the history is in git.
   files (play, download) and remove from history (files stay on disk). Sessions now keep
   their source and preset names and each output's format; any H.264/AAC output in
   .mp4/.mov previews, and a preset can mark the one to prefer. Nodes serve a session's
-  own files with range requests and the controller's forwarder streams them. Not yet:
-  previews of growing files, deleting files from disk (wait for authentication).
+  own files with range requests and the controller's forwarder streams them. Deleting
+  (2026-10-05): one file, or a whole session with or without its files; a session whose
+  files can't all be deleted stays, listing the ones still on disk. Not yet: previews of
+  growing files.
 - **No overwriting on start (2026-10-04)** — an existing file gets a `_2` suffix
   (or the next `{take}`); a path another recording holds is refused.
+- **Record and Recordings refinements (2026-10-06)** — the Record multiviewer drops the
+  inspector for a per-tile info popover and adds a Fit tile size; page headers share one
+  layout.
+- **CI (2026-10-06)** — fmt, clippy, tests, generated-types check and UI type-check on
+  GitHub Actions. The codebase was run through `rustfmt` once to start clean.
 - **Node registry persistence** — peers added by URL are stored and restored on start.
 
 ---
@@ -136,7 +140,8 @@ Roughly in priority order.
 - **Benchmark: GPU load** — not measured (no portable way to read it); CPU, memory and
   write rate are.
 - **Authentication** — the API is open to anyone on the network, and any of them can
-  start or stop recordings. At least a shared token, before packaging.
+  start or stop recordings, or delete recorded files. At least a shared token, before
+  packaging.
 - **Packaging** — cross-platform builds via GitHub Actions; NDI packaging per
   ARCHITECTURE.md.
 - **Timecode** — real LTC/VITC extraction; not started (TestSource fakes wall-clock TC).

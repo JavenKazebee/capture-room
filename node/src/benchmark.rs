@@ -40,8 +40,8 @@ use tracing::{error, info, warn};
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
-    BenchmarkRequest, BenchmarkRunDto, BenchmarkStatus, BenchmarkStepDto, FileSourceConfig, MediaInfo,
-    PresetOutputInput, WsEvent,
+    BenchmarkRequest, BenchmarkRunDto, BenchmarkStatus, BenchmarkStepDto, FileSourceConfig,
+    MediaInfo, PresetOutputInput, WsEvent,
 };
 use crate::db;
 use crate::pipeline::monitor::{MonitorPipeline, VideoProgress};
@@ -98,7 +98,9 @@ pub struct Running {
 /// recordings) or while another benchmark runs.
 pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<BenchmarkRunDto> {
     if req.outputs.is_empty() {
-        return Err(ApiError::BadRequest("at least one output is required".into()));
+        return Err(ApiError::BadRequest(
+            "at least one output is required".into(),
+        ));
     }
     plan_legs(&req.outputs, None).map_err(|e| ApiError::BadRequest(e.into()))?;
     let path = req.media_path.trim().to_string();
@@ -119,15 +121,30 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
     {
         let mut slot = state.benchmark.lock().unwrap();
         if slot.is_some() {
-            return Err(ApiError::Conflict("a benchmark is already running on this node"));
+            return Err(ApiError::Conflict(
+                "a benchmark is already running on this node",
+            ));
         }
-        *slot = Some(Running { id: id.clone(), cancel: cancel.clone(), reason: Arc::clone(&reason), done: done_rx });
+        *slot = Some(Running {
+            id: id.clone(),
+            cancel: cancel.clone(),
+            reason: Arc::clone(&reason),
+            done: done_rx,
+        });
     }
     // Checked after taking the slot: a recording that starts from here on
     // cancels this run instead.
-    if !state.source_manager.read().await.active_sessions().is_empty() {
+    if !state
+        .source_manager
+        .read()
+        .await
+        .active_sessions()
+        .is_empty()
+    {
         state.benchmark.lock().unwrap().take();
-        return Err(ApiError::Conflict("stop every recording on this node before benchmarking it"));
+        return Err(ApiError::Conflict(
+            "stop every recording on this node before benchmarking it",
+        ));
     }
 
     let setup = async {
@@ -142,15 +159,24 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
             outputs: req.outputs.clone(),
             media_path: path.clone(),
             media: media.clone(),
-            max_feeds: req.max_feeds.unwrap_or(DEFAULT_MAX_FEEDS).clamp(1, MAX_FEEDS_LIMIT),
+            max_feeds: req
+                .max_feeds
+                .unwrap_or(DEFAULT_MAX_FEEDS)
+                .clamp(1, MAX_FEEDS_LIMIT),
             step_secs: req.step_secs.unwrap_or(DEFAULT_STEP_SECS).clamp(5, 300),
-            drop_threshold_pct: req.drop_threshold_pct.unwrap_or(DEFAULT_DROP_THRESHOLD_PCT).clamp(0.01, 10.0),
+            drop_threshold_pct: req
+                .drop_threshold_pct
+                .unwrap_or(DEFAULT_DROP_THRESHOLD_PCT)
+                .clamp(0.01, 10.0),
             feeds_running: 0,
             steps: Vec::new(),
             sustainable_feeds: 0,
             encoders: Vec::new(),
             message: None,
-            scratch_dirs: dedup(&scratch).iter().map(|d| d.display().to_string()).collect(),
+            scratch_dirs: dedup(&scratch)
+                .iter()
+                .map(|d| d.display().to_string())
+                .collect(),
         };
         db::benchmark_save(&state.db, &dto).await?;
         anyhow::Ok((dto, scratch))
@@ -164,8 +190,17 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
     };
 
     info!(id = %id, media = %path, max_feeds = dto.max_feeds, "benchmark started");
-    state.emit(&WsEvent::BenchmarkUpdated { run: Box::new(dto.clone()) });
-    let run = Run { state: Arc::clone(state), dto: dto.clone(), scratch, cancel, reason, failure: Default::default() };
+    state.emit(&WsEvent::BenchmarkUpdated {
+        run: Box::new(dto.clone()),
+    });
+    let run = Run {
+        state: Arc::clone(state),
+        dto: dto.clone(),
+        scratch,
+        cancel,
+        reason,
+        failure: Default::default(),
+    };
     tokio::spawn(run.run(done_tx));
     Ok(dto)
 }
@@ -178,7 +213,11 @@ pub async fn cancel(state: &AppState, id: Option<&str>, reason: &str) -> bool {
         let Some(running) = slot.as_ref().filter(|r| id.is_none_or(|id| r.id == id)) else {
             return false;
         };
-        running.reason.lock().unwrap().get_or_insert_with(|| reason.to_string());
+        running
+            .reason
+            .lock()
+            .unwrap()
+            .get_or_insert_with(|| reason.to_string());
         running.cancel.cancel();
         running.done.clone()
     };
@@ -192,14 +231,23 @@ pub async fn cancel(state: &AppState, id: Option<&str>, reason: &str) -> bool {
 
 /// The id of the running benchmark, if any.
 pub fn running_id(state: &AppState) -> Option<String> {
-    state.benchmark.lock().unwrap().as_ref().map(|r| r.id.clone())
+    state
+        .benchmark
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|r| r.id.clone())
 }
 
 /// After a crash or restart: runs left `running` end as errors, and their
 /// scratch folders are deleted.
 pub async fn recover(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     for mut run in db::benchmarks_running(pool).await? {
-        let dirs = run.scratch_dirs.iter().map(PathBuf::from).collect::<Vec<_>>();
+        let dirs = run
+            .scratch_dirs
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
         tokio::task::spawn_blocking(move || remove_scratch(&dirs)).await?;
         run.status = BenchmarkStatus::Error;
         run.finished_at = Some(chrono::Utc::now().to_rfc3339());
@@ -262,7 +310,13 @@ impl Run {
             }
             Err(Stop::Cancelled) => {
                 dto.status = BenchmarkStatus::Cancelled;
-                dto.message = Some(self.reason.lock().unwrap().clone().unwrap_or_else(|| "Cancelled.".into()));
+                dto.message = Some(
+                    self.reason
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap_or_else(|| "Cancelled.".into()),
+                );
             }
             Err(Stop::Failed(e)) => {
                 dto.status = BenchmarkStatus::Error;
@@ -271,7 +325,11 @@ impl Run {
         }
         info!(id = %dto.id, status = ?dto.status, sustainable = dto.sustainable_feeds, message = ?dto.message, "benchmark finished");
         self.publish().await;
-        self.state.benchmark.lock().unwrap().take_if(|r| r.id == self.dto.id);
+        self.state
+            .benchmark
+            .lock()
+            .unwrap()
+            .take_if(|r| r.id == self.dto.id);
         let _ = done.send(true);
     }
 
@@ -295,7 +353,8 @@ impl Run {
             let started = self.set_feeds(feeds, n).await?;
             self.dto.feeds_running = n;
             self.publish().await;
-            let warmup = WARMUP + Duration::from_secs(started.div_ceil(WARMUP_FEEDS_PER_SEC) as u64);
+            let warmup =
+                WARMUP + Duration::from_secs(started.div_ceil(WARMUP_FEEDS_PER_SEC) as u64);
             self.pause(feeds, warmup).await?;
 
             match self.check(feeds, n, full, &mut system).await? {
@@ -305,7 +364,9 @@ impl Run {
                     let reason = if memory_pct > MAX_MEMORY_PCT {
                         Some("memory is nearly full".to_string())
                     } else {
-                        self.low_volume().await.map(|volume| format!("{volume} is nearly full"))
+                        self.low_volume()
+                            .await
+                            .map(|volume| format!("{volume} is nearly full"))
                     };
                     if let Some(reason) = reason {
                         search.cap(n);
@@ -324,27 +385,51 @@ impl Run {
     /// more if the first drops frames.
     /// Returns `Some(full)` if they kept up — `full` when a full-length step
     /// showed it — or `None` if they didn't.
-    async fn check(&mut self, feeds: &[Feed], n: u32, full: bool, system: &mut System) -> Result<Option<bool>, Stop> {
+    async fn check(
+        &mut self,
+        feeds: &[Feed],
+        n: u32,
+        full: bool,
+        system: &mut System,
+    ) -> Result<Option<bool>, Stop> {
         if !full {
             let mut step = self.measure_window(feeds, n, QUICK_SECS, system).await?;
             step.quick = true;
-            step.passed = step.drop_pct <= self.dto.drop_threshold_pct / 2.0 && step.cpu_pct < QUICK_MAX_CPU_PCT;
+            step.passed = step.drop_pct <= self.dto.drop_threshold_pct / 2.0
+                && step.cpu_pct < QUICK_MAX_CPU_PCT;
             let passed = step.passed;
-            info!(feeds = n, drop_pct = step.drop_pct, cpu = step.cpu_pct, passed, "benchmark quick check");
+            info!(
+                feeds = n,
+                drop_pct = step.drop_pct,
+                cpu = step.cpu_pct,
+                passed,
+                "benchmark quick check"
+            );
             self.dto.steps.push(step);
             if passed {
                 return Ok(Some(false));
             }
             // Far over the limit: no need for full steps to say so.
-            if self.dto.steps.last().unwrap().drop_pct > self.dto.drop_threshold_pct * QUICK_FAIL_FACTOR {
+            if self.dto.steps.last().unwrap().drop_pct
+                > self.dto.drop_threshold_pct * QUICK_FAIL_FACTOR
+            {
                 return Ok(None);
             }
             self.publish().await;
         }
         for attempt in 1..=MEASURE_ATTEMPTS {
-            let step = self.measure_window(feeds, n, self.dto.step_secs, system).await?;
+            let step = self
+                .measure_window(feeds, n, self.dto.step_secs, system)
+                .await?;
             let passed = step.passed;
-            info!(feeds = n, attempt, drop_pct = step.drop_pct, cpu = step.cpu_pct, passed, "benchmark step");
+            info!(
+                feeds = n,
+                attempt,
+                drop_pct = step.drop_pct,
+                cpu = step.cpu_pct,
+                passed,
+                "benchmark step"
+            );
             self.dto.steps.push(step);
             if passed {
                 return Ok(Some(true));
@@ -377,7 +462,16 @@ impl Run {
         system.refresh_memory();
         let memory_pct = system.used_memory() as f64 / system.total_memory().max(1) as f64 * 100.0;
         let threshold = self.dto.drop_threshold_pct;
-        Ok(measure(n, fps, self.dto.outputs.len(), &before, &after, &cpu, memory_pct, threshold))
+        Ok(measure(
+            n,
+            fps,
+            self.dto.outputs.len(),
+            &before,
+            &after,
+            &cpu,
+            memory_pct,
+            threshold,
+        ))
     }
 
     /// Start or stop feeds until `target` run. Returns how many were started.
@@ -402,10 +496,19 @@ impl Run {
     fn closing_message(&self, n: u32, search: &Search, capped: Option<&str>) -> String {
         let threshold = self.dto.drop_threshold_pct;
         // The full step that failed at the lowest failing count.
-        let failed = search.fail.and_then(|hi| self.dto.steps.iter().rev().find(|s| s.feeds == hi && !s.quick && !s.passed));
+        let failed = search.fail.and_then(|hi| {
+            self.dto
+                .steps
+                .iter()
+                .rev()
+                .find(|s| s.feeds == hi && !s.quick && !s.passed)
+        });
         match (failed, capped) {
             (Some(step), _) if n == 0 => {
-                format!("Even 1 feed dropped {:.2}% of frames (the limit is {threshold}%).", step.drop_pct)
+                format!(
+                    "Even 1 feed dropped {:.2}% of frames (the limit is {threshold}%).",
+                    step.drop_pct
+                )
             }
             (Some(step), _) => format!(
                 "{n} feed{} kept up; {} dropped {:.2}% of frames (the limit is {threshold}%).",
@@ -415,7 +518,10 @@ impl Run {
             ),
             (None, Some(reason)) => format!("Stopped at {n} feed{}: {reason}.", plural(n)),
             (None, None) => {
-                format!("All {n} feed{} kept up. Raise the feed limit to find where this node stops.", plural(n))
+                format!(
+                    "All {n} feed{} kept up. Raise the feed limit to find where this node stops.",
+                    plural(n)
+                )
             }
         }
     }
@@ -425,10 +531,14 @@ impl Run {
         let source = FileSource::new(
             format!("benchmark-{n}"),
             format!("Benchmark feed {n}"),
-            FileSourceConfig { path: self.dto.media_path.clone(), media: Some(self.dto.media.clone()) },
+            FileSourceConfig {
+                path: self.dto.media_path.clone(),
+                media: Some(self.dto.media.clone()),
+            },
         );
         let config = *self.state.source_manager.read().await.monitor_config();
-        let monitor = MonitorPipeline::new(&source, &config).with_context(|| format!("start feed {n}"))?;
+        let monitor =
+            MonitorPipeline::new(&source, &config).with_context(|| format!("start feed {n}"))?;
 
         let deadline = Instant::now() + FIRST_FRAME_TIMEOUT;
         while monitor.video_frames() == 0 {
@@ -436,7 +546,9 @@ impl Run {
                 return Err(Stop::Failed(anyhow!("feed {n}: {e}")));
             }
             if Instant::now() > deadline {
-                return Err(Stop::Failed(anyhow!("feed {n} delivered no video within {FIRST_FRAME_TIMEOUT:?}")));
+                return Err(Stop::Failed(anyhow!(
+                    "feed {n} delivered no video within {FIRST_FRAME_TIMEOUT:?}"
+                )));
             }
             tokio::select! {
                 _ = self.cancel.cancelled() => return Err(Stop::Cancelled),
@@ -447,16 +559,24 @@ impl Run {
         let legs = self.feed_legs(n, &monitor)?;
         let failure = Arc::clone(&self.failure);
         let on_error: OnLegError = Arc::new(move |path, error| {
-            failure.lock().unwrap().get_or_insert_with(|| format!("{}: {error}", path.display()));
+            failure
+                .lock()
+                .unwrap()
+                .get_or_insert_with(|| format!("{}: {error}", path.display()));
         });
         let on_file: OnLegFile = Arc::new(|| {});
-        let legs = recording::start_legs(&monitor, &format!("bench-{n}"), &legs, &on_error, &on_file)
-            .with_context(|| format!("start feed {n}'s outputs"))?;
+        let legs =
+            recording::start_legs(&monitor, &format!("bench-{n}"), &legs, &on_error, &on_file)
+                .with_context(|| format!("start feed {n}'s outputs"))?;
         Ok(Feed { monitor, legs })
     }
 
     /// Feed `n`'s legs: the run's outputs, writing into the scratch folders.
-    fn feed_legs(&self, n: u32, monitor: &MonitorPipeline) -> anyhow::Result<Vec<(PathBuf, RecordingProfile)>> {
+    fn feed_legs(
+        &self,
+        n: u32,
+        monitor: &MonitorPipeline,
+    ) -> anyhow::Result<Vec<(PathBuf, RecordingProfile)>> {
         let outputs: Vec<PresetOutputInput> = self
             .dto
             .outputs
@@ -464,7 +584,10 @@ impl Run {
             .zip(&self.scratch)
             .enumerate()
             .map(|(i, (o, dir))| PresetOutputInput {
-                path_template: dir.join(format!("feed{n:02}_out{}.{{ext}}", i + 1)).display().to_string(),
+                path_template: dir
+                    .join(format!("feed{n:02}_out{}.{{ext}}", i + 1))
+                    .display()
+                    .to_string(),
                 ..o.clone()
             })
             .collect();
@@ -485,7 +608,11 @@ impl Run {
         if let Some(e) = self.failure.lock().unwrap().clone() {
             return Err(Stop::Failed(anyhow!("an output failed: {e}")));
         }
-        if let Some((i, e)) = feeds.iter().enumerate().find_map(|(i, f)| f.monitor.error().map(|e| (i, e))) {
+        if let Some((i, e)) = feeds
+            .iter()
+            .enumerate()
+            .find_map(|(i, f)| f.monitor.error().map(|e| (i, e)))
+        {
             return Err(Stop::Failed(anyhow!("feed {} failed: {e}", i + 1)));
         }
         Ok(())
@@ -511,7 +638,9 @@ impl Run {
         if let Err(e) = db::benchmark_save(&self.state.db, &self.dto).await {
             error!(error = %e, "save benchmark");
         }
-        self.state.emit(&WsEvent::BenchmarkUpdated { run: Box::new(self.dto.clone()) });
+        self.state.emit(&WsEvent::BenchmarkUpdated {
+            run: Box::new(self.dto.clone()),
+        });
     }
 }
 
@@ -558,7 +687,11 @@ struct Search {
 
 impl Search {
     fn new(limit: u32) -> Self {
-        Self { limit: limit.max(1), passes: BTreeMap::new(), fail: None }
+        Self {
+            limit: limit.max(1),
+            passes: BTreeMap::new(),
+            fail: None,
+        }
     }
 
     /// The most feeds that have passed so far.
@@ -571,7 +704,10 @@ impl Search {
         let narrowing = self.fail.is_some_and(|hi| hi - lo > 1);
         if narrowing {
             let hi = self.fail.unwrap();
-            return Next::Measure { feeds: lo + (hi - lo) / 2, full: true };
+            return Next::Measure {
+                feeds: lo + (hi - lo) / 2,
+                full: true,
+            };
         }
         let settled = self.fail.is_some() || lo >= self.limit;
         if !settled {
@@ -581,7 +717,10 @@ impl Search {
         if lo == 0 || self.passes[&lo] {
             Next::Done(lo)
         } else {
-            Next::Measure { feeds: lo, full: true }
+            Next::Measure {
+                feeds: lo,
+                full: true,
+            }
         }
     }
 
@@ -620,13 +759,30 @@ impl Snapshot {
             .map(|i| feeds.iter().flat_map(|f| f.legs[i].files()).collect())
             .collect();
         let frames = feeds.iter().map(|f| f.monitor.video_progress()).collect();
-        let dropped = feeds.iter().flat_map(|f| &f.legs).map(RecordingLeg::dropped_frames).sum();
+        let dropped = feeds
+            .iter()
+            .flat_map(|f| &f.legs)
+            .map(RecordingLeg::dropped_frames)
+            .sum();
         let at = Instant::now();
         let bytes = tokio::task::spawn_blocking(move || {
-            files.iter().map(|list| list.iter().filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.len()).sum()).collect()
+            files
+                .iter()
+                .map(|list| {
+                    list.iter()
+                        .filter_map(|f| std::fs::metadata(f).ok())
+                        .map(|m| m.len())
+                        .sum()
+                })
+                .collect()
         })
         .await?;
-        Ok(Self { at, frames, dropped, bytes })
+        Ok(Self {
+            at,
+            frames,
+            dropped,
+            bytes,
+        })
     }
 }
 
@@ -665,7 +821,12 @@ fn measure(
     let output_pct = output_dropped as f64 / (produced * outputs as u64).max(1) as f64 * 100.0;
     let drop_pct = source_pct.max(output_pct);
     let per_sec = |bytes: u64| (bytes as f64 / secs.max(0.001)) as u64;
-    let written: Vec<u64> = after.bytes.iter().zip(&before.bytes).map(|(a, b)| a.saturating_sub(*b)).collect();
+    let written: Vec<u64> = after
+        .bytes
+        .iter()
+        .zip(&before.bytes)
+        .map(|(a, b)| a.saturating_sub(*b))
+        .collect();
     BenchmarkStepDto {
         feeds,
         secs,
@@ -673,7 +834,11 @@ fn measure(
         source_shortfall,
         output_dropped,
         drop_pct,
-        cpu_pct: if cpu.is_empty() { 0.0 } else { cpu.iter().sum::<f64>() / cpu.len() as f64 },
+        cpu_pct: if cpu.is_empty() {
+            0.0
+        } else {
+            cpu.iter().sum::<f64>() / cpu.len() as f64
+        },
         memory_pct,
         write_bytes_per_sec: per_sec(written.iter().sum()),
         output_bytes_per_sec: written.iter().map(|&b| per_sec(b) / feeds as u64).collect(),
@@ -686,13 +851,21 @@ fn measure(
 
 /// Per output, a scratch folder on the volume it would write to: in the
 /// nearest existing folder of where its files would go. Created here.
-fn scratch_dirs(outputs: &[PresetOutputInput], id: &str, node: &str, media: &MediaInfo) -> anyhow::Result<Vec<PathBuf>> {
+fn scratch_dirs(
+    outputs: &[PresetOutputInput],
+    id: &str,
+    node: &str,
+    media: &MediaInfo,
+) -> anyhow::Result<Vec<PathBuf>> {
     let legs = plan_legs(outputs, Some(&path_vars(media, node, 1))).map_err(|e| anyhow!(e))?;
     let name = format!("{SCRATCH_PREFIX}{}", &id[..8]);
     let mut dirs = Vec::with_capacity(legs.len());
     for (path, _) in &legs {
         let parent = path.parent().context("output path has no folder")?;
-        let existing = parent.ancestors().find(|p| p.is_dir()).context("no existing folder for the output")?;
+        let existing = parent
+            .ancestors()
+            .find(|p| p.is_dir())
+            .context("no existing folder for the output")?;
         let dir = existing.join(&name);
         if !dir.exists() {
             std::fs::create_dir(&dir).with_context(|| format!("create {}", dir.display()))?;
@@ -705,7 +878,10 @@ fn scratch_dirs(outputs: &[PresetOutputInput], id: &str, node: &str, media: &Med
 /// Delete scratch folders, refusing anything not named like one.
 fn remove_scratch(dirs: &[PathBuf]) {
     for dir in dirs {
-        let named = dir.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(SCRATCH_PREFIX));
+        let named = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with(SCRATCH_PREFIX));
         if !named {
             warn!(dir = ?dir, "not a benchmark scratch folder; leaving it");
             continue;
@@ -730,7 +906,11 @@ fn dedup(dirs: &[PathBuf]) -> Vec<PathBuf> {
 
 /// Path template values for benchmark feed `n`, with the footage's format.
 fn path_vars(media: &MediaInfo, node: &str, n: u32) -> PathVars {
-    let channels = if media.audio_channels > 0 { media.audio_channels } else { 2 };
+    let channels = if media.audio_channels > 0 {
+        media.audio_channels
+    } else {
+        2
+    };
     PathVars {
         source: format!("benchmark-{n}"),
         source_name: format!("Benchmark feed {n}"),
@@ -763,11 +943,25 @@ mod tests {
     }
 
     fn ts(frames: u64, at: f64) -> VideoProgress {
-        VideoProgress { frames, last_pts: Some(secs(at)), skipped: gst::ClockTime::ZERO }
+        VideoProgress {
+            frames,
+            last_pts: Some(secs(at)),
+            skipped: gst::ClockTime::ZERO,
+        }
     }
 
-    fn snapshot(at: Instant, frames: Vec<VideoProgress>, dropped: u64, bytes: Vec<u64>) -> Snapshot {
-        Snapshot { at, frames, dropped, bytes }
+    fn snapshot(
+        at: Instant,
+        frames: Vec<VideoProgress>,
+        dropped: u64,
+        bytes: Vec<u64>,
+    ) -> Snapshot {
+        Snapshot {
+            at,
+            frames,
+            dropped,
+            bytes,
+        }
     }
 
     #[test]
@@ -811,7 +1005,11 @@ mod tests {
         let before = snapshot(t, vec![ts(0, 0.0)], 0, vec![0]);
         // 10 s, but the footage's audio runs 0.9 s past its video, so each
         // loop leaves a gap: 273 frames is everything that was due.
-        let after = VideoProgress { frames: 273, last_pts: Some(secs(10.0)), skipped: secs(0.9) };
+        let after = VideoProgress {
+            frames: 273,
+            last_pts: Some(secs(10.0)),
+            skipped: secs(0.9),
+        };
         let after = snapshot(t + Duration::from_secs(10), vec![after], 0, vec![0]);
         let step = measure(1, 30.0, 1, &before, &after, &[], 0.0, 0.5);
         assert_eq!(step.expected_frames, 273);
@@ -823,8 +1021,12 @@ mod tests {
         let t = Instant::now();
         let before = snapshot(t, vec![ts(0, 0.0); 4], 0, vec![0]);
         // Each of 4 feeds should deliver 300 frames; one delivered 250.
-        let after =
-            snapshot(t + Duration::from_secs(10), vec![ts(300, 10.0), ts(300, 10.0), ts(300, 10.0), ts(250, 10.0)], 0, vec![0]);
+        let after = snapshot(
+            t + Duration::from_secs(10),
+            vec![ts(300, 10.0), ts(300, 10.0), ts(300, 10.0), ts(250, 10.0)],
+            0,
+            vec![0],
+        );
         let step = measure(4, 30.0, 1, &before, &after, &[], 0.0, 0.5);
         assert_eq!(step.source_shortfall, 49);
         assert!(!step.passed);
@@ -841,7 +1043,12 @@ mod tests {
                 Next::Done(n) => return (n, measured),
                 Next::Measure { feeds, full } => {
                     measured.push((feeds, full));
-                    let ok = feeds <= if full { capacity } else { quick_ok.max(capacity) };
+                    let ok = feeds
+                        <= if full {
+                            capacity
+                        } else {
+                            quick_ok.max(capacity)
+                        };
                     if ok {
                         search.passed(feeds, full);
                     } else if !full && feeds <= capacity {
@@ -861,7 +1068,11 @@ mod tests {
         for capacity in 0..=70 {
             let (found, measured) = simulate(64, capacity, 0);
             assert_eq!(found, capacity.min(64), "capacity {capacity}: {measured:?}");
-            assert!(measured.len() <= 15, "capacity {capacity}: {} steps", measured.len());
+            assert!(
+                measured.len() <= 15,
+                "capacity {capacity}: {} steps",
+                measured.len()
+            );
         }
     }
 
@@ -869,9 +1080,17 @@ mod tests {
     fn search_doubles_then_narrows() {
         let (found, measured) = simulate(64, 40, 0);
         assert_eq!(found, 40);
-        let quick: Vec<u32> = measured.iter().filter(|(_, full)| !full).map(|(n, _)| *n).collect();
+        let quick: Vec<u32> = measured
+            .iter()
+            .filter(|(_, full)| !full)
+            .map(|(n, _)| *n)
+            .collect();
         assert_eq!(quick, [1, 2, 4, 8, 16, 32, 64]);
-        let full: Vec<u32> = measured.iter().filter(|(_, full)| *full).map(|(n, _)| *n).collect();
+        let full: Vec<u32> = measured
+            .iter()
+            .filter(|(_, full)| *full)
+            .map(|(n, _)| *n)
+            .collect();
         assert_eq!(full, [48, 40, 44, 42, 41]);
     }
 

@@ -43,7 +43,8 @@ pub fn register_mdns_service(node_id: &str, node_name: &str, port: u16) -> Resul
     // Instance name must be unique on the network; suffix with a short id slice.
     let instance = format!("{} ({})", node_name, &node_id[..node_id.len().min(8)]);
 
-    let service = ServiceInfo::new(SERVICE_TYPE, &instance, &mdns_host, (), port, None)?.enable_addr_auto();
+    let service =
+        ServiceInfo::new(SERVICE_TYPE, &instance, &mdns_host, (), port, None)?.enable_addr_auto();
 
     daemon.register(service)?;
     info!(instance = %instance, port = port, "registered mDNS service");
@@ -64,7 +65,11 @@ pub fn start_mdns_browser(ctx: Ctx) -> Result<ServiceDaemon> {
                 break;
             }
             if let ServiceEvent::ServiceResolved(info) = event {
-                let ip = info.get_addresses().iter().find(|a| a.is_ipv4()).map(|a| a.to_string());
+                let ip = info
+                    .get_addresses()
+                    .iter()
+                    .find(|a| a.is_ipv4())
+                    .map(|a| a.to_string());
                 if let Some(ip) = ip {
                     let url = format!("http://{}:{}", ip, info.get_port());
                     let ctx = ctx.clone();
@@ -114,7 +119,9 @@ pub async fn add_node(ctx: &Ctx, url: String, manual: bool) -> Result<Option<Nod
     let is_new = ctx.registry.write().await.upsert(entry);
     if is_new {
         info!(id = %status.id, url = %url, "node added");
-        ctx.state.emit_controller(&WsEvent::NodeOnline { peer_id: status.id.clone() });
+        ctx.state.emit_controller(&WsEvent::NodeOnline {
+            peer_id: status.id.clone(),
+        });
         relay::spawn(ctx.clone(), status.id.clone(), relay);
     }
     Ok(Some(status))
@@ -145,7 +152,10 @@ pub fn start_health_poller(ctx: Ctx) {
 
             let entries: Vec<(String, String)> = {
                 let reg = ctx.registry.read().await;
-                reg.all().iter().map(|n| (n.id.clone(), n.url.clone())).collect()
+                reg.all()
+                    .iter()
+                    .map(|n| (n.id.clone(), n.url.clone()))
+                    .collect()
             };
 
             // Check concurrently so one unreachable node doesn't delay the rest.
@@ -164,7 +174,9 @@ pub fn start_health_poller(ctx: Ctx) {
                     Ok(status) if status.id == id => {
                         if reg.record_success(&status) {
                             info!(id = %id, "node reachable again");
-                            ctx.state.emit_controller(&WsEvent::NodeOnline { peer_id: id.clone() });
+                            ctx.state.emit_controller(&WsEvent::NodeOnline {
+                                peer_id: id.clone(),
+                            });
                         }
                     }
                     _ => {
@@ -177,7 +189,9 @@ pub fn start_health_poller(ctx: Ctx) {
                             ctx.state.emit_controller(&WsEvent::NodeUpdated);
                         } else if failures == 1 {
                             warn!(id = %id, "node health check failed");
-                            ctx.state.emit_controller(&WsEvent::NodeOffline { peer_id: id.clone() });
+                            ctx.state.emit_controller(&WsEvent::NodeOffline {
+                                peer_id: id.clone(),
+                            });
                         }
                     }
                 }
