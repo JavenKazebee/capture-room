@@ -2,13 +2,15 @@
 import { computed, ref } from 'vue'
 import { useClipboard, useNow, useStorage } from '@vueuse/core'
 import { toast } from 'vue-sonner'
-import { ChevronRight, Download, Play, Share2, Trash2, X } from '@lucide/vue'
+import { ChevronRight, Download, ListPlus, Play, Share2, Trash2, X } from '@lucide/vue'
+import { useRouter } from 'vue-router'
 import { recordingFileUrl } from '@/composables/useApi'
 import { formatDuration, formatTimeRange } from '@/lib/format'
 import { CODECS, CONTAINERS } from '@/lib/codecs'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
 import { outputFiles, previewOutput, useRecordingsStore, type RecordingSession } from '@/stores/recordings'
+import { usePlayoutStore } from '@/stores/playout'
 import type { SessionAudio } from '@/types/generated/SessionAudio'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -101,6 +103,21 @@ function togglePlay() {
 defineExpose({ togglePlay })
 
 // ── Share ─────────────────────────────────────────────────────────────────────
+
+const playout = usePlayoutStore()
+const router = useRouter()
+
+/** Adds a file to its node's media library, for playing out from Playback. */
+async function addToMedia(path: string) {
+  try {
+    const item = await playout.addMedia(s.value.node_id, path, s.value.id)
+    toast.success(`Added ${item.name} to the media library`, {
+      action: { label: 'Open Playback', onClick: () => router.push('/playback') },
+    })
+  } catch (e) {
+    notifyError('Could not add the file to the media library', e, s.value.node_id)
+  }
+}
 
 /** Shares a file's download link through the OS share sheet, or copies it where there isn't one. */
 async function share(output: number, file: number, path: string) {
@@ -350,6 +367,12 @@ async function deleteFile() {
                 </span>
                 <span v-if="isPlaying(i, j)" class="text-[10px] font-medium uppercase tracking-wider text-primary shrink-0 mr-1">Playing</span>
                 <CopyButton :value="f" size="md" :label="`Copy path on ${nodes.labelOf(s.node_id)}`" />
+                <Tooltip v-if="!live">
+                  <TooltipTrigger as-child>
+                    <button class="icon-btn" :aria-label="`Add ${fileName(f)} to the media library`" @click.stop="addToMedia(f)"><ListPlus class="size-3.5" /></button>
+                  </TooltipTrigger>
+                  <TooltipContent>Add to media library (for Playback)</TooltipContent>
+                </Tooltip>
                 <Tooltip v-if="!live">
                   <TooltipTrigger as-child>
                     <button class="icon-btn" :aria-label="`Share ${fileName(f)}`" @click.stop="share(i, j, f)"><Share2 class="size-3.5" /></button>

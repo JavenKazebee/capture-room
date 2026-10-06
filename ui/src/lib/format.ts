@@ -78,3 +78,24 @@ export function dayLabel(key: string, now = new Date()): string {
     ...(y !== now.getFullYear() && { year: 'numeric' }),
   })
 }
+
+/** A clip position as `M:SS.d` (`H:MM:SS.d` from an hour on). */
+export function formatClock(ms: number): string {
+  const tenths = Math.max(0, Math.floor(ms / 100))
+  const s = Math.floor(tenths / 10)
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const rest = `${pad(s % 60)}.${tenths % 10}`
+  return h > 0 ? `${h}:${pad(m)}:${rest}` : `${m}:${rest}`
+}
+
+/**
+ * Parse a position typed as seconds (`12.5`), `M:SS(.d)` or `H:MM:SS(.d)`.
+ * Null if it isn't one.
+ */
+export function parseClock(text: string): number | null {
+  const parts = text.trim().split(':')
+  if (!parts.length || parts.length > 3 || parts.some((p) => !/^\d+(\.\d*)?$/.test(p))) return null
+  const secs = parts.reduce((total, p) => total * 60 + Number(p), 0)
+  return Math.round(secs * 1000)
+}

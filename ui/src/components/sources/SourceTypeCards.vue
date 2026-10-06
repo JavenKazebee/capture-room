@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Component } from 'vue'
-import { Film, Network, Palette, RadioTower, Webcam } from '@lucide/vue'
+import { Film, MonitorPlay, Network, Palette, RadioTower, Webcam } from '@lucide/vue'
 import type { ConfiguredKind } from '@/stores/sources'
 
 /** The first step of adding a source: what kind it is. */
@@ -16,6 +16,7 @@ const CARDS: { kind: ConfiguredKind; icon: Component; label: string; hint: strin
   { kind: 'whip', icon: RadioTower, label: 'WHIP ingest', hint: 'OBS or a browser pushes WebRTC' },
   { kind: 'file', icon: Film, label: 'Media file', hint: 'A file on the node, looped' },
   { kind: 'test', icon: Palette, label: 'Test pattern', hint: 'Bars, tone and other test signals' },
+  { kind: 'channel', icon: MonitorPlay, label: 'Playout channel', hint: 'Plays clips out over NDI, from Playback' },
 ]
 </script>
 

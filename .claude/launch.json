@@ -13,6 +13,20 @@
       "autoPort": true
     },
     {
+      "name": "ui-node2",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "ui",
+        "dev"
+      ],
+      "env": {
+        "CAPTURE_ROOM_NODE": "localhost:7701"
+      },
+      "port": 5174,
+      "autoPort": true
+    },
+    {
       "name": "node",
       "runtimeExecutable": "cargo",
       "runtimeArgs": [

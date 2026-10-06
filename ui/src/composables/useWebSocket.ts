@@ -5,6 +5,7 @@ import { useNodesStore } from '@/stores/nodes'
 import { sourceKey } from '@/composables/useApi'
 import { useEventsStore } from '@/stores/events'
 import { useCapacityStore } from '@/stores/capacity'
+import { usePlayoutStore } from '@/stores/playout'
 import type { WsEvent } from '@/types/generated/WsEvent'
 
 export type WsStatus = 'connecting' | 'connected' | 'disconnected'
@@ -138,6 +139,16 @@ function handleEvent(event: NodeEvent) {
     case 'benchmark.updated':
       useCapacityStore().applyRun(nodeId, event.run)
       break
+
+    case 'channel.state':
+      usePlayoutStore().setStatus(nodeId, event.source_id, event.status)
+      break
+
+    case 'media.updated': {
+      const playout = usePlayoutStore()
+      if (playout.media.has(nodeId)) playout.loadMedia(nodeId)
+      break
+    }
   }
 }
 
@@ -205,6 +216,21 @@ function logEvent(event: NodeEvent) {
           node_id,
           detail: run.message ?? undefined,
         })
+      }
+      break
+    }
+    case 'channel.state': {
+      // Only transitions: a clip that failed, an output that stopped.
+      const prev = usePlayoutStore().status.get(sourceKey(node_id, event.source_id))
+      const s = event.status
+      if (s.error && s.error !== prev?.error) {
+        log('error', `Playout failed on ${source(event.source_id)}`, { node_id, detail: s.error })
+      }
+      for (const o of s.outputs) {
+        const was = prev?.outputs.find((p) => p.label === o.label)
+        if (o.error && o.error !== was?.error) {
+          log('error', `Output failed: ${o.label} on ${source(event.source_id)}`, { node_id, detail: o.error })
+        }
       }
       break
     }

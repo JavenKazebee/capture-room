@@ -27,7 +27,7 @@ export const thumbnailSeqs = shallowReactive(new Map<string, number>())
 
 /** Source types a node is configured with, rather than discovering them. */
 export type ConfiguredKind = Exclude<SourceType, 'ndi'>
-export const CONFIGURED_TYPES: readonly SourceType[] = ['test', 'file', 'stream', 'device', 'whip']
+export const CONFIGURED_TYPES: readonly SourceType[] = ['test', 'file', 'stream', 'device', 'whip', 'channel']
 
 export const useSourcesStore = defineStore('sources', () => {
   const nodes = useNodesStore()
