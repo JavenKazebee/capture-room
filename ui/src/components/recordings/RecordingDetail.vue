@@ -1,20 +1,22 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useClipboard, useNow } from '@vueuse/core'
+import { useClipboard, useNow, useStorage } from '@vueuse/core'
 import { toast } from 'vue-sonner'
-import { Download, Play, Share2, Trash2, X } from '@lucide/vue'
+import { ChevronRight, Download, Play, Share2, Trash2, X } from '@lucide/vue'
 import { recordingFileUrl } from '@/composables/useApi'
-import { formatDuration } from '@/lib/format'
+import { formatDuration, formatTimeRange } from '@/lib/format'
 import { CODECS, CONTAINERS } from '@/lib/codecs'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
 import { outputFiles, previewOutput, useRecordingsStore, type RecordingSession } from '@/stores/recordings'
 import type { SessionAudio } from '@/types/generated/SessionAudio'
 import { Button } from '@/components/ui/button'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
 import KeyValueList from '@/components/common/KeyValueList.vue'
+import StatusDot from '@/components/common/StatusDot.vue'
 
 const props = defineProps<{ session: RecordingSession }>()
 defineEmits<{ close: [] }>()
@@ -86,6 +88,18 @@ const isPlaying = (output: number, file: number) => !live.value && playing.value
 
 const canPlay = (output: number) => !live.value && !!s.value.outputs[output]?.playable
 
+/** Plays or pauses the loaded file, or starts the preview file when nothing's loaded yet. */
+function togglePlay() {
+  if (video.value && !playError.value) {
+    if (video.value.paused) void video.value.play()
+    else video.value.pause()
+    return
+  }
+  const output = previewOutput(s.value)
+  if (output !== -1) play(output, 0)
+}
+defineExpose({ togglePlay })
+
 // ── Share ─────────────────────────────────────────────────────────────────────
 
 /** Shares a file's download link through the OS share sheet, or copies it where there isn't one. */
@@ -127,10 +141,19 @@ const duration = computed(() => {
   return formatDuration(end - new Date(s.value.started_at).getTime())
 })
 
-const STATUS_LABEL = { active: 'Recording', stopped: 'Finished', error: 'Failed' } as const
+const STATUS = {
+  active: { label: 'Recording', dot: 'tally' },
+  stopped: { label: 'Finished', dot: 'off' },
+  error: { label: 'Failed', dot: 'error' },
+} as const
+
+const whenText = computed(() => formatTimeRange(s.value.started_at, s.value.stopped_at, now.value, { withDate: true }))
+
+/** Exact times and IDs are tucked away; the summary row covers the rest. */
+const detailsOpen = useStorage('cr.recordings.detailsOpen', false)
 
 const details = computed(() => [
-  { label: 'Status', value: STATUS_LABEL[s.value.status] },
+  { label: 'Status', value: STATUS[s.value.status].label },
   { label: 'Node', value: nodes.labelOf(s.value.node_id) },
   { label: 'Preset', value: recordings.presetNameOf(s.value) },
   { label: 'Started', value: when(s.value.started_at), mono: true },
@@ -205,48 +228,85 @@ async function deleteFile() {
 </script>
 
 <template>
-  <aside class="h-full flex flex-col min-h-0 bg-card border-l border-border">
-    <div class="h-9 shrink-0 flex items-center gap-2 px-3 border-b border-border">
-      <span class="text-xs font-semibold truncate">{{ recordings.sourceNameOf(s) }}</span>
-      <div class="flex-1" />
-      <button class="icon-btn" title="Close" @click="$emit('close')"><X class="size-3.5" /></button>
+  <section class="h-full min-h-0 flex bg-card">
+    <!-- Player -->
+    <div class="w-[40%] max-w-[560px] min-w-56 shrink-0 flex flex-col border-r border-border">
+      <div class="bg-black aspect-video grid place-items-center">
+        <video
+          v-if="playingUrl && !playError"
+          ref="video"
+          :key="playingUrl"
+          :src="playingUrl"
+          :autoplay="autoplay"
+          class="w-full h-full"
+          controls
+          preload="metadata"
+          @error="playError = true"
+        />
+        <p v-else class="px-6 text-center text-xs text-zinc-400">
+          <template v-if="playingDeleted">This file was deleted.</template>
+          <template v-else-if="playError">
+            This file couldn't be played. It may have been moved or deleted, or still be open from a crash.
+          </template>
+          <template v-else>{{ noPreview }}</template>
+        </p>
+      </div>
+      <div v-if="playingCaption" class="flex items-center gap-1.5 px-3 h-7 text-[11px]">
+        <Play class="size-3 shrink-0 text-primary fill-current" />
+        <span class="font-medium shrink-0">{{ playingCaption.output }}</span>
+        <span class="num truncate text-muted-foreground" :title="playingCaption.file">{{ playingCaption.file }}</span>
+        <span v-if="playingCaption.part" class="num shrink-0 text-muted-foreground">· {{ playingCaption.part }}</span>
+      </div>
     </div>
 
-    <div class="flex-1 min-h-0 overflow-y-auto">
-      <!-- Preview: sticky so it stays in view while picking files below. -->
-      <div class="sticky top-0 z-10 bg-card border-b border-border">
-        <div class="bg-black aspect-video grid place-items-center">
-          <video
-            v-if="playingUrl && !playError"
-            ref="video"
-            :key="playingUrl"
-            :src="playingUrl"
-            :autoplay="autoplay"
-            class="w-full h-full"
-            controls
-            preload="metadata"
-            @error="playError = true"
-          />
-          <p v-else class="px-6 text-center text-xs text-zinc-400">
-            <template v-if="playingDeleted">This file was deleted.</template>
-            <template v-else-if="playError">
-              This file couldn't be played. It may have been moved or deleted, or still be open from a crash.
-            </template>
-            <template v-else>{{ noPreview }}</template>
-          </p>
-        </div>
-        <div v-if="playingCaption" class="flex items-center gap-1.5 px-3 h-7 text-[11px]">
-          <Play class="size-3 shrink-0 text-primary fill-current" />
-          <span class="font-medium shrink-0">{{ playingCaption.output }}</span>
-          <span class="num truncate text-muted-foreground" :title="playingCaption.file">{{ playingCaption.file }}</span>
-          <span v-if="playingCaption.part" class="num shrink-0 text-muted-foreground">· {{ playingCaption.part }}</span>
+    <div class="flex-1 min-w-0 flex flex-col">
+      <!-- Summary: what, state, when, where, and what you can do with it -->
+      <div class="shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 min-h-10 px-3 py-1.5 border-b border-border">
+        <h2 class="text-sm font-semibold truncate">{{ recordings.sourceNameOf(s) }}</h2>
+        <span class="flex items-center gap-1.5 text-xs" :class="live ? 'text-tally font-medium' : 'text-muted-foreground'">
+          <StatusDot :status="STATUS[s.status].dot" /> {{ STATUS[s.status].label }}
+        </span>
+        <span class="num text-xs" :class="live && 'text-tally'">{{ whenText }}</span>
+        <span class="text-xs text-muted-foreground truncate">{{ nodes.nameOf(s.node_id) }} · {{ recordings.presetNameOf(s) }}</span>
+        <div class="flex-1" />
+        <div class="flex items-center gap-2">
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <!-- Wrapped so the tooltip still shows while the button is disabled. -->
+              <span class="inline-block">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  class="h-7 gap-1.5 text-xs hover:text-destructive hover:border-destructive/40"
+                  :disabled="live"
+                  @click="confirmRemove = true"
+                >
+                  <Trash2 class="size-3.5" /> Remove from history
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              {{ live ? 'Stop the recording first' : "Removes the session from this list. Its files stay on disk." }}
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <span class="inline-block">
+                <Button variant="destructive" size="sm" class="h-7 gap-1.5 text-xs" :disabled="live" @click="confirmDeleteAll = true">
+                  <Trash2 class="size-3.5" /> Delete files
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              {{ live ? 'Stop the recording first' : 'Deletes every file from disk and removes the session from history.' }}
+            </TooltipContent>
+          </Tooltip>
+          <button class="icon-btn" title="Close (Esc)" @click="$emit('close')"><X class="size-3.5" /></button>
         </div>
       </div>
 
-      <div class="p-3 space-y-4">
+      <div class="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
         <p v-if="s.error_message" class="text-xs text-destructive break-words">{{ s.error_message }}</p>
-
-        <KeyValueList :items="details" />
 
         <section class="space-y-1.5">
           <h3 class="section-title">Outputs</h3>
@@ -328,39 +388,17 @@ async function deleteFile() {
           </div>
         </section>
 
-        <div class="pt-2 border-t border-border flex flex-wrap gap-2">
-          <Tooltip>
-            <TooltipTrigger as-child>
-              <!-- Wrapped so the tooltip still shows while the button is disabled. -->
-              <span class="inline-block">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  class="h-7 gap-1.5 text-xs hover:text-destructive hover:border-destructive/40"
-                  :disabled="live"
-                  @click="confirmRemove = true"
-                >
-                  <Trash2 class="size-3.5" /> Remove from history
-                </Button>
-              </span>
-            </TooltipTrigger>
-            <TooltipContent>
-              {{ live ? 'Stop the recording first' : "Removes the session from this list. Its files stay on disk." }}
-            </TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger as-child>
-              <span class="inline-block">
-                <Button variant="destructive" size="sm" class="h-7 gap-1.5 text-xs" :disabled="live" @click="confirmDeleteAll = true">
-                  <Trash2 class="size-3.5" /> Delete files
-                </Button>
-              </span>
-            </TooltipTrigger>
-            <TooltipContent>
-              {{ live ? 'Stop the recording first' : 'Deletes every file from disk and removes the session from history.' }}
-            </TooltipContent>
-          </Tooltip>
-        </div>
+        <Collapsible v-model:open="detailsOpen">
+          <CollapsibleTrigger class="flex items-center gap-1 section-title hover:text-foreground">
+            <ChevronRight class="size-3.5 transition-transform" :class="detailsOpen && 'rotate-90'" />
+            Details
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div class="pt-1.5 max-w-md">
+              <KeyValueList :items="details" />
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
       </div>
     </div>
 
@@ -385,7 +423,7 @@ async function deleteFile() {
       confirm-label="Delete file"
       @confirm="deleteFile"
     />
-  </aside>
+  </section>
 </template>
 
 <style scoped>

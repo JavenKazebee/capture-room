@@ -20,8 +20,9 @@ interface Warning {
 }
 
 /**
- * State of the Record workspace: which feeds are selected, which one the
- * inspector shows, each feed's chosen preset, and the multiview filters.
+ * State of the Record workspace: which feeds are selected, which one is
+ * focused or showing its info popover, each feed's chosen preset, and the
+ * multiview filters.
  */
 export const useRecordDeskStore = defineStore('recordDesk', () => {
   const sources = useSourcesStore()
@@ -64,8 +65,10 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
 
   /** Selected source keys. */
   const selected = ref(new Set<string>())
-  /** The source the inspector shows: the last one clicked. */
+  /** The last tile clicked: where Shift-click ranges start and what the I key opens. */
   const focusedKey = ref<string | null>(null)
+  /** The tile whose info popover is open, if any. */
+  const infoKey = ref<string | null>(null)
 
   const selectedSources = computed(() => sources.sources.filter((s) => selected.value.has(s.key)))
   const focused = computed(() => sources.sources.find((s) => s.key === focusedKey.value) ?? null)
@@ -128,21 +131,24 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
 
   const MIXED = '__mixed'
 
-  /** The selection's shared preset id, or `MIXED` when they differ. */
-  const selectedPresetId = computed(() => {
-    const ids = new Set(selectedSources.value.map((s) => presetIdOf(s.key)))
+  /** What the toolbar's preset picker and Record/Stop act on: the selection, or every visible feed when nothing is selected. */
+  const scope = computed(() => (selected.value.size ? selectedSources.value : visible.value))
+
+  /** The scope's shared preset id, or `MIXED` when they differ. */
+  const scopePresetId = computed(() => {
+    const ids = new Set(scope.value.map((s) => presetIdOf(s.key)))
     return ids.size === 1 ? [...ids][0]! : MIXED
   })
 
-  /** Preset options for the selection's picker, with a "Mixed" entry when they differ. */
-  const selectionPresetOptions = computed(() =>
-    selectedPresetId.value === MIXED
+  /** Preset options for the scope's picker, with a "Mixed" entry when they differ. */
+  const scopePresetOptions = computed(() =>
+    scopePresetId.value === MIXED
       ? [{ value: MIXED, label: 'Mixed presets' }, ...presetOptions.value]
       : presetOptions.value,
   )
 
-  function setSelectionPreset(id: string) {
-    if (id !== MIXED) setPresetMany([...selected.value], id)
+  function setScopePreset(id: string) {
+    if (id !== MIXED) setPresetMany(scope.value.map((s) => s.key), id)
   }
 
   const presetOptions = computed(() => [
@@ -276,6 +282,7 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     clearFilters,
     selected,
     focusedKey,
+    infoKey,
     selectedSources,
     focused,
     select,
@@ -286,9 +293,10 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     setPreset,
     setPresetMany,
     presetOptions,
-    selectedPresetId,
-    selectionPresetOptions,
-    setSelectionPreset,
+    scope,
+    scopePresetId,
+    scopePresetOptions,
+    setScopePreset,
     busy,
     isLive,
     toggle,

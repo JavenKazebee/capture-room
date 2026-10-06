@@ -75,6 +75,10 @@ const groups = computed(() => {
   }
   return [...map].map(([key, rows]) => ({ key, rows }))
 })
+
+/** Rows in the order they're shown: filtered, sorted, then grouped. */
+const displayedRows = computed(() => groups.value.flatMap((g) => g.rows))
+defineExpose({ displayedRows })
 </script>
 
 <template>
@@ -113,6 +117,7 @@ const groups = computed(() => {
         <tr
           v-for="r in g.rows"
           :key="rowKey(r)"
+          :data-row-key="rowKey(r)"
           :class="cn('border-b border-border/60 last:border-b-0 hover:bg-accent/40', rowClass?.(r))"
           @click="emit('rowClick', r, $event)"
         >

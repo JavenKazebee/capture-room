@@ -41,3 +41,40 @@ export function formatTimeLeft(secs: number): string {
   if (h > 0) return `${h}h ${m}m`
   return m > 0 ? `${m}m` : '<1m'
 }
+
+/** A wall-clock time as `13:10:22`. */
+export const clockTime = (d: Date | string) => new Date(d).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+
+/**
+ * When something ran, as `13:10:22 → 13:55:24 · 45:02`, or `14:02:10 → now · 12:34`
+ * while it's still going. `withDate` prefixes the start's date (`Oct 5 13:10:22 → …`).
+ */
+export function formatTimeRange(start: string, end: string | null, now: Date, opts: { withDate?: boolean } = {}): string {
+  const from = new Date(start)
+  const to = end ? new Date(end) : null
+  const date = opts.withDate ? `${from.toLocaleDateString([], { month: 'short', day: 'numeric' })} ` : ''
+  const duration = formatDuration((to ?? now).getTime() - from.getTime())
+  return `${date}${clockTime(from)} → ${to ? clockTime(to) : 'now'} · ${duration}`
+}
+
+/** A local calendar day key (`2026-10-05`), for grouping by day. */
+export function dayKey(iso: string): string {
+  const d = new Date(iso)
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+/** A `dayKey` as `Today`, `Yesterday`, `Sat, Oct 3`, or `Sat, Oct 3, 2025` outside this year. */
+export function dayLabel(key: string, now = new Date()): string {
+  const [y, m, d] = key.split('-').map(Number) as [number, number, number]
+  const day = new Date(y, m - 1, d)
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const diff = Math.round((today.getTime() - day.getTime()) / 86_400_000)
+  if (diff === 0) return 'Today'
+  if (diff === 1) return 'Yesterday'
+  return day.toLocaleDateString([], {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    ...(y !== now.getFullYear() && { year: 'numeric' }),
+  })
+}

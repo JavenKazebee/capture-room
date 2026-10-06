@@ -15,6 +15,7 @@ import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import PageHeader from '@/components/common/PageHeader.vue'
+import ToolbarField from '@/components/common/ToolbarField.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import NodeCard from '@/components/nodes/NodeCard.vue'
 
@@ -125,66 +126,66 @@ async function removeNode() {
 
 <template>
   <PageHeader title="Nodes" :count="store.nodes.length">
-    <Tooltip>
-      <TooltipTrigger as-child>
-        <label class="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Switch
-            :model-value="store.isController"
-            :disabled="toggling || !store.self"
-            @update:model-value="onControllerToggle"
-          />
-          Controller
-        </label>
-      </TooltipTrigger>
-      <TooltipContent class="max-w-64">
-        Find other nodes on the network and control them from this machine. Applies immediately.
-      </TooltipContent>
-    </Tooltip>
-    <div class="w-px h-5 bg-border mx-1" />
-    <Popover :open="addOpen" @update:open="onAddOpen">
-      <!-- Anchored on a wrapper: a trigger or anchor can't nest inside the tooltip's trigger. -->
-      <PopoverAnchor ref="addAnchor" class="inline-flex">
-        <Tooltip :disabled="store.isController">
-          <TooltipTrigger as-child>
-            <!-- A disabled button gets no pointer events; the span keeps the tooltip working. -->
-            <span tabindex="-1">
-              <Button
-                size="sm"
-                class="h-7 gap-1.5 text-xs"
-                :disabled="!store.isController"
-                aria-haspopup="dialog"
-                :aria-expanded="addOpen"
-                @click="onAddOpen(!addOpen)"
-              >
-                <Plus class="size-3.5" /> Add node
+    <template #actions>
+      <Popover :open="addOpen" @update:open="onAddOpen">
+        <!-- Anchored on a wrapper: a trigger or anchor can't nest inside the tooltip's trigger. -->
+        <PopoverAnchor ref="addAnchor" class="inline-flex">
+          <Tooltip :disabled="store.isController">
+            <TooltipTrigger as-child>
+              <!-- A disabled button gets no pointer events; the span keeps the tooltip working. -->
+              <span tabindex="-1">
+                <Button
+                  size="sm"
+                  class="h-7 gap-1.5 text-xs"
+                  :disabled="!store.isController"
+                  aria-haspopup="dialog"
+                  :aria-expanded="addOpen"
+                  @click="onAddOpen(!addOpen)"
+                >
+                  <Plus class="size-3.5" /> Add node
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>Turn on Controller to add nodes.</TooltipContent>
+          </Tooltip>
+        </PopoverAnchor>
+        <PopoverContent align="start" class="w-80" @interact-outside="onAddInteractOutside">
+          <form class="space-y-2" @submit.prevent="addNode">
+            <div class="text-sm font-medium">Add node by address</div>
+            <p class="text-xs text-muted-foreground">
+              For a node on another subnet. Nodes on this network are found automatically.
+            </p>
+            <div class="flex gap-2">
+              <Input
+                v-model="addUrl"
+                placeholder="192.168.1.20:7700"
+                class="h-8 num text-xs"
+                :disabled="adding"
+                :aria-invalid="!!addError || undefined"
+              />
+              <Button type="submit" size="sm" class="h-8 w-16" :disabled="adding || !addUrl.trim()">
+                {{ adding ? 'Adding…' : 'Add' }}
               </Button>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent>Turn on Controller to add nodes.</TooltipContent>
-        </Tooltip>
-      </PopoverAnchor>
-      <PopoverContent align="end" class="w-80" @interact-outside="onAddInteractOutside">
-        <form class="space-y-2" @submit.prevent="addNode">
-          <div class="text-sm font-medium">Add node by address</div>
-          <p class="text-xs text-muted-foreground">
-            For a node on another subnet. Nodes on this network are found automatically.
-          </p>
-          <div class="flex gap-2">
-            <Input
-              v-model="addUrl"
-              placeholder="192.168.1.20:7700"
-              class="h-8 num text-xs"
-              :disabled="adding"
-              :aria-invalid="!!addError || undefined"
+            </div>
+            <p class="text-xs text-destructive min-h-4">{{ addError }}</p>
+          </form>
+        </PopoverContent>
+      </Popover>
+      <Tooltip>
+        <TooltipTrigger as-child>
+          <ToolbarField label="Controller">
+            <Switch
+              :model-value="store.isController"
+              :disabled="toggling || !store.self"
+              @update:model-value="onControllerToggle"
             />
-            <Button type="submit" size="sm" class="h-8 w-16" :disabled="adding || !addUrl.trim()">
-              {{ adding ? 'Adding…' : 'Add' }}
-            </Button>
-          </div>
-          <p class="text-xs text-destructive min-h-4">{{ addError }}</p>
-        </form>
-      </PopoverContent>
-    </Popover>
+          </ToolbarField>
+        </TooltipTrigger>
+        <TooltipContent class="max-w-64">
+          Find other nodes on the network and control them from this machine. Applies immediately.
+        </TooltipContent>
+      </Tooltip>
+    </template>
   </PageHeader>
 
   <div class="p-4 space-y-3">

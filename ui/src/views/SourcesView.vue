@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { FolderOpen, Pencil, Radio, RefreshCw, Trash2 } from '@lucide/vue'
+import { FolderOpen, Pencil, Plus, Radio, RefreshCw, Trash2 } from '@lucide/vue'
 import { CONFIGURED_TYPES, useSourcesStore, type Source } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordingsStore } from '@/stores/recordings'
@@ -24,6 +24,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
+import ToolbarField from '@/components/common/ToolbarField.vue'
+import ToolbarSearch from '@/components/common/ToolbarSearch.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import ColumnsMenu from '@/components/common/ColumnsMenu.vue'
 import type { Column } from '@/components/common/dataTable'
@@ -304,16 +306,21 @@ onMounted(async () => {
 
 <template>
   <PageHeader title="Sources" :count="store.sources.length">
-    <Input v-model="filter" placeholder="Filter…" class="h-7 w-44 text-xs" />
-    <label v-if="nodesStore.nodes.length > 1" class="flex items-center gap-1.5 text-xs text-muted-foreground">
-      <Switch v-model="groupByNode" /> Group by node
-    </label>
-    <ColumnsMenu table-id="sources" :columns="columns" />
-    <div class="w-px h-5 bg-border mx-1" />
-    <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" :disabled="scanning" @click="scan">
-      <RefreshCw class="size-3.5" :class="scanning && 'animate-spin'" /> Scan
-    </Button>
-    <Button size="sm" class="h-7 text-xs" @click="openCreate">Add source</Button>
+    <template #actions>
+      <Button size="sm" class="h-7 gap-1.5 text-xs" @click="openCreate"><Plus class="size-3.5" /> Add source</Button>
+      <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" :disabled="scanning" @click="scan">
+        <RefreshCw class="size-3.5" :class="scanning && 'animate-spin'" /> Scan
+      </Button>
+    </template>
+
+    <ToolbarSearch v-model="filter" />
+
+    <template #view>
+      <ToolbarField v-if="nodesStore.nodes.length > 1" label="Group by node">
+        <Switch v-model="groupByNode" />
+      </ToolbarField>
+      <ColumnsMenu table-id="sources" :columns="columns" />
+    </template>
   </PageHeader>
 
   <div class="p-4">

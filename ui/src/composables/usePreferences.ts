@@ -18,13 +18,14 @@ export interface TileOverlays {
 const colorMode = useColorMode({ initialValue: 'dark', storageKey: 'cr.theme' })
 const density = useStorage<Density>('cr.density', 'default')
 const tileSize = useStorage('cr.multiview.tileSize', 320)
+/** Size tiles so every visible feed fits without scrolling, instead of using `tileSize`. */
+const tileFit = useStorage('cr.multiview.tileFit', false)
 const overlays = useStorage<TileOverlays>(
   'cr.multiview.overlays',
   { timecode: true, meters: true, node: true, format: false },
   undefined,
   { mergeDefaults: true },
 )
-const inspectorOpen = useStorage('cr.multiview.inspector', true)
 /** Column visibility per table, keyed by table id. */
 const columns = useStorage<Record<string, Record<string, boolean>>>('cr.columns', {})
 
@@ -35,5 +36,5 @@ watchEffect(() => {
 })
 
 export function usePreferences() {
-  return { colorMode, density, tileSize, overlays, inspectorOpen, columns }
+  return { colorMode, density, tileSize, tileFit, overlays, columns }
 }

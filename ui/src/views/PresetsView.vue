@@ -256,7 +256,9 @@ watch(selected, (p) => p && !dirty.value && p.id === selectedId.value && loadPre
 <template>
   <div class="h-full flex flex-col min-h-0">
     <PageHeader title="Presets" :count="store.presets.length">
-      <Button size="sm" class="h-7 gap-1.5 text-xs" @click="create"><Plus class="size-3.5" /> New preset</Button>
+      <template #actions>
+        <Button size="sm" class="h-7 gap-1.5 text-xs" @click="create"><Plus class="size-3.5" /> New preset</Button>
+      </template>
     </PageHeader>
 
     <div class="flex-1 min-h-0 flex">
