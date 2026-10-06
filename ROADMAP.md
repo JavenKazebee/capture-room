@@ -18,7 +18,7 @@ _Last updated: 2026-10-06_
 6. ✅ **Looping media file source**
 7. ✅ **Benchmark + capacity estimator** (with storage headroom)
 8. ✅ **Recordings view** (+ browser preview)
-9. **Playback** — playout channels, NDI output first
+9. **Playback** — 🚧 milestone 1 shipped (one clip on an NDI channel); gapless playlists next
 10. **Clock sync across nodes** — prerequisite for multi-angle replay
 11. **Instant replay**
 12. **Follow-on**, in rough priority order (see below)
@@ -81,6 +81,23 @@ Design detail for all of these lives in ARCHITECTURE.md; the history is in git.
   layout.
 - **CI (2026-10-06)** — fmt, clippy, tests, generated-types check and UI type-check on
   GitHub Actions. The codebase was run through `rustfmt` once to start clean.
+- **Source types (2026-10-06)** — three live source types, all wrapped in `fallbacksrc`
+  so a dropout plays black and silence, retries, and keeps recording, with a link state
+  on Sources rows and Record tiles. **Stream**: one URL type for RTSP, SRT
+  (caller/listener), RTMP pull, HLS/HTTP and UDP MPEG-TS. **Device**: capture cards and
+  webcams, configured from a device picker. **WHIP** ingest from OBS and browsers.
+  **Audio pairing**: any of them can take its audio from an audio device on the node
+  (picking input channels) or play silence. Missing GStreamer elements make a type
+  unavailable instead of stopping the node. Video device capture is untested on real
+  hardware so far.
+- **9. Playback, milestone 1 (2026-10-06)** — playout channels are configured sources
+  whose program bin (compositor over black, mixer over silence, at a fixed format) runs
+  through the ordinary monitor, so a channel shows in Record and can be recorded. A clip
+  plays in its own player pipeline pushing into per-clip lanes; transport is cue, play,
+  pause, seek, stop, with in/out points and hold / black / loop at the out point
+  (frame-accurate, gapless loops). NDI outputs are separate consumer pipelines. A media
+  library per node (import from the file browser or from Recordings), and a Playback
+  workspace. Design in ARCHITECTURE.md (Playback).
 - **Node registry persistence** — peers added by URL are stored and restored on start.
 
 ---
@@ -101,8 +118,11 @@ A full playout system — capture in reverse. Design in ARCHITECTURE.md (Playbac
 - Reuses file decoding from the looping media file source (#6).
 - Playout channels count against capacity: extend the benchmark to cover them.
 - **Playback workspace** in the UI.
-- Start with: one NDI channel playing a single file, then gapless playlists, then more
-  output types.
+- ✅ One NDI channel playing a single file (milestone 1, 2026-10-06). Next: gapless
+  playlists (cue the next clip's player ahead and switch lanes at a frame boundary),
+  then more output types.
+- A channel's name is in its fingerprint, so renaming one mid-playout rebuilds it and
+  drops the clip; worth fixing when playlists land.
 
 ## 10. Clock sync across nodes
 
@@ -151,23 +171,16 @@ Roughly in priority order.
   thumbnails, which don't scale past ~10–15 fps with more than a handful of feeds.
   Design in ARCHITECTURE.md (Thumbnails).
 - **Additional source types** (each is a new `InputSource` impl, additive), in priority
-  order:
-  1. **RTSP** (`rtspsrc`) — IP cameras; easy, high value.
-  2. **Separate audio pairing** (decision first) — record a video source with audio from
-     another source (an audio interface, Dante Virtual Soundcard). Needs the source
-     contract to allow video-only and audio-only sources, plus a pairing in the source
-     config. Settle this before local devices, which have no paired audio.
-  3. **Local capture devices** — one source type for HDMI/USB capture cards (Cam Link,
-     Magewell), webcams and audio interfaces on every platform, discovered through a
-     `GstDeviceMonitor` (`Video/Source`, `Audio/Source`) like `NdiMonitor`. Replaces the
-     Linux-only `v4l2src` plan; the monitor yields `v4l2src` / `avfvideosrc` /
-     `mfvideosrc` elements per platform. On macOS and Windows screens also appear as
-     devices, which covers most of display capture (not under a service session, though).
-  4. **SRT** (`srtsrc`) — contribution feeds over unreliable networks.
-  5. **WHIP ingest** (`whipserversrc`, gst-plugins-rs) — accept WebRTC pushes from OBS
-     30+ and browsers. Statically linked like `gst-plugin-ndi`.
-  6. **SDI via Decklink** — already specced; needs hardware.
-  7. **SDI via AJA** (`ajasrc`, gst-plugins-bad ≥ 1.24) — alongside Decklink; needs
+  order. Stream, Device, WHIP and audio pairing shipped (see Shipped).
+  1. **Linux screen capture** — X11 `ximagesrc`; Wayland through an xdg-desktop-portal
+     ScreenCast session (`ashpd`, `persist_mode=2`, restore token kept in the source
+     config) into `pipewiresrc`. Offered as entries in the device list. macOS and Windows
+     already list screens as devices.
+  2. **SDI via Decklink** — already specced; needs hardware.
+  3. **SDI via AJA** (`ajasrc`, gst-plugins-bad ≥ 1.24) — alongside Decklink; needs
      hardware.
-  8. **Web page** (`wpesrc`) — render an HTML page (graphics, scoreboards) as a feed.
+  4. **Web page** (`wpesrc`) — render an HTML page (graphics, scoreboards) as a feed.
      Niche; WPE is Linux-only.
+- **macOS and Windows CI jobs** — build + clippy with GStreamer from brew / the official
+  MSI, so the platform-specific device code can't rot. Device and network tests stay
+  Linux-only.

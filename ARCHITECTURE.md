@@ -101,8 +101,32 @@ Initial implementations:
 - `NdiSource` — ✅ implemented — built on the `gst-plugin-ndi` GStreamer elements (`ndisrc` + `ndisrcdemux`), not the raw NDI SDK FFI. Discovery via a persistent `GstDeviceMonitor`. Follows the same bin/ghost-pad contract as `TestSource`.
 - `FileSource` — ✅ implemented — a media file on the node played in a loop as a live feed (real footage for the benchmark, demos without hardware). The file plays in its own *player* pipeline (`uridecodebin` → appsinks, synced to the clock) that loops with segment seeks, so loops are gapless unless the file's streams differ in length (the first frame after such a gap is marked `DISCONT`, so frame counters can tell a loop from a feed falling behind). Its appsinks push into live `appsrc`s in the source bin, which restamp every buffer with the monitor's running time, so the monitor sees one continuous live feed. The player starts when the monitor first wants data and stops when the bin is disposed; its errors are posted on the monitor. A file without audio plays stereo silence; one without video is refused. The file is probed (`Discoverer`) when the source is saved, which rejects anything undecodable and gives the source its capabilities up front.
 
-**Configured vs discovered sources.** Test and file sources are *configured*: stored in `configured_sources` as a JSON config tagged with its `type` (`SourceConfig` in `api/types.rs`), and served from `/configured-sources`. A new configured type adds a `SourceConfig` variant and a case in `sources::configured`. NDI sources are *discovered* and not stored.
+- `StreamSource` — ✅ implemented — one type for every network stream, chosen by URL scheme: RTSP, SRT (caller, or listener for OBS-style pushes), RTMP pull, HLS/HTTP and UDP MPEG-TS. `uridecodebin3` builds the protocol element and decodes; the source sets that element's properties (jitter buffer `latency_ms`, RTSP transport). Saving checks the scheme is available on the node and that no other configured source binds the same listening port.
+- `DeviceSource` — ✅ implemented — a local capture device (HDMI/USB capture card, webcam), configured from a picker rather than auto-discovered. A persistent `GstDeviceMonitor` (`Video/Source`, `Audio/Source`, `Source/Monitor`), like `NdiMonitor`, serves `/devices`; each platform's provider makes the element (`v4l2src` / `pulsesrc` on Linux, `avfvideosrc` on macOS, `mfvideosrc` / `wasapi2src` on Windows), so the only platform code is the stable device key (v4l2 path, AVFoundation unique id, Windows device path, display name as a last resort). Devices without raw video in the requested format are captured as MJPEG and decoded. On Linux, PipeWire's devices are skipped: `pipewiresrc` fails to open its target on some systems (PipeWire 1.6 / GStreamer 1.28), and the v4l2 and PulseAudio providers list the same devices. ALSA's raw devices are skipped too (they'd fight the sound server for the card). An unplugged device keeps the source, shown by its saved name.
+- `WhipSource` — ✅ implemented — WebRTC ingest from OBS 30+ and browsers: `whipserversrc` (gst-plugins-rs, statically linked) serves `http://<node>:<port>/whip/endpoint`. Black and silence until a publisher connects. Each publisher session gets fresh input chains, and the element restarts when its pads go (it won't serve a second session's media otherwise). Ports are unique across WHIP and stream listeners.
 - `DecklinkSource` — ⬜ deferred (no hardware) — Decklink SDK via FFI / `decklinkvideosrc`
+- Linux screen capture — ⬜ not started — X11 `ximagesrc`, or a Wayland xdg-desktop-portal ScreenCast session into `pipewiresrc`, offered as entries in the device list. On macOS and Windows screens already appear as devices.
+
+**Configured vs discovered sources.** Test, file, stream, device and WHIP sources are *configured*: stored in `configured_sources` as a JSON config tagged with its `type` (`SourceConfig` in `api/types.rs`), and served from `/configured-sources`. A new configured type adds a `SourceConfig` variant and a case in `sources::configured`. NDI sources are *discovered* and not stored.
+
+**Live sources (`sources/live.rs`).** Stream, device and WHIP sources share one bin built around `fallbacksrc` (gst-plugins-rs `fallbackswitch`, statically linked). A dropout never stops the monitor or its recordings: the feed plays black and silence while the source retries forever, and recordings keep going (NDI keeps stop-on-failure).
+
+```
+source → [fallbacksrc] → input chain ─┐
+            black (direct sources only) ┴→ compositor → locked caps → video
+source → [fallbacksrc] → input chain ─┐
+                        silence (always) ┴→ audiomixer → 48 kHz F32 → audio
+```
+
+- **Fixed output format.** Fallback frames have their own format (320x240, 44.1 kHz mono), so video is deinterlaced and locked to the source's first live size, rate, pixel format and colorimetry (or a configured `format`), and audio to 48 kHz at a fixed channel count. A recording never sees the format change.
+- **Clocked aggregators.** The compositor and mixer run on the clock: when the source is late or gone they repeat the last frame or play silence instead of leaving a gap, so a recording's 500 ms input queue never gets a catch-up burst to drop.
+- **Fixed latency.** `fallbacksrc`'s `min-latency` is set; otherwise latency changes on every switch and the re-queries stall the pipeline.
+- **Direct mode for WHIP.** `fallbacksrc`'s custom-source wrapper aborts the process on assertion failures with `webrtcsrc`, so WHIP's element sits in the bin directly, with its own black source under the compositor. The gst-plugins-rs WebRTC elements block on their own tokio runtime during state changes, so monitor state changes run on a non-tokio thread.
+- **Link state.** A pad probe counts real frames; `LinkState` (`live`, `connecting`, `waiting` for a listener or WHIP publisher, `reconnecting`) is on `SourceDto` and the 1 Hz `feed.status` event, and the UI shows it on Sources rows and Record tiles (reconnecting is a warning, not tally red).
+
+**Audio pairing.** A live source's config carries an `AudioPlan`: `source` (its own audio, mixed to N channels; silence if it has none), `device` (an audio device on the node such as an interface or Dante Virtual Soundcard, with 1-based input channels in output order), or `silence`. A device plan adds a second `fallbacksrc` around the audio device. Audio-only devices are never sources by themselves. Monitor pipelines are pinned to the system clock, so an audio device inside a bin never becomes the clock that recordings slave to.
+
+**Element availability per type.** `plugins::REQUIRED` (core encoders and the like) still fails startup. Stream, device and WHIP list the elements they need instead: a missing one makes that type (or stream protocol) unavailable without stopping the node. `NodeStatus.source_types` reports `{ source_type, missing, protocols }`; the UI greys out unavailable types and saving one returns 400.
 
 ---
 
@@ -366,93 +390,87 @@ same capacity and should be part of the measurement.
 
 ---
 
-## Playback (planned)
+## Playback
 
-A full playout system: Capture Room plays clips out to the same kinds of channels it
-captures from, in reverse. An NDI source has an NDI output counterpart, Decklink input
-has Decklink output, and so on.
+A playout system: Capture Room plays clips out to the same kinds of channels it
+captures from. Milestone 1 is in: an NDI channel playing one clip at a time from a
+node's media library. Gapless playlists come next.
 
-### Output plugin system
+### Channels are sources
 
-```rust
-pub trait OutputSink: Send + Sync {
-    fn id(&self) -> &str;
-    fn display_name(&self) -> &str;
-    fn output_type(&self) -> OutputType;
-    /// Formats the output accepts (an SDI card is fixed; NDI takes anything).
-    fn capabilities(&self) -> Option<OutputCapabilitiesDto>;
-    fn fingerprint(&self) -> String;
-    /// A `gst::Bin` with `"video"` / `"audio"` ghost *sink* pads.
-    fn gst_sink_element(&self) -> gst::Element;
-}
-```
-
-Implementations, in roughly the order of the matching sources:
-
-- **NDI** — `ndisinkcombiner` + `ndisink` (already in `gst-plugin-ndi`); first, since it
-  needs no hardware
-- **SRT** (`srtsink`) and **RTSP** (`gst-rtsp-server`) — encode + mux in the bin
-- **Local display / HDMI out** — fullscreen window on a chosen screen, plus an audio
-  device
-- **WHEP** (`whepserversink`) — browser and OBS pull
-- **SDI via Decklink / AJA** (`decklinkvideosink`, `ajasink`) — needs hardware; the card
-  is the clock master
-
-### Playout channel
-
-A channel is the output-side twin of a source's monitor pipeline: one persistent
-pipeline per configured output, always running, at a fixed channel format (e.g.
-1080p59.94, 48 kHz stereo).
+A playout channel is a configured source (`SourceConfig::Channel`, `sources/channel.rs`):
+a fixed format (size, rate, audio channels) and a list of outputs. Its *program* is the
+source's bin, run by an ordinary `MonitorPipeline`. So a channel gets thumbnails and
+meters, shows in Sources and the Record multiview, and can be recorded like any feed.
 
 ```
-Clip player pipeline, one per loaded clip
-[filesrc] → [demux/decodebin] → [appsink] = video/audio StreamProducer
+Clip player (one per loaded clip)
+uridecodebin ─┬→ queue → videoconvert → appsink (sync) ─ push ─┐
+              └→ queue → audioconvert → audioresample → appsink ─ push ─┐
+                                                               ▼        ▼
+Program bin (ChannelSource::build_bin, run by the monitor)
+  appsrc lane → input chain ─┐
+     black background ───────┴→ compositor → channel caps (I420)  → "video"
+  appsrc lane → input chain ─┐
+              silence ───────┴→ audiomixer → 48 kHz F32, N ch      → "audio"
 
-Channel pipeline (always running)
-[appsrc video] → [videorate → videoscale → videoconvert → caps channel format] → [vtee]
-[appsrc audio] → [audioconvert → audioresample → caps channel format]          → [atee]
-     vtee/atee ─► OutputSink bin
-               └► thumbnail + audio meter branches (same as a monitor)
+MonitorPipeline producers ─┬─► recording legs (unchanged)
+                           └─► output legs (pipeline/output.rs), one pipeline each:
+                               appsrc v/a → convert → ndisinkcombiner → ndisink
 ```
 
-- **Never goes dark:** with nothing playing, the channel outputs black and silence (or a
-  configured slate). Downstream equipment never loses signal.
-- **Decoupled players:** clips decode in their own pipelines and feed the channel
-  through `StreamProducer`s, the same pattern recording legs use in reverse. A bad file
-  fails its player, not the channel.
-- **Gapless cueing:** the next clip is prerolled (PAUSED, at its in-point) and its
-  producer is connected at a frame boundary, so cuts between clips are frame-accurate.
-- **Conform:** clips are scaled, rate-converted and resampled to the channel format;
-  the channel never renegotiates downstream.
-- **Monitoring:** channels get thumbnails and meters, so they show in Multiview beside
-  sources.
-- **Loopback (optional):** a channel can appear as an internal source, so its program
-  output can itself be recorded.
+- **Never dark, never renegotiates.** The program bin reuses `live.rs`'s compositor over
+  black and mixer over silence (`live::video_output` / `audio_output`), locked to the
+  channel format from the start. Clips are scaled, converted and resampled into it.
+- **Lanes.** Loading a clip adds an `appsrc` + input chain ("lane") per stream to the
+  program bin, and unloading removes them: back to black and silence. The monitor builds
+  a new bin on every (re)start, and `Lanes::attach` moves a loaded clip's lanes over to
+  it, so a monitor restart doesn't drop the clip.
+- **Decoupled players.** Each clip decodes in its own pipeline, on the system clock like
+  the monitor. A bad file fails its player (the clip unloads and the error shows on the
+  channel), never the program.
+- **Timestamps.** A player buffer at running time `rt` renders when the clock reads
+  `player base time + rt`; it's restamped to that moment in the program's running time,
+  plus a 100 ms lead so it reaches the compositor before its slot. Video and audio share
+  the mapping, so they stay in sync, and a pipeline moves its base time on resume, so
+  pauses keep sync too (tested: identical offsets across a pause). Prerolls (a cued or
+  paused frame) are stamped "now". A lane drops anything that doesn't start after the
+  previous buffer, which covers seeks and the duplicate frame a loop point can produce.
+- **Transport** (`Playout`, one per channel, in memory on the node; after a restart a
+  channel is idle and black): *load* prerolls the clip paused at its in point with an
+  accurate seek and shows that frame (cued); *play* / *pause*; *seek* within the in–out
+  range (the frame there shows while paused); *stop* unloads. At the out point a clip
+  holds its last frame, goes to black, or loops. Loops are non-flushing segment seeks,
+  frame-accurate and gapless. The demuxer runs ahead of playback (even paused), so
+  `SEGMENT_DONE` can arrive while a clip is still cueing; it's handled there too.
+- **Outputs** are data (`OutputConfig`, tagged by `type`; only `ndi` so far), not yet an
+  `OutputSink` trait: one comes when a second output type needs it. Output legs are
+  consumers of the monitor's producers, like recording legs, with the monitor's clock and
+  base time; a failing output (no NDI Runtime) fails alone and shows on the channel.
+  `SourceManager` starts them with the monitor and restarts them when they change; a
+  channel's outputs are left out of its fingerprint, so editing them doesn't restart the
+  program or the clip. NDI names are unique across a node's channels.
+- **Still to come:** gapless playlists with auto-advance; SRT / RTSP → local display /
+  HDMI → WHEP → Decklink / AJA outputs (SDI cards are the clock master, which changes
+  the clock design); slates; channels in the benchmark.
 
-### Media and playlists
+### Media library
 
-- A channel plays files on its own node: recordings, or imported media. Playing a file
-  that lives on another node means copying it first.
-- **Playlist (rundown):** ordered items, each a file with in/out points; cue, play,
-  pause, stop, next, loop, auto-advance or hold at the end of each item.
-- **State lives on the node.** Gapless timing can't depend on a controller round trip,
-  so the node running a channel owns its loaded playlist and transport state. This is
-  the one deliberate exception to "nodes keep no state": the controller still only sends
-  plain commands, and the playlist is sent inline when loaded.
+A node's playable files: `media` table (path, name, probed `MediaInfo`, origin
+`import | recording`, the session a recording came from). Files are added from the
+node's file browser or from a session's files in Recordings, probed with the same
+`Discoverer` check as file sources. Removing an entry leaves the file on disk; the list
+flags entries whose file has gone (`missing`). A channel plays files on its own node
+only.
 
-### API and events (sketch)
+### UI
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/outputs` | output devices/targets on this machine (Decklink outputs, screens, …) |
-| GET / POST / PUT / DELETE | `/channels…` | channel configs: output, format, idle slate |
-| PUT | `/channels/{id}/playlist` | load a playlist (inline) |
-| POST | `/channels/{id}/transport` | `{ action: cue \| play \| pause \| stop \| next \| seek, … }` |
-| GET | `/media` | playable files on this node, with probed format |
-
-Events: `channel.state` (item, position, remaining; ~10 Hz while playing),
-`channel.error`. New tables: `output_channels`, `media` (probed file info). Playlists
-are not stored on the node.
+The **Playback** workspace: channels on the left (state and clip), the selected
+channel's program monitor with its outputs, a transport bar (play/pause, stop, elapsed
+and remaining, a scrubber over the file with the in–out range marked), clip setup (in,
+out, what happens at the out point, Cue), and the node's media library on the right.
+Keyboard: Space play/pause, Enter cue, I/O set in/out at the playhead, Esc stop.
+Channels are created and edited in Setup › Sources ("Playout channel").
 
 ### Browser preview
 
@@ -503,14 +521,20 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/status` | id, name, version, uptime, `is_controller` |
+| GET | `/status` | id, name, version, uptime, `is_controller`, available encoders and source types |
 | GET / PUT | `/settings` | node name, monitor settings (thumbnail fps/size, meter interval) |
 | GET | `/storage` | writable volumes: mount point, total/free bytes, removable; what active recordings write to each and the time left |
 | GET | `/sources` | sources on this machine |
 | POST | `/sources/scan` | rescan |
 | GET | `/sources/{id}` | source details |
-| GET / POST | `/configured-sources` | test and file source configs; saving a file source probes the file (400 if it can't be played) |
+| GET / POST | `/configured-sources` | configured source configs (test, file, stream, device, WHIP); saving validates them: a file is probed, a stream's protocol must be available and its listening port free, a device must be known (400 otherwise) |
 | PUT / DELETE | `/configured-sources/{id}` | |
+| GET | `/devices` | capture and audio devices on the node (key, name, class, provider, modes), for picking one in a device source or audio plan |
+| GET / POST | `/media` | the media library (each entry flags a missing file) / add a file `{ path, name?, session_id? }`: probed, 400 if it can't be played, 409 if already in |
+| DELETE | `/media/{id}` | remove from the library (the file stays) |
+| GET | `/channels/{id}` | a playout channel's transport: state (`idle \| cued \| playing \| paused \| ended`), clip, position, duration, error, each output's status |
+| POST | `/channels/{id}/load` | `{ media_id, in_ms?, out_ms?, end: hold \| black \| loop }` → cued at the in point |
+| POST | `/channels/{id}/transport` | `{ action: play \| pause \| stop \| seek, position_ms? }` |
 | GET | `/files?path=` | folders and media files in a directory (home if no path), for picking a file source. Read-only |
 | GET / POST | `/recordings` | list (`?before=&limit=`: newest first, 100 by default, at most 500, paged by `started_at`; the first page also carries active sessions) / start. Start body: `{ source_id, preset_id?, outputs: [...] }`. Refused onto a volume with under 1 GB free; cancels a running benchmark |
 | GET / DELETE | `/recordings/{id}` | session details / remove a finished session from history; `?files` deletes its files from disk first, and if any can't be deleted the session stays, listing those still on disk (409 while recording) |
@@ -552,7 +576,9 @@ All events are JSON with a `type` and the `node_id` they describe. `source_id` /
 | `recording.leg_failed` | session id, source id, error (the session's accumulated message) — a leg failed; the session keeps recording on its other legs |
 | `recording.stats` | session id, source id, dropped frames per leg, ordered like `output_paths` (1 Hz while active) |
 | `recording.removed` | session id — removed from history |
-| `feed.status` | source id, timecode, monitor error (1 Hz) |
+| `feed.status` | source id, timecode, monitor error, link state for live sources (1 Hz) |
+| `channel.state` | source id, the channel's transport status (on every command, ~10 Hz while playing, else 1 Hz) |
+| `media.updated` | none — the node's media library changed |
 | `audio.levels` | source id, channel peak/RMS values (~10fps) |
 | `thumbnail.updated` | source id (at the configured thumbnail fps) |
 | `benchmark.updated` | the run — when it starts, begins a step, finishes a step, and ends |
@@ -577,7 +603,8 @@ Every instance has the same schema (see `node/migrations/`):
 - `recording_sessions` — one row per session, `output_paths` as a JSON array; the
   source and preset names and each output's format are kept with it, so history reads the
   same after either is renamed or removed
-- `configured_sources` — test and file source configs (`config` is JSON tagged with `type`)
+- `configured_sources` — test, file, stream, device, WHIP and playout channel configs (`config` is JSON tagged with `type`)
+- `media` — the media library: path (unique), name, probed info (JSON), origin, session id
 - `presets` + `preset_outputs` — used while acting as controller (or from the UI on a lone node)
 - `nodes` — peers added by URL on a controller (mDNS peers are not persisted)
 - `benchmark_results` — benchmark runs, each stored whole as JSON (`run`)
@@ -713,8 +740,8 @@ One binary, installed as a system service.
 
 - **Linux:** systemd unit
 - **macOS:** launchd plist. A LaunchDaemon can't get camera, microphone or
-  screen-recording permission (macOS has no user session to ask), so once local capture
-  devices or display output land, macOS needs a per-user LaunchAgent in a logged-in
+  screen-recording permission (macOS has no user session to ask). Local capture devices
+  have landed, so macOS needs a per-user LaunchAgent in a logged-in
   session instead.
 - **Windows:** Windows Service via `windows-service` crate. Similar limits: a service
   runs in session 0, with no access to the desktop for display capture or fullscreen
@@ -725,6 +752,29 @@ Config file:
 - Windows: `%APPDATA%\CaptureRoom\config.toml`
 
 Cross-compiled for `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, `aarch64-apple-darwin`, `x86_64-apple-darwin` via GitHub Actions.
+
+### Plugin provenance
+
+Three tiers, the same on every OS:
+
+| Tier | Examples | How it ships |
+|------|----------|--------------|
+| Core GStreamer (C) | encoders, `rtspsrc`, `srtsrc`, `webrtcbin`, device providers | Linux: distro package dependencies. macOS: GStreamer.framework bundled in the .app. Windows: the official MSVC runtime DLLs and plugin dir next to the exe, with `GST_PLUGIN_PATH` set relative to it at startup |
+| Rust plugins | ndi, fallbackswitch, webrtc (WHIP) | statically linked into the binary (one pinned gst-plugins-rs rev), registered in `main.rs` |
+| Vendor runtimes | NDI Runtime | user-installed (licensing, below) |
+
+The official macOS and Windows GStreamer builds include srt, rtsp, nice and webrtcbin, so
+no source type is missing there. Adding a gst-plugins-rs git dependency re-resolves
+gstreamer-rs `branch=main`; pin it back with `cargo update --precise`.
+
+### OS permissions for capture
+
+- **macOS:** `NSCameraUsageDescription` / `NSMicrophoneUsageDescription` in Info.plist;
+  screen recording needs TCC approval. Run as a LaunchAgent (see above).
+- **Windows:** camera and microphone privacy toggles; Media Foundation and screen
+  capture need an interactive session.
+- **Linux:** the user must be in the `video` group for v4l2. Wayland screen capture needs
+  a desktop session and the portal.
 
 ### NDI licensing
 
