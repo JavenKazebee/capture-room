@@ -1,3 +1,8 @@
 [workspace]
 members = ["node"]
 resolver = "2"
+
+# fallbackswitch handles every buffer of a live source: optimize it even in
+# dev builds.
+[profile.dev.package.gst-plugin-fallbackswitch]
+opt-level = 3

@@ -61,6 +61,16 @@ pub(crate) fn capsfilter(name: &str, caps: gst::Caps) -> Result<gst::Element> {
         .with_context(|| format!("create {name}"))
 }
 
+/// Set `audioconvert`'s `mix-matrix`: a row of input gains per output
+/// channel. It has to be set before the element negotiates.
+pub(crate) fn set_mix_matrix(aconv: &gst::Element, rows: &[Vec<f32>]) {
+    let matrix = gst::Array::new(
+        rows.iter()
+            .map(|row| gst::Array::new(row.iter().copied()).to_send_value()),
+    );
+    aconv.set_property("mix-matrix", matrix);
+}
+
 /// Link a new request pad of `tee` to `sink`'s static sink pad.
 pub(super) fn link_tee(tee: &gst::Element, sink: &gst::Element) -> Result<()> {
     tee.request_pad_simple("src_%u")

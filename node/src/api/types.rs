@@ -18,6 +18,21 @@ pub struct NodeStatus {
     /// the UI can say what an output's Auto encoder resolves to here.
     #[serde(default)]
     pub encoders: Vec<String>,
+    /// Source types that depend on optional plugins, and what this node
+    /// is missing for each.
+    #[serde(default)]
+    pub source_types: Vec<SourceTypeSupport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct SourceTypeSupport {
+    pub source_type: SourceType,
+    /// GStreamer elements this node lacks for the type; empty if it can
+    /// run it.
+    pub missing: Vec<String>,
+    /// Streams: the URL schemes this node can open.
+    pub protocols: Vec<String>,
 }
 
 // ── Sources ───────────────────────────────────────────────────────────────────
@@ -29,6 +44,24 @@ pub enum SourceType {
     Test,
     Ndi,
     File,
+    Stream,
+    Device,
+    Whip,
+}
+
+/// Whether a live source (stream, device, WHIP) is delivering frames. While
+/// it isn't, the feed plays black and silence, and recordings keep going.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum LinkState {
+    Live,
+    /// Connecting out for the first time.
+    Connecting,
+    /// Waiting for a sender to connect (a listener or WHIP).
+    Waiting,
+    /// Was live, and is retrying.
+    Reconnecting,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +87,9 @@ pub struct SourceDto {
     /// `None` when the source can't know its format up front (NDI negotiates
     /// it at runtime).
     pub capabilities: Option<SourceCapabilitiesDto>,
+    /// Live sources only.
+    #[serde(default)]
+    pub link: Option<LinkState>,
 }
 
 // ── Configured sources ────────────────────────────────────────────────────────
@@ -92,6 +128,9 @@ pub enum AudioTestSignal {
 pub enum SourceConfig {
     Test(TestSourceConfig),
     File(FileSourceConfig),
+    Stream(StreamSourceConfig),
+    Device(DeviceSourceConfig),
+    Whip(WhipSourceConfig),
 }
 
 /// A synthetic feed: a video pattern plus a test audio signal.
@@ -131,6 +170,137 @@ pub struct MediaInfo {
     pub audio_channels: u32,
     #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
     pub duration_ms: Option<u64>,
+}
+
+/// A network stream pulled (or, for listeners, received) from a URL:
+/// `rtsp://`, `rtsps://`, `srt://`, `rtmp://`, `http(s)://` (HLS) or
+/// `udp://` (MPEG-TS). SRT is a caller unless the URL says
+/// `mode=listener` (or has no host), which is how OBS pushes to it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct StreamSourceConfig {
+    pub url: String,
+    /// Jitter buffer for RTSP and SRT, in milliseconds.
+    #[serde(default = "default_stream_latency")]
+    pub latency_ms: u32,
+    #[serde(default)]
+    pub rtsp_transport: RtspTransport,
+    #[serde(default)]
+    pub audio: AudioPlan,
+    /// Hold the feed to this size and rate; by default it takes the
+    /// stream's first format.
+    #[serde(default)]
+    pub format: Option<LiveVideoFormat>,
+}
+
+fn default_stream_latency() -> u32 {
+    200
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum RtspTransport {
+    #[default]
+    Auto,
+    Tcp,
+    Udp,
+}
+
+/// Where a live source's audio comes from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "from", rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum AudioPlan {
+    /// The source's own audio, mixed to `channels` (silence if it has none).
+    Source {
+        channels: u32,
+    },
+    /// An audio device on the node (an interface, Dante Virtual Soundcard):
+    /// `channels` are its 1-based input channels, in output order.
+    Device {
+        device_key: String,
+        channels: Vec<u32>,
+    },
+    Silence {
+        channels: u32,
+    },
+}
+
+impl Default for AudioPlan {
+    fn default() -> Self {
+        Self::Source { channels: 2 }
+    }
+}
+
+/// A capture device on the node (a webcam, an HDMI/USB capture card, or on
+/// macOS and Windows a screen), with audio from another device or silence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct DeviceSourceConfig {
+    /// [`DeviceDto::key`] of the video device.
+    pub video_device: String,
+    /// The device's name when the source was saved, shown while it's
+    /// unplugged. Filled in by the node; ignored in requests.
+    #[serde(default)]
+    pub video_device_name: String,
+    #[serde(default = "device_audio")]
+    pub audio: AudioPlan,
+    /// Capture at this size and rate (the device's default otherwise).
+    #[serde(default)]
+    pub format: Option<LiveVideoFormat>,
+}
+
+/// WebRTC pushed to the node over WHIP (OBS 30+, browsers), at
+/// `http://<node>:<port>/whip/endpoint`. One publisher at a time; there's
+/// no authentication yet, so anyone who can reach the port can publish.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct WhipSourceConfig {
+    pub port: u16,
+    #[serde(default)]
+    pub audio: AudioPlan,
+    #[serde(default)]
+    pub format: Option<LiveVideoFormat>,
+}
+
+fn device_audio() -> AudioPlan {
+    AudioPlan::Silence { channels: 2 }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum DeviceKind {
+    Video,
+    Audio,
+    Screen,
+}
+
+/// A capture device the node can see, for picking one in a device source.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct DeviceDto {
+    /// Stable across restarts and replugging, where the platform allows.
+    pub key: String,
+    pub name: String,
+    pub kind: DeviceKind,
+    /// The GStreamer device API (`v4l2`, `pipewire`, `avf`, `mediafoundation`, …).
+    pub api: String,
+    /// Audio devices: input channels.
+    pub channels: Option<u32>,
+    /// Video devices: the formats offered, like `1920x1080 60fps YUY2`.
+    pub formats: Vec<String>,
+}
+
+/// A fixed video format for a live source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct LiveVideoFormat {
+    pub width: u32,
+    pub height: u32,
+    pub fps_num: u32,
+    pub fps_den: u32,
 }
 
 /// A configured source, as stored and as served.
@@ -551,6 +721,7 @@ pub enum WsEvent {
         source_id: String,
         timecode: Option<String>,
         error: Option<String>,
+        link: Option<LinkState>,
     },
     #[serde(rename = "audio.levels")]
     AudioLevels {

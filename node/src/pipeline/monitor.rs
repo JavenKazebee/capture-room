@@ -76,6 +76,10 @@ impl MonitorPipeline {
         let audio_meter = AudioMeter::default();
 
         let pipeline = gst::Pipeline::new();
+        // Always the system clock: a device in the source bin (an audio
+        // interface) would otherwise provide it, and recordings take the
+        // monitor's clock.
+        pipeline.use_clock(Some(&gst::SystemClock::obtain()));
         let src_bin = source.build_bin()?;
         pipeline.add(&src_bin).context("add source bin")?;
 
@@ -136,9 +140,7 @@ impl MonitorPipeline {
         // threads. We deliberately do NOT wait on pipeline.state(): that
         // blocks, and new() runs under the SourceManager write lock — blocking
         // would starve the WS emitter. Later errors are reported by the bus task.
-        pipeline
-            .set_state(gst::State::Playing)
-            .map_err(|e| anyhow!("set PLAYING: {e:?}"))?;
+        set_state(&pipeline, gst::State::Playing).map_err(|e| anyhow!("set PLAYING: {e:?}"))?;
 
         Ok(Self {
             pipeline,
@@ -180,8 +182,7 @@ impl MonitorPipeline {
     }
 
     pub fn stop(&self) -> Result<()> {
-        self.pipeline
-            .set_state(gst::State::Null)
+        set_state(&self.pipeline, gst::State::Null)
             .map(|_| ())
             .map_err(|e| anyhow!("set NULL: {e:?}"))
     }
@@ -260,11 +261,16 @@ fn add_thumbnail_branch(
     let rate_caps = capsfilter("thumb-rate-caps", thumb_rate_caps(config))?;
     let scale_caps = capsfilter("thumb-scale-caps", thumb_scale_caps(config))?;
 
+    // Not synced to the clock: videorate picks frames by timestamp anyway,
+    // and a synced sink holds each frame for the pipeline's latency (about
+    // 1 s for live sources). Its queue then fills and blocks the tee, which
+    // stalls the producers and makes recordings drop frames.
     let appsink = gst_app::AppSink::builder()
         .name("thumb-sink")
         .caps(&gst::Caps::builder("image/jpeg").build())
         .max_buffers(1)
         .drop(true)
+        .sync(false)
         .build();
     appsink.set_callbacks(
         gst_app::AppSinkCallbacks::builder()
@@ -279,8 +285,12 @@ fn add_thumbnail_branch(
             .build(),
     );
 
+    // Leaky, so a slow thumbnail never holds up the other branches.
+    let tq = make_el("queue", "tq")?;
+    tq.set_property_from_str("leaky", "downstream");
+    tq.set_property("max-size-buffers", 2u32);
     let chain = [
-        make_el("queue", "tq")?,
+        tq,
         make_el("videorate", "thumb-rate")?,
         rate_caps.clone(),
         make_el("videoscale", "thumb-scale")?,
@@ -353,6 +363,24 @@ struct FrameCount {
     /// Nanoseconds; `u64::MAX` until a timestamped buffer arrives.
     last_pts: AtomicU64,
     skipped_ns: AtomicU64,
+}
+
+/// Change `pipeline`'s state on a thread outside the tokio runtime. Some
+/// elements run their own runtime and block on it while changing state
+/// (`whipserversrc`), which panics — and aborts, across the FFI boundary —
+/// on a thread that's already inside one, as ours are.
+fn set_state(
+    pipeline: &gst::Pipeline,
+    state: gst::State,
+) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return pipeline.set_state(state);
+    }
+    std::thread::scope(|s| {
+        s.spawn(|| pipeline.set_state(state))
+            .join()
+            .unwrap_or(Err(gst::StateChangeError))
+    })
 }
 
 /// Count the buffers reaching `producer`'s appsink.

@@ -1,5 +1,7 @@
 use anyhow::{bail, Result};
-use gstreamer as gst;
+use gstreamer::{self as gst, prelude::*};
+
+use crate::api::types::{SourceType, SourceTypeSupport};
 
 /// Every GStreamer element the application may need, grouped by the system
 /// package that provides it so the error message can say exactly what to
@@ -53,7 +55,59 @@ const REQUIRED: &[Package] = &[
         hint: "",
         elements: &["ndisrc", "ndisrcdemux"],
     },
+    Package {
+        name: "gst-plugin-fallbackswitch",
+        hint: "",
+        elements: &["fallbacksrc"],
+    },
 ];
+
+/// Whether this node has GStreamer element `name`.
+pub fn has(name: &str) -> bool {
+    gst::ElementFactory::find(name).is_some()
+}
+
+/// Source types that need more than the required plugins, and whether this
+/// node can run them. A type missing an element is unavailable rather than
+/// stopping the node.
+pub fn source_types() -> Vec<SourceTypeSupport> {
+    let stream_protocols: Vec<String> = crate::sources::stream::PROTOCOLS
+        .iter()
+        .filter(|(_, element)| has(element))
+        .map(|(scheme, _)| scheme.to_string())
+        .collect();
+    let mut stream = support(SourceType::Stream, &["uridecodebin3"]);
+    if stream.missing.is_empty() && stream_protocols.is_empty() {
+        stream.missing.push("rtspsrc".into());
+    }
+    stream.protocols = stream_protocols;
+    let mut device = support(SourceType::Device, &[]);
+    // Device providers ship with the platform's plugins (video4linux2 /
+    // pipewire, applemedia, mediafoundation / wasapi2).
+    let has_provider = gst::DeviceProviderFactory::factories(gst::Rank::NONE)
+        .iter()
+        .any(|f| f.name() != "ndideviceprovider");
+    if !has_provider {
+        device.missing.push("a capture device provider".into());
+    }
+    let whip = support(
+        SourceType::Whip,
+        &["whipserversrc", "webrtcbin", "nicesrc", "decodebin3"],
+    );
+    vec![stream, device, whip]
+}
+
+fn support(source_type: SourceType, elements: &[&str]) -> SourceTypeSupport {
+    SourceTypeSupport {
+        source_type,
+        missing: elements
+            .iter()
+            .filter(|e| !has(e))
+            .map(|e| e.to_string())
+            .collect(),
+        protocols: Vec::new(),
+    }
+}
 
 struct Package {
     name: &'static str,

@@ -93,6 +93,11 @@ const KIND_OPTIONS: { value: Kind; label: string }[] = [
 const KIND_DESCRIPTIONS: Record<Kind, string> = {
   test: 'A synthetic feed: a video pattern plus a test audio signal.',
   file: "A media file on the node's disk, played in a loop as a live feed.",
+  // Not in the add menu yet: authored through the API until the Sources
+  // view pass.
+  stream: 'A network stream: RTSP, SRT, RTMP, HLS or UDP.',
+  device: 'A capture device on the node, with audio from another device.',
+  whip: 'WebRTC pushed to the node over WHIP (OBS, browsers).',
 }
 
 const showForm = ref(false)
@@ -213,7 +218,8 @@ async function openEdit(src: Source) {
     notifyError('Could not load the source config from its node', e, src.node_id)
     return
   }
-  if (!cfg) return
+  // No form for live sources yet.
+  if (!cfg || (cfg.config.type !== 'test' && cfg.config.type !== 'file')) return
   editingId.value = src.id
   formNodeId.value = src.node_id
   name.value = cfg.name

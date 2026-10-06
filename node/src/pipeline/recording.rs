@@ -25,7 +25,7 @@ use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
 use super::profile::{segment_number, AudioFormat, RecordingProfile, VideoEncoder, PCM_MAX_FILE};
-use super::{capsfilter, make_el};
+use super::{capsfilter, make_el, set_mix_matrix};
 use crate::api::types::{Container, RateControl};
 
 /// Crash safety for .mov/.mp4 (see where the muxer is configured in
@@ -298,11 +298,7 @@ impl RecordingLeg {
         let aconv = make_el("audioconvert", "aconv")?;
         let mix = profile.audio_mix();
         if let Some(rows) = mix.as_ref().and_then(|m| m.matrix.as_ref()) {
-            let matrix = gst::Array::new(
-                rows.iter()
-                    .map(|row| gst::Array::new(row.iter().copied()).to_send_value()),
-            );
-            aconv.set_property("mix-matrix", matrix);
+            set_mix_matrix(&aconv, rows);
         }
         let mut audio = vec![
             audio_src.clone().upcast::<gst::Element>(),

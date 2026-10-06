@@ -10,13 +10,14 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::api::types::{
-    ChannelLevelDto, ConfiguredSourceDto, MonitorSettingsDto, PresetOutputInput,
+    ChannelLevelDto, ConfiguredSourceDto, LinkState, MonitorSettingsDto, PresetOutputInput,
     RecordingSessionDto, RecordingStatus,
 };
 use crate::pipeline::monitor::{MonitorPipeline, SourceFormat};
 use crate::pipeline::profile::RecordingProfile;
 use crate::pipeline::recording::{self, OnLegError, OnLegFile, RecordingLeg};
 
+use super::device::LocalDevices;
 use super::ndi::NdiMonitor;
 use super::{configured, InputSource};
 
@@ -112,6 +113,7 @@ pub struct SourceManager {
     /// stop join the in-flight result instead of reporting "already stopped".
     stopping: HashMap<String, StopResult>,
     ndi_monitor: NdiMonitor,
+    devices: Arc<LocalDevices>,
     leg_failures: mpsc::UnboundedSender<LegFailure>,
     /// Session ids whose legs opened a new file (a split), so the file list
     /// can be saved.
@@ -122,6 +124,7 @@ impl SourceManager {
     pub fn new(
         config: MonitorSettingsDto,
         ndi_monitor: NdiMonitor,
+        devices: Arc<LocalDevices>,
         leg_failures: mpsc::UnboundedSender<LegFailure>,
         leg_files: mpsc::UnboundedSender<String>,
     ) -> Self {
@@ -133,12 +136,18 @@ impl SourceManager {
             sessions: HashMap::new(),
             stopping: HashMap::new(),
             ndi_monitor,
+            devices,
             leg_failures,
             leg_files,
         }
     }
 
     // ── Source access ─────────────────────────────────────────────────────────
+
+    /// The node's capture devices.
+    pub fn devices(&self) -> &Arc<LocalDevices> {
+        &self.devices
+    }
 
     pub fn sources(&self) -> &[Box<dyn InputSource>] {
         &self.sources
@@ -156,6 +165,13 @@ impl SourceManager {
     }
 
     /// Why a source's monitor stopped producing, or couldn't start.
+    /// A live source's link state, while its monitor runs.
+    pub fn link(&self, source: &dyn InputSource) -> Option<LinkState> {
+        self.is_monitored(source.id())
+            .then(|| source.link())
+            .flatten()
+    }
+
     pub fn monitor_error(&self, source_id: &str) -> Option<String> {
         match self.monitors.get(source_id) {
             Some(monitor) => monitor.error(),
@@ -186,7 +202,10 @@ impl SourceManager {
     /// Candidates are only descriptions, so a scan that changes nothing builds
     /// no GStreamer elements.
     pub fn scan(&mut self, configs: &[ConfiguredSourceDto]) -> Vec<Teardown> {
-        let mut candidates: Vec<Box<dyn InputSource>> = configs.iter().map(configured).collect();
+        let mut candidates: Vec<Box<dyn InputSource>> = configs
+            .iter()
+            .map(|c| configured(c, &self.devices))
+            .collect();
         candidates.extend(
             self.ndi_monitor
                 .current_sources()

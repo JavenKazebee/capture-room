@@ -23,8 +23,8 @@ use tracing::{error, info};
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     BenchmarkRequest, BenchmarkRunDto, CapacityCheckDto, CapacityCheckRequest, ConfiguredSourceDto,
-    ConfiguredSourceRequest, DirListingDto, NodeCapacityDto, NodeSettingsDto, NodeStatus,
-    RecordingSessionDto, RecordingStatus, RecordingsQuery, SourceConfig, SourceDto,
+    ConfiguredSourceRequest, DeviceDto, DirListingDto, NodeCapacityDto, NodeSettingsDto,
+    NodeStatus, RecordingSessionDto, RecordingStatus, RecordingsQuery, SourceConfig, SourceDto,
     StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
@@ -44,6 +44,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/settings", get(get_settings).put(put_settings))
         .route("/storage", get(get_storage))
         .route("/files", get(get_files))
+        .route("/devices", get(get_devices))
         // Sources — static paths before dynamic {id}
         .route("/sources", get(get_sources))
         .route("/sources/scan", post(post_scan))
@@ -88,6 +89,7 @@ async fn get_status(State(state): State<Arc<AppState>>) -> Json<NodeStatus> {
         uptime_secs: state.started_at.elapsed().as_secs(),
         is_controller: state.is_controller().await,
         encoders: crate::pipeline::profile::available_encoders(),
+        source_types: crate::plugins::source_types(),
     })
 }
 
@@ -184,10 +186,43 @@ async fn get_configured_sources(
 }
 
 /// Check a request, and probe a media file so the source knows its format.
-async fn validated(mut req: ConfiguredSourceRequest) -> ApiResult<ConfiguredSourceRequest> {
+/// `id` is the source being replaced, if any.
+async fn validated(
+    state: &AppState,
+    id: Option<&str>,
+    mut req: ConfiguredSourceRequest,
+) -> ApiResult<ConfiguredSourceRequest> {
     req.name = req.name.trim().to_string();
     if req.name.is_empty() {
         return Err(ApiError::BadRequest("name is required".into()));
+    }
+    let devices = state.source_manager.read().await.devices().clone();
+    let bad = |e: String| ApiError::BadRequest(e.into());
+    match &mut req.config {
+        SourceConfig::Stream(cfg) => {
+            cfg.url = cfg.url.trim().to_string();
+            crate::sources::stream::validate(cfg, crate::plugins::has).map_err(bad)?;
+            crate::sources::device::validate_audio(&cfg.audio, &devices).map_err(bad)?;
+        }
+        SourceConfig::Device(cfg) => {
+            crate::sources::device::validate(cfg, &devices).map_err(bad)?;
+        }
+        SourceConfig::Whip(cfg) => {
+            crate::sources::whip::validate(cfg).map_err(bad)?;
+            crate::sources::device::validate_audio(&cfg.audio, &devices).map_err(bad)?;
+        }
+        _ => {}
+    }
+    if let Some(port) = listen_port(&req.config) {
+        let others = db::configured_sources_list(&state.db).await?;
+        if let Some(other) = others
+            .iter()
+            .find(|o| Some(o.id.as_str()) != id && listen_port(&o.config) == Some(port))
+        {
+            return Err(ApiError::BadRequest(
+                format!("port {port} is already used by {}", other.name).into(),
+            ));
+        }
     }
     if let SourceConfig::File(cfg) = &mut req.config {
         cfg.path = cfg.path.trim().to_string();
@@ -204,7 +239,7 @@ async fn post_configured_source(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ConfiguredSourceRequest>,
 ) -> ApiResult<(StatusCode, Json<ConfiguredSourceDto>)> {
-    let req = validated(req).await?;
+    let req = validated(&state, None, req).await?;
     let source = ConfiguredSourceDto {
         id: uuid::Uuid::new_v4().to_string(),
         name: req.name,
@@ -225,7 +260,7 @@ async fn put_configured_source(
     let existing = db::configured_source_get(&state.db, &id)
         .await?
         .ok_or(NOT_FOUND)?;
-    let req = validated(req).await?;
+    let req = validated(&state, Some(&id), req).await?;
     let source = ConfiguredSourceDto {
         name: req.name,
         config: req.config,
@@ -247,6 +282,23 @@ async fn delete_configured_source(
     }
     rescan_after(&state, "delete").await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// The local port a configured source listens on, if any.
+fn listen_port(config: &SourceConfig) -> Option<u16> {
+    match config {
+        SourceConfig::Stream(cfg) => crate::sources::stream::listen_port(cfg),
+        SourceConfig::Whip(cfg) => Some(cfg.port),
+        _ => None,
+    }
+}
+
+// ── /devices ──────────────────────────────────────────────────────────────────
+
+/// Capture devices on the node, for picking one in a device source.
+async fn get_devices(State(state): State<Arc<AppState>>) -> Json<Vec<DeviceDto>> {
+    let devices = state.source_manager.read().await.devices().clone();
+    Json(devices.list())
 }
 
 // ── /files ────────────────────────────────────────────────────────────────────
@@ -858,6 +910,7 @@ fn source_to_dto(mgr: &SourceManager, s: &dyn InputSource) -> SourceDto {
         error: mgr.monitor_error(s.id()),
         timecode: s.timecode(),
         capabilities: s.capabilities(),
+        link: mgr.link(s),
     }
 }
 

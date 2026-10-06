@@ -51,6 +51,8 @@ async fn main() -> Result<()> {
 
     gstreamer::init().expect("GStreamer init failed");
     gstndi::plugin_register_static().expect("NDI plugin registration failed");
+    gstfallbackswitch::plugin_register_static().expect("fallbackswitch plugin registration failed");
+    gstrswebrtc::plugin_register_static().expect("webrtc plugin registration failed");
     plugins::check_required_plugins()?;
     let pool = db::init(&args.db).await?;
 
@@ -85,10 +87,18 @@ async fn main() -> Result<()> {
     let ndi_monitor = tokio::task::spawn_blocking(sources::ndi::NdiMonitor::start)
         .await
         .expect("NDI monitor thread panicked");
+    let devices = tokio::task::spawn_blocking(sources::device::LocalDevices::start)
+        .await
+        .expect("device monitor thread panicked");
     let (leg_failure_tx, leg_failure_rx) = tokio::sync::mpsc::unbounded_channel();
     let (leg_file_tx, leg_file_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut source_manager =
-        SourceManager::new(monitor_config, ndi_monitor, leg_failure_tx, leg_file_tx);
+    let mut source_manager = SourceManager::new(
+        monitor_config,
+        ndi_monitor,
+        std::sync::Arc::new(devices),
+        leg_failure_tx,
+        leg_file_tx,
+    );
     source_manager.scan(&configured);
 
     for source in source_manager.sources() {

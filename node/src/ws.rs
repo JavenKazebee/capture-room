@@ -106,6 +106,7 @@ pub fn spawn_emitter(state: Arc<AppState>) {
                         source_id: source.id().to_string(),
                         timecode: source.timecode(),
                         error: mgr.monitor_error(source.id()),
+                        link: mgr.link(source.as_ref()),
                     });
                 }
             }
