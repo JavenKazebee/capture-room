@@ -6,7 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::broadcast;
 use tracing::warn;
 
-use crate::api::types::WsEvent;
+use crate::api::types::{TransportState, WsEvent};
 use crate::state::AppState;
 
 /// Capacity of the broadcast channel.  Old messages are dropped when the
@@ -107,6 +107,24 @@ pub fn spawn_emitter(state: Arc<AppState>) {
                         timecode: source.timecode(),
                         error: mgr.monitor_error(source.id()),
                         link: mgr.link(source.as_ref()),
+                    });
+                }
+            }
+
+            // Channels: every tick while playing (the position moves), else
+            // once a second.
+            for source in mgr.sources() {
+                let Some(playout) = source.playout() else {
+                    continue;
+                };
+                let status = playout.status();
+                if status.state == TransportState::Playing || tick.is_multiple_of(10) {
+                    state.emit(&WsEvent::ChannelState {
+                        source_id: source.id().to_string(),
+                        status: crate::api::playout::status_dto(
+                            status,
+                            mgr.output_status(source.id()),
+                        ),
                     });
                 }
             }

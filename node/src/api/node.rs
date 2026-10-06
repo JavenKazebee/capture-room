@@ -77,6 +77,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/capacity/check", post(post_capacity_check))
         .route("/thumbnails/{source_id}", get(get_thumbnail))
         .route("/ws", get(ws_handler))
+        .merge(super::playout::router())
 }
 
 // ── /status ───────────────────────────────────────────────────────────────────
@@ -210,6 +211,18 @@ async fn validated(
         SourceConfig::Whip(cfg) => {
             crate::sources::whip::validate(cfg).map_err(bad)?;
             crate::sources::device::validate_audio(&cfg.audio, &devices).map_err(bad)?;
+        }
+        SourceConfig::Channel(cfg) => {
+            let others = db::configured_sources_list(&state.db).await?;
+            let others: Vec<_> = others
+                .iter()
+                .filter(|o| Some(o.id.as_str()) != id)
+                .filter_map(|o| match &o.config {
+                    SourceConfig::Channel(c) => Some((o.name.as_str(), c)),
+                    _ => None,
+                })
+                .collect();
+            crate::sources::channel::validate(cfg, &req.name, &others).map_err(bad)?;
         }
         _ => {}
     }

@@ -10,10 +10,11 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::api::types::{
-    ChannelLevelDto, ConfiguredSourceDto, LinkState, MonitorSettingsDto, PresetOutputInput,
-    RecordingSessionDto, RecordingStatus,
+    ChannelLevelDto, ConfiguredSourceDto, LinkState, MonitorSettingsDto, OutputConfig,
+    OutputStatusDto, PresetOutputInput, RecordingSessionDto, RecordingStatus,
 };
 use crate::pipeline::monitor::{MonitorPipeline, SourceFormat};
+use crate::pipeline::output::OutputLeg;
 use crate::pipeline::profile::RecordingProfile;
 use crate::pipeline::recording::{self, OnLegError, OnLegFile, RecordingLeg};
 
@@ -93,6 +94,14 @@ pub enum StopOutcome {
     NotFound,
 }
 
+/// A playout channel's running outputs.
+struct ChannelOutputs {
+    /// The channel name the outputs were started with (their default name).
+    name: String,
+    configs: Vec<OutputConfig>,
+    legs: Vec<Result<OutputLeg, String>>,
+}
+
 // ── SourceManager ─────────────────────────────────────────────────────────────
 
 /// Owns the sources, their monitor pipelines, and active recording sessions.
@@ -109,6 +118,9 @@ pub struct SourceManager {
     /// or the source goes away. A running monitor reports its own errors.
     start_errors: HashMap<String, String>,
     sessions: HashMap<String, ActiveSession>, // session_id → session
+    /// Playout channels' outputs, by source id: their config, and each
+    /// output's leg (or why it couldn't start).
+    outputs: HashMap<String, ChannelOutputs>,
     /// Sessions whose legs are draining. Lets a duplicate/retried
     /// stop join the in-flight result instead of reporting "already stopped".
     stopping: HashMap<String, StopResult>,
@@ -134,6 +146,7 @@ impl SourceManager {
             monitors: HashMap::new(),
             start_errors: HashMap::new(),
             sessions: HashMap::new(),
+            outputs: HashMap::new(),
             stopping: HashMap::new(),
             ndi_monitor,
             devices,
@@ -213,6 +226,17 @@ impl SourceManager {
                 .map(|s| Box::new(s) as Box<dyn InputSource>),
         );
 
+        // Outputs are left out of a channel's fingerprint, so a kept source
+        // has its old config: take the wanted outputs from the candidates.
+        let wanted_outputs: HashMap<String, (String, Vec<OutputConfig>)> = candidates
+            .iter()
+            .filter(|c| c.playout().is_some())
+            .map(|c| {
+                let name = c.display_name().to_string();
+                (c.id().to_string(), (name, c.outputs().to_vec()))
+            })
+            .collect();
+
         let mut old: HashMap<String, Box<dyn InputSource>> = self
             .sources
             .drain(..)
@@ -247,6 +271,9 @@ impl SourceManager {
         for id in &gone {
             self.start_errors.remove(id);
         }
+        for id in &added {
+            self.outputs.remove(id);
+        }
         for id in added {
             match self.start_monitor(&id) {
                 Ok(()) => {
@@ -260,8 +287,72 @@ impl SourceManager {
             }
         }
 
+        self.outputs.retain(|id, _| wanted_outputs.contains_key(id));
+        for (id, (name, configs)) in wanted_outputs {
+            self.reconcile_outputs(&id, &name, configs);
+        }
+
         info!(count = self.sources.len(), "source scan complete");
         teardowns
+    }
+
+    /// Start a channel's outputs if they changed or aren't running (a new
+    /// monitor), on its current monitor.
+    fn reconcile_outputs(&mut self, id: &str, name: &str, configs: Vec<OutputConfig>) {
+        if self
+            .outputs
+            .get(id)
+            .is_some_and(|o| o.configs == configs && o.name == name)
+        {
+            return;
+        }
+        // Stop the old ones first: an NDI name can only be sent once.
+        self.outputs.remove(id);
+        let Some(monitor) = self.monitors.get(id) else {
+            return;
+        };
+        let legs = configs
+            .iter()
+            .map(|config| {
+                OutputLeg::start(monitor, config, name).map_err(|e| {
+                    let error = format!("{e:#}");
+                    warn!(channel = %id, error = %error, "output failed to start");
+                    error
+                })
+            })
+            .collect();
+        self.outputs.insert(
+            id.to_string(),
+            ChannelOutputs {
+                name: name.to_string(),
+                configs,
+                legs,
+            },
+        );
+    }
+
+    /// A channel's outputs and whether each is sending.
+    pub fn output_status(&self, source_id: &str) -> Vec<OutputStatusDto> {
+        let Some(outputs) = self.outputs.get(source_id) else {
+            return Vec::new();
+        };
+        outputs
+            .legs
+            .iter()
+            .zip(&outputs.configs)
+            .map(|(leg, config)| match leg {
+                Ok(leg) => OutputStatusDto {
+                    label: leg.label().to_string(),
+                    error: leg.error(),
+                },
+                Err(e) => OutputStatusDto {
+                    label: match config {
+                        OutputConfig::Ndi { .. } => "NDI".into(),
+                    },
+                    error: Some(e.clone()),
+                },
+            })
+            .collect()
     }
 
     // ── Thumbnail / audio access ──────────────────────────────────────────────
@@ -498,6 +589,7 @@ impl SourceManager {
 
     /// Remove the monitor (and any active recordings) for a source.
     fn disconnect(&mut self, source_id: &str) -> Option<Teardown> {
+        self.outputs.remove(source_id);
         let pipeline = self.monitors.remove(source_id)?;
         let session_ids: Vec<String> = self
             .sessions

@@ -47,6 +47,7 @@ pub enum SourceType {
     Stream,
     Device,
     Whip,
+    Channel,
 }
 
 /// Whether a live source (stream, device, WHIP) is delivering frames. While
@@ -131,6 +132,7 @@ pub enum SourceConfig {
     Stream(StreamSourceConfig),
     Device(DeviceSourceConfig),
     Whip(WhipSourceConfig),
+    Channel(ChannelConfig),
 }
 
 /// A synthetic feed: a video pattern plus a test audio signal.
@@ -262,6 +264,182 @@ pub struct WhipSourceConfig {
     pub audio: AudioPlan,
     #[serde(default)]
     pub format: Option<LiveVideoFormat>,
+}
+
+/// A playout channel: clips played out at a fixed format, black and
+/// silence when nothing plays. Its program is a source like any other, so it
+/// can be monitored and recorded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct ChannelConfig {
+    pub format: LiveVideoFormat,
+    #[serde(default = "default_channel_audio")]
+    pub audio_channels: u32,
+    /// Where the program is sent.
+    #[serde(default)]
+    pub outputs: Vec<OutputConfig>,
+}
+
+fn default_channel_audio() -> u32 {
+    2
+}
+
+/// Where a channel's program is sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum OutputConfig {
+    /// An NDI sender, named `<node> (<ndi_name or channel name>)` on the
+    /// network.
+    Ndi {
+        #[serde(default)]
+        ndi_name: Option<String>,
+    },
+}
+
+/// What a channel does when a clip reaches its out point.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum ClipEnd {
+    /// Hold the last frame (with silence).
+    #[default]
+    Hold,
+    /// Go to black.
+    Black,
+    /// Play again from the in point.
+    Loop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum TransportState {
+    /// No clip: black and silence.
+    Idle,
+    /// A clip is loaded at its in point, showing its first frame.
+    Cued,
+    Playing,
+    Paused,
+    /// The clip reached its out point (holding its last frame, or black).
+    Ended,
+}
+
+/// A channel's transport, as served and in `channel.state` events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct ChannelStatusDto {
+    pub state: TransportState,
+    pub clip: Option<LoadedClipDto>,
+    /// Position in the file.
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub position_ms: Option<u64>,
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub duration_ms: Option<u64>,
+    /// Why the last clip stopped, if it failed.
+    pub error: Option<String>,
+    /// The channel's outputs, in config order.
+    pub outputs: Vec<OutputStatusDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct OutputStatusDto {
+    pub label: String,
+    /// Why the output isn't sending, if it isn't.
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct LoadedClipDto {
+    pub media_id: String,
+    pub name: String,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub in_ms: u64,
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub out_ms: Option<u64>,
+    pub end: ClipEnd,
+}
+
+/// Body for loading a clip onto a channel: it's cued at `in_ms`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct LoadClipRequest {
+    pub media_id: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub in_ms: Option<u64>,
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub out_ms: Option<u64>,
+    #[serde(default)]
+    pub end: ClipEnd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum TransportAction {
+    Play,
+    Pause,
+    /// Unload the clip: black and silence.
+    Stop,
+    /// Go to `position_ms` in the file.
+    Seek,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct TransportRequest {
+    pub action: TransportAction,
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub position_ms: Option<u64>,
+}
+
+// ── Media library ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "lowercase")]
+#[sqlx(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum MediaOrigin {
+    /// Added from the node's file browser.
+    Import,
+    /// Added from a recording session's files.
+    Recording,
+}
+
+/// A file in the node's media library.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct MediaItemDto {
+    pub id: String,
+    pub path: String,
+    pub name: String,
+    #[sqlx(json)]
+    pub info: MediaInfo,
+    pub origin: MediaOrigin,
+    pub session_id: Option<String>,
+    pub added_at: String,
+    /// The file is no longer on disk.
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub missing: bool,
+}
+
+/// Body for adding a file to the media library.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct AddMediaRequest {
+    pub path: String,
+    /// Defaults to the file name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The recording session the file is from.
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 fn device_audio() -> AudioPlan {
@@ -729,6 +907,15 @@ pub enum WsEvent {
     /// A finished session changed after it stopped: some of its files were deleted.
     #[serde(rename = "recording.updated")]
     RecordingUpdated { session: Box<RecordingSessionDto> },
+    /// A channel's transport: on every change, and ~10 Hz while playing.
+    #[serde(rename = "channel.state")]
+    ChannelState {
+        source_id: String,
+        status: ChannelStatusDto,
+    },
+    /// The media library changed.
+    #[serde(rename = "media.updated")]
+    MediaUpdated,
     #[serde(rename = "feed.status")]
     FeedStatus {
         source_id: String,

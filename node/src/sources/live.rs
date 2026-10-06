@@ -154,51 +154,13 @@ pub fn build_bin(input: LiveInput) -> Result<gst::Bin> {
     };
     bin.add(&main).context("add live source")?;
 
-    // ── Video ────────────────────────────────────────────────────────────────
-    let compositor = make_el("compositor", &format!("live-vsync-{id}"))?;
-    compositor.set_property_from_str("background", "black");
-    let out_vcaps = capsfilter(&format!("live-outvcaps-{id}"), initial_video_caps(format))?;
-    bin.add_many([&compositor, &out_vcaps])
-        .context("add live video output")?;
-    compositor
-        .link(&out_vcaps)
-        .context("link live video output")?;
-    add_ghost_pad(&bin, &out_vcaps, "video")?;
-    let video_format = Arc::new(Mutex::new(VideoFormat {
-        pre: pre_compositor_caps(&initial_video_caps(format)),
-        inputs: Vec::new(),
-        out: out_vcaps.downgrade(),
-    }));
-    let video = Inputs {
-        bin: bin.downgrade(),
-        id: id.to_string(),
-        aggregator: compositor.downgrade(),
-        kind: Kind::Video(video_format.clone()),
-    };
-
-    // ── Audio ────────────────────────────────────────────────────────────────
+    let (video, video_format) = video_output(&bin, id, initial_video_caps(format))?;
+    let compositor = video.aggregator.upgrade().context("compositor")?;
     let channels = match &audio {
         LiveAudio::Source { channels } | LiveAudio::Silence { channels } => *channels,
         LiveAudio::Element { channels, .. } => channels.len() as u32,
     };
-    let audio_caps = audio_caps(channels);
-    let mixer = make_el("audiomixer", &format!("live-amix-{id}"))?;
-    let out_acaps = capsfilter(&format!("live-acaps-{id}"), audio_caps.clone())?;
-    let silence = make_el("audiotestsrc", &format!("live-silence-{id}"))?;
-    silence.set_property("is-live", true);
-    silence.set_property_from_str("wave", "silence");
-    let silence_caps = capsfilter(&format!("live-scaps-{id}"), audio_caps.clone())?;
-    bin.add_many([&mixer, &out_acaps, &silence, &silence_caps])
-        .context("add live audio output")?;
-    gst::Element::link_many([&silence, &silence_caps, &mixer, &out_acaps])
-        .context("link live audio output")?;
-    add_ghost_pad(&bin, &out_acaps, "audio")?;
-    let audio_inputs = Inputs {
-        bin: bin.downgrade(),
-        id: id.to_string(),
-        aggregator: mixer.downgrade(),
-        kind: Kind::Audio(audio_caps, None),
-    };
+    let audio_inputs = audio_output(&bin, id, channels)?;
 
     // ── Inputs ───────────────────────────────────────────────────────────────
     watch_source(&source, tracker.clone(), format.copied(), move |lock| {
@@ -244,6 +206,59 @@ pub fn build_bin(input: LiveInput) -> Result<gst::Bin> {
     Ok(bin)
 }
 
+/// The bin's video output: a compositor over black, held to `caps`, on the
+/// `"video"` ghost pad. Inputs are added through the returned [`Inputs`].
+pub(crate) fn video_output(
+    bin: &gst::Bin,
+    id: &str,
+    caps: gst::Caps,
+) -> Result<(Inputs, Arc<Mutex<VideoFormat>>)> {
+    let compositor = make_el("compositor", &format!("live-vsync-{id}"))?;
+    compositor.set_property_from_str("background", "black");
+    let out_vcaps = capsfilter(&format!("live-outvcaps-{id}"), caps.clone())?;
+    bin.add_many([&compositor, &out_vcaps])
+        .context("add live video output")?;
+    compositor
+        .link(&out_vcaps)
+        .context("link live video output")?;
+    add_ghost_pad(bin, &out_vcaps, "video")?;
+    let format = Arc::new(Mutex::new(VideoFormat {
+        pre: pre_compositor_caps(&caps),
+        inputs: Vec::new(),
+        out: out_vcaps.downgrade(),
+    }));
+    let inputs = Inputs {
+        bin: bin.downgrade(),
+        id: id.to_string(),
+        aggregator: compositor.downgrade(),
+        kind: Kind::Video(format.clone()),
+    };
+    Ok((inputs, format))
+}
+
+/// The bin's audio output: a mixer over silence at 48 kHz F32 with
+/// `channels`, on the `"audio"` ghost pad.
+pub(crate) fn audio_output(bin: &gst::Bin, id: &str, channels: u32) -> Result<Inputs> {
+    let audio_caps = audio_caps(channels);
+    let mixer = make_el("audiomixer", &format!("live-amix-{id}"))?;
+    let out_acaps = capsfilter(&format!("live-acaps-{id}"), audio_caps.clone())?;
+    let silence = make_el("audiotestsrc", &format!("live-silence-{id}"))?;
+    silence.set_property("is-live", true);
+    silence.set_property_from_str("wave", "silence");
+    let silence_caps = capsfilter(&format!("live-scaps-{id}"), audio_caps.clone())?;
+    bin.add_many([&mixer, &out_acaps, &silence, &silence_caps])
+        .context("add live audio output")?;
+    gst::Element::link_many([&silence, &silence_caps, &mixer, &out_acaps])
+        .context("link live audio output")?;
+    add_ghost_pad(bin, &out_acaps, "audio")?;
+    Ok(Inputs {
+        bin: bin.downgrade(),
+        id: id.to_string(),
+        aggregator: mixer.downgrade(),
+        kind: Kind::Audio(audio_caps, None),
+    })
+}
+
 fn audio_caps(channels: u32) -> gst::Caps {
     gst::Caps::builder("audio/x-raw")
         .field("format", "F32LE")
@@ -255,7 +270,7 @@ fn audio_caps(channels: u32) -> gst::Caps {
 
 /// The video format inputs are converted to, and who has to know when it's
 /// locked.
-struct VideoFormat {
+pub(crate) struct VideoFormat {
     /// Caps for each input's converters (see [`pre_compositor_caps`]).
     pre: gst::Caps,
     /// The inputs' capsfilters.
@@ -264,7 +279,7 @@ struct VideoFormat {
 }
 
 impl VideoFormat {
-    fn lock(&mut self, lock: &gst::Caps) {
+    pub(crate) fn lock(&mut self, lock: &gst::Caps) {
         // Before the compositor, only what the converters can always
         // produce: stricter caps would reach fallbacksrc's black-frame
         // source, which then fails to negotiate.
@@ -289,7 +304,7 @@ enum Kind {
 /// Makes input chains into one of the bin's aggregators (the compositor or
 /// the mixer).
 #[derive(Clone)]
-struct Inputs {
+pub(crate) struct Inputs {
     bin: glib::WeakRef<gst::Bin>,
     id: String,
     aggregator: glib::WeakRef<gst::Element>,
@@ -297,19 +312,33 @@ struct Inputs {
 }
 
 /// One input chain, and the aggregator pad it feeds.
-struct Chain {
+pub(crate) struct Chain {
     elements: Vec<gst::Element>,
     pad: gst::Pad,
 }
 
 impl Chain {
-    fn sink(&self) -> Option<gst::Pad> {
+    pub(crate) fn sink(&self) -> Option<gst::Pad> {
         self.elements.first().and_then(|e| e.static_pad("sink"))
+    }
+
+    /// Put `head` (already in the bin and linked to [`Chain::sink`]) at the
+    /// front, so it's removed with the chain.
+    pub(crate) fn prepend(&mut self, head: gst::Element) {
+        self.elements.insert(0, head);
     }
 }
 
 impl Inputs {
-    fn audio_caps(&self) -> gst::Caps {
+    pub(crate) fn bin(&self) -> Option<gst::Bin> {
+        self.bin.upgrade()
+    }
+
+    pub(crate) fn aggregator(&self) -> Option<gst::Element> {
+        self.aggregator.upgrade()
+    }
+
+    pub(crate) fn audio_caps(&self) -> gst::Caps {
         match &self.kind {
             Kind::Audio(caps, _) => caps.clone(),
             Kind::Video(_) => gst::Caps::new_empty_simple("audio/x-raw"),
@@ -318,7 +347,7 @@ impl Inputs {
 
     /// Add a chain converting into the aggregator's format, named by `tag`
     /// (unique per bin).
-    fn add(&self, tag: &str) -> Result<Chain> {
+    pub(crate) fn add(&self, tag: &str) -> Result<Chain> {
         let bin = self.bin.upgrade().context("live bin gone")?;
         let aggregator = self.aggregator.upgrade().context("aggregator gone")?;
         let id = &self.id;
@@ -371,7 +400,7 @@ impl Inputs {
 
     /// Take `chain` out of the bin. On its own thread: it runs from a
     /// source's signal, whose thread the state changes could wait on.
-    fn remove(&self, chain: Chain) {
+    pub(crate) fn remove(&self, chain: Chain) {
         let (bin, aggregator) = (self.bin.clone(), self.aggregator.clone());
         std::thread::spawn(move || {
             for el in &chain.elements {
@@ -493,7 +522,7 @@ fn restart(src: gst::Element) {
 /// A small live black source at the bottom of `compositor`, so it keeps
 /// producing frames while a direct source has no pads. The compositor's own
 /// (black) background fills the rest of the frame.
-fn add_background(bin: &gst::Bin, id: &str, compositor: &gst::Element) -> Result<()> {
+pub(crate) fn add_background(bin: &gst::Bin, id: &str, compositor: &gst::Element) -> Result<()> {
     let src = make_el("videotestsrc", &format!("live-bg-{id}"))?;
     src.set_property("is-live", true);
     src.set_property_from_str("pattern", "black");
@@ -611,7 +640,7 @@ fn pre_compositor_caps(lock: &gst::Caps) -> gst::Caps {
 }
 
 /// Output caps for a source whose first video caps are `caps`.
-fn lock_caps(caps: &gst::CapsRef, format: Option<&LiveVideoFormat>) -> gst::Caps {
+pub(crate) fn lock_caps(caps: &gst::CapsRef, format: Option<&LiveVideoFormat>) -> gst::Caps {
     let s = caps.structure(0);
     let int = |name: &str| s.and_then(|s| s.get::<i32>(name).ok());
     let frac = |name: &str| s.and_then(|s| s.get::<gst::Fraction>(name).ok());

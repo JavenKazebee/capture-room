@@ -94,7 +94,17 @@ pub fn source_types() -> Vec<SourceTypeSupport> {
         SourceType::Whip,
         &["whipserversrc", "webrtcbin", "nicesrc", "decodebin3"],
     );
-    vec![stream, device, whip]
+    let channel = support(
+        SourceType::Channel,
+        &[
+            "compositor",
+            "audiomixer",
+            "uridecodebin",
+            "ndisinkcombiner",
+            "ndisink",
+        ],
+    );
+    vec![stream, device, whip, channel]
 }
 
 fn support(source_type: SourceType, elements: &[&str]) -> SourceTypeSupport {

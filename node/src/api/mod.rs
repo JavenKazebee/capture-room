@@ -1,5 +1,6 @@
 pub mod error;
 pub mod node;
+pub mod playout;
 pub mod types;
 
 use std::sync::Arc;

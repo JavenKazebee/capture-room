@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use gstreamer::{self as gst, prelude::*};
 
+pub mod channel;
 pub mod device;
 pub mod file;
 pub mod live;
@@ -13,7 +14,7 @@ pub mod test;
 pub mod whip;
 
 use crate::api::types::{
-    ConfiguredSourceDto, LinkState, SourceCapabilitiesDto, SourceConfig, SourceType,
+    ConfiguredSourceDto, LinkState, OutputConfig, SourceCapabilitiesDto, SourceConfig, SourceType,
 };
 
 /// Every input source implements this trait.
@@ -47,6 +48,16 @@ pub trait InputSource: Send + Sync {
     fn link(&self) -> Option<LinkState> {
         None
     }
+
+    /// A playout channel's transport.
+    fn playout(&self) -> Option<&Arc<channel::Playout>> {
+        None
+    }
+
+    /// Where a playout channel's program is sent.
+    fn outputs(&self) -> &[OutputConfig] {
+        &[]
+    }
 }
 
 /// The source a stored config describes. `devices` resolves capture and
@@ -71,6 +82,7 @@ pub fn configured(
             cfg.clone(),
             devices.clone(),
         )),
+        SourceConfig::Channel(cfg) => Box::new(channel::ChannelSource::new(id, name, cfg.clone())),
         SourceConfig::Whip(cfg) => Box::new(whip::WhipSource::new(
             id,
             name,

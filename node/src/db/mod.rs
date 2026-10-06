@@ -4,8 +4,8 @@ use std::str::FromStr;
 use tracing::info;
 
 use crate::api::types::{
-    BenchmarkRunDto, BenchmarkStatus, ConfiguredSourceDto, MonitorSettingsDto, PresetDto,
-    PresetOutputDto, RecordingSessionDto, RecordingStatus,
+    BenchmarkRunDto, BenchmarkStatus, ConfiguredSourceDto, MediaItemDto, MonitorSettingsDto,
+    PresetDto, PresetOutputDto, RecordingSessionDto, RecordingStatus,
 };
 
 pub async fn init(db_path: &str) -> Result<SqlitePool> {
@@ -420,6 +420,51 @@ pub async fn configured_source_update(
 
 pub async fn configured_source_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
     let res = sqlx::query("DELETE FROM configured_sources WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+// ── media ─────────────────────────────────────────────────────────────────────
+
+const MEDIA_SELECT: &str = "SELECT id, path, name, info, origin, session_id, added_at FROM media";
+
+pub async fn media_list(pool: &SqlitePool) -> Result<Vec<MediaItemDto>> {
+    let rows = sqlx::query_as::<_, MediaItemDto>(&format!("{MEDIA_SELECT} ORDER BY name"))
+        .fetch_all(pool)
+        .await?;
+    Ok(rows)
+}
+
+pub async fn media_get(pool: &SqlitePool, id: &str) -> Result<Option<MediaItemDto>> {
+    let row = sqlx::query_as::<_, MediaItemDto>(&format!("{MEDIA_SELECT} WHERE id = ?"))
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row)
+}
+
+/// Add `item`; false if its path is already in the library.
+pub async fn media_insert(pool: &SqlitePool, item: &MediaItemDto) -> Result<bool> {
+    let res = sqlx::query(
+        "INSERT INTO media (id, path, name, info, origin, session_id, added_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO NOTHING",
+    )
+    .bind(&item.id)
+    .bind(&item.path)
+    .bind(&item.name)
+    .bind(Json(&item.info))
+    .bind(item.origin)
+    .bind(&item.session_id)
+    .bind(&item.added_at)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+pub async fn media_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
+    let res = sqlx::query("DELETE FROM media WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await?;
