@@ -22,6 +22,10 @@ pub struct AppState {
     pub ws_tx: broadcast::Sender<String>,
     /// The benchmark running on this node, if any.
     pub benchmark: std::sync::Mutex<Option<crate::benchmark::Running>>,
+    /// What this node's pipelines run on.
+    pub clock: Arc<crate::clock::NodeClock>,
+    /// The UDP port this instance serves its clock on while a controller.
+    pub clock_port: u16,
 
     // ── Controller: present only while promoted ────────────────────────────
     pub controller: RwLock<Option<Controller>>,
@@ -38,6 +42,12 @@ impl AppState {
 
     pub async fn is_controller(&self) -> bool {
         self.controller.read().await.is_some()
+    }
+
+    /// Where this node's clock stands.
+    pub async fn clock_status(&self) -> crate::api::types::ClockStatusDto {
+        let stale = self.source_manager.read().await.stale_sources();
+        self.clock.status(stale)
     }
 
     /// Emit a local event on both the node-only and the merged channel.

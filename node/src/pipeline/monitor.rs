@@ -21,6 +21,8 @@ use super::{capsfilter, handle_level_message, link_tee, make_el, AudioMeter, Thu
 /// stall the source or the other recordings.
 pub struct MonitorPipeline {
     pipeline: gst::Pipeline,
+    /// The clock it was built on (the node clock at the time).
+    clock: gst::Clock,
     pub thumbnail: ThumbnailStore,
     pub audio_meter: AudioMeter,
     pub video: StreamProducer,
@@ -69,17 +71,22 @@ pub struct SourceFormat {
 impl MonitorPipeline {
     /// Build and start an always-on monitor pipeline for `source`.
     ///
-    /// The pipeline runs immediately: thumbnail frames are produced at the
-    /// configured rate and audio levels are metered continuously.
-    pub fn new(source: &dyn InputSource, config: &MonitorSettingsDto) -> Result<Self> {
+    /// The pipeline runs immediately on `clock`: thumbnail frames are
+    /// produced at the configured rate and audio levels are metered
+    /// continuously.
+    pub fn new(
+        source: &dyn InputSource,
+        config: &MonitorSettingsDto,
+        clock: &gst::Clock,
+    ) -> Result<Self> {
         let thumbnail = ThumbnailStore::default();
         let audio_meter = AudioMeter::default();
 
         let pipeline = gst::Pipeline::new();
-        // Always the system clock: a device in the source bin (an audio
+        // Always the node clock: a device in the source bin (an audio
         // interface) would otherwise provide it, and recordings take the
         // monitor's clock.
-        pipeline.use_clock(Some(&gst::SystemClock::obtain()));
+        pipeline.use_clock(Some(clock));
         let src_bin = source.build_bin()?;
         pipeline.add(&src_bin).context("add source bin")?;
 
@@ -144,6 +151,7 @@ impl MonitorPipeline {
 
         Ok(Self {
             pipeline,
+            clock: clock.clone(),
             thumbnail,
             audio_meter,
             video,
@@ -185,6 +193,11 @@ impl MonitorPipeline {
         set_state(&self.pipeline, gst::State::Null)
             .map(|_| ())
             .map_err(|e| anyhow!("set NULL: {e:?}"))
+    }
+
+    /// The clock the monitor was built on.
+    pub fn clock(&self) -> &gst::Clock {
+        &self.clock
     }
 
     /// The clock and base time a consumer pipeline should share, so buffer

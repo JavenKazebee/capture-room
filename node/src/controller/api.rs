@@ -12,11 +12,11 @@ use axum::{
     Json, Router,
 };
 
-use super::{discovery, forward, Controller, CONFIG_KEY};
+use super::{clock_mode, discovery, forward, Controller, CLOCK_MODE_KEY, CONFIG_KEY};
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
-    AddNodeRequest, ControllerToggleRequest, NodeDto, PresetCreateRequest, PresetDto,
-    PresetOutputDto, PresetOutputInput,
+    AddNodeRequest, ClockMode, ControllerClockDto, ControllerToggleRequest, NodeDto,
+    PresetCreateRequest, PresetDto, PresetOutputDto, PresetOutputInput,
 };
 use crate::db;
 use crate::pipeline::profile::{plan_legs, unknown_token};
@@ -27,6 +27,10 @@ use crate::ws;
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/v1/controller", put(put_controller))
+        .route(
+            "/api/v1/controller/clock",
+            get(get_controller_clock).put(put_controller_clock),
+        )
         .route("/api/v1/nodes", get(get_nodes).post(post_node))
         .route("/api/v1/nodes/{id}", delete(delete_node))
         .route("/api/v1/nodes/{id}/{*path}", any(forward::forward))
@@ -55,6 +59,42 @@ async fn put_controller(
     Ok(Json(req))
 }
 
+// ── /api/v1/controller/clock ─────────────────────────────────────────────────
+
+async fn controller_clock(state: &AppState) -> ApiResult<ControllerClockDto> {
+    let serving = match state.controller.read().await.as_ref() {
+        Some(c) => c.serves_clock(),
+        None => return Err(NOT_CONTROLLER),
+    };
+    Ok(ControllerClockDto {
+        mode: clock_mode(state).await?,
+        port: state.clock_port,
+        serving,
+    })
+}
+
+async fn get_controller_clock(
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<Json<ControllerClockDto>> {
+    Ok(Json(controller_clock(&state).await?))
+}
+
+/// Change how this controller's nodes keep time. Nodes get the new mode with
+/// their next health check.
+async fn put_controller_clock(
+    State(state): State<Arc<AppState>>,
+    Json(mode): Json<ClockMode>,
+) -> ApiResult<Json<ControllerClockDto>> {
+    if !state.is_controller().await {
+        return Err(NOT_CONTROLLER);
+    }
+    let json = serde_json::to_string(&mode).map_err(anyhow::Error::from)?;
+    db::config_set(&state.db, CLOCK_MODE_KEY, &json).await?;
+    state.clock.set_own_mode(Some(mode));
+    state.emit(&crate::api::types::WsEvent::NodeUpdated);
+    Ok(Json(controller_clock(&state).await?))
+}
+
 // ── /api/v1/nodes ────────────────────────────────────────────────────────────
 
 async fn get_nodes(State(state): State<Arc<AppState>>) -> Json<Vec<NodeDto>> {
@@ -69,6 +109,7 @@ async fn get_nodes(State(state): State<Arc<AppState>>) -> Json<Vec<NodeDto>> {
         manual: false,
         encoders: crate::pipeline::profile::available_encoders(),
         source_types: crate::plugins::source_types(),
+        clock: Some(state.clock_status().await),
     }];
 
     if let Some(c) = state.controller.read().await.as_ref() {

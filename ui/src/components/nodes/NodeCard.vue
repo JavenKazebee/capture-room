@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, type ComponentPublicInstance } from 'vue'
 import { useRouter } from 'vue-router'
-import { Check, Pencil, Radio, Trash2, Video, X } from '@lucide/vue'
+import { Check, Clock, Pencil, Radio, Trash2, Video, X } from '@lucide/vue'
+import { clockSummary } from '@/lib/clock'
 import { formatUptime } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
@@ -42,6 +43,8 @@ const stats = computed(() => ({
   failed: nodeSources.value.filter((s) => s.error).length,
   recording: recordings.activeSessions.filter((s) => s.node_id === props.node.id).length,
 }))
+
+const clock = computed(() => clockSummary(props.node.clock))
 
 /** `undefined` while loading, `null` if it failed. */
 const volumes = computed(() => storage.volumes.get(props.node.id))
@@ -134,6 +137,18 @@ async function saveRename() {
         <template v-else>
           <span>·</span><span class="text-destructive shrink-0">Unreachable</span>
         </template>
+      </div>
+      <div class="pl-4 flex items-center gap-1.5 h-5 text-xs text-muted-foreground min-w-0" :title="node.healthy ? clock.title : undefined">
+        <Clock class="size-3 shrink-0" />
+        <template v-if="node.healthy">
+          <span class="truncate">{{ clock.label }}</span>
+          <template v-if="clock.detail">
+            <span>·</span>
+            <StatusDot v-if="clock.status !== 'off'" :status="clock.status" />
+            <span class="num shrink-0" :class="{ 'text-warning': clock.status === 'warn', 'text-destructive': clock.status === 'error' }">{{ clock.detail }}</span>
+          </template>
+        </template>
+        <span v-else>—</span>
       </div>
     </header>
 

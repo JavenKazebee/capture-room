@@ -1,6 +1,7 @@
 mod api;
 mod benchmark;
 mod capacity;
+mod clock;
 mod controller;
 mod db;
 mod pipeline;
@@ -33,6 +34,10 @@ struct Args {
 
     #[arg(long, default_value_t = 7700)]
     port: u16,
+
+    /// UDP port to serve the clock on while a controller [default: port + 100]
+    #[arg(long)]
+    clock_port: Option<u16>,
 
     #[arg(long, default_value = "capture-room.db")]
     db: String,
@@ -90,10 +95,12 @@ async fn main() -> Result<()> {
     let devices = tokio::task::spawn_blocking(sources::device::LocalDevices::start)
         .await
         .expect("device monitor thread panicked");
+    let node_clock = Arc::new(clock::NodeClock::new());
     let (leg_failure_tx, leg_failure_rx) = tokio::sync::mpsc::unbounded_channel();
     let (leg_file_tx, leg_file_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut source_manager = SourceManager::new(
         monitor_config,
+        node_clock.clock(),
         ndi_monitor,
         std::sync::Arc::new(devices),
         leg_failure_tx,
@@ -122,6 +129,8 @@ async fn main() -> Result<()> {
         node_tx,
         ws_tx,
         benchmark: std::sync::Mutex::new(None),
+        clock: node_clock,
+        clock_port: args.clock_port.unwrap_or(args.port.saturating_add(100)),
         controller: RwLock::new(None),
         http: reqwest::Client::new(),
         node_router: std::sync::OnceLock::new(),
@@ -130,6 +139,7 @@ async fn main() -> Result<()> {
 
     ws::spawn_emitter(Arc::clone(&state));
     session::spawn_monitor_recovery(Arc::clone(&state));
+    session::spawn_clock_follower(Arc::clone(&state));
     session::spawn_leg_failure_reporter(Arc::clone(&state), leg_failure_rx);
     session::spawn_leg_file_recorder(Arc::clone(&state), leg_file_rx);
 
@@ -149,7 +159,13 @@ async fn main() -> Result<()> {
     let router = api::build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!(addr = %addr, "listening");
-    axum::serve(listener, router).await?;
+    // Connect info: a controller's clock is served from the address it
+    // claims a node from.
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }

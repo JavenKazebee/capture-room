@@ -127,7 +127,12 @@ mod tests {
             },
             Arc::new(LocalDevices::start()),
         );
-        let mon = MonitorPipeline::new(&src, &MonitorSettingsDto::default()).unwrap();
+        let mon = MonitorPipeline::new(
+            &src,
+            &MonitorSettingsDto::default(),
+            &gst::SystemClock::obtain(),
+        )
+        .unwrap();
         let publish = || {
             let p = gst::parse::launch(&format!(
                 "videotestsrc is-live=1 pattern=ball ! video/x-raw,width=640,height=360,framerate=30/1 ! queue ! ws. \

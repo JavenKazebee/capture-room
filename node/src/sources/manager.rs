@@ -5,13 +5,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 use chrono::Utc;
+use gstreamer as gst;
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::api::types::{
     ChannelLevelDto, ConfiguredSourceDto, LinkState, MonitorSettingsDto, OutputConfig,
-    OutputStatusDto, PresetOutputInput, RecordingSessionDto, RecordingStatus,
+    OutputStatusDto, PresetOutputInput, RecordingSessionDto, RecordingStatus, TransportState,
 };
 use crate::pipeline::monitor::{MonitorPipeline, SourceFormat};
 use crate::pipeline::output::OutputLeg;
@@ -112,6 +113,8 @@ struct ChannelOutputs {
 /// a recording to EOS) is handed back as a [`StopJob`] or [`Teardown`].
 pub struct SourceManager {
     config: MonitorSettingsDto,
+    /// The node clock: new monitors run on it.
+    clock: gst::Clock,
     sources: Vec<Box<dyn InputSource>>,
     monitors: HashMap<String, Arc<MonitorPipeline>>,
     /// Why a source's monitor couldn't be started, until a later start works
@@ -135,6 +138,7 @@ pub struct SourceManager {
 impl SourceManager {
     pub fn new(
         config: MonitorSettingsDto,
+        clock: gst::Clock,
         ndi_monitor: NdiMonitor,
         devices: Arc<LocalDevices>,
         leg_failures: mpsc::UnboundedSender<LegFailure>,
@@ -142,6 +146,7 @@ impl SourceManager {
     ) -> Self {
         Self {
             config,
+            clock,
             sources: Vec::new(),
             monitors: HashMap::new(),
             start_errors: HashMap::new(),
@@ -200,9 +205,43 @@ impl SourceManager {
     }
 
     /// Whether any source lacks a healthy monitor — it failed, or never
-    /// started — and is waiting for a rescan to (re)start it.
+    /// started — or is idle on an old clock, and is waiting for a rescan to
+    /// (re)start it.
     pub fn needs_rescan(&self) -> bool {
-        self.sources.iter().any(|s| !self.is_healthy(s.id()))
+        self.sources
+            .iter()
+            .any(|s| !self.is_healthy(s.id()) || self.should_migrate(s.as_ref()))
+    }
+
+    // ── Clock ─────────────────────────────────────────────────────────────────
+
+    /// The node clock changed: monitors started from now on use `clock`, and
+    /// running ones move to it as they become idle (see [`Self::scan`]).
+    pub fn set_clock(&mut self, clock: gst::Clock) {
+        self.clock = clock;
+    }
+
+    /// Sources whose monitors still run on an old clock.
+    pub fn stale_sources(&self) -> u32 {
+        self.monitors
+            .values()
+            .filter(|m| m.clock() != &self.clock)
+            .count() as u32
+    }
+
+    /// Whether `source`'s monitor is on an old clock and can be rebuilt now:
+    /// nothing is recording it and, for a channel, nothing is playing.
+    fn should_migrate(&self, source: &dyn InputSource) -> bool {
+        let id = source.id();
+        let stale = self
+            .monitors
+            .get(id)
+            .is_some_and(|m| m.clock() != &self.clock);
+        let recording = self.sessions.values().any(|s| s.dto.source_id == id);
+        let playing = source
+            .playout()
+            .is_some_and(|p| p.status().state != TransportState::Idle);
+        stale && !recording && !playing
     }
 
     // ── Scan ──────────────────────────────────────────────────────────────────
@@ -210,7 +249,7 @@ impl SourceManager {
     /// Rebuild the source list from configured sources and the NDI sources currently
     /// on the network. A source whose id and fingerprint are unchanged is kept
     /// as-is, monitor and recordings included — unless its monitor has failed
-    /// or never started. Removed, changed or failed sources are torn down
+    /// or never started, or is idle on an old clock. Removed, changed or failed sources are torn down
     /// (returned for the caller to run); everything else gets a fresh monitor.
     /// Candidates are only descriptions, so a scan that changes nothing builds
     /// no GStreamer elements.
@@ -253,7 +292,8 @@ impl SourceManager {
             match old.remove(&id) {
                 Some(existing)
                     if existing.fingerprint() == candidate.fingerprint()
-                        && self.is_healthy(&id) =>
+                        && self.is_healthy(&id)
+                        && !self.should_migrate(existing.as_ref()) =>
                 {
                     self.sources.push(existing);
                     continue;
@@ -567,7 +607,7 @@ impl SourceManager {
         let source = self
             .get_source(source_id)
             .ok_or_else(|| anyhow::anyhow!("source {source_id} not found"))?;
-        let pipeline = Arc::new(MonitorPipeline::new(source, &self.config)?);
+        let pipeline = Arc::new(MonitorPipeline::new(source, &self.config, &self.clock)?);
         self.monitors.insert(source_id.to_string(), pipeline);
         info!(source = source_id, "monitor started");
         Ok(())

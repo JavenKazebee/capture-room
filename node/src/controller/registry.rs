@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::api::types::{NodeDto, NodeStatus, SourceTypeSupport};
+use crate::api::types::{ClockStatusDto, NodeDto, NodeStatus, SourceTypeSupport};
 
 #[derive(Clone)]
 pub struct NodeEntry {
@@ -21,6 +21,8 @@ pub struct NodeEntry {
     pub encoders: Vec<String>,
     /// See `NodeStatus::source_types`.
     pub source_types: Vec<SourceTypeSupport>,
+    /// See `NodeStatus::clock`.
+    pub clock: Option<ClockStatusDto>,
     /// Stops this node's WS relay. Cancelled when the entry is removed, so a
     /// node that is removed and re-added never ends up with two relays.
     pub relay: CancellationToken,
@@ -39,6 +41,7 @@ impl From<&NodeEntry> for NodeDto {
             manual: n.manual,
             encoders: n.encoders.clone(),
             source_types: n.source_types.clone(),
+            clock: n.clock.clone(),
         }
     }
 }
@@ -83,13 +86,22 @@ impl NodeRegistry {
         self.entries.get(id).map(|n| n.url.clone())
     }
 
-    /// Record a successful health check. Returns `true` if the node was
-    /// unhealthy until now.
-    pub fn record_success(&mut self, status: &NodeStatus) -> bool {
+    /// Record a successful health check. Returns whether the node was
+    /// unhealthy until now, and whether its clock status changed.
+    pub fn record_success(&mut self, status: &NodeStatus) -> (bool, bool) {
         let Some(e) = self.entries.get_mut(&status.id) else {
-            return false;
+            return (false, false);
         };
         let recovered = !e.healthy;
+        // The delay wobbles with every exchange; only state changes count.
+        let state_of = |c: &Option<ClockStatusDto>| {
+            c.clone().map(|c| ClockStatusDto {
+                delay_us: None,
+                ..c
+            })
+        };
+        let clock_changed = state_of(&e.clock) != state_of(&status.clock);
+        e.clock = status.clock.clone();
         e.healthy = true;
         e.fail_count = 0;
         e.name = status.name.clone();
@@ -97,7 +109,7 @@ impl NodeRegistry {
         e.version = status.version.clone();
         e.encoders = status.encoders.clone();
         e.source_types = status.source_types.clone();
-        recovered
+        (recovered, clock_changed)
     }
 
     /// Record a failed health check. Returns the new consecutive failure count

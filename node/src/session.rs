@@ -147,6 +147,29 @@ pub fn spawn_monitor_recovery(state: Arc<AppState>) {
     });
 }
 
+/// Move monitors onto the node clock when it changes. Idle ones are rebuilt
+/// now; busy ones (recording, playing out) are left for the monitor recovery
+/// loop to rebuild once they're idle.
+pub fn spawn_clock_follower(state: Arc<AppState>) {
+    let mut changed = state.clock.subscribe();
+    tokio::spawn(async move {
+        while changed.changed().await.is_ok() {
+            let rescan = {
+                let mut mgr = state.source_manager.write().await;
+                mgr.set_clock(state.clock.clock());
+                mgr.needs_rescan()
+            };
+            if rescan {
+                info!("moving idle monitors to the new clock");
+                if let Err(e) = rebuild_sources(&state).await {
+                    error!(error = %e, "rescan for the new clock");
+                }
+            }
+            state.emit(&WsEvent::NodeUpdated);
+        }
+    });
+}
+
 /// Report recording legs that fail mid-recording as they happen, rather than
 /// only when the session is stopped. The session's other legs keep recording;
 /// once every leg has failed nothing is being recorded, so the session is

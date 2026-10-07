@@ -3,14 +3,17 @@ import { computed, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { AlertTriangle, RotateCcw } from '@lucide/vue'
-import { nodeApi } from '@/composables/useApi'
+import { api, nodeApi } from '@/composables/useApi'
 import { usePreferences } from '@/composables/usePreferences'
 import { formatUptime } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
+import type { ClockMode } from '@/types/generated/ClockMode'
+import type { ControllerClockDto } from '@/types/generated/ControllerClockDto'
 import type { MonitorSettingsDto } from '@/types/generated/MonitorSettingsDto'
 import type { NodeSettingsDto } from '@/types/generated/NodeSettingsDto'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import OptionSelect from '@/components/OptionSelect.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
@@ -138,6 +141,43 @@ const meterRates = computed(() =>
   withValue([50, 100, 200, 500].map((v) => ({ value: v, label: msLabel(v) })), draft.value?.level_interval_ms, msLabel),
 )
 
+// ── Clock sync (controllers) ─────────────────────────────────────────────────
+
+/** `null` until loaded, or while this instance isn't a controller. */
+const clockSettings = ref<ControllerClockDto | null>(null)
+const ptpDomain = ref(0)
+const savingClock = ref(false)
+
+async function loadClock() {
+  clockSettings.value = nodes.isController ? await api<ControllerClockDto>('/controller/clock').catch(() => null) : null
+  if (clockSettings.value?.mode.kind === 'ptp') ptpDomain.value = clockSettings.value.mode.domain
+}
+watch(() => nodes.nodes, loadClock, { immediate: true })
+
+async function setClockMode(mode: ClockMode) {
+  savingClock.value = true
+  try {
+    clockSettings.value = await api<ControllerClockDto>('/controller/clock', { method: 'PUT', body: mode })
+    toast.success('Clock mode changed; nodes switch once the new clock syncs')
+  } catch (e) {
+    notifyError("Couldn't change the clock mode", e)
+  } finally {
+    savingClock.value = false
+  }
+}
+
+function onClockKind(kind: unknown) {
+  if (kind === 'controller') setClockMode({ kind: 'controller' })
+  else if (kind === 'ptp') setClockMode({ kind: 'ptp', domain: ptpDomain.value })
+}
+
+function commitDomain() {
+  const domain = Math.min(127, Math.max(0, Math.round(Number(ptpDomain.value) || 0)))
+  ptpDomain.value = domain
+  const mode = clockSettings.value?.mode
+  if (mode?.kind === 'ptp' && mode.domain !== domain) setClockMode({ kind: 'ptp', domain })
+}
+
 // ── About ─────────────────────────────────────────────────────────────────────
 
 const selfNode = computed(() => nodes.nodes.find((n) => n.is_self))
@@ -244,6 +284,65 @@ const about = computed(() => [
           <Button size="sm" class="h-7 w-20 text-xs" :disabled="(!dirty && !drifted.length) || saving" @click="apply">
             {{ saving ? 'Applying…' : 'Apply' }}
           </Button>
+        </div>
+      </div>
+    </section>
+
+    <section v-if="clockSettings" class="space-y-2">
+      <div>
+        <h2 class="text-base font-semibold tracking-tight">Clock sync</h2>
+        <p class="text-xs text-muted-foreground">
+          What this controller's nodes run on, so their timestamps agree. Each node shows its sync on the Nodes page.
+        </p>
+      </div>
+      <div class="rounded-lg border border-border bg-card overflow-hidden">
+        <div class="divide-y divide-border">
+          <div class="flex items-center justify-between gap-4 px-4 py-3">
+            <div>
+              <div class="text-sm">Clock master</div>
+              <div class="text-xs text-muted-foreground">
+                This controller's clock needs no setup. PTP follows a grandmaster already on the network
+                (e.g. a Dante or AES67 system) and is tighter, but needs the PTP helper's permissions on each node.
+              </div>
+            </div>
+            <ToggleGroup
+              :model-value="clockSettings.mode.kind"
+              type="single"
+              variant="segmented"
+              :disabled="savingClock"
+              @update:model-value="onClockKind"
+            >
+              <ToggleGroupItem value="controller" class="px-2.5">This controller</ToggleGroupItem>
+              <ToggleGroupItem value="ptp" class="px-2.5">PTP</ToggleGroupItem>
+            </ToggleGroup>
+          </div>
+          <div v-if="clockSettings.mode.kind === 'ptp'" class="flex items-center justify-between gap-4 px-4 py-3">
+            <div>
+              <div class="text-sm">PTP domain</div>
+              <div class="text-xs text-muted-foreground">The grandmaster's domain number, 0–127. Dante and AES67 usually use 0.</div>
+            </div>
+            <Input
+              v-model.number="ptpDomain"
+              type="number"
+              min="0"
+              max="127"
+              class="w-20 h-8 shrink-0 num"
+              :disabled="savingClock"
+              @blur="commitDomain"
+              @keydown.enter="commitDomain"
+            />
+          </div>
+        </div>
+        <div class="flex items-center gap-3 px-4 py-2.5 border-t border-border bg-muted/30">
+          <p class="flex-1 min-w-0 truncate text-xs">
+            <span v-if="!clockSettings.serving" class="inline-flex items-center gap-1.5 text-warning">
+              <AlertTriangle class="size-3.5 shrink-0" />
+              Can't serve the clock on UDP port <span class="num">{{ clockSettings.port }}</span>; is another program using it?
+            </span>
+            <span v-else class="text-muted-foreground">
+              Clock served on UDP port <span class="num">{{ clockSettings.port }}</span>. Nodes need to reach it through their firewalls.
+            </span>
+          </p>
         </div>
       </div>
     </section>

@@ -180,7 +180,12 @@ mod tests {
                 outputs: vec![],
             },
         );
-        let mon = MonitorPipeline::new(&channel, &MonitorSettingsDto::default()).unwrap();
+        let mon = MonitorPipeline::new(
+            &channel,
+            &MonitorSettingsDto::default(),
+            &gst::SystemClock::obtain(),
+        )
+        .unwrap();
         let leg = OutputLeg::start(
             &mon,
             &OutputConfig::Ndi {

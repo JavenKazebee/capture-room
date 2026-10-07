@@ -4,7 +4,7 @@ Active sequencing of work, decisions, and rationale. This complements
 [ARCHITECTURE.md](ARCHITECTURE.md) (the design spec) — when the two disagree on
 *order*, this file wins; ARCHITECTURE.md remains the source of truth for *design*.
 
-_Last updated: 2026-10-06_
+_Last updated: 2026-10-07_
 
 ---
 
@@ -19,9 +19,11 @@ _Last updated: 2026-10-06_
 7. ✅ **Benchmark + capacity estimator** (with storage headroom)
 8. ✅ **Recordings view** (+ browser preview)
 9. **Playback** — 🚧 milestone 1 shipped (one clip on an NDI channel); gapless playlists next
-10. **Clock sync across nodes** — prerequisite for multi-angle replay
-11. **Instant replay**
-12. **Follow-on**, in rough priority order (see below)
+10. **Clock sync across nodes** — 🚧 shared node clock shipped (controller's clock or
+    PTP); synchronized start next. Prerequisite for multi-angle replay
+11. **Setup page** — per-node permission and system checks, with shortcuts to fix them
+12. **Instant replay**
+13. **Follow-on**, in rough priority order (see below)
 
 Rationale for front-loading 1–2 ahead of NDI: a configurable TestSource plus the
 Sources view gives a real authoring/verification surface, and live monitoring forces
@@ -126,15 +128,42 @@ A full playout system — capture in reverse. Design in ARCHITECTURE.md (Playbac
 
 ## 10. Clock sync across nodes
 
-Design sketch in ARCHITECTURE.md (Timecode › Clock sync).
+Design in ARCHITECTURE.md (Timecode › Clock sync).
 
-- Nodes report their clock offset (NTP, or PTP where frame accuracy matters); the UI
-  warns when it's too large.
-- Network-synced GStreamer clock; frames stamped with wall-clock capture time.
-- **Synchronized start:** a start command can carry a wall-clock time, so bulk Record
-  across machines produces files that line up.
+- ✅ **Shared node clock (2026-10-07).** Every pipeline runs on the node clock. A
+  controller serves its clock (UDP 7800 by default) and claims its nodes with every
+  health check; nodes follow it (GStreamer net clock, tens of µs on a wired LAN) or, in
+  PTP mode, a PTP grandmaster. First controller wins; busy sources switch once idle.
+  Clock status on each node card; mode in Settings.
+- **Synchronized start:** a start command carries a time on the shared clock, so bulk
+  Record across machines produces files that line up to the frame.
+- Frames stamped with capture time on the shared clock (and a clock ↔ UTC mapping from
+  the controller for wall-clock time).
+- PTP is untested against a real grandmaster: try it on ACC's Dante network, and check
+  the helper's permissions on macOS and Windows builds.
 
-## 11. Instant replay
+## 11. Setup page
+
+Per-node permission and system checks in one place, so it's obvious why a feature
+won't work on a machine and how to fix it. Design in ARCHITECTURE.md (Deployment ›
+Setup checks).
+
+- **Checked live, not recorded:** the OS is the source of truth (permissions get
+  revoked, machines reinstalled), so each check reads the real state: ok, missing or
+  unknown.
+- **Per node, rolled up on the controller:** each node runs its own checks; the Nodes
+  page badges any node with a problem.
+- **Shortcuts help grant; they can't grant.** A button opening the right System
+  Settings pane (macOS, only when the browser is on that machine), otherwise a command
+  to copy (`setcap …`, `New-NetFirewallRule …`). The page says which app holds a macOS
+  permission (Terminal when run from a shell).
+- **Reachability tested from outside:** a node can't see its own firewall, so the
+  controller probes each node's HTTP, clock and WHIP ports.
+- **Each feature adds its own checks.** First set: macOS Screen Recording, Camera and
+  Microphone; NDI Runtime loads; PTP helper capabilities (Linux); clock / API / WHIP
+  ports reachable from the controller; storage writable.
+
+## 12. Instant replay
 
 Builds on playback (#9) and clock sync (#10). Design in ARCHITECTURE.md (Instant Replay).
 
@@ -147,7 +176,7 @@ Builds on playback (#9) and clock sync (#10). Design in ARCHITECTURE.md (Instant
 - Replay buffers count against capacity; extend the benchmark to cover them and
   playout channels.
 
-## 12. Follow-on
+## 13. Follow-on
 
 Roughly in priority order.
 

@@ -249,6 +249,18 @@ impl Lanes {
         }
     }
 
+    /// The program's clock, which a player has to share for timestamps to
+    /// map between them. The system clock until the program runs.
+    fn clock(&self) -> gst::Clock {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .video_in
+            .as_ref()
+            .and_then(Inputs::bin)
+            .and_then(|bin| bin.clock())
+            .unwrap_or_else(gst::SystemClock::obtain)
+    }
+
     /// Add lanes for a clip (replacing any).
     fn open(&self, audio: bool) -> Result<()> {
         let mut inner = self.inner.lock().unwrap();
@@ -777,8 +789,8 @@ fn build_player(
     playing: &Arc<AtomicBool>,
 ) -> Result<(gst::Pipeline, Arc<Streams>)> {
     let player = gst::Pipeline::with_name(&format!("channel-player-{}", lanes.id));
-    // The program runs on the system clock; timestamps map between the two.
-    player.use_clock(Some(&gst::SystemClock::obtain()));
+    // The program's clock: timestamps map between the two.
+    player.use_clock(Some(&lanes.clock()));
     let decode = make_el("uridecodebin", &format!("channel-decode-{}", lanes.id))?;
     decode.set_property(
         "uri",
@@ -1080,7 +1092,12 @@ mod tests {
             },
         );
         let playout = src.playout().unwrap().clone();
-        let mon = MonitorPipeline::new(&src, &MonitorSettingsDto::default()).unwrap();
+        let mon = MonitorPipeline::new(
+            &src,
+            &MonitorSettingsDto::default(),
+            &gst::SystemClock::obtain(),
+        )
+        .unwrap();
         let program = watch_program(&mon);
         let luma = || *program.luma.lock().unwrap();
         let pos = || playout.status().position.unwrap().mseconds();

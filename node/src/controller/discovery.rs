@@ -6,11 +6,11 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use futures_util::future::join_all;
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::registry::NodeEntry;
 use super::{relay, Ctx};
-use crate::api::types::{NodeStatus, WsEvent};
+use crate::api::types::{ClockClaim, NodeStatus, WsEvent};
 
 const SERVICE_TYPE: &str = "_capture-room._tcp.local.";
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
@@ -113,6 +113,7 @@ pub async fn add_node(ctx: &Ctx, url: String, manual: bool) -> Result<Option<Nod
         manual,
         encoders: status.encoders.clone(),
         source_types: status.source_types.clone(),
+        clock: status.clock.clone(),
         relay: ctx.cancel.child_token(),
     };
 
@@ -126,6 +127,18 @@ pub async fn add_node(ctx: &Ctx, url: String, manual: bool) -> Result<Option<Nod
         relay::spawn(ctx.clone(), status.id.clone(), relay);
     }
     Ok(Some(status))
+}
+
+async fn send_claim(ctx: &Ctx, url: &str, claim: &ClockClaim) -> Result<()> {
+    ctx.state
+        .http
+        .post(format!("{url}/api/v1/node/clock/claim"))
+        .json(claim)
+        .timeout(STATUS_TIMEOUT)
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
 }
 
 async fn fetch_status(ctx: &Ctx, url: &str) -> Result<NodeStatus> {
@@ -159,10 +172,31 @@ pub fn start_health_poller(ctx: Ctx) {
                     .collect()
             };
 
+            // Claimed with every check, so nodes know their master is alive.
+            let claim = match super::clock_mode(&ctx.state).await {
+                Ok(mode) => Some(ClockClaim {
+                    controller_id: ctx.state.node_id.clone(),
+                    controller_name: ctx.state.node_name(),
+                    mode,
+                    port: ctx.state.clock_port,
+                }),
+                Err(e) => {
+                    warn!(error = %e, "can't read the clock mode; not claiming nodes");
+                    None
+                }
+            };
+
             // Check concurrently so one unreachable node doesn't delay the rest.
             let results = join_all(entries.into_iter().map(|(id, url)| {
                 let ctx = &ctx;
+                let claim = claim.as_ref();
                 async move {
+                    if let Some(claim) = claim {
+                        // Nodes that predate clock sync refuse it; that's fine.
+                        if let Err(e) = send_claim(ctx, &url, claim).await {
+                            debug!(id = %id, error = %e, "clock claim failed");
+                        }
+                    }
                     let result = fetch_status(ctx, &url).await;
                     (id, result)
                 }
@@ -173,11 +207,14 @@ pub fn start_health_poller(ctx: Ctx) {
             for (id, result) in results {
                 match result {
                     Ok(status) if status.id == id => {
-                        if reg.record_success(&status) {
+                        let (recovered, clock_changed) = reg.record_success(&status);
+                        if recovered {
                             info!(id = %id, "node reachable again");
                             ctx.state.emit_controller(&WsEvent::NodeOnline {
                                 peer_id: id.clone(),
                             });
+                        } else if clock_changed {
+                            ctx.state.emit_controller(&WsEvent::NodeUpdated);
                         }
                     }
                     _ => {

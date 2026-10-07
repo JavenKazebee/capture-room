@@ -273,6 +273,7 @@ dependencies = [
  "gst-plugin-webrtc",
  "gstreamer 0.23.7",
  "gstreamer-app 0.23.5",
+ "gstreamer-net 0.23.5",
  "gstreamer-pbutils 0.23.5",
  "gstreamer-utils 0.23.6",
  "mdns-sd",
@@ -596,7 +597,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -830,6 +831,23 @@ dependencies = [
 
 [[package]]
 name = "gio"
+version = "0.20.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e27e276e7b6b8d50f6376ee7769a71133e80d093bdc363bd0af71664228b831"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "futures-io",
+ "futures-util",
+ "gio-sys 0.20.10",
+ "glib 0.20.12",
+ "libc",
+ "pin-project-lite",
+ "smallvec",
+]
+
+[[package]]
+name = "gio"
 version = "0.23.0-alpha"
 source = "git+https://github.com/gtk-rs/gtk-rs-core?branch=main#2b8a1a066e1532a43406e76ab4f606dff59add0d"
 dependencies = [
@@ -866,7 +884,7 @@ dependencies = [
  "gobject-sys 0.23.0-alpha",
  "libc",
  "system-deps 9.0.0",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1037,7 +1055,7 @@ dependencies = [
  "gstreamer-app 0.26.0-alpha",
  "gstreamer-audio 0.26.0-alpha",
  "gstreamer-base 0.26.0-alpha",
- "gstreamer-net",
+ "gstreamer-net 0.26.0-alpha",
  "gstreamer-pbutils 0.26.0-alpha",
  "gstreamer-rtp",
  "gstreamer-sdp",
@@ -1319,13 +1337,38 @@ dependencies = [
 
 [[package]]
 name = "gstreamer-net"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7a57013f1af740373c5cbf1602b6ff25238d4a0e300eff179b75676c9c7781e"
+dependencies = [
+ "gio 0.20.12",
+ "glib 0.20.12",
+ "gstreamer 0.23.7",
+ "gstreamer-net-sys 0.23.5",
+]
+
+[[package]]
+name = "gstreamer-net"
 version = "0.26.0-alpha"
 source = "git+https://gitlab.freedesktop.org/gstreamer/gstreamer-rs?branch=main#7922e962b267bdb645443615a5ae84239c71f19c"
 dependencies = [
- "gio",
+ "gio 0.23.0-alpha",
  "glib 0.23.0-alpha",
  "gstreamer 0.26.0-alpha",
- "gstreamer-net-sys",
+ "gstreamer-net-sys 0.26.0-alpha",
+]
+
+[[package]]
+name = "gstreamer-net-sys"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b0291a3064e6e94d640f2d662264b726e5e0c2067ceb17f2b56dec6f6920877"
+dependencies = [
+ "gio-sys 0.20.10",
+ "glib-sys 0.20.10",
+ "gstreamer-sys 0.23.6",
+ "libc",
+ "system-deps 7.0.8",
 ]
 
 [[package]]
@@ -2556,7 +2599,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "thiserror",
  "tokio",
  "tracing",
@@ -2594,9 +2637,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2884,7 +2927,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3538,10 +3581,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4242,7 +4285,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

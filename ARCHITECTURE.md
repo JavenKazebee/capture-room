@@ -124,7 +124,7 @@ source → [fallbacksrc] → input chain ─┐
 - **Direct mode for WHIP.** `fallbacksrc`'s custom-source wrapper aborts the process on assertion failures with `webrtcsrc`, so WHIP's element sits in the bin directly, with its own black source under the compositor. The gst-plugins-rs WebRTC elements block on their own tokio runtime during state changes, so monitor state changes run on a non-tokio thread.
 - **Link state.** A pad probe counts real frames; `LinkState` (`live`, `connecting`, `waiting` for a listener or WHIP publisher, `reconnecting`) is on `SourceDto` and the 1 Hz `feed.status` event, and the UI shows it on Sources rows and Record tiles (reconnecting is a warning, not tally red).
 
-**Audio pairing.** A live source's config carries an `AudioPlan`: `source` (its own audio, mixed to N channels; silence if it has none), `device` (an audio device on the node such as an interface or Dante Virtual Soundcard, with 1-based input channels in output order), or `silence`. A device plan adds a second `fallbacksrc` around the audio device. Audio-only devices are never sources by themselves. Monitor pipelines are pinned to the system clock, so an audio device inside a bin never becomes the clock that recordings slave to.
+**Audio pairing.** A live source's config carries an `AudioPlan`: `source` (its own audio, mixed to N channels; silence if it has none), `device` (an audio device on the node such as an interface or Dante Virtual Soundcard, with 1-based input channels in output order), or `silence`. A device plan adds a second `fallbacksrc` around the audio device. Audio-only devices are never sources by themselves. Monitor pipelines are pinned to the node clock (see Clock sync), so an audio device inside a bin never becomes the clock that recordings slave to.
 
 **Element availability per type.** `plugins::REQUIRED` (core encoders and the like) still fails startup. Stream, device and WHIP list the elements they need instead: a missing one makes that type (or stream protocol) unavailable without stopping the node. `NodeStatus.source_types` reports `{ source_type, missing, protocols }`; the UI greys out unavailable types and saving one returns 400.
 
@@ -296,19 +296,54 @@ sources report none._
 - Exposed per-source via the status WebSocket and REST
 - Written into output file metadata where the container supports it (MOV)
 
-### Clock sync across nodes (planned)
+### Clock sync across nodes
 
 Synchronized starts, timecode for sources that carry none, and multi-angle replay all
-need every node to agree on the time. Not specced in detail yet:
+need every node to agree on the time. Built (`clock.rs`): every pipeline on a node runs
+on its **node clock**, and a controller's nodes share one.
 
-- Nodes keep their system clocks in sync (NTP at minimum, PTP where frame accuracy
-  matters); a node reports its measured offset, and the UI warns when it's too large.
-- Pipelines use a network-synced GStreamer clock, so running time means the same thing
-  on every node.
-- Each captured frame can be stamped with wall-clock capture time, giving recordings
-  and replay buffers one shared timeline across nodes.
-- **Synchronized start:** a start command can carry a wall-clock start time; every leg
+- **Node clock.** A node's own system clock until a controller claims it. Monitors take
+  it, and recording and output legs take the monitor's (with its base time), as before;
+  channel players take their program's.
+- **Controller mode** (the default): a controller serves its clock with GStreamer's
+  `NetTimeProvider` on UDP `--clock-port` (default: HTTP port + 100, so 7800), and its
+  nodes follow it with a `NetClientClock`. No per-machine setup or admin rights; a wired
+  LAN gets well under a millisecond (a few hundred µs at worst, tens of µs on one switch).
+  The served clock is the monotonic system clock, so an NTP step on the controller
+  doesn't jump every pipeline on the network.
+- **PTP mode** (`{ kind: "ptp", domain }`): the controller and its nodes all follow a
+  PTP grandmaster already on the network (Dante, AES67 or SMPTE 2110 gear) with a
+  `PtpClock`, for tighter sync and the same clock as that gear. GStreamer's helper
+  binds UDP 319/320: Linux needs `cap_net_bind_service,cap_net_admin` on
+  `gst-ptp-helper` (Arch ships them), macOS and Windows need nothing beyond the firewall.
+  PTP time is TAI-based, so it's a shared time base, not wall-clock time.
+- **Claims.** A controller claims each node with every health check
+  (`POST /api/v1/node/clock/claim { controller_id, controller_name, mode, port }`), and
+  the node follows the clock at the claim's source address. A node keeps the first
+  controller that claims it until that one has been quiet for 20 s; then the next claim
+  wins. A controller takes no claims: it follows its own mode, so two controllers make
+  two clock domains rather than a loop. A node that stops being a controller keeps its
+  clock until it's claimed.
+- **Switching.** A new clock is used once it reports synced; until then the old one
+  stays (status `pending`). A running pipeline can't change clocks, so idle monitors are
+  rebuilt on the new one at once, and a source that's recording or playing a clip keeps
+  its old clock until it's idle (`stale_sources`), when the monitor recovery loop
+  rebuilds it. Tested: a recording across a switch finishes with no dropped frames, and
+  its source moves over once it stops.
+- **Losing the master.** A followed clock that hears nothing for 10 s is `lost`: it keeps
+  running at its last measured rate and drifts slowly until the master is back.
+- **Status.** `ClockStatusDto` (source, synced, pending, delay, lost, stale sources,
+  error) is on `NodeStatus` and `NodeDto`; the Nodes page shows it on each card, and a
+  controller emits `node.updated` when a peer's clock state changes (not for delay
+  wobble). Settings has the controller's mode.
+
+Still to build on it:
+
+- **Synchronized start:** a start command carries a time on the shared clock; every leg
   begins at the first frame at or after it.
+- Each captured frame stamped with capture time on the shared clock, giving recordings
+  and replay buffers one timeline across nodes (needs the controller's clock ↔ UTC
+  mapping for wall-clock time).
 
 ---
 
@@ -426,8 +461,8 @@ MonitorPipeline producers ─┬─► recording legs (unchanged)
   program bin, and unloading removes them: back to black and silence. The monitor builds
   a new bin on every (re)start, and `Lanes::attach` moves a loaded clip's lanes over to
   it, so a monitor restart doesn't drop the clip.
-- **Decoupled players.** Each clip decodes in its own pipeline, on the system clock like
-  the monitor. A bad file fails its player (the clip unloads and the error shows on the
+- **Decoupled players.** Each clip decodes in its own pipeline, on the program's clock
+  (the node clock its monitor was built on). A bad file fails its player (the clip unloads and the error shows on the
   channel), never the program.
 - **Timestamps.** A player buffer at running time `rt` renders when the clock reads
   `player base time + rt`; it's restamped to that moment in the program's running time,
@@ -521,7 +556,9 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/status` | id, name, version, uptime, `is_controller`, available encoders and source types |
+| GET | `/status` | id, name, version, uptime, `is_controller`, available encoders and source types, clock status |
+| GET | `/clock` | clock status: source (`local \| controller \| ptp`), synced, pending, delay, lost, stale sources, error |
+| POST | `/clock/claim` | a controller claims this node's clock (see Clock sync); answers with the clock status |
 | GET / PUT | `/settings` | node name, monitor settings (thumbnail fps/size, meter interval) |
 | GET | `/storage` | writable volumes: mount point, total/free bytes, removable; what active recordings write to each and the time left |
 | GET | `/sources` | sources on this machine |
@@ -555,6 +592,7 @@ Mounted on every instance; peer-related routes only do anything while the contro
 | Method | Path | Description |
 |--------|------|-------------|
 | PUT | `/controller` | `{ enabled }` — promote/demote live |
+| GET / PUT | `/controller/clock` | `{ mode, port, serving }` / set the mode: `{ kind: "controller" }` or `{ kind: "ptp", domain }` (409 if not a controller) |
 | GET | `/nodes` | self + registered peers |
 | POST | `/nodes` | add a node by URL (persisted) — 409 if not a controller |
 | DELETE | `/nodes/{id}` | remove a node |
@@ -715,13 +753,17 @@ Example (`/media/recordings/{date}/{node}/{source}_{datetime}_{output}.{ext}`):
 
 Every instance registers an mDNS service (`_capture-room._tcp.local.`). A controller browses for it, identifies each service via `GET /api/v1/node/status`, and adds it to its registry. mDNS peers are pruned after ~15 s of failed health checks and re-added when they re-announce. Peers added by URL are persisted and never pruned — they're just shown as unreachable.
 
-Discovery is asymmetric: the controller initiates all connections; nodes never need to know a controller exists. Nothing is pushed on connect because nodes hold no controller state.
+Discovery is asymmetric: the controller initiates all connections; nodes never need to know a controller exists. The one thing pushed is the clock claim, sent with every health check; a node holds it only as long as claims keep coming (see Clock sync).
 
 ---
 
 ## Ports & Networking
 
-One port per machine, configurable, default `7700`. Set via config file or `--port` flag.
+One HTTP port per machine, configurable, default `7700`. Set via config file or `--port` flag.
+
+A controller also serves its clock on UDP `--clock-port` (default: the HTTP port + 100,
+so `7800`), which its nodes must be able to reach. PTP mode uses UDP 319/320 multicast
+on every node.
 
 Plain HTTP/WebSocket over LAN. No TLS required for v1 (trusted network assumed).
 
@@ -776,6 +818,27 @@ gstreamer-rs `branch=main`; pin it back with `cargo update --precise`.
 - **Linux:** the user must be in the `video` group for v4l2. Wayland screen capture needs
   a desktop session and the portal.
 
+### Setup checks (planned)
+
+A Setup page lists, per node, what each feature needs from the machine and whether it
+has it (ROADMAP #11). Checks run live on the node (the OS is the source of truth, so
+nothing is recorded), and the controller's Nodes page badges a node with a failing one.
+Checks are a list each feature adds to:
+
+| Check | Platforms | How |
+|-------|-----------|-----|
+| Screen Recording, Camera, Microphone | macOS | ask macOS for the authorization status |
+| NDI Runtime | all | `libndi` loads |
+| PTP helper permissions | Linux | `getcap` on `gst-ptp-helper`, or a test bind of 319/320 |
+| Clock / API / WHIP ports reachable | all | probed by the controller from outside (a node can't see its own firewall) |
+| Storage writable, free space | all | partly in Storage already |
+
+Shortcuts help the user grant what's missing; nothing grants it for them. macOS gets a
+button to the right System Settings pane (only when the browser is on that machine);
+otherwise a command to copy (`setcap` on Linux, `New-NetFirewallRule` on Windows).
+macOS privacy permissions belong to whatever launched capture-room (Terminal when run
+from a shell, until there's an app bundle), and the page says so.
+
 ### NDI licensing
 
 `gst-plugin-ndi` is MPL-licensed and compiled into the binary. It dlopens `libndi` at
@@ -812,6 +875,7 @@ capture-room/
 │   │   │   ├── relay.rs         # peer WS → merged /ws
 │   │   │   └── registry.rs      # NodeRegistry
 │   │   ├── benchmark.rs         # Benchmark runner
+│   │   ├── clock.rs             # Node clock: local, a controller's (net clock) or PTP; serving
 │   │   ├── capacity.rs          # Capacity estimates from benchmark results
 │   │   ├── storage.rs           # Storage volumes, write rates, file browsing
 │   │   ├── pipeline/

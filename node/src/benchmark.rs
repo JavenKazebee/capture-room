@@ -537,8 +537,8 @@ impl Run {
             },
         );
         let config = *self.state.source_manager.read().await.monitor_config();
-        let monitor =
-            MonitorPipeline::new(&source, &config).with_context(|| format!("start feed {n}"))?;
+        let monitor = MonitorPipeline::new(&source, &config, &self.state.clock.clock())
+            .with_context(|| format!("start feed {n}"))?;
 
         let deadline = Instant::now() + FIRST_FRAME_TIMEOUT;
         while monitor.video_frames() == 0 {

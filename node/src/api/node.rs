@@ -3,13 +3,14 @@
 //! other nodes. Mounted at `/api/v1/node`; controllers reach a peer's copy
 //! through `/api/v1/nodes/{id}/…`.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
 use axum::{
     body::Body,
-    extract::{ws::WebSocketUpgrade, Path as AxumPath, Query, Request, State},
+    extract::{ws::WebSocketUpgrade, ConnectInfo, Path as AxumPath, Query, Request, State},
     http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -22,10 +23,11 @@ use tracing::{error, info};
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
-    BenchmarkRequest, BenchmarkRunDto, CapacityCheckDto, CapacityCheckRequest, ConfiguredSourceDto,
-    ConfiguredSourceRequest, DeviceDto, DirListingDto, NodeCapacityDto, NodeSettingsDto,
-    NodeStatus, RecordingSessionDto, RecordingStatus, RecordingsQuery, SourceConfig, SourceDto,
-    StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest, VolumeCheckDto, WsEvent,
+    BenchmarkRequest, BenchmarkRunDto, CapacityCheckDto, CapacityCheckRequest, ClockClaim,
+    ClockStatusDto, ConfiguredSourceDto, ConfiguredSourceRequest, DeviceDto, DirListingDto,
+    NodeCapacityDto, NodeSettingsDto, NodeStatus, RecordingSessionDto, RecordingStatus,
+    RecordingsQuery, SourceConfig, SourceDto, StartRecordingRequest, StorageVolumeDto,
+    UpdateNodeSettingsRequest, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
 use crate::capacity::{self, Capacity};
@@ -41,6 +43,8 @@ use crate::ws;
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/status", get(get_status))
+        .route("/clock", get(get_clock))
+        .route("/clock/claim", post(post_clock_claim))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/storage", get(get_storage))
         .route("/files", get(get_files))
@@ -91,7 +95,25 @@ async fn get_status(State(state): State<Arc<AppState>>) -> Json<NodeStatus> {
         is_controller: state.is_controller().await,
         encoders: crate::pipeline::profile::available_encoders(),
         source_types: crate::plugins::source_types(),
+        clock: Some(state.clock_status().await),
     })
+}
+
+// ── /clock ────────────────────────────────────────────────────────────────────
+
+async fn get_clock(State(state): State<Arc<AppState>>) -> Json<ClockStatusDto> {
+    Json(state.clock_status().await)
+}
+
+/// A controller claims this node's clock (see [`crate::clock`]). Its clock
+/// is served from the address the claim came from.
+async fn post_clock_claim(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(claim): Json<ClockClaim>,
+) -> Json<ClockStatusDto> {
+    state.clock.claim(&claim, peer.ip());
+    Json(state.clock_status().await)
 }
 
 // ── /settings ─────────────────────────────────────────────────────────────────

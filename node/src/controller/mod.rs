@@ -18,17 +18,23 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use crate::api::types::ClockMode;
 use crate::db;
 use crate::state::AppState;
 use registry::{NodeEntry, NodeRegistry};
 
 pub const CONFIG_KEY: &str = "controller_enabled";
+/// The [`ClockMode`] this controller gives its nodes, as JSON.
+pub const CLOCK_MODE_KEY: &str = "clock_mode";
 
 pub struct Controller {
     pub registry: Arc<RwLock<NodeRegistry>>,
     /// Cancels the health poller, WS relays and discovery handlers.
     cancel: CancellationToken,
     mdns_browser: Option<ServiceDaemon>,
+    /// Serves this instance's clock to its nodes. `None` if the port
+    /// couldn't be bound.
+    clock_server: Option<gstreamer_net::NetTimeProvider>,
 }
 
 /// Handle shared by the controller's background tasks.
@@ -67,6 +73,7 @@ impl Controller {
                 manual: true,
                 encoders: Vec::new(),
                 source_types: Vec::new(),
+                clock: None,
                 relay: ctx.cancel.child_token(),
             };
             let relay = entry.relay.clone();
@@ -74,6 +81,14 @@ impl Controller {
                 relay::spawn(ctx.clone(), row.id, relay);
             }
         }
+
+        // Serve the clock before claiming anyone. It's the local clock: a
+        // controller follows no one (in PTP mode nobody uses it).
+        let clock_server = crate::clock::serve(state.clock.local(), state.clock_port)
+            .inspect(|_| info!(port = state.clock_port, "serving clock"))
+            .inspect_err(|e| warn!(error = %e, "nodes can't follow this controller's clock"))
+            .ok();
+        state.clock.set_own_mode(Some(clock_mode(state).await?));
 
         discovery::start_health_poller(ctx.clone());
         let mdns_browser = match discovery::start_mdns_browser(ctx.clone()) {
@@ -88,6 +103,7 @@ impl Controller {
             registry: ctx.registry,
             cancel: ctx.cancel,
             mdns_browser,
+            clock_server,
         });
         info!("controller enabled");
         Ok(())
@@ -100,8 +116,17 @@ impl Controller {
             if let Some(d) = c.mdns_browser {
                 let _ = d.shutdown();
             }
+            if let Some(server) = c.clock_server {
+                server.set_active(false);
+            }
+            state.clock.set_own_mode(None);
             info!("controller disabled");
         }
+    }
+
+    /// Whether nodes can follow this controller's clock.
+    pub fn serves_clock(&self) -> bool {
+        self.clock_server.is_some()
     }
 
     pub fn ctx(&self, state: &Arc<AppState>) -> Ctx {
@@ -111,4 +136,12 @@ impl Controller {
             cancel: self.cancel.clone(),
         }
     }
+}
+
+/// The clock mode this instance gives its nodes as a controller.
+pub async fn clock_mode(state: &AppState) -> Result<ClockMode> {
+    Ok(db::config_get(&state.db, CLOCK_MODE_KEY)
+        .await?
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default())
 }

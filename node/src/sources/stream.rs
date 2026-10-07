@@ -313,7 +313,12 @@ mod monitor_tests {
             },
             Arc::new(LocalDevices::start()),
         );
-        let mon = MonitorPipeline::new(&src, &MonitorSettingsDto::default()).unwrap();
+        let mon = MonitorPipeline::new(
+            &src,
+            &MonitorSettingsDto::default(),
+            &gst::SystemClock::obtain(),
+        )
+        .unwrap();
         let stalls = Arc::new(Mutex::new(Vec::<String>::new()));
         for (name, producer) in [("video", &mon.video), ("audio", &mon.audio)] {
             let last = Mutex::new(None::<Instant>);
@@ -392,7 +397,12 @@ mod monitor_tests {
             },
             devices,
         );
-        let mon = MonitorPipeline::new(&src, &MonitorSettingsDto::default()).unwrap();
+        let mon = MonitorPipeline::new(
+            &src,
+            &MonitorSettingsDto::default(),
+            &gst::SystemClock::obtain(),
+        )
+        .unwrap();
         let audio_buffers = Arc::new(Mutex::new(0u32));
         let n = audio_buffers.clone();
         mon.audio.appsink().static_pad("sink").unwrap().add_probe(
