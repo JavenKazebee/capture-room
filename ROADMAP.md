@@ -19,8 +19,8 @@ _Last updated: 2026-10-07_
 7. ✅ **Benchmark + capacity estimator** (with storage headroom)
 8. ✅ **Recordings view** (+ browser preview)
 9. **Playback** — 🚧 milestone 1 shipped (one clip on an NDI channel); gapless playlists next
-10. **Clock sync across nodes** — 🚧 shared node clock shipped (controller's clock or
-    PTP); synchronized start next. Prerequisite for multi-angle replay
+10. **Clock sync across nodes** — ✅ shared node clock (controller's clock or PTP) and
+    synchronized start. Prerequisite for multi-angle replay
 11. **Setup page** — per-node permission and system checks, with shortcuts to fix them
 12. **Instant replay**
 13. **Follow-on**, in rough priority order (see below)
@@ -135,8 +135,10 @@ Design in ARCHITECTURE.md (Timecode › Clock sync).
   health check; nodes follow it (GStreamer net clock, tens of µs on a wired LAN) or, in
   PTP mode, a PTP grandmaster. First controller wins; busy sources switch once idle.
   Clock status on each node card; mode in Settings.
-- **Synchronized start:** a start command carries a time on the shared clock, so bulk
-  Record across machines produces files that line up to the frame.
+- ✅ **Synchronized start (2026-10-07).** A start can carry a time on the shared clock;
+  legs begin at the first frame due at or after it. Bulk Record sets one 1.5 s ahead and
+  warns about feeds on another clock. Every session records its clock domain and first
+  frame time, so recordings can be lined up later.
 - Frames stamped with capture time on the shared clock (and a clock ↔ UTC mapping from
   the controller for wall-clock time).
 - PTP is untested against a real grandmaster: try it on ACC's Dante network, and check

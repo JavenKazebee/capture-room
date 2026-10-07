@@ -591,6 +591,27 @@ pub struct RecordingSessionDto {
     pub files: Vec<Vec<String>>,
     pub status: RecordingStatus,
     pub error_message: Option<String>,
+    /// The clock the recording ran on, for lining it up with others. `None`
+    /// for older sessions, or a source still on a previous clock.
+    #[serde(default)]
+    #[sqlx(json(nullable))]
+    pub clock: Option<SessionClockDto>,
+}
+
+/// Where a recording sits on its clock.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct SessionClockDto {
+    /// See [`ClockStatusDto::domain`]: recordings with the same domain can be
+    /// lined up by `first_frame_us`.
+    pub domain: String,
+    /// The synchronized start it waited for, if any.
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub start_at_us: Option<u64>,
+    /// When its first video frame was due on the clock. `None` until one
+    /// arrives.
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub first_frame_us: Option<u64>,
 }
 
 /// One output leg of a session: its name and format, as recorded.
@@ -639,6 +660,12 @@ pub struct StartRecordingRequest {
     pub preset_name: Option<String>,
     /// The output legs to record. Sent inline so nodes keep no preset store.
     pub outputs: Vec<PresetOutputInput>,
+    /// Start at this time on the shared clock, so recordings started
+    /// together on several nodes line up: every leg begins at the first
+    /// frame due at or after it. A node on another clock starts now (its
+    /// session's `clock.start_at_us` is then `null`).
+    #[serde(default)]
+    pub start_at: Option<ClockTimeDto>,
 }
 
 // ── Presets ───────────────────────────────────────────────────────────────────
@@ -1296,6 +1323,10 @@ pub enum ClockSourceDto {
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct ClockStatusDto {
     pub source: ClockSourceDto,
+    /// Which shared clock this is: nodes with the same domain agree on the
+    /// time. `controller:{id}` (a controller and the nodes following it),
+    /// `ptp:{domain}`, or `local:{node id}` for a node on its own.
+    pub domain: String,
     /// Whether `source` is in sync (always true for `local`).
     pub synced: bool,
     /// A clock being switched to, until it syncs.
@@ -1336,4 +1367,15 @@ pub struct ControllerClockDto {
     pub port: u16,
     /// Whether it's being served (the port could be bound).
     pub serving: bool,
+}
+
+/// A time on a clock domain (see [`ClockStatusDto::domain`]), in
+/// microseconds: precise enough to pick a frame, and small enough for a
+/// JavaScript number even on a PTP clock.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct ClockTimeDto {
+    pub domain: String,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub time_us: u64,
 }

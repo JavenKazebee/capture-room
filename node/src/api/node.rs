@@ -24,10 +24,10 @@ use tracing::{error, info};
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     BenchmarkRequest, BenchmarkRunDto, CapacityCheckDto, CapacityCheckRequest, ClockClaim,
-    ClockStatusDto, ConfiguredSourceDto, ConfiguredSourceRequest, DeviceDto, DirListingDto,
-    NodeCapacityDto, NodeSettingsDto, NodeStatus, RecordingSessionDto, RecordingStatus,
-    RecordingsQuery, SourceConfig, SourceDto, StartRecordingRequest, StorageVolumeDto,
-    UpdateNodeSettingsRequest, VolumeCheckDto, WsEvent,
+    ClockStatusDto, ClockTimeDto, ConfiguredSourceDto, ConfiguredSourceRequest, DeviceDto,
+    DirListingDto, NodeCapacityDto, NodeSettingsDto, NodeStatus, RecordingSessionDto,
+    RecordingStatus, RecordingsQuery, SourceConfig, SourceDto, StartRecordingRequest,
+    StorageVolumeDto, UpdateNodeSettingsRequest, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
 use crate::capacity::{self, Capacity};
@@ -44,6 +44,7 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/status", get(get_status))
         .route("/clock", get(get_clock))
+        .route("/clock/now", get(get_clock_now))
         .route("/clock/claim", post(post_clock_claim))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/storage", get(get_storage))
@@ -103,6 +104,11 @@ async fn get_status(State(state): State<Arc<AppState>>) -> Json<NodeStatus> {
 
 async fn get_clock(State(state): State<Arc<AppState>>) -> Json<ClockStatusDto> {
     Json(state.clock_status().await)
+}
+
+/// The time now on this node's clock, for picking a synchronized start.
+async fn get_clock_now(State(state): State<Arc<AppState>>) -> Json<ClockTimeDto> {
+    Json(state.clock.now())
 }
 
 /// A controller claims this node's clock (see [`crate::clock`]). Its clock
@@ -653,6 +659,7 @@ async fn post_recording(
         &req.outputs,
         &legs,
         key,
+        req.start_at.as_ref(),
     )?;
 
     if let Err(e) = db::session_insert(&state.db, &session).await {
@@ -733,20 +740,10 @@ async fn stop_orphaned(state: &AppState, id: &str) -> anyhow::Result<Option<Reco
         return Ok(None);
     };
     if session.status == RecordingStatus::Active {
-        let stopped_at = chrono::Utc::now().to_rfc3339();
-        db::session_update_stop(
-            &state.db,
-            id,
-            &stopped_at,
-            RecordingStatus::Stopped,
-            None,
-            None,
-            None,
-        )
-        .await?;
-        session.stopped_at = Some(stopped_at);
+        session.stopped_at = Some(chrono::Utc::now().to_rfc3339());
         session.status = RecordingStatus::Stopped;
         session.error_message = None;
+        db::session_update_stop(&state.db, &session).await?;
     }
     Ok(Some(session))
 }
@@ -853,6 +850,7 @@ async fn post_capacity_check(
             preset_id: None,
             preset_name: None,
             outputs: req.outputs.clone(),
+            start_at: None,
         };
         let legs = build_legs(&state, &start).await?;
         let measured = capacity
@@ -1028,6 +1026,7 @@ mod tests {
                 .collect(),
             status: RecordingStatus::Stopped,
             error_message: None,
+            clock: None,
         }
     }
 

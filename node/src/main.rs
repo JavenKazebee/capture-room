@@ -95,12 +95,12 @@ async fn main() -> Result<()> {
     let devices = tokio::task::spawn_blocking(sources::device::LocalDevices::start)
         .await
         .expect("device monitor thread panicked");
-    let node_clock = Arc::new(clock::NodeClock::new());
+    let node_clock = Arc::new(clock::NodeClock::new(&node_id));
     let (leg_failure_tx, leg_failure_rx) = tokio::sync::mpsc::unbounded_channel();
     let (leg_file_tx, leg_file_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut source_manager = SourceManager::new(
         monitor_config,
-        node_clock.clock(),
+        node_clock.current(),
         ndi_monitor,
         std::sync::Arc::new(devices),
         leg_failure_tx,

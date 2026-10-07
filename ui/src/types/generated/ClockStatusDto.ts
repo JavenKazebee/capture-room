@@ -3,6 +3,12 @@ import type { ClockSourceDto } from "./ClockSourceDto";
 
 export type ClockStatusDto = { source: ClockSourceDto, 
 /**
+ * Which shared clock this is: nodes with the same domain agree on the
+ * time. `controller:{id}` (a controller and the nodes following it),
+ * `ptp:{domain}`, or `local:{node id}` for a node on its own.
+ */
+domain: string, 
+/**
  * Whether `source` is in sync (always true for `local`).
  */
 synced: boolean, 

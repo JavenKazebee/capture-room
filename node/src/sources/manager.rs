@@ -5,14 +5,15 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 use chrono::Utc;
-use gstreamer as gst;
+use gstreamer::{self as gst, prelude::*};
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::api::types::{
-    ChannelLevelDto, ConfiguredSourceDto, LinkState, MonitorSettingsDto, OutputConfig,
-    OutputStatusDto, PresetOutputInput, RecordingSessionDto, RecordingStatus, TransportState,
+    ChannelLevelDto, ClockTimeDto, ConfiguredSourceDto, LinkState, MonitorSettingsDto,
+    OutputConfig, OutputStatusDto, PresetOutputInput, RecordingSessionDto, RecordingStatus,
+    SessionClockDto, TransportState,
 };
 use crate::pipeline::monitor::{MonitorPipeline, SourceFormat};
 use crate::pipeline::output::OutputLeg;
@@ -47,7 +48,19 @@ impl ActiveSession {
     fn files(&self) -> Vec<Vec<String>> {
         self.legs.iter().map(RecordingLeg::files).collect()
     }
+
+    /// The session's clock, with its first frame once one has arrived.
+    fn clock(&self) -> Option<SessionClockDto> {
+        let first = self.legs.iter().filter_map(RecordingLeg::first_frame).min();
+        self.dto.clock.clone().map(|c| SessionClockDto {
+            first_frame_us: first.map(|t| t.useconds()),
+            ..c
+        })
+    }
 }
+
+/// A synchronized start may be at most this far ahead.
+const MAX_START_LEAD: Duration = Duration::from_secs(10);
 
 /// A session taken out of the active set whose legs still have to drain and
 /// close their files. The caller runs it — see
@@ -115,6 +128,8 @@ pub struct SourceManager {
     config: MonitorSettingsDto,
     /// The node clock: new monitors run on it.
     clock: gst::Clock,
+    /// Its domain (see `ClockStatusDto::domain`), for synchronized starts.
+    clock_domain: String,
     sources: Vec<Box<dyn InputSource>>,
     monitors: HashMap<String, Arc<MonitorPipeline>>,
     /// Why a source's monitor couldn't be started, until a later start works
@@ -138,7 +153,7 @@ pub struct SourceManager {
 impl SourceManager {
     pub fn new(
         config: MonitorSettingsDto,
-        clock: gst::Clock,
+        (clock, clock_domain): (gst::Clock, String),
         ndi_monitor: NdiMonitor,
         devices: Arc<LocalDevices>,
         leg_failures: mpsc::UnboundedSender<LegFailure>,
@@ -147,6 +162,7 @@ impl SourceManager {
         Self {
             config,
             clock,
+            clock_domain,
             sources: Vec::new(),
             monitors: HashMap::new(),
             start_errors: HashMap::new(),
@@ -217,8 +233,9 @@ impl SourceManager {
 
     /// The node clock changed: monitors started from now on use `clock`, and
     /// running ones move to it as they become idle (see [`Self::scan`]).
-    pub fn set_clock(&mut self, clock: gst::Clock) {
+    pub fn set_clock(&mut self, (clock, domain): (gst::Clock, String)) {
         self.clock = clock;
+        self.clock_domain = domain;
     }
 
     /// Sources whose monitors still run on an old clock.
@@ -423,6 +440,9 @@ impl SourceManager {
     /// `legs` is an ordered list of `(output_path, profile)` pairs, one per output leg.
     /// Start recording `source_id` with `legs`, one per entry of `outputs`
     /// (which supplies each leg's name and preview flag for the session).
+    /// With `start_at` on this node's clock domain, the legs begin at the
+    /// first frame due at or after it; on another domain they start now.
+    #[allow(clippy::too_many_arguments)]
     pub fn start_recording(
         &mut self,
         source_id: &str,
@@ -431,6 +451,7 @@ impl SourceManager {
         outputs: &[PresetOutputInput],
         legs: &[(PathBuf, RecordingProfile)],
         outputs_key: String,
+        start_at: Option<&ClockTimeDto>,
     ) -> Result<RecordingSessionDto> {
         if self.sessions.values().any(|s| s.dto.source_id == source_id) {
             bail!("source {source_id} already has an active recording");
@@ -453,6 +474,43 @@ impl SourceManager {
             }
         }
 
+        // A source still on a previous clock (it was busy when the clock
+        // changed) can't be placed on the shared one.
+        let on_node_clock = monitor.clock() == &self.clock;
+        let start_at = match start_at {
+            Some(at) if on_node_clock && at.domain == self.clock_domain => {
+                let at = gst::ClockTime::from_useconds(at.time_us);
+                let now = self.clock.time().unwrap_or(gst::ClockTime::ZERO);
+                if at > now + gst::ClockTime::try_from(MAX_START_LEAD).unwrap() {
+                    bail!(
+                        "the start time is {:.1} s away; at most {} s ahead is allowed",
+                        (at - now).seconds_f64(),
+                        MAX_START_LEAD.as_secs()
+                    );
+                }
+                if at < now {
+                    warn!(source = source_id, late = %(now - at), "synchronized start arrived late");
+                }
+                Some(at)
+            }
+            Some(at) => {
+                warn!(
+                    source = source_id,
+                    wanted = %at.domain,
+                    have = %self.clock_domain,
+                    on_node_clock,
+                    "not on the requested clock; starting now"
+                );
+                None
+            }
+            None => None,
+        };
+        let session_clock = on_node_clock.then(|| SessionClockDto {
+            domain: self.clock_domain.clone(),
+            start_at_us: start_at.map(|t| t.useconds()),
+            first_frame_us: None,
+        });
+
         let id = Uuid::new_v4().to_string();
         let failures = self.leg_failures.clone();
         let session_id = id.clone();
@@ -468,7 +526,8 @@ impl SourceManager {
         let on_file: OnLegFile = Arc::new(move || {
             let _ = files_tx.send(files_session.clone());
         });
-        let recording_legs = recording::start_legs(monitor, &id[..8], legs, &on_error, &on_file)?;
+        let recording_legs =
+            recording::start_legs(monitor, &id[..8], legs, &on_error, &on_file, start_at)?;
 
         let dto = RecordingSessionDto {
             id,
@@ -490,9 +549,10 @@ impl SourceManager {
             files: recording_legs.iter().map(RecordingLeg::files).collect(),
             status: RecordingStatus::Active,
             error_message: None,
+            clock: session_clock,
         };
 
-        info!(id = %dto.id, source = source_id, legs = legs.len(), "recording started");
+        info!(id = %dto.id, source = source_id, legs = legs.len(), ?start_at, "recording started");
         self.sessions.insert(
             dto.id.clone(),
             ActiveSession {
@@ -513,6 +573,7 @@ impl SourceManager {
             .map(|s| RecordingSessionDto {
                 dropped_frames: s.dropped_frames(),
                 files: s.files(),
+                clock: s.clock(),
                 ..s.dto.clone()
             })
             .collect()
@@ -619,6 +680,7 @@ impl SourceManager {
         let dto = RecordingSessionDto {
             dropped_frames: session.dropped_frames(),
             files: session.files(),
+            clock: session.clock(),
             ..session.dto
         };
         let legs = session.legs;

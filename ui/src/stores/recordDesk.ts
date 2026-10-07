@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useStorage } from '@vueuse/core'
 import { toast } from 'vue-sonner'
+import { api } from '@/composables/useApi'
 import { formatTimeLeft } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
 import { LOW_TIME_SECS, useCapacityStore } from '@/stores/capacity'
@@ -10,6 +11,8 @@ import { useNodesStore } from '@/stores/nodes'
 import { blankLeg, presetLegs, usePresetsStore } from '@/stores/presets'
 import { useRecordingsStore } from '@/stores/recordings'
 import { useSourcesStore, type Source } from '@/stores/sources'
+import type { ClockTimeDto } from '@/types/generated/ClockTimeDto'
+import type { RecordingSessionDto } from '@/types/generated/RecordingSessionDto'
 
 export type StateFilter = 'all' | 'live' | 'idle'
 
@@ -159,10 +162,22 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
   // ── Start / stop ───────────────────────────────────────────────────────────
 
   const busy = ref(new Set<string>())
+  /** How far ahead a synchronized start is set. */
+  const SYNC_LEAD_US = 1_500_000
 
-  async function start(s: Source) {
+  async function start(s: Source, startAt: ClockTimeDto | null = null) {
     const preset = presets.presets.find((p) => p.id === presetIdOf(s.key)) ?? null
-    await recordings.start(s.node_id, s.id, preset)
+    return recordings.start(s.node_id, s.id, preset, startAt)
+  }
+
+  /**
+   * A start time on the shared clock for starting several feeds together,
+   * far enough ahead for every node to get its start and build its legs.
+   * `null` if the clock can't be read: the feeds then start as they land.
+   */
+  async function syncedStartTime(): Promise<ClockTimeDto | null> {
+    const now = await api<ClockTimeDto>('/node/clock/now').catch(() => null)
+    return now && { ...now, time_us: now.time_us + SYNC_LEAD_US }
   }
 
   async function stop(s: Source) {
@@ -253,12 +268,26 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     }
   }
 
+  /** Report feeds that started together but couldn't wait for the shared start time. */
+  function warnUnaligned(targets: Source[], results: PromiseSettledResult<RecordingSessionDto | void>[]) {
+    const unaligned = targets.filter((_, i) => {
+      const r = results[i]!
+      return r.status === 'fulfilled' && r.value && r.value.clock?.start_at_us == null
+    })
+    if (!unaligned.length) return
+    const names = unaligned.map((s) => `${s.display_name} (${nodes.nameOf(s.node_id)})`).join(', ')
+    const text = `Not lined up with the others: ${names}. ${unaligned.length === 1 ? "Its node isn't" : "Their nodes aren't"} on the shared clock, so ${unaligned.length === 1 ? 'it' : 'they'} started on arrival.`
+    toast.warning(text)
+    useEventsStore().log('warn', text)
+  }
+
   /** Start (or stop) several at once; reports one summary toast plus a log entry per failure. */
   async function bulk(action: 'start' | 'stop', list: Source[]) {
     const targets = list.filter((s) => (action === 'start' ? !isLive(s) : isLive(s)))
     if (!targets.length) return
     const warnings = action === 'start' ? await capacityWarnings(targets) : []
-    const results = await Promise.allSettled(targets.map((s) => (action === 'start' ? start(s) : stop(s))))
+    const startAt = action === 'start' && targets.length > 1 ? await syncedStartTime() : null
+    const results = await Promise.allSettled(targets.map((s) => (action === 'start' ? start(s, startAt) : stop(s))))
     let failed = 0
     results.forEach((r, i) => {
       if (r.status === 'rejected') {
@@ -270,6 +299,7 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     const ok = targets.length - failed
     if (ok) toast.success(`${action === 'start' ? 'Recording' : 'Stopped'} ${ok} feed${ok > 1 ? 's' : ''}`)
     if (ok) showWarnings(warnings)
+    if (startAt) warnUnaligned(targets, results)
   }
 
   return {

@@ -58,17 +58,7 @@ pub async fn run_stop(state: Arc<AppState>, job: StopJob, source_error: Option<S
         }
     }
 
-    if let Err(e) = db::session_update_stop(
-        &state.db,
-        &dto.id,
-        dto.stopped_at.as_deref().unwrap_or_default(),
-        dto.status,
-        dto.error_message.as_deref(),
-        Some(&dto.dropped_frames),
-        Some(&dto.files),
-    )
-    .await
-    {
+    if let Err(e) = db::session_update_stop(&state.db, &dto).await {
         error!(error = %e, "persist session stop");
     }
 
@@ -156,7 +146,7 @@ pub fn spawn_clock_follower(state: Arc<AppState>) {
         while changed.changed().await.is_ok() {
             let rescan = {
                 let mut mgr = state.source_manager.write().await;
-                mgr.set_clock(state.clock.clock());
+                mgr.set_clock(state.clock.current());
                 mgr.needs_rescan()
             };
             if rescan {

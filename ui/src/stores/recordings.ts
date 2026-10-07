@@ -4,6 +4,7 @@ import { nodeApi, sourceKey } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
 import { blankLeg, presetLegs, usePresetsStore } from '@/stores/presets'
 import { useSourcesStore } from '@/stores/sources'
+import type { ClockTimeDto } from '@/types/generated/ClockTimeDto'
 import type { PresetDto } from '@/types/generated/PresetDto'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import type { RecordingSessionDto } from '@/types/generated/RecordingSessionDto'
@@ -234,15 +235,17 @@ export const useRecordingsStore = defineStore('recordings', () => {
   /**
    * Start recording `sourceId` on `nodeId`. The preset's outputs are sent
    * inline — nodes keep no preset store. With no preset, a single default
-   * H.264/MOV output is used.
+   * H.264/MOV output is used. With `startAt`, the recording begins at that
+   * time on the shared clock (see `syncedStartTime`).
    */
-  async function start(nodeId: string, sourceId: string, preset: PresetDto | null) {
+  async function start(nodeId: string, sourceId: string, preset: PresetDto | null, startAt: ClockTimeDto | null = null) {
     const outputs: PresetOutputInput[] = preset ? presetLegs(preset) : [blankLeg()]
     const body: StartRecordingRequest = {
       source_id: sourceId,
       preset_id: preset?.id ?? null,
       preset_name: preset?.name ?? null,
       outputs,
+      start_at: startAt,
     }
     const dto = await nodeApi(nodeId)<RecordingSessionDto>('/recordings', { method: 'POST', body })
     upsert(nodeId, dto)

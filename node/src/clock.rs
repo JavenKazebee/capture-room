@@ -24,7 +24,7 @@ use gstreamer_net as gst_net;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
-use crate::api::types::{ClockClaim, ClockMode, ClockSourceDto, ClockStatusDto};
+use crate::api::types::{ClockClaim, ClockMode, ClockSourceDto, ClockStatusDto, ClockTimeDto};
 
 /// A claiming controller is dropped after this long without a claim, so
 /// another can take the node.
@@ -35,6 +35,7 @@ const LOST_AFTER: Duration = Duration::from_secs(10);
 const SYNC_POLL: gst::ClockTime = gst::ClockTime::SECOND;
 
 pub struct NodeClock {
+    node_id: String,
     local: gst::Clock,
     inner: Mutex<Inner>,
     /// Bumped whenever the clock in use changes.
@@ -73,7 +74,7 @@ struct Stats {
 }
 
 impl NodeClock {
-    pub fn new() -> Self {
+    pub fn new(node_id: &str) -> Self {
         let local = gst::SystemClock::obtain();
         let active = Follow {
             source: ClockSourceDto::Local,
@@ -83,6 +84,7 @@ impl NodeClock {
             since: Instant::now(),
         };
         Self {
+            node_id: node_id.to_string(),
             local,
             inner: Mutex::new(Inner {
                 own_mode: None,
@@ -106,6 +108,36 @@ impl NodeClock {
         self.inner.lock().unwrap().active.clock.clone()
     }
 
+    /// The clock new pipelines should run on, and its domain.
+    pub fn current(&self) -> (gst::Clock, String) {
+        let inner = self.inner.lock().unwrap();
+        (inner.active.clock.clone(), self.domain_of(&inner))
+    }
+
+    /// The time now on the clock in use.
+    pub fn now(&self) -> ClockTimeDto {
+        let (clock, domain) = self.current();
+        ClockTimeDto {
+            domain,
+            time_us: clock.time().map_or(0, |t| t.useconds()),
+        }
+    }
+
+    /// Which shared clock `inner.active` is (see `ClockStatusDto::domain`).
+    /// A controller's own clock is the one its nodes follow.
+    fn domain_of(&self, inner: &Inner) -> String {
+        match &inner.active.source {
+            ClockSourceDto::Local if inner.own_mode == Some(ClockMode::Controller) => {
+                format!("controller:{}", self.node_id)
+            }
+            ClockSourceDto::Local => format!("local:{}", self.node_id),
+            ClockSourceDto::Controller { controller_id, .. } => {
+                format!("controller:{controller_id}")
+            }
+            ClockSourceDto::Ptp { domain } => format!("ptp:{domain}"),
+        }
+    }
+
     /// Notified whenever [`Self::clock`] changes.
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.changed.subscribe()
@@ -125,6 +157,9 @@ impl NodeClock {
             };
             self.follow(&mut inner, source);
         }
+        // The domain can change with the clock unchanged (becoming the
+        // controller of the clock this node already runs on).
+        self.changed.send_modify(|n| *n += 1);
     }
 
     /// A controller at `address` claims this node. Returns whether it's
@@ -276,6 +311,7 @@ impl NodeClock {
         let heard = stats.last_update.unwrap_or(active.since);
         ClockStatusDto {
             source: active.source.clone(),
+            domain: self.domain_of(&inner),
             synced: !remote || active.clock.is_synced(),
             pending: inner.pending.as_ref().map(|p| p.source.clone()),
             delay_us: stats.delay.map(|d| d.useconds()),
@@ -386,7 +422,7 @@ mod tests {
         let provider = serve(&master, 0).unwrap();
         let port = provider.port() as u16;
 
-        let node = Arc::new(NodeClock::new());
+        let node = Arc::new(NodeClock::new("node"));
         let mut changed = node.subscribe();
         assert!(node.claim(&claim("a", port), "127.0.0.1".parse().unwrap()));
         assert!(matches!(
@@ -422,7 +458,7 @@ mod tests {
     #[test]
     fn controller_takes_no_claims() {
         gst::init().unwrap();
-        let node = Arc::new(NodeClock::new());
+        let node = Arc::new(NodeClock::new("node"));
         node.set_own_mode(Some(ClockMode::Controller));
         assert!(!node.claim(&claim("a", 9), "127.0.0.1".parse().unwrap()));
         assert_eq!(node.status(0).source, ClockSourceDto::Local);

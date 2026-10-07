@@ -5,7 +5,7 @@ use tracing::info;
 
 use crate::api::types::{
     BenchmarkRunDto, BenchmarkStatus, ConfiguredSourceDto, MediaItemDto, MonitorSettingsDto,
-    PresetDto, PresetOutputDto, RecordingSessionDto, RecordingStatus,
+    PresetDto, PresetOutputDto, RecordingSessionDto,
 };
 
 pub async fn init(db_path: &str) -> Result<SqlitePool> {
@@ -87,7 +87,8 @@ pub async fn monitor_settings_set(pool: &SqlitePool, m: &MonitorSettingsDto) -> 
 // ── recording_sessions ────────────────────────────────────────────────────────
 
 const SESSION_SELECT: &str = "SELECT id, source_id, preset_id, source_name, preset_name, started_at, stopped_at,
-                                     outputs, output_paths, dropped_frames, files, status, error_message
+                                     outputs, output_paths, dropped_frames, files, status, error_message,
+                                     clock
                               FROM recording_sessions";
 
 pub async fn sessions_mark_crashed(pool: &SqlitePool) -> Result<()> {
@@ -107,8 +108,8 @@ pub async fn session_insert(pool: &SqlitePool, s: &RecordingSessionDto) -> Resul
     sqlx::query(
         "INSERT INTO recording_sessions
          (id, source_id, preset_id, source_name, preset_name, started_at, stopped_at, outputs,
-          output_paths, dropped_frames, files, status, error_message)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          output_paths, dropped_frames, files, status, error_message, clock)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&s.id)
     .bind(&s.source_id)
@@ -123,32 +124,28 @@ pub async fn session_insert(pool: &SqlitePool, s: &RecordingSessionDto) -> Resul
     .bind(Json(&s.files))
     .bind(s.status)
     .bind(&s.error_message)
+    .bind(s.clock.as_ref().map(Json))
     .execute(pool)
     .await?;
     Ok(())
 }
 
-pub async fn session_update_stop(
-    pool: &SqlitePool,
-    id: &str,
-    stopped_at: &str,
-    status: RecordingStatus,
-    error_message: Option<&str>,
-    dropped_frames: Option<&[u64]>,
-    files: Option<&[Vec<String>]>,
-) -> Result<()> {
+/// Save how a session finished: its stop time, status and error, and its
+/// final dropped frames, files and clock.
+pub async fn session_update_stop(pool: &SqlitePool, s: &RecordingSessionDto) -> Result<()> {
     sqlx::query(
         "UPDATE recording_sessions
-         SET stopped_at = ?, status = ?, error_message = ?, dropped_frames = COALESCE(?, dropped_frames),
-             files = COALESCE(?, files)
+         SET stopped_at = ?, status = ?, error_message = ?, dropped_frames = ?, files = ?,
+             clock = COALESCE(?, clock)
          WHERE id = ?",
     )
-    .bind(stopped_at)
-    .bind(status)
-    .bind(error_message)
-    .bind(dropped_frames.map(Json))
-    .bind(files.map(Json))
-    .bind(id)
+    .bind(&s.stopped_at)
+    .bind(s.status)
+    .bind(&s.error_message)
+    .bind(Json(&s.dropped_frames))
+    .bind(Json(&s.files))
+    .bind(s.clock.as_ref().map(Json))
+    .bind(&s.id)
     .execute(pool)
     .await?;
     Ok(())

@@ -337,13 +337,28 @@ on its **node clock**, and a controller's nodes share one.
   controller emits `node.updated` when a peer's clock state changes (not for delay
   wobble). Settings has the controller's mode.
 
-Still to build on it:
+- **Clock domains.** Nodes agree on the time only within a domain: `controller:{id}` (a
+  controller and the nodes following it), `ptp:{domain}`, or `local:{node id}` for a node
+  on its own. `ClockStatusDto::domain` says which a node is in; `GET /clock/now` gives
+  the time on it. Times in the API are in µs, which picks a frame and stays exact as a
+  JavaScript number even on a PTP (TAI) clock.
+- **Synchronized start.** A start can carry `start_at: { domain, time_us }`. On a node
+  in that domain, whose source's monitor is on the node clock, every leg drops frames due
+  before it (a probe on the leg's appsrc, by running time) and begins with the first one
+  at or after it. Elsewhere it starts now. At most 10 s ahead; one that arrives late
+  starts with the first frame still to come. The Record view's bulk Record sets one 1.5 s
+  ahead (from the instance it talks to) for all its feeds and warns about any that
+  couldn't wait for it. Tested: feeds on two nodes begin within a frame after the start
+  (+14 and +20 ms at 30 fps). Closer than a frame needs the sources themselves locked
+  (genlock); each runs its own frame grid.
+- **Session clock.** Every session records its domain, the start it waited for, and when
+  its first video frame was due on the clock (`SessionClockDto`, the `clock` column), so
+  recordings in one domain can be lined up later, synchronized start or not. Missing if
+  the source was still on a previous clock.
 
-- **Synchronized start:** a start command carries a time on the shared clock; every leg
-  begins at the first frame at or after it.
-- Each captured frame stamped with capture time on the shared clock, giving recordings
-  and replay buffers one timeline across nodes (needs the controller's clock ↔ UTC
-  mapping for wall-clock time).
+Still to build on it: each frame stamped with capture time on the shared clock, giving
+replay buffers one timeline across nodes (with the controller's clock ↔ UTC mapping for
+wall-clock time).
 
 ---
 
@@ -557,7 +572,8 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/status` | id, name, version, uptime, `is_controller`, available encoders and source types, clock status |
-| GET | `/clock` | clock status: source (`local \| controller \| ptp`), synced, pending, delay, lost, stale sources, error |
+| GET | `/clock` | clock status: source (`local \| controller \| ptp`), domain, synced, pending, delay, lost, stale sources, error |
+| GET | `/clock/now` | `{ domain, time_us }`: the time now on this node's clock |
 | POST | `/clock/claim` | a controller claims this node's clock (see Clock sync); answers with the clock status |
 | GET / PUT | `/settings` | node name, monitor settings (thumbnail fps/size, meter interval) |
 | GET | `/storage` | writable volumes: mount point, total/free bytes, removable; what active recordings write to each and the time left |
@@ -573,7 +589,7 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 | POST | `/channels/{id}/load` | `{ media_id, in_ms?, out_ms?, end: hold \| black \| loop }` → cued at the in point |
 | POST | `/channels/{id}/transport` | `{ action: play \| pause \| stop \| seek, position_ms? }` |
 | GET | `/files?path=` | folders and media files in a directory (home if no path), for picking a file source. Read-only |
-| GET / POST | `/recordings` | list (`?before=&limit=`: newest first, 100 by default, at most 500, paged by `started_at`; the first page also carries active sessions) / start. Start body: `{ source_id, preset_id?, outputs: [...] }`. Refused onto a volume with under 1 GB free; cancels a running benchmark |
+| GET / POST | `/recordings` | list (`?before=&limit=`: newest first, 100 by default, at most 500, paged by `started_at`; the first page also carries active sessions) / start. Start body: `{ source_id, preset_id?, outputs: [...], start_at?: { domain, time_us } }` (see Clock sync). Refused onto a volume with under 1 GB free; cancels a running benchmark |
 | GET / DELETE | `/recordings/{id}` | session details / remove a finished session from history; `?files` deletes its files from disk first, and if any can't be deleted the session stays, listing those still on disk (409 while recording) |
 | GET / HEAD / DELETE | `/recordings/{id}/outputs/{i}/files/{j}` | a finished session's file, with range requests; `?download` adds `Content-Disposition` / delete it from disk and the session's list (`?path=` must match, so a stale index is refused; the session stays in history). 409 while recording |
 | POST | `/recordings/{id}/stop` | stop (waits for EOS drain) |
@@ -640,7 +656,7 @@ Every instance has the same schema (see `node/migrations/`):
 - `node_config` — key/value: `uuid`, `name`, `controller_enabled`, `monitor_*`
 - `recording_sessions` — one row per session, `output_paths` as a JSON array; the
   source and preset names and each output's format are kept with it, so history reads the
-  same after either is renamed or removed
+  same after either is renamed or removed; `clock` (JSON) places it on its clock
 - `configured_sources` — test, file, stream, device, WHIP and playout channel configs (`config` is JSON tagged with `type`)
 - `media` — the media library: path (unique), name, probed info (JSON), origin, session id
 - `presets` + `preset_outputs` — used while acting as controller (or from the UI on a lone node)

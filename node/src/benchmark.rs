@@ -565,9 +565,15 @@ impl Run {
                 .get_or_insert_with(|| format!("{}: {error}", path.display()));
         });
         let on_file: OnLegFile = Arc::new(|| {});
-        let legs =
-            recording::start_legs(&monitor, &format!("bench-{n}"), &legs, &on_error, &on_file)
-                .with_context(|| format!("start feed {n}'s outputs"))?;
+        let legs = recording::start_legs(
+            &monitor,
+            &format!("bench-{n}"),
+            &legs,
+            &on_error,
+            &on_file,
+            None,
+        )
+        .with_context(|| format!("start feed {n}'s outputs"))?;
         Ok(Feed { monitor, legs })
     }
 

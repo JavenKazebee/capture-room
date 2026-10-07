@@ -13,7 +13,7 @@
 //! leg's [`OnLegError`] callback.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -67,6 +67,10 @@ pub struct RecordingLeg {
     files: Arc<Mutex<Vec<PathBuf>>>,
     /// The video encoder element the leg was built with.
     encoder: &'static str,
+    /// Running time of the first video frame recorded; `u64::MAX` until one.
+    first_frame: Arc<AtomicU64>,
+    /// The monitor's base time, shared by the leg.
+    base_time: Option<gst::ClockTime>,
 }
 
 /// Called when a splitting leg opens a new file. Runs on a GStreamer
@@ -80,12 +84,17 @@ pub type OnLegFile = Arc<dyn Fn() + Send + Sync>;
 /// (missing encoder, a codec the container can't carry) fail without opening
 /// a file. If starting a leg fails, every leg of this attempt is rolled back
 /// and its partial file deleted.
+///
+/// With `start_at` (a time on the monitor's clock), the legs drop frames due
+/// before it, so legs started together on several nodes sharing a clock
+/// begin with the same frame.
 pub fn start_legs(
     monitor: &MonitorPipeline,
     tag: &str,
     legs: &[(PathBuf, RecordingProfile)],
     on_error: &OnLegError,
     on_file: &OnLegFile,
+    start_at: Option<gst::ClockTime>,
 ) -> Result<Vec<RecordingLeg>> {
     let built = legs
         .iter()
@@ -103,7 +112,7 @@ pub fn start_legs(
 
     let mut started: Vec<RecordingLeg> = Vec::with_capacity(built.len());
     for mut leg in built {
-        if let Err(e) = leg.start(monitor) {
+        if let Err(e) = leg.start(monitor, start_at) {
             leg.discard();
             for leg in started {
                 leg.discard();
@@ -468,18 +477,30 @@ impl RecordingLeg {
             location: path.to_path_buf(),
             files,
             encoder: encoder.element(),
+            first_frame: Arc::new(AtomicU64::new(u64::MAX)),
+            base_time: None,
         })
     }
 
     /// Open the file, start the pipeline and connect it to the producers.
-    fn start(&mut self, monitor: &MonitorPipeline) -> Result<()> {
+    fn start(&mut self, monitor: &MonitorPipeline, start_at: Option<gst::ClockTime>) -> Result<()> {
         // Share the monitor's clock and base time, so the forwarded timestamps
         // mean the same running time on both sides.
         if let (Some(clock), Some(base_time)) = monitor.timing() {
             self.pipeline.use_clock(Some(&clock));
             self.pipeline.set_base_time(base_time);
             self.pipeline.set_start_time(gst::ClockTime::NONE);
+            self.base_time = Some(base_time);
         }
+        let start_rt = start_at
+            .zip(self.base_time)
+            .map(|(at, base)| at.saturating_sub(base));
+        gate(
+            &self.video_src,
+            start_rt,
+            Some(Arc::clone(&self.first_frame)),
+        )?;
+        gate(&self.audio_src, start_rt, None)?;
 
         if self.pipeline.set_state(gst::State::Playing).is_err() {
             // The reason (e.g. "Could not open file … for writing") is on the bus.
@@ -501,6 +522,13 @@ impl RecordingLeg {
             .push(monitor.audio.add_consumer(&self.audio_src)?);
         info!(path = ?self.location, "recording leg started");
         Ok(())
+    }
+
+    /// When the first video frame recorded was due, on the monitor's clock.
+    pub fn first_frame(&self) -> Option<gst::ClockTime> {
+        let rt = self.first_frame.load(Ordering::Acquire);
+        let base = self.base_time?;
+        (rt != u64::MAX).then(|| gst::ClockTime::from_nseconds(rt) + base)
     }
 
     /// Video frames dropped so far because the leg couldn't keep up (its
@@ -582,6 +610,40 @@ impl RecordingLeg {
     pub fn encoder(&self) -> &'static str {
         self.encoder
     }
+}
+
+/// Drop `src`'s buffers due before `start` (running time), then note the
+/// first one let through in `first` and get out of the way.
+fn gate(
+    src: &gst_app::AppSrc,
+    start: Option<gst::ClockTime>,
+    first: Option<Arc<AtomicU64>>,
+) -> Result<()> {
+    let pad = src.static_pad("src").context("appsrc src pad")?;
+    pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
+        let Some(pts) = info.buffer().and_then(|b| b.pts()) else {
+            return gst::PadProbeReturn::Ok;
+        };
+        // The producer forwards the monitor's segment; without one, the
+        // timestamps are running time already.
+        let rt = pad
+            .sticky_event::<gst::event::Segment>(0)
+            .and_then(|e| {
+                e.segment()
+                    .downcast_ref::<gst::ClockTime>()
+                    .and_then(|s| s.to_running_time(pts))
+            })
+            .unwrap_or(pts);
+        if start.is_some_and(|start| rt < start) {
+            return gst::PadProbeReturn::Drop;
+        }
+        if let Some(first) = &first {
+            first.store(rt.nseconds(), Ordering::Release);
+        }
+        gst::PadProbeReturn::Remove
+    })
+    .context("add start gate")?;
+    Ok(())
 }
 
 fn remove_file(location: &Path) {
@@ -768,4 +830,102 @@ fn set_property(el: &gst::Element, name: &str, value: &str) -> Result<()> {
     }
     el.set_property_from_str(name, value);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::types::{
+        AudioTestSignal, ChromaSubsampling, MonitorSettingsDto, OutputAdvanced, PresetOutputInput,
+        TestSourceConfig, VideoCodec, VideoTestPattern,
+    };
+    use crate::sources::test::TestSource;
+
+    /// A leg told to start at a time begins with the first frame due at or
+    /// after it; one without starts with whatever arrives.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn legs_start_at_the_requested_time() {
+        gst::init().unwrap();
+        let source = TestSource::new(
+            "t".into(),
+            "t".into(),
+            TestSourceConfig {
+                pattern: VideoTestPattern::Smpte,
+                width: 320,
+                height: 180,
+                fps_num: 30,
+                fps_den: 1,
+                audio_signal: AudioTestSignal::Tone,
+                frequency: 440.0,
+                channels: 2,
+            },
+        );
+        let clock = gst::SystemClock::obtain();
+        let monitor =
+            MonitorPipeline::new(&source, &MonitorSettingsDto::default(), &clock).unwrap();
+        while monitor.video_frames() == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let dir = std::env::temp_dir().join(format!("capture-room-gate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let profile = RecordingProfile::from_output(&PresetOutputInput {
+            name: "a".into(),
+            codec: VideoCodec::H264,
+            container: Container::Mkv,
+            resolution: None,
+            framerate: None,
+            bitrate_kbps: None,
+            chroma: ChromaSubsampling::Yuv420,
+            path_template: String::new(),
+            preview: false,
+            advanced: OutputAdvanced::default(),
+        })
+        .unwrap();
+        let on_error: OnLegError = Arc::new(|_, e| panic!("leg failed: {e}"));
+        let on_file: OnLegFile = Arc::new(|| {});
+
+        let start_at = clock.time().unwrap() + gst::ClockTime::from_mseconds(700);
+        let gated = start_legs(
+            &monitor,
+            "gated",
+            &[(dir.join("gated.mkv"), profile.clone())],
+            &on_error,
+            &on_file,
+            Some(start_at),
+        )
+        .unwrap();
+        let free = start_legs(
+            &monitor,
+            "free",
+            &[(dir.join("free.mkv"), profile)],
+            &on_error,
+            &on_file,
+            None,
+        )
+        .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            gated[0].first_frame().is_none(),
+            "recorded before its start"
+        );
+        let free_first = free[0].first_frame().expect("ungated leg recorded nothing");
+        assert!(free_first < start_at);
+
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let first = gated[0].first_frame().expect("gated leg never started");
+        assert!(first >= start_at, "{first} is before {start_at}");
+        let frame = gst::ClockTime::SECOND / 30;
+        assert!(
+            first < start_at + frame,
+            "{first} is more than a frame after {start_at}"
+        );
+
+        for leg in gated.into_iter().chain(free) {
+            leg.stop(Duration::from_secs(5)).await.unwrap();
+        }
+        let _ = monitor.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
