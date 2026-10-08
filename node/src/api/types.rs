@@ -678,6 +678,15 @@ pub struct SessionClockDto {
     /// arrives.
     #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
     pub first_frame_us: Option<u64>,
+    /// UTC minus the clock's time when it started, in µs (see
+    /// [`ClockStatusDto::utc_offset_us`]). MOV files' timecode is the time
+    /// of day this gives each frame.
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub utc_offset_us: Option<i64>,
+    /// When the first video frame was due, in UTC (RFC 3339).
+    #[serde(default)]
+    pub first_frame_utc: Option<String>,
 }
 
 /// One output leg of a session: its name and format, as recorded.
@@ -1409,6 +1418,11 @@ pub struct ClockStatusDto {
     pub stale_sources: u32,
     /// Why the wanted clock couldn't be set up (e.g. PTP not permitted).
     pub error: Option<String>,
+    /// UTC minus the clock's time, in µs: the domain's mapping to wall-clock
+    /// time (the controller's wall clock, or TAI − 37 s on PTP). The same on
+    /// every node in the domain. `None` until a controller has sent it.
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub utc_offset_us: Option<i64>,
 }
 
 /// A controller asking a node to follow its clock. Sent with every health
@@ -1422,6 +1436,12 @@ pub struct ClockClaim {
     pub mode: ClockMode,
     /// The UDP port the controller serves its clock on.
     pub port: u16,
+    /// UTC minus the controller's clock, in µs: maps times on its clock to
+    /// wall-clock time, the same way on every node. Absent from controllers
+    /// that predate it, and in PTP mode (PTP time maps to UTC by itself).
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub utc_offset_us: Option<i64>,
 }
 
 /// A controller's clock settings.

@@ -661,6 +661,7 @@ async fn post_recording(
         &legs,
         key,
         req.start_at.as_ref(),
+        state.clock.utc_offset_us(),
     )?;
 
     if let Err(e) = db::session_insert(&state.db, &session).await {

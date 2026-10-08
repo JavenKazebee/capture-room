@@ -277,6 +277,7 @@ dependencies = [
  "gstreamer-pbutils 0.23.5",
  "gstreamer-sys 0.23.6",
  "gstreamer-utils 0.23.6",
+ "gstreamer-video 0.23.6",
  "gstreamer-video-sys 0.23.6",
  "mdns-sd",
  "mime_guess",

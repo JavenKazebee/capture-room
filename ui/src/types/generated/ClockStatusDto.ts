@@ -34,4 +34,10 @@ stale_sources: number,
 /**
  * Why the wanted clock couldn't be set up (e.g. PTP not permitted).
  */
-error: string | null, };
+error: string | null, 
+/**
+ * UTC minus the clock's time, in µs: the domain's mapping to wall-clock
+ * time (the controller's wall clock, or TAI − 37 s on PTP). The same on
+ * every node in the domain. `None` until a controller has sent it.
+ */
+utc_offset_us: number | null, };

@@ -289,12 +289,36 @@ thumbnail WebSocket:
 
 ## Timecode
 
-_Planned — not built. Today `TestSource` reports a fake wall-clock timecode and other
-sources report none._
+**Time-of-day timecode from the shared clock** is built: every frame recorded to MOV
+carries its capture time as timecode, so recordings from every node in a clock domain
+line up by timecode in an NLE (multicam sync in Resolve or Premiere), and every session
+records when its first frame was captured.
 
-- Reads LTC from a designated audio channel or VITC from the video signal via GStreamer timecode elements and the Decklink SDK timecode API
+- **Capture time.** A frame's capture time is its running time on the monitor plus the
+  monitor's base time: its time on the node clock, which nodes in a domain share.
+- **To wall-clock time.** The shared clock isn't wall time (a controller serves its
+  monotonic clock; PTP is TAI), so each domain has a mapping, `utc_offset_us` (UTC minus
+  clock time) on `ClockStatusDto`: a controller sends its own (from its wall clock) with
+  every claim, so all its nodes map times identically; PTP is TAI − 37 s; a node on its
+  own (or a source still on a previous clock) uses its own wall clock.
+- **Timecode.** A probe on a MOV leg's encoder output stamps each frame with a
+  `VideoTimeCodeMeta`: its capture time mapped to UTC, as time of day in the node's time
+  zone, counted at the output's frame rate (drop-frame at 29.97 and 59.94). qtmux turns
+  the first frame's into the file's `tmcd` track (each file's, when a leg splits); a
+  frame that already has timecode keeps it. MP4 (`mp4mux` writes no timecode track) and
+  Matroska (no timecode track) get none. Tested: a recording's file reads back the
+  timecode of its first frame's clock time, exactly.
+- **Sessions.** `SessionClockDto` keeps the offset it started with and gives the first
+  frame's UTC time (`first_frame_utc`), shown in Recordings with the clock it was on.
+  The mapping is fixed per session, so a controller's wall clock being adjusted (NTP)
+  mid-recording doesn't step the timecode.
+- Nodes in different time zones would write different timecode hours: keep a venue's
+  machines in one zone.
+
+_Still planned:_ real source timecode.
+
+- Reads LTC from a designated audio channel or VITC from the video signal via GStreamer timecode elements and the Decklink SDK timecode API (it would take priority: a frame that has timecode keeps it)
 - Exposed per-source via the status WebSocket and REST
-- Written into output file metadata where the container supports it (MOV)
 
 ### Clock sync across nodes
 
@@ -356,9 +380,9 @@ on its **node clock**, and a controller's nodes share one.
   recordings in one domain can be lined up later, synchronized start or not. Missing if
   the source was still on a previous clock.
 
-Still to build on it: each frame stamped with capture time on the shared clock, giving
-replay buffers one timeline across nodes (with the controller's clock ↔ UTC mapping for
-wall-clock time).
+Built on it: each recorded frame's capture time on the shared clock, mapped to wall-clock
+time per domain and written as MOV timecode (see Timecode above). Replay buffers will use
+the same capture times as one timeline across nodes.
 
 ---
 

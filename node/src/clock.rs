@@ -33,6 +33,9 @@ pub const MASTER_TIMEOUT: Duration = Duration::from_secs(20);
 const LOST_AFTER: Duration = Duration::from_secs(10);
 /// How often a switch checks whether the new clock has synced.
 const SYNC_POLL: gst::ClockTime = gst::ClockTime::SECOND;
+/// UTC minus TAI (PTP's timescale), in µs: 37 leap seconds since 2017, and
+/// none are planned.
+const PTP_UTC_OFFSET_US: i64 = -37_000_000;
 
 pub struct NodeClock {
     node_id: String,
@@ -51,6 +54,8 @@ struct Inner {
     pending: Option<Follow>,
     error: Option<String>,
     serial: u64,
+    /// UTC minus the master's clock, as its last claim said.
+    claimed_utc_offset_us: Option<i64>,
 }
 
 struct Master {
@@ -93,6 +98,7 @@ impl NodeClock {
                 pending: None,
                 error: None,
                 serial: 0,
+                claimed_utc_offset_us: None,
             }),
             changed: watch::channel(0).0,
         }
@@ -135,6 +141,23 @@ impl NodeClock {
                 format!("controller:{controller_id}")
             }
             ClockSourceDto::Ptp { domain } => format!("ptp:{domain}"),
+        }
+    }
+
+    /// UTC minus the time on the clock in use, in µs: the same on every node
+    /// in its domain, so a time on the shared clock maps to the same
+    /// wall-clock time everywhere. A controller's clock maps by its own wall
+    /// clock (sent with its claims), PTP by TAI − 37 s.
+    pub fn utc_offset_us(&self) -> Option<i64> {
+        let inner = self.inner.lock().unwrap();
+        Self::offset_of(&inner)
+    }
+
+    fn offset_of(inner: &Inner) -> Option<i64> {
+        match &inner.active.source {
+            ClockSourceDto::Local => local_utc_offset_us(&inner.active.clock),
+            ClockSourceDto::Controller { .. } => inner.claimed_utc_offset_us,
+            ClockSourceDto::Ptp { .. } => Some(PTP_UTC_OFFSET_US),
         }
     }
 
@@ -186,6 +209,7 @@ impl NodeClock {
             id: claim.controller_id.clone(),
             last_claim: Instant::now(),
         });
+        inner.claimed_utc_offset_us = claim.utc_offset_us;
         let source = match claim.mode {
             ClockMode::Controller => ClockSourceDto::Controller {
                 controller_id: claim.controller_id.clone(),
@@ -318,8 +342,21 @@ impl NodeClock {
             lost: remote && heard.elapsed() > LOST_AFTER,
             stale_sources,
             error: inner.error.clone(),
+            utc_offset_us: Self::offset_of(&inner),
         }
     }
+}
+
+/// UTC minus `clock`'s time, in µs, by this machine's wall clock: read
+/// between two readings of the clock, so it's off by at most half the gap.
+pub fn local_utc_offset_us(clock: &gst::Clock) -> Option<i64> {
+    let before = clock.time()?;
+    let utc = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    let after = clock.time()?;
+    let mid = (before.nseconds() / 2 + after.nseconds() / 2) / 1000;
+    Some(utc.as_micros() as i64 - mid as i64)
 }
 
 /// Whether two sources are the same clock. A controller's name is only a
@@ -411,6 +448,7 @@ mod tests {
             controller_name: id.to_string(),
             mode: ClockMode::Controller,
             port,
+            utc_offset_us: None,
         }
     }
 

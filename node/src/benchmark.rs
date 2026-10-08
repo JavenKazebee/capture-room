@@ -572,6 +572,7 @@ impl Run {
             &on_error,
             &on_file,
             None,
+            None,
         )
         .with_context(|| format!("start feed {n}'s outputs"))?;
         Ok(Feed { monitor, legs })

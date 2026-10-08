@@ -17,4 +17,14 @@ start_at_us: number | null,
  * When its first video frame was due on the clock. `None` until one
  * arrives.
  */
-first_frame_us: number | null, };
+first_frame_us: number | null, 
+/**
+ * UTC minus the clock's time when it started, in µs (see
+ * [`ClockStatusDto::utc_offset_us`]). MOV files' timecode is the time
+ * of day this gives each frame.
+ */
+utc_offset_us: number | null, 
+/**
+ * When the first video frame was due, in UTC (RFC 3339).
+ */
+first_frame_utc: string | null, };

@@ -18,9 +18,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use gstreamer::{self as gst, prelude::*};
+use gstreamer::{self as gst, glib, prelude::*};
 use gstreamer_app as gst_app;
 use gstreamer_utils::{ConsumptionLink, StreamProducer};
+use gstreamer_video as gst_video;
 use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
@@ -71,6 +72,9 @@ pub struct RecordingLeg {
     first_frame: Arc<AtomicU64>,
     /// The monitor's base time, shared by the leg.
     base_time: Option<gst::ClockTime>,
+    /// The encoder's output, stamped with timecode for containers that
+    /// keep it (MOV).
+    timecode_pad: Option<gst::Pad>,
 }
 
 /// Called when a splitting leg opens a new file. Runs on a GStreamer
@@ -87,7 +91,8 @@ pub type OnLegFile = Arc<dyn Fn() + Send + Sync>;
 ///
 /// With `start_at` (a time on the monitor's clock), the legs drop frames due
 /// before it, so legs started together on several nodes sharing a clock
-/// begin with the same frame.
+/// begin with the same frame. With `utc_offset_us` (UTC minus the monitor's
+/// clock), MOV files get timecode: each frame's time of day.
 pub fn start_legs(
     monitor: &MonitorPipeline,
     tag: &str,
@@ -95,6 +100,7 @@ pub fn start_legs(
     on_error: &OnLegError,
     on_file: &OnLegFile,
     start_at: Option<gst::ClockTime>,
+    utc_offset_us: Option<i64>,
 ) -> Result<Vec<RecordingLeg>> {
     let built = legs
         .iter()
@@ -112,7 +118,7 @@ pub fn start_legs(
 
     let mut started: Vec<RecordingLeg> = Vec::with_capacity(built.len());
     for mut leg in built {
-        if let Err(e) = leg.start(monitor, start_at) {
+        if let Err(e) = leg.start(monitor, start_at, utc_offset_us) {
             leg.discard();
             for leg in started {
                 leg.discard();
@@ -264,6 +270,9 @@ impl RecordingLeg {
             )?);
         }
         let venc = build_video_encoder(profile, encoder)?;
+        let timecode_pad = (profile.container == Container::Mov)
+            .then(|| venc.static_pad("src"))
+            .flatten();
         if encoder == VideoEncoder::VtProRes {
             // vtenc_prores marks every frame a delta unit, but ProRes frames
             // are all keyframes: left as is, the muxer's keyframe table lists
@@ -479,11 +488,17 @@ impl RecordingLeg {
             encoder: encoder.element(),
             first_frame: Arc::new(AtomicU64::new(u64::MAX)),
             base_time: None,
+            timecode_pad,
         })
     }
 
     /// Open the file, start the pipeline and connect it to the producers.
-    fn start(&mut self, monitor: &MonitorPipeline, start_at: Option<gst::ClockTime>) -> Result<()> {
+    fn start(
+        &mut self,
+        monitor: &MonitorPipeline,
+        start_at: Option<gst::ClockTime>,
+        utc_offset_us: Option<i64>,
+    ) -> Result<()> {
         // Share the monitor's clock and base time, so the forwarded timestamps
         // mean the same running time on both sides.
         if let (Some(clock), Some(base_time)) = monitor.timing() {
@@ -501,6 +516,11 @@ impl RecordingLeg {
             Some(Arc::clone(&self.first_frame)),
         )?;
         gate(&self.audio_src, start_rt, None)?;
+        if let (Some(pad), Some(base), Some(offset)) =
+            (&self.timecode_pad, self.base_time, utc_offset_us)
+        {
+            stamp_timecode(pad, base, offset);
+        }
 
         if self.pipeline.set_state(gst::State::Playing).is_err() {
             // The reason (e.g. "Could not open file … for writing") is on the bus.
@@ -644,6 +664,66 @@ fn gate(
     })
     .context("add start gate")?;
     Ok(())
+}
+
+/// Stamp each frame leaving `pad` with its time of day as SMPTE timecode:
+/// its time on the clock (running time + `base`) mapped to UTC by
+/// `utc_offset_us`, in this machine's time zone. Nodes on one clock domain
+/// share the mapping, so their files' timecode lines up frame for frame.
+/// qtmux writes the first frame's into the file's timecode track (each file's,
+/// when a leg splits). A frame that already has timecode (from its source)
+/// keeps it.
+fn stamp_timecode(pad: &gst::Pad, base: gst::ClockTime, utc_offset_us: i64) {
+    pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
+        let Some(pts) = info.buffer().and_then(|b| b.pts()) else {
+            return gst::PadProbeReturn::Ok;
+        };
+        if info
+            .buffer()
+            .is_some_and(|b| b.meta::<gst_video::VideoTimeCodeMeta>().is_some())
+        {
+            return gst::PadProbeReturn::Ok;
+        }
+        let rt = pad
+            .sticky_event::<gst::event::Segment>(0)
+            .and_then(|e| {
+                e.segment()
+                    .downcast_ref::<gst::ClockTime>()
+                    .and_then(|s| s.to_running_time(pts))
+            })
+            .unwrap_or(pts);
+        let fps = pad
+            .current_caps()
+            .and_then(|c| c.structure(0)?.get::<gst::Fraction>("framerate").ok())
+            .filter(|f| f.numer() > 0 && f.denom() > 0);
+        let utc_us = (base + rt).useconds() as i64 + utc_offset_us;
+        if let (Some(tc), Some(buffer)) =
+            (fps.and_then(|f| time_code(utc_us, f)), info.buffer_mut())
+        {
+            gst_video::VideoTimeCodeMeta::add(buffer.make_mut(), &tc);
+        }
+        gst::PadProbeReturn::Ok
+    });
+}
+
+/// The timecode at `utc_us` (µs since the Unix epoch) in local time, at
+/// `fps`. 29.97 and 59.94 count drop-frame, as their timecode does.
+fn time_code(utc_us: i64, fps: gst::Fraction) -> Option<gst_video::ValidVideoTimeCode> {
+    let dt = glib::DateTime::from_unix_local(utc_us.div_euclid(1_000_000))
+        .ok()?
+        .add(glib::TimeSpan::from_microseconds(
+            utc_us.rem_euclid(1_000_000),
+        ))
+        .ok()?;
+    let flags = if fps.denom() == 1001 && fps.numer() % 30000 == 0 {
+        gst_video::VideoTimeCodeFlags::DROP_FRAME
+    } else {
+        gst_video::VideoTimeCodeFlags::empty()
+    };
+    gst_video::VideoTimeCode::from_date_time(fps, &dt, flags, 0)
+        .ok()?
+        .try_into()
+        .ok()
 }
 
 fn remove_file(location: &Path) {
@@ -885,7 +965,7 @@ mod tests {
         let on_error: OnLegError = Arc::new(|_, e| panic!("leg failed: {e}"));
         let on_file: OnLegFile = Arc::new(|| {});
 
-        let start_at = clock.time().unwrap() + gst::ClockTime::from_mseconds(700);
+        let start_at = clock.time().unwrap() + gst::ClockTime::from_mseconds(1500);
         let gated = start_legs(
             &monitor,
             "gated",
@@ -893,6 +973,7 @@ mod tests {
             &on_error,
             &on_file,
             Some(start_at),
+            None,
         )
         .unwrap();
         let free = start_legs(
@@ -902,18 +983,31 @@ mod tests {
             &on_error,
             &on_file,
             None,
+            None,
         )
         .unwrap();
 
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Waited for rather than slept: a loaded machine (the whole suite in
+        // parallel) can take a while to get the first frame encoded.
+        let free_first = loop {
+            if let Some(first) = free[0].first_frame() {
+                break first;
+            }
+            assert!(
+                clock.time().unwrap() < start_at,
+                "ungated leg recorded nothing"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert!(free_first < start_at);
         assert!(
             gated[0].first_frame().is_none(),
             "recorded before its start"
         );
-        let free_first = free[0].first_frame().expect("ungated leg recorded nothing");
-        assert!(free_first < start_at);
 
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        while clock.time().unwrap() < start_at + gst::ClockTime::from_mseconds(800) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         let first = gated[0].first_frame().expect("gated leg never started");
         assert!(first >= start_at, "{first} is before {start_at}");
         let frame = gst::ClockTime::SECOND / 30;
@@ -927,5 +1021,107 @@ mod tests {
         }
         let _ = monitor.stop();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A MOV leg's file carries the timecode of its first frame's time of
+    /// day on the clock (drop-frame at 29.97), from the UTC mapping given.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mov_files_carry_time_of_day_timecode() {
+        gst::init().unwrap();
+        let source = TestSource::new(
+            "t".into(),
+            "t".into(),
+            TestSourceConfig {
+                pattern: VideoTestPattern::Smpte,
+                width: 320,
+                height: 180,
+                fps_num: 30000,
+                fps_den: 1001,
+                audio_signal: AudioTestSignal::Tone,
+                frequency: 440.0,
+                channels: 2,
+            },
+        );
+        let clock = gst::SystemClock::obtain();
+        let monitor =
+            MonitorPipeline::new(&source, &MonitorSettingsDto::default(), &clock).unwrap();
+        while monitor.video_frames() == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let dir = std::env::temp_dir().join(format!("capture-room-tc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("tc.mov");
+        let profile = RecordingProfile::from_output(&PresetOutputInput {
+            name: "a".into(),
+            codec: VideoCodec::H264,
+            container: Container::Mov,
+            resolution: None,
+            framerate: None,
+            bitrate_kbps: None,
+            chroma: ChromaSubsampling::Yuv420,
+            path_template: String::new(),
+            preview: false,
+            advanced: OutputAdvanced::default(),
+        })
+        .unwrap();
+        let on_error: OnLegError = Arc::new(|_, e| panic!("leg failed: {e}"));
+        let on_file: OnLegFile = Arc::new(|| {});
+        // An hour off this machine's own mapping, as a controller's might be.
+        let offset = crate::clock::local_utc_offset_us(&clock).unwrap() + 3_600_000_000;
+        let legs = start_legs(
+            &monitor,
+            "tc",
+            &[(file.clone(), profile)],
+            &on_error,
+            &on_file,
+            None,
+            Some(offset),
+        )
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        let first = legs[0].first_frame().expect("nothing recorded");
+        for leg in legs {
+            leg.stop(Duration::from_secs(5)).await.unwrap();
+        }
+        let _ = monitor.stop();
+
+        let want = time_code(
+            first.useconds() as i64 + offset,
+            gst::Fraction::new(30000, 1001),
+        )
+        .unwrap()
+        .to_string();
+        assert!(want.contains(';'), "drop-frame: {want}");
+        // Read back with ffprobe where it's installed.
+        match std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-select_streams", "v:0"])
+            .args(["-show_entries", "stream_tags=timecode", "-of", "csv=p=0"])
+            .arg(&file)
+            .output()
+        {
+            Ok(out) => {
+                let got = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                println!("file timecode {got}, expected {want}");
+                assert_eq!(got, want, "the file's timecode");
+            }
+            Err(_) => println!("no ffprobe: not reading the file back"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Timecode counts frames of the time of day; a second is a second.
+    #[test]
+    fn time_code_counts_the_time_of_day() {
+        gst::init().unwrap();
+        let fps = gst::Fraction::new(25, 1);
+        let t = 1_790_000_000_000_000; // a whole second
+        let a = time_code(t, fps).unwrap();
+        let b = time_code(t + 1_120_000, fps).unwrap();
+        assert_eq!(a.frames(), 0);
+        assert_eq!(b.frames(), 3, "0.12 s is 3 frames at 25 fps");
+        assert_eq!((b.seconds() + 60 - a.seconds()) % 60, 1);
+        assert!(!a
+            .flags()
+            .contains(gst_video::VideoTimeCodeFlags::DROP_FRAME));
     }
 }

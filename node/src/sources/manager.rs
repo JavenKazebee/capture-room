@@ -54,6 +54,12 @@ impl ActiveSession {
         let first = self.legs.iter().filter_map(RecordingLeg::first_frame).min();
         self.dto.clock.clone().map(|c| SessionClockDto {
             first_frame_us: first.map(|t| t.useconds()),
+            first_frame_utc: first
+                .zip(c.utc_offset_us)
+                .and_then(|(t, offset)| {
+                    chrono::DateTime::from_timestamp_micros(t.useconds() as i64 + offset)
+                })
+                .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
             ..c
         })
     }
@@ -445,6 +451,8 @@ impl SourceManager {
     /// (which supplies each leg's name and preview flag for the session).
     /// With `start_at` on this node's clock domain, the legs begin at the
     /// first frame due at or after it; on another domain they start now.
+    /// `utc_offset_us` is the domain's mapping to UTC (see
+    /// [`crate::clock::NodeClock::utc_offset_us`]), for timecode.
     #[allow(clippy::too_many_arguments)]
     pub fn start_recording(
         &mut self,
@@ -455,6 +463,7 @@ impl SourceManager {
         legs: &[(PathBuf, RecordingProfile)],
         outputs_key: String,
         start_at: Option<&ClockTimeDto>,
+        utc_offset_us: Option<i64>,
     ) -> Result<RecordingSessionDto> {
         if self.sessions.values().any(|s| s.dto.source_id == source_id) {
             bail!("source {source_id} already has an active recording");
@@ -508,10 +517,17 @@ impl SourceManager {
             }
             None => None,
         };
+        // Off the node clock, this machine's own wall clock maps it.
+        let utc_offset_us = on_node_clock
+            .then_some(utc_offset_us)
+            .flatten()
+            .or_else(|| crate::clock::local_utc_offset_us(monitor.clock()));
         let session_clock = on_node_clock.then(|| SessionClockDto {
             domain: self.clock_domain.clone(),
             start_at_us: start_at.map(|t| t.useconds()),
             first_frame_us: None,
+            utc_offset_us,
+            first_frame_utc: None,
         });
 
         let id = Uuid::new_v4().to_string();
@@ -529,8 +545,15 @@ impl SourceManager {
         let on_file: OnLegFile = Arc::new(move || {
             let _ = files_tx.send(files_session.clone());
         });
-        let recording_legs =
-            recording::start_legs(monitor, &id[..8], legs, &on_error, &on_file, start_at)?;
+        let recording_legs = recording::start_legs(
+            monitor,
+            &id[..8],
+            legs,
+            &on_error,
+            &on_file,
+            start_at,
+            utc_offset_us,
+        )?;
 
         let dto = RecordingSessionDto {
             id,

@@ -93,10 +93,12 @@ impl NodeRegistry {
             return (false, false);
         };
         let recovered = !e.healthy;
-        // The delay wobbles with every exchange; only state changes count.
+        // The delay and UTC offset wobble with every exchange; only state
+        // changes count.
         let state_of = |c: &Option<ClockStatusDto>| {
             c.clone().map(|c| ClockStatusDto {
                 delay_us: None,
+                utc_offset_us: None,
                 ..c
             })
         };

@@ -10,4 +10,10 @@ export type ClockClaim = { controller_id: string, controller_name: string, mode:
 /**
  * The UDP port the controller serves its clock on.
  */
-port: number, };
+port: number, 
+/**
+ * UTC minus the controller's clock, in µs: maps times on its clock to
+ * wall-clock time, the same way on every node. Absent from controllers
+ * that predate it, and in PTP mode (PTP time maps to UTC by itself).
+ */
+utc_offset_us: number | null, };

@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 
 use super::registry::NodeEntry;
 use super::{relay, Ctx};
-use crate::api::types::{ClockClaim, NodeStatus, WsEvent};
+use crate::api::types::{ClockClaim, ClockMode, NodeStatus, WsEvent};
 
 const SERVICE_TYPE: &str = "_capture-room._tcp.local.";
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
@@ -177,6 +177,10 @@ pub fn start_health_poller(ctx: Ctx) {
                 Ok(mode) => Some(ClockClaim {
                     controller_id: ctx.state.node_id.clone(),
                     controller_name: ctx.state.node_name(),
+                    // The clock served is this machine's own.
+                    utc_offset_us: (mode == ClockMode::Controller)
+                        .then(|| crate::clock::local_utc_offset_us(ctx.state.clock.local()))
+                        .flatten(),
                     mode,
                     port: ctx.state.clock_port,
                 }),

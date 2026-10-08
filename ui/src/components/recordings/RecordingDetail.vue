@@ -176,8 +176,33 @@ const details = computed(() => [
   { label: 'Started', value: when(s.value.started_at), mono: true },
   { label: 'Stopped', value: when(s.value.stopped_at), mono: true },
   { label: 'Duration', value: duration.value, mono: true },
+  ...(s.value.clock
+    ? [
+        { label: 'First frame', value: firstFrame(s.value.clock.first_frame_utc), mono: true },
+        { label: 'Clock', value: clockLabel(s.value.clock.domain, !!s.value.clock.start_at_us) },
+      ]
+    : []),
   { label: 'Session', value: s.value.id, mono: true, copy: true },
 ])
+
+/** When the first frame was captured, to the millisecond: what lines recordings up. */
+function firstFrame(iso: string | null) {
+  if (!iso) return null
+  const d = new Date(iso)
+  const ms = String(d.getMilliseconds()).padStart(3, '0')
+  return `${d.toLocaleTimeString([], { hour12: false })}.${ms}`
+}
+
+function clockLabel(domain: string, synchronized: boolean) {
+  const [kind, id] = [domain.slice(0, domain.indexOf(':')), domain.slice(domain.indexOf(':') + 1)]
+  const what =
+    kind === 'controller'
+      ? `Shared with ${nodes.labelOf(id)}`
+      : kind === 'ptp'
+        ? `PTP domain ${id}`
+        : 'This node only'
+  return synchronized ? `${what}, synchronized start` : what
+}
 
 const AUDIO: Record<SessionAudio, string> = { pcm: 'PCM', aac: 'AAC', opus: 'Opus' }
 

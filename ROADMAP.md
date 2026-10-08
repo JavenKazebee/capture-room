@@ -19,8 +19,9 @@ _Last updated: 2026-10-07_
 7. ✅ **Benchmark + capacity estimator** (with storage headroom)
 8. ✅ **Recordings view** (+ browser preview)
 9. **Playback** — 🚧 gapless playlists shipped; more output types next
-10. **Clock sync across nodes** — ✅ shared node clock (controller's clock or PTP) and
-    synchronized start. Prerequisite for multi-angle replay
+10. **Clock sync across nodes** — ✅ shared node clock (controller's clock or PTP),
+    synchronized start, and frame capture times as MOV timecode. Prerequisite for
+    multi-angle replay
 11. **Setup page** — per-node permission and system checks, with shortcuts to fix them
 12. **Instant replay**
 13. **Follow-on**, in rough priority order (see below)
@@ -144,8 +145,11 @@ Design in ARCHITECTURE.md (Timecode › Clock sync).
   legs begin at the first frame due at or after it. Bulk Record sets one 1.5 s ahead and
   warns about feeds on another clock. Every session records its clock domain and first
   frame time, so recordings can be lined up later.
-- Frames stamped with capture time on the shared clock (and a clock ↔ UTC mapping from
-  the controller for wall-clock time).
+- ✅ **Frame capture times (2026-10-07).** Each domain maps its clock to UTC (the
+  controller's wall clock, sent with its claims; TAI − 37 s on PTP). MOV recordings carry
+  each frame's capture time as time-of-day timecode (drop-frame at 29.97), so files from
+  every node line up by timecode in an NLE; sessions keep their first frame's UTC time,
+  shown in Recordings. MP4 and MKV get no timecode track (their muxers write none).
 - PTP is untested against a real grandmaster: try it on ACC's Dante network, and check
   the helper's permissions on macOS and Windows builds.
 
