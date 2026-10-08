@@ -539,14 +539,42 @@ MonitorPipeline producers ─┬─► recording legs (unchanged)
   switch. Without a cued next item (it was still cueing, or failed), it's cued then,
   with a gap. Tested: a three-item playlist keeps 33 ms between every video frame and
   no audio gap across handovers.
-- **Outputs** are data (`OutputConfig`, tagged by `type`; only `ndi` so far), not yet an
-  `OutputSink` trait: one comes when a second output type needs it. Output legs are
-  consumers of the monitor's producers, like recording legs, with the monitor's clock and
-  base time; a failing output (no NDI Runtime) fails alone and shows on the channel.
-  `SourceManager` starts them with the monitor and restarts them when they change; a
-  channel's outputs are left out of its fingerprint, so editing them doesn't restart the
-  program or the clip. NDI names are unique across a node's channels.
-- **Still to come:** SRT / RTSP → local display /
+- **Outputs** are data (`OutputConfig`, tagged by `type`: `ndi`, `srt`, `rtsp`), each
+  built by an `OutputSink` (the counterpart of `InputSource`). Pipeline outputs are fed
+  from the monitor's producers, like a recording leg, with the monitor's clock and base
+  time; a failing output (no NDI Runtime) fails alone and shows on the channel. `SourceManager`
+  starts them with the monitor and restarts them when they change; a channel's outputs
+  are left out of its fingerprint, so editing them doesn't restart the program or the
+  clip. NDI names are unique across a node's channels.
+- **SRT output:** H.264 and AAC in MPEG-TS (`alignment=7`, one SRT payload per buffer)
+  into `srtsink`, with fixed live settings: the first live encoder the node has
+  (`vtenc_h264` realtime, then `x264enc` `zerolatency`), a keyframe every second and
+  parameter sets with each one, so a receiver joining mid-stream waits at most a second.
+  The output sets only bitrate, latency and an optional passphrase. URLs follow the
+  Stream source's rules: no host listens (receivers connect; `wait-for-connection=false`
+  so nobody connected drops the stream rather than holding up the program), a host
+  calls (`srtsink` retries on its own until it answers). A listener counts its receivers
+  (`caller-added` / `caller-removed`), shown beside the output. Listening ports are
+  checked against every source's and output's on the node. Audio is at most 8 channels
+  (AAC). Both encoders' output is held until both have caps, and video then starts at a
+  keyframe: otherwise `mpegtsmux` writes a first program table with one stream and a
+  second adding the other, and `srtsink` replays that first table to every receiver
+  that connects, so each would see the program change (and many drop a stream).
+- **RTSP output:** the node's RTSP server (`gst-rtsp-server`, port 8554, its own GLib
+  main loop, started with the first RTSP output) serves each output as a mount,
+  `rtsp://<node>:8554/<path>`, the path defaulting to the channel's name made URL-safe
+  and unique across the node's channels. A shared media factory: the pipeline (the same
+  live H.264 settings as SRT, AAC, `rtph264pay` / `rtpmp4gpay`) is built when the first
+  viewer connects and torn down when the last leaves, so an unwatched mount encodes
+  nothing. `media-configure` connects its appsrcs to the monitor's producers on the
+  monitor's clock and base time; `unprepared` drops the links. Viewers are the session
+  pool's sessions on the mount. Removing the output unmounts it and unprepares its
+  media. Port 8554 is refused for listening sources while any channel serves RTSP (and
+  the other way round). `OutputSink::start` returns a `RunningOutput`, so a sink needn't
+  own a pipeline; NDI and SRT run theirs through `PipelineOutput`.
+- A channel no longer needs NDI to run: the Channel type needs the compositor, mixer
+  and decoder, and reports the output types the node can send (`protocols`: `ndi`, `srt`, `rtsp`).
+- **Still to come:** local display /
   HDMI → WHEP → Decklink / AJA outputs (SDI cards are the clock master, which changes
   the clock design); slates; channels in the benchmark.
 
@@ -867,7 +895,7 @@ Three tiers, the same on every OS:
 
 | Tier | Examples | How it ships |
 |------|----------|--------------|
-| Core GStreamer (C) | encoders, `rtspsrc`, `srtsrc`, `webrtcbin`, device providers | Linux: distro package dependencies. macOS: GStreamer.framework bundled in the .app. Windows: the official MSVC runtime DLLs and plugin dir next to the exe, with `GST_PLUGIN_PATH` set relative to it at startup |
+| Core GStreamer (C) | encoders, `rtspsrc`, `srtsrc`, `webrtcbin`, device providers, and the RTSP server library (`libgstrtspserver`, linked, not a plugin: a node without it won't start; Linux `gst-rtsp-server` / `libgstrtspserver-1.0-0`) | Linux: distro package dependencies. macOS: GStreamer.framework bundled in the .app. Windows: the official MSVC runtime DLLs and plugin dir next to the exe, with `GST_PLUGIN_PATH` set relative to it at startup |
 | Rust plugins | ndi, fallbackswitch, webrtc (WHIP) | statically linked into the binary (one pinned gst-plugins-rs rev), registered in `main.rs` |
 | Vendor runtimes | NDI Runtime | user-installed (licensing, below) |
 

@@ -18,7 +18,8 @@ _Last updated: 2026-10-07_
 6. ✅ **Looping media file source**
 7. ✅ **Benchmark + capacity estimator** (with storage headroom)
 8. ✅ **Recordings view** (+ browser preview)
-9. **Playback** — 🚧 gapless playlists shipped; more output types next
+9. **Playback** — 🚧 gapless playlists, SRT and RTSP outputs shipped; local display /
+   HDMI output next
 10. **Clock sync across nodes** — ✅ shared node clock (controller's clock or PTP),
     synchronized start, and frame capture times as MOV timecode. Prerequisite for
     multi-angle replay
@@ -116,8 +117,8 @@ A full playout system — capture in reverse. Design in ARCHITECTURE.md (Playbac
   Gapless, frame-accurate cueing; thumbnails and meters like a source.
 - **Playlists** with in/out points and transport (cue, play, pause, stop, next, loop),
   owned by the node running the channel.
-- **Output types, in order:** NDI (`ndisink`, no hardware needed) → SRT / RTSP → local
-  display / HDMI out → WHEP → Decklink / AJA.
+- **Output types, in order:** NDI (`ndisink`, no hardware needed) → SRT / RTSP (both
+  shipped) → local display / HDMI out → WHEP → Decklink / AJA.
 - Reuses file decoding from the looping media file source (#6).
 - Playout channels count against capacity: extend the benchmark to cover them.
 - **Playback workspace** in the UI.
@@ -126,8 +127,15 @@ A full playout system — capture in reverse. Design in ARCHITECTURE.md (Playbac
   plays the next one, holds, goes to black or loops at its out point; the next item is
   cued in the background and takes over at the frame after the last one; Next takes it
   by hand; the playlist can loop. A changed channel (rename, new format) keeps its
-  transport, so what's on air plays on through the program restart. Next: more output
-  types (SRT / RTSP).
+  transport, so what's on air plays on through the program restart.
+- ✅ **SRT output (2026-10-07)** — the `OutputSink` trait, and SRT as its second type:
+  H.264/AAC in MPEG-TS, listener or caller, with bitrate, latency and passphrase (fixed
+  live encode settings otherwise; a stream preset UI can come if it's needed). Listeners
+  show how many receivers are connected. Channels no longer need NDI to run.
+- ✅ **RTSP output (2026-10-07)** — the node serves each RTSP output as a mount on its
+  RTSP server (port 8554), `rtsp://node:8554/<channel name>`; encoded only while someone
+  watches, one encode shared by every viewer. Links `libgstrtspserver` (a new required
+  package on Linux). Next: local display / HDMI out.
 - Renaming a channel still restarts its program (a brief glitch on air, the clip
   survives): the name is in its fingerprint because the kept source would otherwise
   show the old name.

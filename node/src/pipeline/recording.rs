@@ -901,7 +901,7 @@ fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Res
 
 /// `set_property_from_str` panics on an unknown property; encoder builds
 /// differ between platforms, so a missing one is an error instead.
-fn set_property(el: &gst::Element, name: &str, value: &str) -> Result<()> {
+pub(crate) fn set_property(el: &gst::Element, name: &str, value: &str) -> Result<()> {
     if el.find_property(name).is_none() {
         anyhow::bail!(
             "{} has no `{name}` property",

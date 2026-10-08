@@ -3,4 +3,13 @@
 /**
  * Where a channel's program is sent.
  */
-export type OutputConfig = { "type": "ndi", ndi_name: string | null, };
+export type OutputConfig = { "type": "ndi", ndi_name: string | null, } | { "type": "srt", url: string, latency_ms: number, bitrate_kbps: number, 
+/**
+ * Encrypts the stream; receivers need the same one. 10–79
+ * characters.
+ */
+passphrase: string | null, } | { "type": "rtsp", 
+/**
+ * The mount path; the channel's name when unset. Made URL-safe.
+ */
+path: string | null, bitrate_kbps: number, };

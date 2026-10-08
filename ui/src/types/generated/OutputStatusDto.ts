@@ -4,4 +4,9 @@ export type OutputStatusDto = { label: string,
 /**
  * Why the output isn't sending, if it isn't.
  */
-error: string | null, };
+error: string | null, 
+/**
+ * How many receivers are connected, for outputs that know (an SRT
+ * listener).
+ */
+receivers: number | null, };

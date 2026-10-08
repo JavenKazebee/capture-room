@@ -8,6 +8,7 @@ export type SourceTypeSupport = { source_type: SourceType,
  */
 missing: Array<string>, 
 /**
- * Streams: the URL schemes this node can open.
+ * Streams: the URL schemes this node can open. Channels: the output
+ * types it can send (`ndi`, `srt`).
  */
 protocols: Array<string>, };

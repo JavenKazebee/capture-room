@@ -35,7 +35,8 @@ pub struct SourceTypeSupport {
     /// GStreamer elements this node lacks for the type; empty if it can
     /// run it.
     pub missing: Vec<String>,
-    /// Streams: the URL schemes this node can open.
+    /// Streams: the URL schemes this node can open. Channels: the output
+    /// types it can send (`ndi`, `srt`).
     pub protocols: Vec<String>,
 }
 
@@ -299,6 +300,38 @@ pub enum OutputConfig {
         #[serde(default)]
         ndi_name: Option<String>,
     },
+    /// An SRT stream (H.264 and AAC in MPEG-TS). A URL with no host, like
+    /// `srt://:9000`, listens for receivers to connect; one with a host
+    /// calls it, and keeps retrying until it answers.
+    Srt {
+        url: String,
+        #[serde(default = "default_srt_latency")]
+        latency_ms: u32,
+        #[serde(default = "default_srt_bitrate")]
+        bitrate_kbps: u32,
+        /// Encrypts the stream; receivers need the same one. 10–79
+        /// characters.
+        #[serde(default)]
+        passphrase: Option<String>,
+    },
+    /// Served by the node's RTSP server at `rtsp://<node>:8554/<path>`
+    /// (H.264 and AAC), encoded only while someone is watching.
+    Rtsp {
+        /// The mount path; the channel's name when unset. Made URL-safe.
+        #[serde(default)]
+        path: Option<String>,
+        #[serde(default = "default_srt_bitrate")]
+        bitrate_kbps: u32,
+    },
+}
+
+fn default_srt_latency() -> u32 {
+    200
+}
+
+/// Default bitrate for encoded outputs (SRT, RTSP).
+fn default_srt_bitrate() -> u32 {
+    8000
 }
 
 /// What a channel does when a clip reaches its out point.
@@ -364,6 +397,9 @@ pub struct OutputStatusDto {
     pub label: String,
     /// Why the output isn't sending, if it isn't.
     pub error: Option<String>,
+    /// How many receivers are connected, for outputs that know (an SRT
+    /// listener).
+    pub receivers: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -29,12 +29,12 @@ use gstreamer_app as gst_app;
 use tracing::{debug, warn};
 
 use super::live::{self, Chain, Inputs};
-use super::InputSource;
+use super::{stream, InputSource};
 use crate::api::types::{
     ChannelConfig, ClipEnd, LiveVideoFormat, OutputConfig, SourceCapabilitiesDto, SourceType,
     TransportState,
 };
-use crate::pipeline::make_el;
+use crate::pipeline::{make_el, output, rtsp};
 
 /// How far ahead of its slot a clip's buffer is stamped. Covers the
 /// program-side conversion, so frames are never late at the compositor.
@@ -128,11 +128,14 @@ impl InputSource for ChannelSource {
 }
 
 /// Check a config before it's saved. `others` are the node's other
-/// channels, whose NDI names this one mustn't reuse.
+/// channels, whose NDI names this one mustn't reuse (listening ports are
+/// checked against every source by the caller). `available` says whether
+/// an element is installed on this node.
 pub fn validate(
     cfg: &ChannelConfig,
     name: &str,
     others: &[(&str, &ChannelConfig)],
+    available: impl Fn(&str) -> bool,
 ) -> Result<(), String> {
     let f = &cfg.format;
     if f.width == 0 || f.height == 0 || f.width > 7680 || f.height > 4320 {
@@ -147,19 +150,52 @@ pub fn validate(
     if !(1..=16).contains(&cfg.audio_channels) {
         return Err("audio must have 1 to 16 channels".into());
     }
+    for o in &cfg.outputs {
+        match o {
+            OutputConfig::Ndi { .. } if !available("ndisink") => {
+                return Err("NDI outputs need ndisink, which isn't on this node".into());
+            }
+            OutputConfig::Ndi { .. } => {}
+            OutputConfig::Srt { .. } => validate_srt(o, cfg.audio_channels, &available)?,
+            OutputConfig::Rtsp { bitrate_kbps, .. } => {
+                validate_rtsp(*bitrate_kbps, cfg.audio_channels, &available)?
+            }
+        }
+    }
+    let ports = listen_ports(cfg);
+    for (i, port) in ports.iter().enumerate() {
+        if ports[..i].contains(port) {
+            return Err(format!("two outputs both listen on port {port}"));
+        }
+    }
     let ndi_names = |cfg: &ChannelConfig, name: &str| -> Vec<String> {
         cfg.outputs
             .iter()
-            .map(|o| match o {
-                OutputConfig::Ndi { ndi_name } => ndi_name
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|n| !n.is_empty())
-                    .unwrap_or(name)
-                    .to_lowercase(),
+            .filter_map(|o| match o {
+                OutputConfig::Ndi { ndi_name } => Some(
+                    ndi_name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|n| !n.is_empty())
+                        .unwrap_or(name)
+                        .to_lowercase(),
+                ),
+                OutputConfig::Srt { .. } | OutputConfig::Rtsp { .. } => None,
             })
             .collect()
     };
+    let mine = mount_paths(cfg, name);
+    for (i, p) in mine.iter().enumerate() {
+        if mine[..i].contains(p) {
+            return Err(format!("two outputs are both served at {p}"));
+        }
+        if let Some((other, _)) = others
+            .iter()
+            .find(|(other, ocfg)| mount_paths(ocfg, other).contains(p))
+        {
+            return Err(format!("RTSP path {p} is already used by {other}"));
+        }
+    }
     let mine = ndi_names(cfg, name);
     for (i, n) in mine.iter().enumerate() {
         if mine[..i].contains(n) {
@@ -173,6 +209,113 @@ pub fn validate(
         }
     }
     Ok(())
+}
+
+fn validate_srt(
+    output: &OutputConfig,
+    audio_channels: u32,
+    available: impl Fn(&str) -> bool,
+) -> Result<(), String> {
+    let OutputConfig::Srt {
+        url,
+        latency_ms,
+        bitrate_kbps,
+        passphrase,
+    } = output
+    else {
+        return Ok(());
+    };
+    if let Some(missing) = output::SRT_ELEMENTS.iter().find(|e| !available(e)) {
+        return Err(format!(
+            "SRT outputs need {missing}, which isn't installed on this node"
+        ));
+    }
+    if !output::LIVE_H264.iter().any(|e| available(e)) {
+        return Err(
+            "SRT outputs need an H.264 encoder (x264enc), which isn't installed on this node"
+                .into(),
+        );
+    }
+    let url = url.trim();
+    if stream::scheme(url).as_deref() != Some("srt") {
+        return Err("an SRT output needs an srt:// URL, like srt://:9000".into());
+    }
+    let (host, port) = stream::host_port(url);
+    if port.is_none() {
+        return Err(format!("{url} needs a port, like srt://:9000"));
+    }
+    if host.is_empty() && stream::url_listen_port(url).is_none() {
+        return Err(format!("{url} needs a host"));
+    }
+    if !(20..=8000).contains(latency_ms) {
+        return Err("SRT latency must be 20–8000 ms".into());
+    }
+    if !(100..=100_000).contains(bitrate_kbps) {
+        return Err("SRT bitrate must be 100–100,000 kbps".into());
+    }
+    if let Some(p) = passphrase.as_deref().filter(|p| !p.is_empty()) {
+        if !(10..=79).contains(&p.chars().count()) {
+            return Err("an SRT passphrase must be 10–79 characters".into());
+        }
+    }
+    if audio_channels > output::SRT_MAX_AUDIO_CHANNELS {
+        return Err(format!(
+            "SRT outputs carry up to {} audio channels; this channel has {audio_channels}",
+            output::SRT_MAX_AUDIO_CHANNELS
+        ));
+    }
+    Ok(())
+}
+
+fn validate_rtsp(
+    bitrate_kbps: u32,
+    audio_channels: u32,
+    available: impl Fn(&str) -> bool,
+) -> Result<(), String> {
+    if let Some(missing) = rtsp::RTSP_ELEMENTS.iter().find(|e| !available(e)) {
+        return Err(format!(
+            "RTSP outputs need {missing}, which isn't installed on this node"
+        ));
+    }
+    if !output::LIVE_H264.iter().any(|e| available(e)) {
+        return Err(
+            "RTSP outputs need an H.264 encoder (x264enc), which isn't installed on this node"
+                .into(),
+        );
+    }
+    if !(100..=100_000).contains(&bitrate_kbps) {
+        return Err("RTSP bitrate must be 100–100,000 kbps".into());
+    }
+    if audio_channels > output::SRT_MAX_AUDIO_CHANNELS {
+        return Err(format!(
+            "RTSP outputs carry up to {} audio channels; this channel has {audio_channels}",
+            output::SRT_MAX_AUDIO_CHANNELS
+        ));
+    }
+    Ok(())
+}
+
+/// Where a channel's RTSP outputs are served (`name` is the channel's).
+pub fn mount_paths(cfg: &ChannelConfig, name: &str) -> Vec<String> {
+    cfg.outputs
+        .iter()
+        .filter_map(|o| match o {
+            OutputConfig::Rtsp { path, .. } => Some(rtsp::mount_path(path.as_deref(), name)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The local ports a channel's outputs listen on (SRT listeners; RTSP
+/// outputs share the node's RTSP server).
+pub fn listen_ports(cfg: &ChannelConfig) -> Vec<u16> {
+    cfg.outputs
+        .iter()
+        .filter_map(|o| match o {
+            OutputConfig::Srt { url, .. } => stream::url_listen_port(url),
+            OutputConfig::Ndi { .. } | OutputConfig::Rtsp { .. } => None,
+        })
+        .collect()
 }
 
 /// The program's video caps: the channel's size and rate, progressive I420.
@@ -1434,6 +1577,117 @@ mod tests {
 
     const W: u32 = 1920;
     const H: u32 = 1080;
+
+    fn with_outputs(outputs: Vec<OutputConfig>) -> ChannelConfig {
+        ChannelConfig {
+            format: LiveVideoFormat {
+                width: W,
+                height: H,
+                fps_num: 30,
+                fps_den: 1,
+            },
+            audio_channels: 2,
+            outputs,
+        }
+    }
+
+    fn srt(url: &str) -> OutputConfig {
+        OutputConfig::Srt {
+            url: url.into(),
+            latency_ms: 200,
+            bitrate_kbps: 8000,
+            passphrase: None,
+        }
+    }
+
+    fn check(cfg: &ChannelConfig) -> Result<(), String> {
+        validate(cfg, "c", &[], |_| true)
+    }
+
+    #[test]
+    fn srt_outputs_are_validated() {
+        assert!(check(&with_outputs(vec![srt("srt://:9000")])).is_ok());
+        assert!(check(&with_outputs(vec![srt("srt://10.0.0.5:9000")])).is_ok());
+        assert!(check(&with_outputs(vec![srt("srt://0.0.0.0:9000?mode=listener")])).is_ok());
+        // Not SRT, no port.
+        assert!(check(&with_outputs(vec![srt("rtsp://:9000")])).is_err());
+        assert!(check(&with_outputs(vec![srt("srt://10.0.0.5")])).is_err());
+        assert!(check(&with_outputs(vec![srt("srt://")])).is_err());
+        // Two listeners on one port.
+        let err = check(&with_outputs(vec![srt("srt://:9000"), srt("srt://:9000")])).unwrap_err();
+        assert!(err.contains("9000"), "{err}");
+        // Two callers to the same place are fine.
+        assert!(check(&with_outputs(vec![
+            srt("srt://h:9000"),
+            srt("srt://h:9000")
+        ]))
+        .is_ok());
+
+        let with = |passphrase: &str| {
+            with_outputs(vec![OutputConfig::Srt {
+                url: "srt://:9000".into(),
+                latency_ms: 200,
+                bitrate_kbps: 8000,
+                passphrase: Some(passphrase.into()),
+            }])
+        };
+        assert!(check(&with("")).is_ok());
+        assert!(check(&with("short")).is_err());
+        assert!(check(&with("long enough")).is_ok());
+
+        let mut surround = with_outputs(vec![srt("srt://:9000")]);
+        surround.audio_channels = 16;
+        assert!(check(&surround).is_err());
+    }
+
+    #[test]
+    fn outputs_need_their_elements() {
+        let cfg = with_outputs(vec![srt("srt://:9000")]);
+        let err = validate(&cfg, "c", &[], |e| e != "srtsink").unwrap_err();
+        assert!(err.contains("srtsink"), "{err}");
+        let no_h264 = |e: &str| !output::LIVE_H264.contains(&e);
+        assert!(validate(&cfg, "c", &[], no_h264).is_err());
+        let ndi = with_outputs(vec![OutputConfig::Ndi { ndi_name: None }]);
+        assert!(validate(&ndi, "c", &[], |e| e != "ndisink").is_err());
+        // An SRT-only channel doesn't need NDI.
+        assert!(validate(&cfg, "c", &[], |e| e != "ndisink").is_ok());
+    }
+
+    fn rtsp(path: Option<&str>) -> OutputConfig {
+        OutputConfig::Rtsp {
+            path: path.map(Into::into),
+            bitrate_kbps: 8000,
+        }
+    }
+
+    #[test]
+    fn rtsp_paths_are_unique() {
+        // The default path is the channel's name.
+        let a = with_outputs(vec![rtsp(None)]);
+        assert_eq!(mount_paths(&a, "Studio A"), vec!["/studio-a"]);
+        assert!(validate(&a, "Studio A", &[], |_| true).is_ok());
+        let err = validate(&a, "studio a", &[("Studio A", &a)], |_| true).unwrap_err();
+        assert!(
+            err.contains("/studio-a") && err.contains("Studio A"),
+            "{err}"
+        );
+        assert!(validate(&a, "Studio B", &[("Studio A", &a)], |_| true).is_ok());
+        let twice = with_outputs(vec![rtsp(None), rtsp(Some("C"))]);
+        assert!(validate(&twice, "c", &[], |_| true).is_err());
+        let err = validate(&a, "c", &[], |e| e != "rtph264pay").unwrap_err();
+        assert!(err.contains("rtph264pay"), "{err}");
+    }
+
+    #[test]
+    fn listen_ports_are_srt_listeners() {
+        let cfg = with_outputs(vec![
+            srt("srt://:9000"),
+            srt("srt://h:9001"),
+            OutputConfig::Ndi { ndi_name: None },
+            rtsp(None),
+        ]);
+        assert_eq!(listen_ports(&cfg), vec![9000]);
+    }
 
     /// A 5 s 720p30 clip: colour bars and a tone.
     fn make_clip(path: &std::path::Path) {

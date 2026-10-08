@@ -2,6 +2,7 @@ pub mod monitor;
 pub mod output;
 pub mod profile;
 pub mod recording;
+pub mod rtsp;
 
 use std::sync::{Arc, Mutex};
 

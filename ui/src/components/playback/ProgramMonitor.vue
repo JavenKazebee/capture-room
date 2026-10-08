@@ -65,7 +65,7 @@ const format = computed(() => {
 
     <div class="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 text-xs">
       <span class="font-medium text-sm">{{ source.display_name }}</span>
-      <span v-if="!status?.outputs.length" class="text-muted-foreground">No outputs: record it from Record, or add an NDI output in Setup › Sources.</span>
+      <span v-if="!status?.outputs.length" class="text-muted-foreground">No outputs: record it from Record, or add an NDI, SRT or RTSP output in Setup › Sources.</span>
       <span
         v-for="o in status?.outputs ?? []"
         :key="o.label"
@@ -74,7 +74,8 @@ const format = computed(() => {
         :title="o.error ?? 'Sending'"
       >
         <StatusDot :status="o.error ? 'error' : 'ok'" />
-        {{ o.label }}<template v-if="o.error">: {{ o.error }}</template>
+        {{ o.label }}<template v-if="o.error">: {{ o.error }}</template
+        ><template v-else-if="o.receivers !== null"> · {{ o.receivers }} receiver{{ o.receivers === 1 ? '' : 's' }}</template>
       </span>
     </div>
   </div>

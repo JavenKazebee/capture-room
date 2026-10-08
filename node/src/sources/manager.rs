@@ -16,7 +16,7 @@ use crate::api::types::{
     SessionClockDto, TransportState,
 };
 use crate::pipeline::monitor::{MonitorPipeline, SourceFormat};
-use crate::pipeline::output::OutputLeg;
+use crate::pipeline::output::{self, OutputLeg, Program};
 use crate::pipeline::profile::RecordingProfile;
 use crate::pipeline::recording::{self, OnLegError, OnLegFile, RecordingLeg};
 
@@ -119,7 +119,8 @@ struct ChannelOutputs {
     /// The channel name the outputs were started with (their default name).
     name: String,
     configs: Vec<OutputConfig>,
-    legs: Vec<Result<OutputLeg, String>>,
+    /// Each output's leg, or its label and why it couldn't start.
+    legs: Vec<Result<OutputLeg, (String, String)>>,
 }
 
 // ── SourceManager ─────────────────────────────────────────────────────────────
@@ -290,12 +291,13 @@ impl SourceManager {
 
         // Outputs are left out of a channel's fingerprint, so a kept source
         // has its old config: take the wanted outputs from the candidates.
-        let wanted_outputs: HashMap<String, (String, Vec<OutputConfig>)> = candidates
+        let wanted_outputs: HashMap<String, (String, Vec<OutputConfig>, Program)> = candidates
             .iter()
             .filter(|c| c.playout().is_some())
-            .map(|c| {
+            .filter_map(|c| {
                 let name = c.display_name().to_string();
-                (c.id().to_string(), (name, c.outputs().to_vec()))
+                let program = Program::from(&c.capabilities()?);
+                Some((c.id().to_string(), (name, c.outputs().to_vec(), program)))
             })
             .collect();
 
@@ -354,8 +356,8 @@ impl SourceManager {
         }
 
         self.outputs.retain(|id, _| wanted_outputs.contains_key(id));
-        for (id, (name, configs)) in wanted_outputs {
-            self.reconcile_outputs(&id, &name, configs);
+        for (id, (name, configs, program)) in wanted_outputs {
+            self.reconcile_outputs(&id, &name, configs, program);
         }
 
         info!(count = self.sources.len(), "source scan complete");
@@ -363,8 +365,15 @@ impl SourceManager {
     }
 
     /// Start a channel's outputs if they changed or aren't running (a new
-    /// monitor), on its current monitor.
-    fn reconcile_outputs(&mut self, id: &str, name: &str, configs: Vec<OutputConfig>) {
+    /// monitor), on its current monitor. A changed `program` restarts the
+    /// monitor, so it's a new one then.
+    fn reconcile_outputs(
+        &mut self,
+        id: &str,
+        name: &str,
+        configs: Vec<OutputConfig>,
+        program: Program,
+    ) {
         if self
             .outputs
             .get(id)
@@ -372,7 +381,8 @@ impl SourceManager {
         {
             return;
         }
-        // Stop the old ones first: an NDI name can only be sent once.
+        // Stop the old ones first: an NDI name can only be sent once, and an
+        // SRT port bound once.
         self.outputs.remove(id);
         let Some(monitor) = self.monitors.get(id) else {
             return;
@@ -380,10 +390,11 @@ impl SourceManager {
         let legs = configs
             .iter()
             .map(|config| {
-                OutputLeg::start(monitor, config, name).map_err(|e| {
+                let sink = output::sink(config, name, program);
+                OutputLeg::start(monitor, sink.as_ref()).map_err(|e| {
                     let error = format!("{e:#}");
                     warn!(channel = %id, error = %error, "output failed to start");
-                    error
+                    (sink.label(), error)
                 })
             })
             .collect();
@@ -405,17 +416,16 @@ impl SourceManager {
         outputs
             .legs
             .iter()
-            .zip(&outputs.configs)
-            .map(|(leg, config)| match leg {
+            .map(|leg| match leg {
                 Ok(leg) => OutputStatusDto {
                     label: leg.label().to_string(),
                     error: leg.error(),
+                    receivers: leg.receivers(),
                 },
-                Err(e) => OutputStatusDto {
-                    label: match config {
-                        OutputConfig::Ndi { .. } => "NDI".into(),
-                    },
-                    error: Some(e.clone()),
+                Err((label, error)) => OutputStatusDto {
+                    label: label.clone(),
+                    error: Some(error.clone()),
+                    receivers: None,
                 },
             })
             .collect()

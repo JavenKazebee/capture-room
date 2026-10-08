@@ -94,16 +94,25 @@ pub fn source_types() -> Vec<SourceTypeSupport> {
         SourceType::Whip,
         &["whipserversrc", "webrtcbin", "nicesrc", "decodebin3"],
     );
-    let channel = support(
+    // A channel runs with any outputs this node can send, or none (it can
+    // still be recorded).
+    let mut channel = support(
         SourceType::Channel,
-        &[
-            "compositor",
-            "audiomixer",
-            "uridecodebin",
-            "ndisinkcombiner",
-            "ndisink",
-        ],
+        &["compositor", "audiomixer", "uridecodebin"],
     );
+    if ["ndisinkcombiner", "ndisink"].iter().all(|e| has(e)) {
+        channel.protocols.push("ndi".into());
+    }
+    let srt = crate::pipeline::output::SRT_ELEMENTS.iter().all(|e| has(e))
+        && crate::pipeline::output::LIVE_H264.iter().any(|e| has(e));
+    if srt {
+        channel.protocols.push("srt".into());
+    }
+    let rtsp = crate::pipeline::rtsp::RTSP_ELEMENTS.iter().all(|e| has(e))
+        && crate::pipeline::output::LIVE_H264.iter().any(|e| has(e));
+    if rtsp {
+        channel.protocols.push("rtsp".into());
+    }
     vec![stream, device, whip, channel]
 }
 

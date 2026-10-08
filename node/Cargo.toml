@@ -20,6 +20,7 @@ gstreamer = "0.23"
 gstreamer-app = "0.23"
 gstreamer-net = "0.23"
 gstreamer-pbutils = "0.23"
+gstreamer-rtsp-server = "0.23"
 gstreamer-sys = "0.23"
 gstreamer-video = { version = "0.23", features = ["v1_16"] }
 gstreamer-video-sys = "0.23"

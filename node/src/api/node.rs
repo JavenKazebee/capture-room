@@ -25,7 +25,7 @@ use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     BenchmarkRequest, BenchmarkRunDto, CapacityCheckDto, CapacityCheckRequest, ClockClaim,
     ClockStatusDto, ClockTimeDto, ConfiguredSourceDto, ConfiguredSourceRequest, DeviceDto,
-    DirListingDto, NodeCapacityDto, NodeSettingsDto, NodeStatus, RecordingSessionDto,
+    DirListingDto, NodeCapacityDto, NodeSettingsDto, NodeStatus, OutputConfig, RecordingSessionDto,
     RecordingStatus, RecordingsQuery, SourceConfig, SourceDto, StartRecordingRequest,
     StorageVolumeDto, UpdateNodeSettingsRequest, VolumeCheckDto, WsEvent,
 };
@@ -250,19 +250,48 @@ async fn validated(
                     _ => None,
                 })
                 .collect();
-            crate::sources::channel::validate(cfg, &req.name, &others).map_err(bad)?;
+            crate::sources::channel::validate(cfg, &req.name, &others, crate::plugins::has)
+                .map_err(bad)?;
         }
         _ => {}
     }
-    if let Some(port) = listen_port(&req.config) {
+    let ports = listen_ports(&req.config);
+    if !ports.is_empty() || serves_rtsp(&req.config) {
         let others = db::configured_sources_list(&state.db).await?;
-        if let Some(other) = others
+        let others: Vec<_> = others
             .iter()
-            .find(|o| Some(o.id.as_str()) != id && listen_port(&o.config) == Some(port))
-        {
+            .filter(|o| Some(o.id.as_str()) != id)
+            .collect();
+        // The RTSP server's port, while any channel serves RTSP.
+        const RTSP: u16 = crate::pipeline::rtsp::RTSP_PORT;
+        if ports.contains(&RTSP) && others.iter().any(|o| serves_rtsp(&o.config)) {
             return Err(ApiError::BadRequest(
-                format!("port {port} is already used by {}", other.name).into(),
+                format!("port {RTSP} is the node's RTSP server, used by RTSP outputs").into(),
             ));
+        }
+        if serves_rtsp(&req.config) {
+            if let Some(other) = others
+                .iter()
+                .find(|o| listen_ports(&o.config).contains(&RTSP))
+            {
+                return Err(ApiError::BadRequest(
+                    format!(
+                        "RTSP outputs are served on port {RTSP}, which {} listens on",
+                        other.name
+                    )
+                    .into(),
+                ));
+            }
+        }
+        for port in ports {
+            if let Some(other) = others
+                .iter()
+                .find(|o| listen_ports(&o.config).contains(&port))
+            {
+                return Err(ApiError::BadRequest(
+                    format!("port {port} is already used by {}", other.name).into(),
+                ));
+            }
         }
     }
     if let SourceConfig::File(cfg) = &mut req.config {
@@ -326,13 +355,23 @@ async fn delete_configured_source(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// The local port a configured source listens on, if any.
-fn listen_port(config: &SourceConfig) -> Option<u16> {
+/// The local ports a configured source listens on: a listening stream,
+/// WHIP, or a channel's SRT listener outputs.
+fn listen_ports(config: &SourceConfig) -> Vec<u16> {
     match config {
-        SourceConfig::Stream(cfg) => crate::sources::stream::listen_port(cfg),
-        SourceConfig::Whip(cfg) => Some(cfg.port),
-        _ => None,
+        SourceConfig::Stream(cfg) => crate::sources::stream::listen_port(cfg)
+            .into_iter()
+            .collect(),
+        SourceConfig::Whip(cfg) => vec![cfg.port],
+        SourceConfig::Channel(cfg) => crate::sources::channel::listen_ports(cfg),
+        _ => Vec::new(),
     }
+}
+
+/// Whether a configured source is a channel with RTSP outputs.
+fn serves_rtsp(config: &SourceConfig) -> bool {
+    matches!(config, SourceConfig::Channel(cfg)
+        if cfg.outputs.iter().any(|o| matches!(o, OutputConfig::Rtsp { .. })))
 }
 
 // ── /devices ──────────────────────────────────────────────────────────────────

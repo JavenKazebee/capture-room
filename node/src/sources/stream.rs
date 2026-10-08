@@ -149,7 +149,7 @@ fn query_param<'a>(url: &'a str, key: &str) -> Option<&'a str> {
 }
 
 /// Host and port; the host is empty for `srt://:9000` and `udp://@:5000`.
-fn host_port(url: &str) -> (&str, Option<u16>) {
+pub(crate) fn host_port(url: &str) -> (&str, Option<u16>) {
     let auth = authority(url).trim_start_matches('@');
     match auth.rsplit_once(':') {
         Some((host, port)) if !port.contains(']') => (host, port.parse().ok()),
@@ -159,7 +159,13 @@ fn host_port(url: &str) -> (&str, Option<u16>) {
 
 /// The local port a listening stream binds: an SRT listener, or UDP.
 pub fn listen_port(cfg: &StreamSourceConfig) -> Option<u16> {
-    let url = cfg.url.trim();
+    url_listen_port(&cfg.url)
+}
+
+/// The local port `url` binds, if it listens (see [`listen_port`]). Also
+/// used for SRT outputs, which follow the same rules.
+pub fn url_listen_port(url: &str) -> Option<u16> {
+    let url = url.trim();
     let (host, port) = host_port(url);
     match scheme(url)?.as_str() {
         "udp" => port,
@@ -171,7 +177,7 @@ pub fn listen_port(cfg: &StreamSourceConfig) -> Option<u16> {
 /// The URI to hand GStreamer: an SRT URL with no host listens, and UDP's
 /// VLC-style `udp://@:5000` / `udp://@239.1.1.1:5000` become plain
 /// `host:port` (no host binds every interface).
-fn uri(url: &str) -> Result<String> {
+pub(crate) fn uri(url: &str) -> Result<String> {
     let url = url.trim();
     let Some(scheme) = scheme(url) else {
         bail!("not a URL: {url}");

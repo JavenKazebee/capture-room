@@ -12,6 +12,7 @@ import OptionSelect from '@/components/OptionSelect.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
 import AudioPlanField from './AudioPlanField.vue'
 import LiveFormatField from './LiveFormatField.vue'
+import { hostPort, param, scheme as schemeOf, srtListens, withParam } from '@/lib/streamUrl'
 
 /**
  * A network stream, URL first: the fields that matter for its protocol
@@ -40,27 +41,7 @@ const EXAMPLES = [
 const examples = computed(() => EXAMPLES.filter((e) => props.protocols.includes(e.scheme)))
 
 const url = computed(() => cfg.value.url.trim())
-const scheme = computed(() => url.value.match(/^([a-z][a-z0-9+.-]*):\/\//i)?.[1]?.toLowerCase() ?? '')
-
-function hostPort(u: string) {
-  const rest = u.split('://')[1] ?? ''
-  const auth = rest.split(/[/?]/)[0].split('@').pop()!.replace(/^@/, '')
-  const i = auth.lastIndexOf(':')
-  return i >= 0 ? { host: auth.slice(0, i), port: auth.slice(i + 1) } : { host: auth, port: '' }
-}
-
-function param(u: string, key: string) {
-  return new URLSearchParams(u.split('?')[1] ?? '').get(key)
-}
-
-function withParam(u: string, key: string, value: string | null) {
-  const [base, query = ''] = u.split('?')
-  const params = new URLSearchParams(query)
-  if (value) params.set(key, value)
-  else params.delete(key)
-  const q = params.toString()
-  return q ? `${base}?${q}` : base
-}
+const scheme = computed(() => schemeOf(url.value))
 
 const unsupported = computed(() =>
   scheme.value && !props.protocols.includes(scheme.value)
@@ -70,9 +51,7 @@ const unsupported = computed(() =>
 
 // ── SRT ───────────────────────────────────────────────────────────────────────
 
-const srtListener = computed(
-  () => scheme.value === 'srt' && (!hostPort(url.value).host || param(url.value, 'mode') === 'listener'),
-)
+const srtListener = computed(() => srtListens(url.value))
 /** The caller's host, kept while toggling to listener and back. */
 const lastHost = ref('')
 

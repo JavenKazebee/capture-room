@@ -223,6 +223,10 @@ const formHost = computed(() => {
 const protocols = computed(
   () => formNode.value?.source_types.find((t) => t.source_type === 'stream')?.protocols ?? ['rtsp', 'srt', 'rtmp', 'http', 'https', 'udp'],
 )
+/** Output types the node's channels can send. */
+const outputTypes = computed(
+  () => formNode.value?.source_types.find((t) => t.source_type === 'channel')?.protocols ?? ['ndi', 'srt', 'rtsp'],
+)
 /** Kinds the node can't run, and why. */
 const unavailable = computed(() => {
   const out: Partial<Record<Kind, string>> = {}
@@ -611,7 +615,13 @@ onMounted(async () => {
         @refresh="nodeDevices.refresh"
       />
       <WhipFields v-else-if="kind === 'whip'" v-model="whip" :host="formHost" :devices="nodeDevices.devices.value" />
-      <ChannelFields v-else-if="kind === 'channel'" v-model="channel" :name="name" />
+      <ChannelFields
+        v-else-if="kind === 'channel'"
+        v-model="channel"
+        :name="name"
+        :host="formHost"
+        :output-types="outputTypes"
+      />
 
       <template v-if="kind === 'file'">
         <FormField label="File" class="col-span-2">
