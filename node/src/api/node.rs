@@ -321,6 +321,7 @@ async fn delete_configured_source(
     if !db::configured_source_delete(&state.db, &id).await? {
         return Err(ApiError::NotFound("source not found"));
     }
+    db::playlist_delete(&state.db, &id).await?;
     rescan_after(&state, "delete").await;
     Ok(StatusCode::NO_CONTENT)
 }

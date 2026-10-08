@@ -43,8 +43,16 @@ struct Args {
     db: String,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // Before the runtime's threads start: it sets an environment variable.
+    let ndi_dir = plugins::locate_ndi_runtime();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(ndi_dir))
+}
+
+async fn run(ndi_dir: Option<&'static str>) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -53,6 +61,9 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+    if let Some(dir) = ndi_dir {
+        info!(dir, "using the NDI library found in");
+    }
 
     gstreamer::init().expect("GStreamer init failed");
     gstndi::plugin_register_static().expect("NDI plugin registration failed");

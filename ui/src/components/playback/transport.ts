@@ -14,3 +14,6 @@ export const TRANSPORT: Record<
   paused: { label: 'Paused', badge: 'bg-warning text-black', dot: 'warn' },
   ended: { label: 'Ended', badge: 'bg-black/70 text-zinc-300', dot: 'off' },
 }
+
+/** Drag data carrying a media library entry's id (into a playlist). */
+export const MEDIA_DRAG = 'application/x-cr-media'

@@ -443,8 +443,8 @@ same capacity and should be part of the measurement.
 ## Playback
 
 A playout system: Capture Room plays clips out to the same kinds of channels it
-captures from. Milestone 1 is in: an NDI channel playing one clip at a time from a
-node's media library. Gapless playlists come next.
+captures from. A channel runs a playlist of clips from its node's media library,
+handing over from one to the next without a gap, out over NDI.
 
 ### Channels are sources
 
@@ -487,12 +487,34 @@ MonitorPipeline producers ─┬─► recording legs (unchanged)
   paused frame) are stamped "now". A lane drops anything that doesn't start after the
   previous buffer, which covers seeks and the duplicate frame a loop point can produce.
 - **Transport** (`Playout`, one per channel, in memory on the node; after a restart a
-  channel is idle and black): *load* prerolls the clip paused at its in point with an
-  accurate seek and shows that frame (cued); *play* / *pause*; *seek* within the in–out
-  range (the frame there shows while paused); *stop* unloads. At the out point a clip
-  holds its last frame, goes to black, or loops. Loops are non-flushing segment seeks,
-  frame-accurate and gapless. The demuxer runs ahead of playback (even paused), so
-  `SEGMENT_DONE` can arrive while a clip is still cueing; it's handled there too.
+  channel is idle and black): *cue* prerolls a playlist item paused at its in point
+  with an accurate seek and shows that frame; *play* / *pause*; *seek* within the in–out
+  range (the frame there shows while paused); *next* takes the next item (it plays at
+  once if the channel is playing or has ended, else it's cued); *stop* unloads. At its
+  out point an item plays the **next** one, holds its last frame, goes to black, or
+  loops. Loops are non-flushing segment seeks, frame-accurate and gapless. The demuxer
+  runs ahead of playback (even paused), so `SEGMENT_DONE` can arrive while a clip is
+  still cueing; it's handled there too. The transport outlives the channel's config: a
+  changed channel (renamed, new format) restarts its program and `InputSource::adopt`
+  hands the transport over, so what's on air plays on.
+- **Playlists** (`playlists` and `playlist_items` tables) are stored per channel and
+  handed to the transport when first used and after every edit; the API replaces the
+  whole list at once (`PUT /channels/{id}/playlist`). Items keep their media entry's
+  path and go with it when it's removed from the library. A playlist can loop. Edits
+  don't touch the clip on air, except what it does at its out point (between next,
+  hold and black), so "stop after this one" works while it plays.
+- **Gapless handover.** While an item plays, the next is cued in the background in
+  *standby*: a prerolled player whose appsinks push nothing. Each player is in a
+  *mode* (standby, cued: prerolls show, playing: buffers play). At the out point the
+  next player starts with a fixed base time, chosen so its first frame (the running
+  time of its last preroll) is stamped at the end of the last frame the video lane
+  queued; it pushes into the same lanes, so the compositor sees one continuous stream
+  (caps changes are converted in the lane's chain). Taking the next item by hand works
+  the same way, from the latest of that point and now. The EOS that triggers it
+  arrives about `LEAD` (100 ms) before the program needs the next frame, which covers the
+  switch. Without a cued next item (it was still cueing, or failed), it's cued then,
+  with a gap. Tested: a three-item playlist keeps 33 ms between every video frame and
+  no audio gap across handovers.
 - **Outputs** are data (`OutputConfig`, tagged by `type`; only `ndi` so far), not yet an
   `OutputSink` trait: one comes when a second output type needs it. Output legs are
   consumers of the monitor's producers, like recording legs, with the monitor's clock and
@@ -500,7 +522,7 @@ MonitorPipeline producers ─┬─► recording legs (unchanged)
   `SourceManager` starts them with the monitor and restarts them when they change; a
   channel's outputs are left out of its fingerprint, so editing them doesn't restart the
   program or the clip. NDI names are unique across a node's channels.
-- **Still to come:** gapless playlists with auto-advance; SRT / RTSP → local display /
+- **Still to come:** SRT / RTSP → local display /
   HDMI → WHEP → Decklink / AJA outputs (SDI cards are the clock master, which changes
   the clock design); slates; channels in the benchmark.
 
@@ -516,10 +538,14 @@ only.
 ### UI
 
 The **Playback** workspace: channels on the left (state and clip), the selected
-channel's program monitor with its outputs, a transport bar (play/pause, stop, elapsed
-and remaining, a scrubber over the file with the in–out range marked), clip setup (in,
-out, what happens at the out point, Cue), and the node's media library on the right.
-Keyboard: Space play/pause, Enter cue, I/O set in/out at the playhead, Esc stop.
+channel's program monitor with its outputs, a transport bar (play/pause, stop, next
+with the next item's name, elapsed and remaining, a scrubber over the file with the
+in–out range marked), the playlist (on air and next marked, total running time, loop
+toggle; drag to reorder, double-click to cue), the selected item's setup (in, out, what
+happens at the out point, Apply, Cue), and the node's media library on the right
+(double-click or drag an entry to add it to the playlist). Keyboard: Space play/pause,
+N next, Enter cue, I/O set in/out at the playhead, Esc stop, Delete removes a focused
+playlist item.
 Channels are created and edited in Setup › Sources ("Playout channel").
 
 ### Browser preview
@@ -859,7 +885,11 @@ from a shell, until there's an app bundle), and the page says so.
 
 `gst-plugin-ndi` is MPL-licensed and compiled into the binary. It dlopens `libndi` at
 runtime; users install the NDI Runtime separately (same pattern as OBS). We never
-distribute `libndi` itself.
+distribute `libndi` itself. The plugin only looks in `NDI_RUNTIME_DIR_V6` / `_V5` and the
+default library path, and on macOS nothing installs it there (the SDK has its own folder,
+NDI Tools bundles a copy in each component), so on macOS the node looks in those places at
+startup and points the plugin at the first it finds (`plugins::locate_ndi_runtime`).
+Installing NDI Tools is enough.
 
 | Dependency | Who provides |
 |------------|-------------|

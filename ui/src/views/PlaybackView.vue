@@ -10,6 +10,7 @@ import { notifyError } from '@/lib/notify'
 import { formatClock, parseClock } from '@/lib/format'
 import type { ClipEnd } from '@/types/generated/ClipEnd'
 import type { MediaItemDto } from '@/types/generated/MediaItemDto'
+import type { PlaylistItemDto } from '@/types/generated/PlaylistItemDto'
 import type { TransportAction } from '@/types/generated/TransportAction'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -20,6 +21,7 @@ import FormField from '@/components/FormField.vue'
 import ProgramMonitor from '@/components/playback/ProgramMonitor.vue'
 import TransportBar from '@/components/playback/TransportBar.vue'
 import MediaLibrary from '@/components/playback/MediaLibrary.vue'
+import PlaylistPanel from '@/components/playback/PlaylistPanel.vue'
 import { TRANSPORT } from '@/components/playback/transport'
 
 const sources = useSourcesStore()
@@ -30,7 +32,8 @@ const router = useRouter()
 
 const SHORTCUTS: [string[], string][] = [
   [['Space'], 'Play / pause'],
-  [['Enter'], 'Cue the selected clip'],
+  [['N'], 'Take the next item'],
+  [['Enter'], 'Cue the selected item'],
   [['I'], 'Set the in point at the playhead'],
   [['O'], 'Set the out point at the playhead'],
   [['Esc'], 'Stop (back to black)'],
@@ -44,6 +47,8 @@ const channel = computed(
 )
 const status = computed(() => (channel.value ? playout.status.get(channel.value.key) : undefined))
 const nodeId = computed(() => channel.value?.node_id ?? nodes.self?.node_id ?? '')
+const playlist = computed(() => (channel.value ? playout.playlists.get(channel.value.key) : undefined))
+const items = computed(() => playlist.value?.items ?? [])
 
 // `?channel=<key>` (from Sources) picks the channel.
 watch(
@@ -61,37 +66,40 @@ watch(
   (c) => {
     if (!c) return
     playout.loadStatus(c.node_id, c.id).catch(() => {})
+    playout.loadPlaylist(c.node_id, c.id).catch(() => {})
     if (!playout.media.has(c.node_id)) playout.loadMedia(c.node_id).catch(() => {})
   },
   { immediate: true },
 )
 
-// ── Clip setup ────────────────────────────────────────────────────────────────
+// ── Item setup ────────────────────────────────────────────────────────────────
 
-/** The library entry picked for cueing. */
+/** The playlist item picked for editing and cueing. */
 const selectedId = ref<string | null>(null)
-const selected = computed(() => playout.media.get(nodeId.value)?.find((m) => m.id === selectedId.value) ?? null)
+const selected = computed(() => items.value.find((i) => i.id === selectedId.value) ?? null)
+/** The library entry picked (only for the library's own highlight). */
+const mediaId = ref<string | null>(null)
 const loaded = computed(() => status.value?.clip ?? null)
+const onAir = computed(() => !!selected.value && status.value?.item_id === selected.value.id)
+const nextItem = computed(() => items.value.find((i) => i.id === status.value?.next_id) ?? null)
 
 const inText = ref('')
 const outText = ref('')
-const end = ref<ClipEnd>('hold')
+const end = ref<ClipEnd>('next')
 
-/** Picking a clip resets its in and out, unless it's the one on air. */
-watch(selectedId, () => {
-  const l = loaded.value
-  if (l && l.media_id === selectedId.value) {
-    inText.value = l.in_ms ? formatClock(l.in_ms) : ''
-    outText.value = l.out_ms != null ? formatClock(l.out_ms) : ''
-    end.value = l.end
-  } else {
-    inText.value = ''
-    outText.value = ''
-  }
-})
-// Follow the channel's clip when it changes (another operator, or a cue).
+/** Picking an item (or the item changing) shows its setup. */
 watch(
-  () => loaded.value?.media_id,
+  selected,
+  (i) => {
+    inText.value = i?.in_ms ? formatClock(i.in_ms) : ''
+    outText.value = i?.out_ms != null ? formatClock(i.out_ms) : ''
+    end.value = i?.end ?? 'next'
+  },
+  { immediate: true },
+)
+// Follow the channel's item when it changes (auto-advance, another operator).
+watch(
+  () => status.value?.item_id,
   (id) => {
     if (id) selectedId.value = id
   },
@@ -104,21 +112,27 @@ const setupError = computed(() => {
   if (inMs.value === null) return 'The in point should look like 1:23.4 or 83.4.'
   if (outText.value.trim() && outMs.value === null) return 'The out point should look like 1:23.4 or 83.4.'
   if (outMs.value !== null && outMs.value <= inMs.value) return 'The out point must be after the in point.'
-  const d = selected.value?.info.duration_ms
+  const d = selected.value?.duration_ms
   if (d != null && inMs.value >= d) return `The in point is past the end (${formatClock(d)}).`
   return null
 })
 
-/** The picked clip, in and out differ from what's on air. */
+/** The setup differs from the saved item. */
 const changed = computed(() => {
+  const i = selected.value
+  if (!i) return false
+  return i.in_ms !== inMs.value || i.out_ms !== outMs.value || i.end !== end.value
+})
+/** On air, new in and out points only apply once it's cued again. */
+const onAirStale = computed(() => {
   const l = loaded.value
-  if (!l || !selected.value) return false
-  return l.media_id !== selected.value.id || l.in_ms !== inMs.value || l.out_ms !== outMs.value || l.end !== end.value
+  const i = selected.value
+  return onAir.value && !!l && !!i && (l.in_ms !== i.in_ms || l.out_ms !== i.out_ms)
 })
 
 function setAtPlayhead(which: 'in' | 'out') {
   const p = status.value?.position_ms
-  if (p == null || !loaded.value || loaded.value.media_id !== selectedId.value) return
+  if (p == null || !onAir.value) return
   if (which === 'in') inText.value = formatClock(p)
   else outText.value = formatClock(p)
 }
@@ -127,7 +141,7 @@ function setAtPlayhead(which: 'in' | 'out') {
 
 const busy = ref(false)
 
-async function run(what: string, fn: () => Promise<void>) {
+async function run(what: string, fn: () => Promise<unknown>) {
   if (busy.value) return
   busy.value = true
   try {
@@ -139,27 +153,39 @@ async function run(what: string, fn: () => Promise<void>) {
   }
 }
 
-function cue(item: MediaItemDto | null = selected.value) {
+function applySetup() {
+  const c = channel.value
+  const i = selected.value
+  if (!c || !i || setupError.value || !changed.value) return
+  const list = items.value.map((x) => ({
+    id: x.id,
+    media_id: x.media_id,
+    in_ms: x.id === i.id ? inMs.value! : x.in_ms,
+    out_ms: x.id === i.id ? outMs.value : x.out_ms,
+    end: x.id === i.id ? end.value : x.end,
+  }))
+  run(`Saving ${i.name}`, () => playout.savePlaylist(c.node_id, c.id, list, playlist.value?.loop_playlist ?? false))
+}
+
+function cue(item: PlaylistItemDto | null = selected.value) {
   const c = channel.value
   if (!c || !item) return
-  // The in and out typed apply to the clip they were typed for; another
-  // clip (double-clicked in the list) cues whole.
-  const sameSetup = item.id === selectedId.value && !setupError.value
   selectedId.value = item.id
-  run(`Cueing ${item.name}`, () =>
-    playout.load(c.node_id, c.id, {
-      media_id: item.id,
-      in_ms: sameSetup ? inMs.value : 0,
-      out_ms: sameSetup ? outMs.value : null,
-      end: end.value,
-    }),
-  )
+  run(`Cueing ${item.name}`, () => playout.cue(c.node_id, c.id, item.id))
 }
 
 function transport(action: TransportAction, positionMs?: number) {
   const c = channel.value
   if (!c) return
-  run(action[0].toUpperCase() + action.slice(1), () => playout.transport(c.node_id, c.id, action, positionMs))
+  const what = action === 'next' ? 'Taking the next item' : action[0].toUpperCase() + action.slice(1)
+  run(what, () => playout.transport(c.node_id, c.id, action, positionMs))
+}
+
+const playlistPanel = ref<InstanceType<typeof PlaylistPanel> | null>(null)
+
+function addMedia(item: MediaItemDto) {
+  mediaId.value = item.id
+  playlistPanel.value?.add(item.id)
 }
 
 // ── Keyboard ──────────────────────────────────────────────────────────────────
@@ -176,6 +202,8 @@ useEventListener('keydown', (e: KeyboardEvent) => {
   } else if (key === 'enter' && !t.closest('[role="listbox"]')) {
     e.preventDefault()
     cue()
+  } else if (key === 'n') {
+    if (status.value?.next_id || (!loaded.value && items.value.length)) transport('next')
   } else if (key === 'escape') {
     if (loaded.value) transport('stop')
   } else if (key === 'i') {
@@ -254,31 +282,41 @@ onMounted(async () => {
           <TransportBar
             :status="status"
             :busy="busy"
+            :next-name="nextItem?.name ?? null"
+            :can-next="!!status?.next_id || (!loaded && items.length > 0)"
             @play="transport('play')"
             @pause="transport('pause')"
             @stop="transport('stop')"
+            @next="transport('next')"
             @seek="(ms) => transport('seek', ms)"
           />
 
-          <!-- Clip setup -->
-          <section class="rounded-lg border border-border p-3 flex flex-col gap-3">
+          <PlaylistPanel
+            ref="playlistPanel"
+            v-model:selected="selectedId"
+            :channel="channel"
+            :status="status"
+            @cue="cue"
+          />
+
+          <!-- Item setup -->
+          <section v-if="selected" class="rounded-lg border border-border p-3 flex flex-col gap-3">
             <div class="flex items-center gap-2 min-w-0">
-              <span class="text-xs text-muted-foreground shrink-0">Clip</span>
-              <span v-if="selected" class="text-sm font-medium truncate" :title="selected.path">{{ selected.name }}</span>
-              <span v-else class="text-sm text-muted-foreground">Pick a clip in the media list.</span>
-              <span v-if="selected?.info.duration_ms != null" class="num text-xs text-muted-foreground shrink-0">
-                {{ formatClock(selected.info.duration_ms) }}
+              <span class="text-xs text-muted-foreground shrink-0">Item</span>
+              <span class="text-sm font-medium truncate">{{ selected.name }}</span>
+              <span v-if="selected.duration_ms != null" class="num text-xs text-muted-foreground shrink-0">
+                {{ formatClock(selected.duration_ms) }}
               </span>
             </div>
             <div class="flex flex-wrap items-end gap-3">
               <FormField label="In">
                 <div class="flex gap-1">
-                  <Input v-model="inText" class="w-24 num h-8" placeholder="0:00.0" :disabled="!selected" />
+                  <Input v-model="inText" class="w-24 num h-8" placeholder="0:00.0" @keydown.enter="applySetup" />
                   <Button
                     variant="outline"
                     size="icon"
                     class="size-8"
-                    :disabled="!loaded || loaded.media_id !== selectedId"
+                    :disabled="!onAir"
                     title="Set at the playhead (I)"
                     aria-label="Set the in point at the playhead"
                     @click="setAtPlayhead('in')"
@@ -289,12 +327,12 @@ onMounted(async () => {
               </FormField>
               <FormField label="Out">
                 <div class="flex gap-1">
-                  <Input v-model="outText" class="w-24 num h-8" placeholder="End" :disabled="!selected" />
+                  <Input v-model="outText" class="w-24 num h-8" placeholder="End" @keydown.enter="applySetup" />
                   <Button
                     variant="outline"
                     size="icon"
                     class="size-8"
-                    :disabled="!loaded || loaded.media_id !== selectedId"
+                    :disabled="!onAir"
                     title="Set at the playhead (O)"
                     aria-label="Set the out point at the playhead"
                     @click="setAtPlayhead('out')"
@@ -304,7 +342,8 @@ onMounted(async () => {
                 </div>
               </FormField>
               <FormField label="At the out point">
-                <ToggleGroup v-model="end" type="single" variant="segmented" :disabled="!selected">
+                <ToggleGroup v-model="end" type="single" variant="segmented">
+                  <ToggleGroupItem value="next" class="h-8 px-3 text-xs">Next</ToggleGroupItem>
                   <ToggleGroupItem value="hold" class="h-8 px-3 text-xs">Hold</ToggleGroupItem>
                   <ToggleGroupItem value="black" class="h-8 px-3 text-xs">Black</ToggleGroupItem>
                   <ToggleGroupItem value="loop" class="h-8 px-3 text-xs">Loop</ToggleGroupItem>
@@ -313,18 +352,27 @@ onMounted(async () => {
               <div class="flex-1" />
               <Button
                 size="sm"
+                variant="outline"
+                class="h-8"
+                :disabled="!changed || !!setupError || busy"
+                @click="applySetup"
+              >
+                Apply
+              </Button>
+              <Button
+                size="sm"
                 class="h-8 min-w-24"
-                :variant="loaded && !changed ? 'outline' : 'default'"
-                :disabled="!selected || selected.missing || !!setupError || busy"
-                title="Load the clip, paused at its in point (Enter)"
+                :variant="onAir && !onAirStale ? 'outline' : 'default'"
+                :disabled="selected.missing || changed || busy"
+                :title="changed ? 'Apply the changes first' : 'Load the item, paused at its in point (Enter)'"
                 @click="cue()"
               >
-                {{ loaded && changed ? 'Re-cue' : 'Cue' }}
+                {{ onAir ? 'Re-cue' : 'Cue' }}
               </Button>
             </div>
             <p v-if="setupError" class="text-xs text-destructive">{{ setupError }}</p>
-            <p v-else-if="loaded && changed" class="text-xs text-muted-foreground">
-              Cue again to put these changes on air.
+            <p v-else-if="onAirStale" class="text-xs text-muted-foreground">
+              It's on air with its old in and out points: cue it again to use the new ones.
             </p>
           </section>
         </div>
@@ -334,10 +382,10 @@ onMounted(async () => {
       <aside class="w-80 shrink-0 border-l border-border min-h-0">
         <MediaLibrary
           v-if="nodeId"
-          v-model:selected="selectedId"
+          v-model:selected="mediaId"
           :node-id="nodeId"
           :loaded-id="loaded?.media_id ?? null"
-          @cue="cue"
+          @add="addMedia"
         />
       </aside>
     </div>

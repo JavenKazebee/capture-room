@@ -4,8 +4,8 @@ use std::str::FromStr;
 use tracing::info;
 
 use crate::api::types::{
-    BenchmarkRunDto, BenchmarkStatus, ConfiguredSourceDto, MediaItemDto, MonitorSettingsDto,
-    PresetDto, PresetOutputDto, RecordingSessionDto,
+    BenchmarkRunDto, BenchmarkStatus, ClipEnd, ConfiguredSourceDto, MediaItemDto,
+    MonitorSettingsDto, PresetDto, PresetOutputDto, RecordingSessionDto,
 };
 
 pub async fn init(db_path: &str) -> Result<SqlitePool> {
@@ -434,14 +434,6 @@ pub async fn media_list(pool: &SqlitePool) -> Result<Vec<MediaItemDto>> {
     Ok(rows)
 }
 
-pub async fn media_get(pool: &SqlitePool, id: &str) -> Result<Option<MediaItemDto>> {
-    let row = sqlx::query_as::<_, MediaItemDto>(&format!("{MEDIA_SELECT} WHERE id = ?"))
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
-    Ok(row)
-}
-
 /// Add `item`; false if its path is already in the library.
 pub async fn media_insert(pool: &SqlitePool, item: &MediaItemDto) -> Result<bool> {
     let res = sqlx::query(
@@ -466,6 +458,102 @@ pub async fn media_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
         .execute(pool)
         .await?;
     Ok(res.rows_affected() > 0)
+}
+
+// ── playlists ─────────────────────────────────────────────────────────────────
+
+/// A playlist item with its media entry.
+#[derive(Debug, Clone, FromRow)]
+pub struct PlaylistRow {
+    pub id: String,
+    pub media_id: String,
+    pub in_ms: i64,
+    pub out_ms: Option<i64>,
+    pub end_action: ClipEnd,
+    pub name: String,
+    pub path: String,
+}
+
+/// A channel's items in order, and whether the playlist loops.
+pub async fn playlist_get(pool: &SqlitePool, channel_id: &str) -> Result<(Vec<PlaylistRow>, bool)> {
+    let rows = sqlx::query_as::<_, PlaylistRow>(
+        "SELECT i.id, i.media_id, i.in_ms, i.out_ms, i.end_action, m.name, m.path
+         FROM playlist_items i JOIN media m ON m.id = i.media_id
+         WHERE i.channel_id = ? ORDER BY i.position",
+    )
+    .bind(channel_id)
+    .fetch_all(pool)
+    .await?;
+    let looped =
+        sqlx::query_scalar::<_, bool>("SELECT loop_playlist FROM playlists WHERE channel_id = ?")
+            .bind(channel_id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or(false);
+    Ok((rows, looped))
+}
+
+/// Replace a channel's playlist. `items` are (id, media id, in, out, end).
+pub async fn playlist_set(
+    pool: &SqlitePool,
+    channel_id: &str,
+    items: &[(String, String, u64, Option<u64>, ClipEnd)],
+    loop_playlist: bool,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM playlist_items WHERE channel_id = ?")
+        .bind(channel_id)
+        .execute(&mut *tx)
+        .await?;
+    for (position, (id, media_id, in_ms, out_ms, end)) in items.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO playlist_items (id, channel_id, position, media_id, in_ms, out_ms, end_action)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(channel_id)
+        .bind(position as i64)
+        .bind(media_id)
+        .bind(*in_ms as i64)
+        .bind(out_ms.map(|v| v as i64))
+        .bind(end)
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO playlists (channel_id, loop_playlist) VALUES (?, ?)
+         ON CONFLICT(channel_id) DO UPDATE SET loop_playlist = excluded.loop_playlist",
+    )
+    .bind(channel_id)
+    .bind(loop_playlist)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Remove a channel's playlist (the channel was deleted).
+pub async fn playlist_delete(pool: &SqlitePool, channel_id: &str) -> Result<()> {
+    sqlx::query("DELETE FROM playlist_items WHERE channel_id = ?")
+        .bind(channel_id)
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM playlists WHERE channel_id = ?")
+        .bind(channel_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Channels whose playlists use `media_id`.
+pub async fn playlists_using(pool: &SqlitePool, media_id: &str) -> Result<Vec<String>> {
+    let rows = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT channel_id FROM playlist_items WHERE media_id = ?",
+    )
+    .bind(media_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
 }
 
 // ── benchmark_results ─────────────────────────────────────────────────────────

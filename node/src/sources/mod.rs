@@ -58,6 +58,10 @@ pub trait InputSource: Send + Sync {
     fn outputs(&self) -> &[OutputConfig] {
         &[]
     }
+
+    /// This source replaces `old` (same id, changed config): take over
+    /// whatever should outlive the change.
+    fn adopt(&mut self, _old: &dyn InputSource) {}
 }
 
 /// The source a stored config describes. `devices` resolves capture and

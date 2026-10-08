@@ -18,4 +18,16 @@ error: string | null,
 /**
  * The channel's outputs, in config order.
  */
-outputs: Array<OutputStatusDto>, };
+outputs: Array<OutputStatusDto>, 
+/**
+ * The playlist item on air (none for a clip that isn't in it).
+ */
+item_id: string | null, 
+/**
+ * The item that plays next, cued in the background once it's ready.
+ */
+next_id: string | null, next_ready: boolean, 
+/**
+ * Bumped whenever the playlist changes, to know when to fetch it.
+ */
+playlist_rev: number, };

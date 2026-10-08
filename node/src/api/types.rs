@@ -302,8 +302,9 @@ pub enum OutputConfig {
 }
 
 /// What a channel does when a clip reaches its out point.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "lowercase")]
+#[sqlx(rename_all = "lowercase")]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub enum ClipEnd {
     /// Hold the last frame (with silence).
@@ -313,6 +314,9 @@ pub enum ClipEnd {
     Black,
     /// Play again from the in point.
     Loop,
+    /// Play the playlist's next item, without a gap (holds after the last
+    /// one unless the playlist loops).
+    Next,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -344,6 +348,14 @@ pub struct ChannelStatusDto {
     pub error: Option<String>,
     /// The channel's outputs, in config order.
     pub outputs: Vec<OutputStatusDto>,
+    /// The playlist item on air (none for a clip that isn't in it).
+    pub item_id: Option<String>,
+    /// The item that plays next, cued in the background once it's ready.
+    pub next_id: Option<String>,
+    pub next_ready: bool,
+    /// Bumped whenever the playlist changes, to know when to fetch it.
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub playlist_rev: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -366,19 +378,70 @@ pub struct LoadedClipDto {
     pub end: ClipEnd,
 }
 
-/// Body for loading a clip onto a channel: it's cued at `in_ms`.
+/// A channel's playlist, as served.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
-pub struct LoadClipRequest {
+pub struct PlaylistDto {
+    pub items: Vec<PlaylistItemDto>,
+    /// After the last item, start again from the first.
+    pub loop_playlist: bool,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub rev: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct PlaylistItemDto {
+    pub id: String,
+    pub media_id: String,
+    pub name: String,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub in_ms: u64,
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub out_ms: Option<u64>,
+    pub end: ClipEnd,
+    /// The file's length.
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub duration_ms: Option<u64>,
+    /// The file is no longer on disk.
+    pub missing: bool,
+}
+
+/// Body replacing a channel's playlist: the whole list, in order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct PlaylistInput {
+    pub items: Vec<PlaylistItemInput>,
+    #[serde(default)]
+    pub loop_playlist: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct PlaylistItemInput {
+    /// An existing item's id; new items leave it out.
+    #[serde(default)]
+    pub id: Option<String>,
     pub media_id: String,
     #[serde(default)]
-    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
-    pub in_ms: Option<u64>,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub in_ms: u64,
     #[serde(default)]
     #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
     pub out_ms: Option<u64>,
-    #[serde(default)]
+    #[serde(default = "default_item_end")]
     pub end: ClipEnd,
+}
+
+fn default_item_end() -> ClipEnd {
+    ClipEnd::Next
+}
+
+/// Body for cueing a playlist item: loaded, paused at its in point.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct CueRequest {
+    pub item_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -391,6 +454,9 @@ pub enum TransportAction {
     Stop,
     /// Go to `position_ms` in the file.
     Seek,
+    /// Take the next item: it plays now if the channel is playing or has
+    /// ended, else it's cued.
+    Next,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

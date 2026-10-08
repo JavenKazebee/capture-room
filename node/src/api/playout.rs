@@ -2,6 +2,7 @@
 //! (`/api/v1/node/…`). Channels themselves are configured sources, created
 //! and edited through `/configured-sources`.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -15,11 +16,12 @@ use gstreamer as gst;
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
-    AddMediaRequest, ChannelStatusDto, LoadClipRequest, LoadedClipDto, MediaItemDto, MediaOrigin,
-    OutputStatusDto, TransportAction, TransportRequest, WsEvent,
+    AddMediaRequest, ChannelStatusDto, CueRequest, LoadedClipDto, MediaItemDto, MediaOrigin,
+    OutputStatusDto, PlaylistDto, PlaylistInput, PlaylistItemDto, TransportAction,
+    TransportRequest, WsEvent,
 };
 use crate::db;
-use crate::sources::channel::{ClipRequest, Playout, PlayoutStatus};
+use crate::sources::channel::{ClipRequest, PlaylistItem, Playout, PlayoutStatus};
 use crate::state::AppState;
 
 pub fn router() -> Router<Arc<AppState>> {
@@ -27,7 +29,11 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/media", get(get_media).post(post_media))
         .route("/media/{id}", axum::routing::delete(delete_media))
         .route("/channels/{id}", get(get_channel))
-        .route("/channels/{id}/load", post(post_load))
+        .route(
+            "/channels/{id}/playlist",
+            get(get_playlist).put(put_playlist),
+        )
+        .route("/channels/{id}/cue", post(post_cue))
         .route("/channels/{id}/transport", post(post_transport))
 }
 
@@ -98,8 +104,15 @@ async fn delete_media(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
 ) -> ApiResult<StatusCode> {
+    // Its playlist items go with it.
+    let channels = db::playlists_using(&state.db, &id).await?;
     if !db::media_delete(&state.db, &id).await? {
         return Err(MEDIA_NOT_FOUND);
+    }
+    for channel in channels {
+        if let Ok(playout) = playout(&state, &channel).await {
+            reload_playlist(&state, &channel, &playout).await?;
+        }
     }
     state.emit(&WsEvent::MediaUpdated);
     Ok(StatusCode::NO_CONTENT)
@@ -107,15 +120,70 @@ async fn delete_media(
 
 // ── /channels ─────────────────────────────────────────────────────────────────
 
+/// A channel's transport, with its playlist read in.
 async fn playout(state: &AppState, id: &str) -> ApiResult<Arc<Playout>> {
-    state
+    let playout = state
         .source_manager
         .read()
         .await
         .get_source(id)
         .and_then(|s| s.playout())
         .cloned()
-        .ok_or(ApiError::NotFound("channel not found"))
+        .ok_or(ApiError::NotFound("channel not found"))?;
+    if !playout.playlist_loaded() {
+        reload_playlist(state, id, &playout).await?;
+    }
+    Ok(playout)
+}
+
+/// Hand a channel's stored playlist to its transport.
+async fn reload_playlist(state: &AppState, id: &str, playout: &Arc<Playout>) -> ApiResult<()> {
+    let (rows, loop_playlist) = db::playlist_get(&state.db, id).await?;
+    let items = rows
+        .into_iter()
+        .map(|r| PlaylistItem {
+            id: r.id,
+            clip: ClipRequest {
+                media_id: r.media_id,
+                name: r.name,
+                path: r.path,
+                in_point: gst::ClockTime::from_mseconds(r.in_ms as u64),
+                out_point: r.out_ms.map(|v| gst::ClockTime::from_mseconds(v as u64)),
+                end: r.end_action,
+            },
+        })
+        .collect();
+    playout.set_playlist(items, loop_playlist).await;
+    Ok(())
+}
+
+fn playlist_dto(playout: &Playout, durations: &HashMap<String, Option<u64>>) -> PlaylistDto {
+    let (items, loop_playlist, rev) = playout.playlist();
+    PlaylistDto {
+        items: items
+            .into_iter()
+            .map(|i| PlaylistItemDto {
+                missing: !Path::new(&i.clip.path).is_file(),
+                duration_ms: durations.get(&i.clip.media_id).copied().flatten(),
+                id: i.id,
+                media_id: i.clip.media_id,
+                name: i.clip.name,
+                in_ms: i.clip.in_point.mseconds(),
+                out_ms: i.clip.out_point.map(|t| t.mseconds()),
+                end: i.clip.end,
+            })
+            .collect(),
+        loop_playlist,
+        rev,
+    }
+}
+
+async fn media_durations(state: &AppState) -> ApiResult<HashMap<String, Option<u64>>> {
+    Ok(db::media_list(&state.db)
+        .await?
+        .into_iter()
+        .map(|m| (m.id, m.info.duration_ms))
+        .collect())
 }
 
 async fn channel_status(state: &AppState, id: &str, playout: &Playout) -> ChannelStatusDto {
@@ -137,6 +205,10 @@ pub fn status_dto(status: PlayoutStatus, outputs: Vec<OutputStatusDto>) -> Chann
         duration_ms: status.duration.map(|t| t.mseconds()),
         error: status.error,
         outputs,
+        item_id: status.item_id,
+        next_id: status.next_id,
+        next_ready: status.next_ready,
+        playlist_rev: status.playlist_rev,
     }
 }
 
@@ -158,40 +230,70 @@ async fn get_channel(
     Ok(Json(channel_status(&state, &id, &playout).await))
 }
 
-async fn post_load(
+async fn get_playlist(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
-    Json(req): Json<LoadClipRequest>,
+) -> ApiResult<Json<PlaylistDto>> {
+    let playout = playout(&state, &id).await?;
+    Ok(Json(playlist_dto(
+        &playout,
+        &media_durations(&state).await?,
+    )))
+}
+
+/// Replace a channel's playlist with the list given, in order.
+async fn put_playlist(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<PlaylistInput>,
+) -> ApiResult<Json<PlaylistDto>> {
+    let playout = playout(&state, &id).await?;
+    let media: HashMap<String, MediaItemDto> = db::media_list(&state.db)
+        .await?
+        .into_iter()
+        .map(|m| (m.id.clone(), m))
+        .collect();
+    let mut rows = Vec::with_capacity(req.items.len());
+    for (n, item) in req.items.into_iter().enumerate() {
+        let n = n + 1;
+        let m = media.get(&item.media_id).ok_or_else(|| {
+            ApiError::BadRequest(format!("item {n}: not in the media library").into())
+        })?;
+        if let Some(duration) = m.info.duration_ms.filter(|&d| item.in_ms >= d) {
+            return Err(ApiError::BadRequest(
+                format!("item {n}: the in point is past the end ({duration} ms)").into(),
+            ));
+        }
+        if item.out_ms.is_some_and(|out| out <= item.in_ms) {
+            return Err(ApiError::BadRequest(
+                format!("item {n}: the out point must be after the in point").into(),
+            ));
+        }
+        let id = item
+            .id
+            .filter(|i| !i.is_empty() && !rows.iter().any(|r: &(String, _, _, _, _)| &r.0 == i))
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        rows.push((id, item.media_id, item.in_ms, item.out_ms, item.end));
+    }
+    db::playlist_set(&state.db, &id, &rows, req.loop_playlist).await?;
+    reload_playlist(&state, &id, &playout).await?;
+    // The next item may have changed.
+    let _ = reply(&state, &id, &playout).await;
+    let durations = media
+        .into_iter()
+        .map(|(id, m)| (id, m.info.duration_ms))
+        .collect();
+    Ok(Json(playlist_dto(&playout, &durations)))
+}
+
+/// Cue a playlist item: loaded, paused at its in point.
+async fn post_cue(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<CueRequest>,
 ) -> ApiResult<Json<ChannelStatusDto>> {
     let playout = playout(&state, &id).await?;
-    let media = db::media_get(&state.db, &req.media_id)
-        .await?
-        .ok_or(MEDIA_NOT_FOUND)?;
-    if !Path::new(&media.path).is_file() {
-        return Err(ApiError::BadRequest(
-            format!("{} is no longer on disk", media.path).into(),
-        ));
-    }
-    let in_ms = req.in_ms.unwrap_or(0);
-    if let Some(duration) = media.info.duration_ms.filter(|&d| in_ms >= d) {
-        return Err(ApiError::BadRequest(
-            format!("the in point is past the end ({duration} ms)").into(),
-        ));
-    }
-    if req.out_ms.is_some_and(|out| out <= in_ms) {
-        return Err(ApiError::BadRequest(
-            "the out point must be after the in point".into(),
-        ));
-    }
-    let clip = ClipRequest {
-        media_id: media.id,
-        name: media.name,
-        path: media.path,
-        in_point: gst::ClockTime::from_mseconds(in_ms),
-        out_point: req.out_ms.map(gst::ClockTime::from_mseconds),
-        end: req.end,
-    };
-    let result = playout.load(clip).await;
+    let result = playout.cue_item(&req.item_id).await;
     let reply = reply(&state, &id, &playout).await;
     result.map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
     Ok(reply)
@@ -216,6 +318,7 @@ async fn post_transport(
                 .ok_or(ApiError::BadRequest("position_ms is required".into()))?;
             playout.seek(gst::ClockTime::from_mseconds(position)).await
         }
+        TransportAction::Next => playout.next().await,
     };
     let reply = reply(&state, &id, &playout).await;
     result.map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;

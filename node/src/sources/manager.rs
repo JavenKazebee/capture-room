@@ -300,7 +300,7 @@ impl SourceManager {
             .collect();
         let mut gone = Vec::new();
         let mut added = Vec::new();
-        for candidate in candidates {
+        for mut candidate in candidates {
             let id = candidate.id().to_string();
             if self.sources.iter().any(|s| s.id() == id) {
                 warn!(id = %id, "duplicate source id, ignoring");
@@ -315,7 +315,10 @@ impl SourceManager {
                     self.sources.push(existing);
                     continue;
                 }
-                Some(_) => gone.push(id.clone()),
+                Some(existing) => {
+                    candidate.adopt(existing.as_ref());
+                    gone.push(id.clone());
+                }
                 None => {}
             }
             added.push(id);

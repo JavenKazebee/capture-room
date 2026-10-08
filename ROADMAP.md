@@ -18,7 +18,7 @@ _Last updated: 2026-10-07_
 6. ✅ **Looping media file source**
 7. ✅ **Benchmark + capacity estimator** (with storage headroom)
 8. ✅ **Recordings view** (+ browser preview)
-9. **Playback** — 🚧 milestone 1 shipped (one clip on an NDI channel); gapless playlists next
+9. **Playback** — 🚧 gapless playlists shipped; more output types next
 10. **Clock sync across nodes** — ✅ shared node clock (controller's clock or PTP) and
     synchronized start. Prerequisite for multi-angle replay
 11. **Setup page** — per-node permission and system checks, with shortcuts to fix them
@@ -120,11 +120,16 @@ A full playout system — capture in reverse. Design in ARCHITECTURE.md (Playbac
 - Reuses file decoding from the looping media file source (#6).
 - Playout channels count against capacity: extend the benchmark to cover them.
 - **Playback workspace** in the UI.
-- ✅ One NDI channel playing a single file (milestone 1, 2026-10-06). Next: gapless
-  playlists (cue the next clip's player ahead and switch lanes at a frame boundary),
-  then more output types.
-- A channel's name is in its fingerprint, so renaming one mid-playout rebuilds it and
-  drops the clip; worth fixing when playlists land.
+- ✅ One NDI channel playing a single file (milestone 1, 2026-10-06).
+- ✅ **Gapless playlists (2026-10-07)** — a stored playlist per channel; each item
+  plays the next one, holds, goes to black or loops at its out point; the next item is
+  cued in the background and takes over at the frame after the last one; Next takes it
+  by hand; the playlist can loop. A changed channel (rename, new format) keeps its
+  transport, so what's on air plays on through the program restart. Next: more output
+  types (SRT / RTSP).
+- Renaming a channel still restarts its program (a brief glitch on air, the clip
+  survives): the name is in its fingerprint because the kept source would otherwise
+  show the old name.
 
 ## 10. Clock sync across nodes
 

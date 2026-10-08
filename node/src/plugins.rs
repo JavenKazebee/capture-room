@@ -125,6 +125,38 @@ struct Package {
     elements: &'static [&'static str],
 }
 
+/// Folders that may hold the NDI library, most official first. The NDI
+/// plugin only looks in `NDI_RUNTIME_DIR_V6` / `_V5` and the default library
+/// path, but on macOS nothing installs it there: the SDK goes to its own
+/// folder, and NDI Tools bundles a private copy in each of its components.
+#[cfg(target_os = "macos")]
+const NDI_DIRS: &[&str] = &[
+    "/Library/NDI SDK for Apple/lib/macOS",
+    // NDI Tools: its camera plugin, then its apps.
+    "/Library/CoreMediaIO/Plug-Ins/DAL/NDIVideoOut.plugin/Contents/Frameworks",
+    "/Applications/NDI Scan Converter.app/Contents/Frameworks",
+    "/Applications/NDI Router.app/Contents/Frameworks/NTFramework.framework/Versions/A/Frameworks",
+];
+#[cfg(not(target_os = "macos"))]
+const NDI_DIRS: &[&str] = &[];
+
+/// Point the NDI plugin at an installed NDI library it wouldn't find by
+/// itself, unless one is set already. Returns the folder chosen. Call before
+/// any threads start: it sets an environment variable.
+pub fn locate_ndi_runtime() -> Option<&'static str> {
+    if ["NDI_RUNTIME_DIR_V6", "NDI_RUNTIME_DIR_V5"]
+        .iter()
+        .any(|v| std::env::var_os(v).is_some())
+    {
+        return None;
+    }
+    let dir = NDI_DIRS
+        .iter()
+        .find(|d| std::path::Path::new(d).join("libndi.dylib").is_file())?;
+    std::env::set_var("NDI_RUNTIME_DIR_V6", dir);
+    Some(dir)
+}
+
 /// Check that every required GStreamer element is registered on this machine.
 ///
 /// Returns an error listing all missing elements and the packages that provide

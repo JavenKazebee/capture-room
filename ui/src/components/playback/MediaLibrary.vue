@@ -11,10 +11,12 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import ToolbarSearch from '@/components/common/ToolbarSearch.vue'
 import FileBrowseDialog from '@/components/sources/FileBrowseDialog.vue'
+import { MEDIA_DRAG } from './transport'
 
 /**
- * A node's media library. Click picks a clip; double-click (or Enter) cues
- * it on the channel. Removing an entry leaves its file on disk.
+ * A node's media library. Click picks a clip; double-click (or Enter) adds
+ * it to the channel's playlist, as does dragging it there. Removing an entry
+ * leaves its file on disk (and takes it out of playlists).
  */
 const props = defineProps<{
   nodeId: string
@@ -22,7 +24,7 @@ const props = defineProps<{
   loadedId: string | null
 }>()
 const selected = defineModel<string | null>('selected', { required: true })
-const emit = defineEmits<{ cue: [item: MediaItemDto] }>()
+const emit = defineEmits<{ add: [item: MediaItemDto] }>()
 
 const playout = usePlayoutStore()
 const filter = ref('')
@@ -85,8 +87,10 @@ async function remove(m: MediaItemDto) {
         class="group flex items-start gap-2 px-3 py-2 cursor-pointer outline-none focus-visible:bg-accent/60"
         :class="selected === m.id ? 'bg-accent' : 'hover:bg-accent/40'"
         @click="selected = m.id"
-        @dblclick="!m.missing && emit('cue', m)"
-        @keydown.enter.prevent="!m.missing && emit('cue', m)"
+        :draggable="!m.missing"
+        @dblclick="!m.missing && emit('add', m)"
+        @keydown.enter.prevent="!m.missing && emit('add', m)"
+        @dragstart="(e: DragEvent) => e.dataTransfer?.setData(MEDIA_DRAG, m.id)"
       >
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-1.5 min-w-0">
@@ -117,7 +121,7 @@ async function remove(m: MediaItemDto) {
               <X class="size-3.5" />
             </button>
           </TooltipTrigger>
-          <TooltipContent>Remove from library (the file stays on disk)</TooltipContent>
+          <TooltipContent>Remove from the library and playlists (the file stays on disk)</TooltipContent>
         </Tooltip>
       </li>
       <li v-if="!items.length" class="px-3 py-6 text-center text-xs text-muted-foreground">

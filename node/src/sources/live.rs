@@ -648,11 +648,11 @@ pub(crate) fn lock_caps(caps: &gst::CapsRef, format: Option<&LiveVideoFormat>) -
     // Every field the fallback's frames could differ in is fixed, so the
     // caps never change: an encoder given new caps mid-recording can emit
     // new codec data, which the muxers refuse.
-    let mut caps: gst::Caps = "video/x-raw, interlace-mode=progressive, multiview-mode=mono, \
-        multiview-flags=(GstVideoMultiviewFlagsSet)0:ffffffff"
+    let mut caps: gst::Caps = "video/x-raw, interlace-mode=progressive, multiview-mode=mono"
         .parse()
         .expect("valid caps");
     let st = caps.make_mut().structure_mut(0).expect("one structure");
+    st.set_value("multiview-flags", no_multiview_flags());
     for name in ["format", "colorimetry", "chroma-site"] {
         if let Some(value) = text(name) {
             st.set(name, value);
@@ -681,6 +681,20 @@ pub(crate) fn lock_caps(caps: &gst::CapsRef, format: Option<&LiveVideoFormat>) -
     caps
 }
 
+/// `multiview-flags` with no flags set and all of them fixed. Built rather
+/// than parsed: GStreamer 1.28 no longer parses flagsets from caps strings.
+fn no_multiview_flags() -> glib::SendValue {
+    use glib::translate::{from_glib, ToGlibPtrMut, UnsafeFrom};
+    // SAFETY: the type getter registers the flagset type; the value is
+    // initialized to that type before it's set, and owns its GValue.
+    unsafe {
+        let ty: glib::Type = from_glib(gstreamer_video_sys::gst_video_multiview_flagset_get_type());
+        let mut value = glib::Value::from_type(ty);
+        gstreamer_sys::gst_value_set_flagset(value.to_glib_none_mut().0, 0, u32::MAX);
+        glib::SendValue::unsafe_from(value.into_raw())
+    }
+}
+
 /// `audioconvert` matrix picking `channels` (1-based) out of `inputs`.
 fn pick_matrix(inputs: u32, channels: &[u32]) -> Vec<Vec<f32>> {
     channels
@@ -707,6 +721,23 @@ mod tests {
             pick_matrix(4, &[3, 1]),
             vec![vec![0.0, 0.0, 1.0, 0.0], vec![1.0, 0.0, 0.0, 0.0]]
         );
+    }
+
+    /// Locked caps are fixed, with mono multiview and every flag pinned, so
+    /// they accept a source's (unflagged) frames.
+    #[test]
+    fn lock_caps_pins_multiview() {
+        gst::init().unwrap();
+        let src: gst::Caps = "video/x-raw, format=I420, width=1280, height=720, framerate=30/1"
+            .parse()
+            .unwrap();
+        let locked = lock_caps(&src, None);
+        assert!(locked.is_fixed(), "{locked}");
+        let text = locked.to_string();
+        assert!(text.contains("multiview-flags"), "{text}");
+        let s = locked.structure(0).unwrap();
+        assert_eq!(s.get::<i32>("width").unwrap(), 1280);
+        assert_eq!(s.get::<&str>("multiview-mode").unwrap(), "mono");
     }
 
     /// What a test sink saw.
