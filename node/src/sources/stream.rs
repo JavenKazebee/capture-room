@@ -60,6 +60,10 @@ impl InputSource for StreamSource {
         &self.name
     }
 
+    fn set_name(&mut self, name: &str) {
+        self.name = name.to_string();
+    }
+
     fn source_type(&self) -> SourceType {
         SourceType::Stream
     }

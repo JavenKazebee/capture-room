@@ -496,6 +496,10 @@ MonitorPipeline producers ─┬─► recording legs (unchanged)
 - **Never dark, never renegotiates.** The program bin reuses `live.rs`'s compositor over
   black and mixer over silence (`live::video_output` / `audio_output`), locked to the
   channel format from the start. Clips are scaled, converted and resampled into it.
+  Audio is 1–8 channels; beyond stereo it has GStreamer's usual layout for the count
+  (5.1 for 6, 7.1 for 8), which the mixer needs, so stereo clips are spread onto it and
+  outputs can mix it down. Live sources' audio is laid out the same way, except picked
+  device channels, which stay numbered (unpositioned).
 - **Lanes.** Loading a clip adds an `appsrc` + input chain ("lane") per stream to the
   program bin, and unloading removes them: back to black and silence. The monitor builds
   a new bin on every (re)start, and `Lanes::attach` moves a loaded clip's lanes over to
@@ -511,24 +515,31 @@ MonitorPipeline producers ─┬─► recording legs (unchanged)
   paused frame) are stamped "now". A lane drops anything that doesn't start after the
   previous buffer, which covers seeks and the duplicate frame a loop point can produce.
 - **Transport** (`Playout`, one per channel, in memory on the node; after a restart a
-  channel is idle and black): *cue* prerolls a playlist item paused at its in point
-  with an accurate seek and shows that frame; *play* / *pause*; *seek* within the in–out
-  range (the frame there shows while paused); *next* takes the next item (it plays at
-  once if the channel is playing or has ended, else it's cued); *stop* unloads. At its
-  out point an item plays the **next** one, holds its last frame, goes to black, or
-  loops. Loops are non-flushing segment seeks, frame-accurate and gapless. The demuxer
+  channel is idle and black). The next-up item is always prerolled in standby (see
+  Gapless handover), also while the channel is idle, so nothing needs cueing by hand:
+  *play* plays the clip on air, or idle, the next-up item (the item after the last one
+  played, else the first); *play item* plays any playlist item now, straight on from
+  what's on air; *next* plays the next item now; *pause*; *seek* within the in–out range
+  (the frame there shows while paused); *stop* unloads. *Cue* is still there to hold an
+  item's first frame on air before rolling: it prerolls off air and switches when ready,
+  so what's on air stays up meanwhile (over a clip playing, the lanes are replaced, or
+  the cued frame would land behind what they've queued). At its out point an item plays
+  the **next** one, holds its last frame, goes to black, or loops. Loops are non-flushing segment seeks, frame-accurate and gapless. The demuxer
   runs ahead of playback (even paused), so `SEGMENT_DONE` can arrive while a clip is
   still cueing; it's handled there too. The transport outlives the channel's config: a
-  changed channel (renamed, new format) restarts its program and `InputSource::adopt`
-  hands the transport over, so what's on air plays on.
+  new format restarts its program and `InputSource::adopt` hands the transport over, so
+  what's on air plays on. A rename restarts nothing: no source's fingerprint has its
+  name, and a rescan renames the source it keeps (`InputSource::set_name`). Outputs are
+  compared by identity (`output::identity`: the config with the channel-name defaults
+  filled in), so only those named after the channel (an NDI name, an RTSP or WHEP path
+  left unset) restart, and recordings of the channel carry on.
 - **Playlists** (`playlists` and `playlist_items` tables) are stored per channel and
   handed to the transport when first used and after every edit; the API replaces the
   whole list at once (`PUT /channels/{id}/playlist`). Items keep their media entry's
   path and go with it when it's removed from the library. A playlist can loop. Edits
   don't touch the clip on air, except what it does at its out point (between next,
   hold and black), so "stop after this one" works while it plays.
-- **Gapless handover.** While an item plays, the next is cued in the background in
-  *standby*: a prerolled player whose appsinks push nothing. Each player is in a
+- **Gapless handover.** The next item is cued in the background in *standby*: a prerolled player whose appsinks push nothing. Each player is in a
   *mode* (standby, cued: prerolls show, playing: buffers play). At the out point the
   next player starts with a fixed base time, chosen so its first frame (the running
   time of its last preroll) is stamped at the end of the last frame the video lane
@@ -539,11 +550,12 @@ MonitorPipeline producers ─┬─► recording legs (unchanged)
   switch. Without a cued next item (it was still cueing, or failed), it's cued then,
   with a gap. Tested: a three-item playlist keeps 33 ms between every video frame and
   no audio gap across handovers.
-- **Outputs** are data (`OutputConfig`, tagged by `type`: `ndi`, `srt`, `rtsp`), each
+- **Outputs** are data (`OutputConfig`, tagged by `type`: `ndi`, `srt`, `rtsp`, `whep`,
+  `display`), each
   built by an `OutputSink` (the counterpart of `InputSource`). Pipeline outputs are fed
   from the monitor's producers, like a recording leg, with the monitor's clock and base
   time; a failing output (no NDI Runtime) fails alone and shows on the channel. `SourceManager`
-  starts them with the monitor and restarts them when they change; a channel's outputs
+  starts them with the monitor and restarts the ones that change; a channel's outputs
   are left out of its fingerprint, so editing them doesn't restart the program or the
   clip. NDI names are unique across a node's channels.
 - **SRT output:** H.264 and AAC in MPEG-TS (`alignment=7`, one SRT payload per buffer)
@@ -572,11 +584,29 @@ MonitorPipeline producers ─┬─► recording legs (unchanged)
   media. Port 8554 is refused for listening sources while any channel serves RTSP (and
   the other way round). `OutputSink::start` returns a `RunningOutput`, so a sink needn't
   own a pipeline; NDI and SRT run theirs through `PipelineOutput`.
+- **WHEP output:** WebRTC to browsers and WHEP players. Each output runs a
+  `whepserversink` (gst-plugins-rs `webrtcsink` with the WHEP server signaller) whose
+  HTTP server listens on localhost, on a free port; the node's API proxies
+  `/whep/<path>` to it (`api/whep.rs`), so every channel is reached on the API port, at
+  `http://<node>:<API port>/whep/<path>` (the path as RTSP's, unique across the node's
+  WHEP outputs). Only these routes allow any origin, so web players elsewhere can
+  connect; they only give out the program. The answer's resource becomes
+  `/whep/<path>/resource/<id>` (PATCH, DELETE). The signaller starts once the program
+  reaches the sink, so a viewer that comes before then gets 503 with `Retry-After`.
+  `webrtcsink` encodes for each viewer and adapts the bitrate to their link, up to the
+  output's; video is H.264 (`x264enc`) or VP8, audio Opus mixed to stereo. VideoToolbox
+  is hidden from it (ranked none before the plugin registers): it fails `webrtcsink`'s
+  negotiation and its bitrate can't be adapted; everything else creates encoders by
+  name, so nothing else changes. Viewers are counted from `consumer-added` /
+  `consumer-removed`. STUN is off (LAN). The WebRTC elements block on their own tokio
+  runtime while changing state, so output pipelines change state off ours (as monitors
+  do). Media goes over ports ICE picks per viewer, which can't be listed in the checks.
+  The Playback workspace's Watch plays an output in the browser the same way.
 - A channel no longer needs NDI to run: the Channel type needs the compositor, mixer
-  and decoder, and reports the output types the node can send (`protocols`: `ndi`, `srt`, `rtsp`).
-- **Still to come:** local display /
-  HDMI → WHEP → Decklink / AJA outputs (SDI cards are the clock master, which changes
-  the clock design); slates; channels in the benchmark.
+  and decoder, and reports the output types the node can send (`protocols`: `ndi`,
+  `srt`, `rtsp`, `whep`, `display`).
+- **Still to come:** Decklink / AJA outputs (SDI cards are the clock master, which
+  changes the clock design); slates; channels in the benchmark.
 
 ### Media library
 
@@ -593,11 +623,13 @@ The **Playback** workspace: channels on the left (state and clip), the selected
 channel's program monitor with its outputs, a transport bar (play/pause, stop, next
 with the next item's name, elapsed and remaining, a scrubber over the file with the
 in–out range marked), the playlist (on air and next marked, total running time, loop
-toggle; drag to reorder, double-click to cue), the selected item's setup (in, out, what
-happens at the out point, Apply, Cue), and the node's media library on the right
-(double-click or drag an entry to add it to the playlist). Keyboard: Space play/pause,
-N next, Enter cue, I/O set in/out at the playhead, Esc stop, Delete removes a focused
-playlist item.
+toggle; drag to reorder, double-click or a row's play button to play an item now), the
+selected item's setup (in, out, what happens at the out point, Apply, Show first frame,
+Play), and the node's media library on the right (double-click or drag an entry to add
+it to the playlist). Play with nothing on air plays the next-up item. Keyboard: Space
+play/pause, N next, Enter plays the selected item, I/O set in/out at the playhead, Esc
+stop, Delete removes a focused playlist item. A WHEP output on the program monitor has
+Watch, which plays it in the browser.
 Channels are created and edited in Setup › Sources ("Playout channel").
 
 ### Browser preview
@@ -665,9 +697,11 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 | GET | `/devices` | capture and audio devices on the node (key, name, class, provider, modes), for picking one in a device source or audio plan |
 | GET / POST | `/media` | the media library (each entry flags a missing file) / add a file `{ path, name?, session_id? }`: probed, 400 if it can't be played, 409 if already in |
 | DELETE | `/media/{id}` | remove from the library (the file stays) |
-| GET | `/channels/{id}` | a playout channel's transport: state (`idle \| cued \| playing \| paused \| ended`), clip, position, duration, error, each output's status |
-| POST | `/channels/{id}/load` | `{ media_id, in_ms?, out_ms?, end: hold \| black \| loop }` → cued at the in point |
-| POST | `/channels/{id}/transport` | `{ action: play \| pause \| stop \| seek, position_ms? }` |
+| GET | `/channels/{id}` | a playout channel's transport: state (`idle \| cued \| playing \| paused \| ended`), clip, item on air, next item and whether it's in standby, position, duration, error, each output's status |
+| GET / PUT | `/channels/{id}/playlist` | the playlist (items with in, out and end, whether it loops) / replace it |
+| POST | `/channels/{id}/play` | `{ item_id }` → plays now, straight on from what's on air |
+| POST | `/channels/{id}/cue` | `{ item_id }` → on air, paused at its in point |
+| POST | `/channels/{id}/transport` | `{ action: play \| pause \| stop \| seek \| next, position_ms? }`; play with nothing on air plays the next-up item |
 | GET | `/files?path=` | folders and media files in a directory (home if no path), for picking a file source. Read-only |
 | GET / POST | `/recordings` | list (`?before=&limit=`: newest first, 100 by default, at most 500, paged by `started_at`; the first page also carries active sessions) / start. Start body: `{ source_id, preset_id?, outputs: [...], start_at?: { domain, time_us } }` (see Clock sync). Refused onto a volume with under 1 GB free; cancels a running benchmark |
 | GET / DELETE | `/recordings/{id}` | session details / remove a finished session from history; `?files` deletes its files from disk first, and if any can't be deleted the session stays, listing those still on disk (409 while recording) |
@@ -900,7 +934,7 @@ Three tiers, the same on every OS:
 | Tier | Examples | How it ships |
 |------|----------|--------------|
 | Core GStreamer (C) | encoders, `rtspsrc`, `srtsrc`, `webrtcbin`, device providers, and the RTSP server library (`libgstrtspserver`, linked, not a plugin: a node without it won't start; Linux `gst-rtsp-server` / `libgstrtspserver-1.0-0`) | Linux: distro package dependencies. macOS: GStreamer.framework bundled in the .app. Windows: the official MSVC runtime DLLs and plugin dir next to the exe, with `GST_PLUGIN_PATH` set relative to it at startup |
-| Rust plugins | ndi, fallbackswitch, webrtc (WHIP) | statically linked into the binary (one pinned gst-plugins-rs rev), registered in `main.rs` |
+| Rust plugins | ndi, fallbackswitch, webrtc (WHIP, WHEP) | statically linked into the binary (one pinned gst-plugins-rs rev), registered in `main.rs` |
 | Vendor runtimes | NDI Runtime | user-installed (licensing, below) |
 
 The official macOS and Windows GStreamer builds include srt, rtsp, nice and webrtcbin, so
@@ -932,7 +966,7 @@ cards badge their problem count. Checks are a list each feature adds to:
 | NDI Runtime | all | the NDI device provider started (it fails without `libndi`; the plugin tries once per process, so installing needs a restart) |
 | Recording folder | all | `~/capture-room` can be created and written, with at least the 1 GB a start needs on its volume |
 | Controller's clock / PTP | all | from the clock status, when following one |
-| API, WHIP and RTSP ports | all | TCP connect from the controller (`/reachability/{id}`); UDP listeners (SRT, UDP streams) listed as unknown |
+| API (also WHEP outputs), WHIP and RTSP ports | all | TCP connect from the controller (`/reachability/{id}`); UDP listeners (SRT, UDP streams) listed as unknown; WebRTC media ports are picked per session and can't be listed |
 
 Not yet: Linux `video` group and PTP-helper capabilities, Windows privacy toggles.
 

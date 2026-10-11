@@ -18,8 +18,8 @@ _Last updated: 2026-10-11_
 6. ✅ **Looping media file source**
 7. ✅ **Benchmark + capacity estimator** (with storage headroom)
 8. ✅ **Recordings view** (+ browser preview)
-9. **Playback** — 🚧 gapless playlists, SRT and RTSP outputs shipped; local display /
-   HDMI output next
+9. **Playback** — ✅ gapless playlists; NDI, SRT, RTSP, WHEP and display outputs; play
+   without cueing; renames without a restart. Decklink / AJA outputs wait for hardware
 10. **Clock sync across nodes** — ✅ shared node clock (controller's clock or PTP),
     synchronized start, and frame capture times as MOV timecode. Prerequisite for
     multi-angle replay
@@ -123,8 +123,8 @@ A full playout system — capture in reverse. Design in ARCHITECTURE.md (Playbac
   Gapless, frame-accurate cueing; thumbnails and meters like a source.
 - **Playlists** with in/out points and transport (cue, play, pause, stop, next, loop),
   owned by the node running the channel.
-- **Output types, in order:** NDI (`ndisink`, no hardware needed) → SRT / RTSP (both
-  shipped) → local display / HDMI out → WHEP → Decklink / AJA.
+- **Output types, in order:** NDI (`ndisink`, no hardware needed) → SRT / RTSP → local
+  display / HDMI out → WHEP (all shipped) → Decklink / AJA.
 - Reuses file decoding from the looping media file source (#6).
 - Playout channels count against capacity: extend the benchmark to cover them.
 - **Playback workspace** in the UI.
@@ -158,9 +158,20 @@ A full playout system — capture in reverse. Design in ARCHITECTURE.md (Playbac
 - **Channels are set up in Playback (2026-10-11)** — New channel and Channel settings
   (format, outputs, delete) open a sheet there; Sources still lists channels (they can
   be recorded) and its edit button goes to Playback.
-- Renaming a channel still restarts its program (a brief glitch on air, the clip
-  survives): the name is in its fingerprint because the kept source would otherwise
-  show the old name.
+- ✅ **Play without cueing (2026-10-11)** — the next-up item is always loaded in
+  standby, idle too, so Play starts it at once; double-click, Enter or a row's play
+  button plays any item now, straight on from what's on air; Next always plays. Cue is
+  now Show first frame, and no longer goes black while it loads.
+- ✅ **Renames without a restart (2026-10-11)** — names are out of every source's
+  fingerprint; a rescan renames the source it keeps. Only outputs named after the
+  channel (NDI name, RTSP or WHEP path left unset) restart, and recordings carry on.
+  Stream, Device and WHIP sources no longer keep showing their old name after a rename.
+- ✅ **WHEP output (2026-10-11)** — WebRTC on the node's API port,
+  `http://node:<port>/whep/<path>`, proxied to each output's `whepserversink` on
+  localhost, with CORS so web players elsewhere can connect. Encoded per viewer (H.264
+  or VP8, Opus stereo) with the bitrate adapted to each link; viewers counted. Watch in
+  Playback plays it in the browser. Needs the libnice GStreamer plugin
+  (`libnice-gstreamer` on macOS), like WHIP.
 
 ## 10. Clock sync across nodes
 

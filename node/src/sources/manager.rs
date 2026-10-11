@@ -115,13 +115,13 @@ pub enum StopOutcome {
     NotFound,
 }
 
+/// A channel's output, sending, or its label and why it couldn't start.
+type Leg = Result<OutputLeg, (String, String)>;
+
 /// A playout channel's running outputs.
 struct ChannelOutputs {
-    /// The channel name the outputs were started with (their default name).
-    name: String,
-    configs: Vec<OutputConfig>,
-    /// Each output's leg, or its label and why it couldn't start.
-    legs: Vec<Result<OutputLeg, (String, String)>>,
+    /// Each output's [`output::identity`], with its leg.
+    legs: Vec<(OutputConfig, Leg)>,
 }
 
 // ── SourceManager ─────────────────────────────────────────────────────────────
@@ -330,11 +330,12 @@ impl SourceManager {
                 continue;
             }
             match old.remove(&id) {
-                Some(existing)
+                Some(mut existing)
                     if existing.fingerprint() == candidate.fingerprint()
                         && self.is_healthy(&id)
                         && !self.should_migrate(existing.as_ref()) =>
                 {
+                    existing.set_name(candidate.display_name());
                     self.sources.push(existing);
                     continue;
                 }
@@ -379,9 +380,11 @@ impl SourceManager {
         teardowns
     }
 
-    /// Start a channel's outputs if they changed or aren't running (a new
-    /// monitor), on its current monitor. A changed `program` restarts the
-    /// monitor, so it's a new one then.
+    /// Start a channel's outputs that changed or aren't running (a new
+    /// monitor), on its current monitor, and stop the ones no longer wanted.
+    /// Outputs whose identity is unchanged keep running, so renaming a
+    /// channel only restarts the outputs named after it. A changed `program`
+    /// restarts the monitor, so it's a new one then.
     fn reconcile_outputs(
         &mut self,
         id: &str,
@@ -389,48 +392,58 @@ impl SourceManager {
         configs: Vec<OutputConfig>,
         program: Program,
     ) {
-        if self
-            .outputs
-            .get(id)
-            .is_some_and(|o| o.configs == configs && o.name == name)
-        {
+        let wanted: Vec<OutputConfig> = configs.iter().map(|c| output::identity(c, name)).collect();
+        let mut old = self.outputs.remove(id).map(|o| o.legs).unwrap_or_default();
+        if old.len() == wanted.len() && old.iter().zip(&wanted).all(|((i, _), w)| i == w) {
+            self.outputs
+                .insert(id.to_string(), ChannelOutputs { legs: old });
             return;
         }
-        // Stop the old ones first: an NDI name can only be sent once, and an
-        // SRT port bound once.
-        self.outputs.remove(id);
+        // Keep the running legs still wanted (one per wanted output); stop
+        // the rest before starting new ones: an NDI name can only be sent
+        // once, and an SRT port bound once.
+        let mut kept: Vec<Option<OutputLeg>> = wanted
+            .iter()
+            .map(|w| {
+                let i = old.iter().position(|(identity, leg)| {
+                    identity == w && leg.as_ref().is_ok_and(|l| l.error().is_none())
+                })?;
+                old.remove(i).1.ok()
+            })
+            .collect();
+        drop(old);
         let Some(monitor) = self.monitors.get(id) else {
             return;
         };
         let legs = configs
             .iter()
-            .map(|config| {
+            .zip(wanted)
+            .zip(kept.iter_mut())
+            .map(|((config, identity), kept)| {
+                if let Some(leg) = kept.take() {
+                    return (identity, Ok(leg));
+                }
                 let context = output::OutputContext {
                     displays: &self.displays,
                     devices: &self.devices,
                 };
                 let sink = output::sink(config, name, program, &context);
-                OutputLeg::start(monitor, sink.as_ref()).map_err(|e| {
+                let leg = OutputLeg::start(monitor, sink.as_ref()).map_err(|e| {
                     let error = format!("{e:#}");
                     warn!(channel = %id, error = %error, "output failed to start");
                     (sink.label(), error)
-                })
+                });
+                (identity, leg)
             })
             .collect();
-        self.outputs.insert(
-            id.to_string(),
-            ChannelOutputs {
-                name: name.to_string(),
-                configs,
-                legs,
-            },
-        );
+        self.outputs.insert(id.to_string(), ChannelOutputs { legs });
     }
 
     /// Tell a channel's outputs whether it has something loaded.
     pub fn set_on_air(&self, source_id: &str, on_air: bool) {
         if let Some(outputs) = self.outputs.get(source_id) {
-            for leg in outputs.legs.iter().flatten() {
+            for (_, leg) in &outputs.legs {
+                let Ok(leg) = leg else { continue };
                 leg.set_on_air(on_air);
             }
         }
@@ -444,7 +457,7 @@ impl SourceManager {
         outputs
             .legs
             .iter()
-            .map(|leg| match leg {
+            .map(|(_, leg)| match leg {
                 Ok(leg) => OutputStatusDto {
                     label: leg.label().to_string(),
                     error: leg.error(),
@@ -774,5 +787,93 @@ impl SourceManager {
             pipeline,
             stops,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::types::{ChannelConfig, LiveVideoFormat, SourceConfig};
+    use crate::pipeline::rtsp;
+
+    fn manager() -> SourceManager {
+        gst::init().unwrap();
+        let (failures, _) = mpsc::unbounded_channel();
+        let (files, _) = mpsc::unbounded_channel();
+        SourceManager::new(
+            MonitorSettingsDto::default(),
+            (gst::SystemClock::obtain(), "test".into()),
+            NdiMonitor::start(),
+            Arc::new(LocalDevices::start()),
+            Displays::none(),
+            failures,
+            files,
+        )
+    }
+
+    fn channel(name: &str) -> ConfiguredSourceDto {
+        ConfiguredSourceDto {
+            id: "c".into(),
+            name: name.into(),
+            config: SourceConfig::Channel(ChannelConfig {
+                format: LiveVideoFormat {
+                    width: 640,
+                    height: 360,
+                    fps_num: 30,
+                    fps_den: 1,
+                },
+                audio_channels: 2,
+                outputs: vec![
+                    OutputConfig::Srt {
+                        url: "srt://:9311".into(),
+                        latency_ms: 120,
+                        bitrate_kbps: 2000,
+                        passphrase: None,
+                    },
+                    OutputConfig::Rtsp {
+                        path: None,
+                        bitrate_kbps: 2000,
+                    },
+                ],
+            }),
+            created_at: String::new(),
+        }
+    }
+
+    fn leg_keys(mgr: &SourceManager) -> Vec<Option<usize>> {
+        mgr.outputs["c"]
+            .legs
+            .iter()
+            .map(|(_, leg)| leg.as_ref().ok().map(OutputLeg::key))
+            .collect()
+    }
+
+    /// A rename keeps the program running (and whatever records it), and
+    /// restarts only the outputs named after the channel.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rename_keeps_program() {
+        let mut mgr = manager();
+        assert!(mgr.scan(&[channel("One")]).is_empty());
+        let monitor = mgr.monitors["c"].clone();
+        let before = leg_keys(&mgr);
+        assert!(
+            before.iter().all(Option::is_some),
+            "{:?}",
+            mgr.output_status("c")
+        );
+
+        let teardowns = mgr.scan(&[channel("Two")]);
+        assert!(teardowns.is_empty(), "the program restarted");
+        assert!(Arc::ptr_eq(&monitor, &mgr.monitors["c"]));
+        assert_eq!(mgr.get_source("c").unwrap().display_name(), "Two");
+        let after = leg_keys(&mgr);
+        assert_eq!(after[0], before[0], "the SRT output restarted");
+        assert_ne!(after[1], before[1], "the RTSP mount kept the old name");
+        assert_eq!(
+            mgr.output_status("c")[1].label,
+            format!("RTSP {}", rtsp::mount_path(None, "Two"))
+        );
+
+        let _ = monitor.stop();
     }
 }

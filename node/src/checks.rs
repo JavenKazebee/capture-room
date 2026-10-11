@@ -460,8 +460,8 @@ fn ports(http_port: u16, configured: &[ConfiguredSourceDto]) -> Vec<NodePortDto>
         protocol,
         label: label.to_string(),
     };
-    let mut ports = vec![port(http_port, PortProtocol::Tcp, "API and web UI")];
-    let mut rtsp = false;
+    let mut ports = Vec::new();
+    let (mut rtsp, mut whep) = (false, false);
     for s in configured {
         match &s.config {
             SourceConfig::Whip(cfg) => ports.push(port(cfg.port, PortProtocol::Tcp, &s.name)),
@@ -478,10 +478,22 @@ fn ports(http_port: u16, configured: &[ConfiguredSourceDto]) -> Vec<NodePortDto>
                     .outputs
                     .iter()
                     .any(|o| matches!(o, OutputConfig::Rtsp { .. }));
+                whep |= cfg
+                    .outputs
+                    .iter()
+                    .any(|o| matches!(o, OutputConfig::Whep { .. }));
             }
             _ => {}
         }
     }
+    // WHEP is served on the API port; its media goes over ports ICE picks
+    // for each viewer, which can't be listed.
+    let api = if whep {
+        "API, web UI and WHEP outputs"
+    } else {
+        "API and web UI"
+    };
+    ports.insert(0, port(http_port, PortProtocol::Tcp, api));
     if rtsp {
         ports.push(port(
             crate::pipeline::rtsp::RTSP_PORT,

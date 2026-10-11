@@ -74,6 +74,8 @@ async fn run(ndi_dir: Option<&'static str>, displays: display::Displays) -> Resu
     gstreamer::init().expect("GStreamer init failed");
     gstndi::plugin_register_static().expect("NDI plugin registration failed");
     gstfallbackswitch::plugin_register_static().expect("fallbackswitch plugin registration failed");
+    // Before the WebRTC elements list the encoders they can use.
+    pipeline::whep::hide_unsupported_encoders();
     gstrswebrtc::plugin_register_static().expect("webrtc plugin registration failed");
     plugins::check_required_plugins()?;
     let pool = db::init(&args.db).await?;

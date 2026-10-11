@@ -60,6 +60,10 @@ impl InputSource for FileSource {
         &self.name
     }
 
+    fn set_name(&mut self, name: &str) {
+        self.name = name.to_string();
+    }
+
     fn source_type(&self) -> SourceType {
         SourceType::File
     }
@@ -79,7 +83,7 @@ impl InputSource for FileSource {
     }
 
     fn fingerprint(&self) -> String {
-        format!("{}|{:?}", self.name, self.config)
+        format!("{:?}", self.config)
     }
 
     fn build_bin(&self) -> Result<gst::Element> {

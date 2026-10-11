@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { ArrowDown, FileWarning, GripVertical, Pause, Repeat, Square, X } from '@lucide/vue'
+import { ArrowDown, FileWarning, GripVertical, Pause, Play, Repeat, Square, X } from '@lucide/vue'
 import { usePlayoutStore } from '@/stores/playout'
 import type { Source } from '@/stores/sources'
 import { notifyError } from '@/lib/notify'
@@ -14,13 +14,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { MEDIA_DRAG } from './transport'
 
 /**
- * A channel's playlist. Click selects an item, double-click (or Enter) cues
+ * A channel's playlist. Click selects an item, double-click (or Enter) plays
  * it. Rows drag to reorder, and media dragged in from the library is added
  * where it's dropped. Each edit saves the whole list.
  */
 const props = defineProps<{ channel: Source; status?: ChannelStatusDto }>()
 const selected = defineModel<string | null>('selected', { required: true })
-const emit = defineEmits<{ cue: [item: PlaylistItemDto] }>()
+const emit = defineEmits<{ play: [item: PlaylistItemDto] }>()
 
 const playout = usePlayoutStore()
 const playlist = computed(() => playout.playlists.get(props.channel.key))
@@ -154,8 +154,8 @@ defineExpose({ add, remove })
           status?.item_id === i.id && 'shadow-[inset_3px_0_0_var(--color-success)]',
         ]"
         @click="selected = i.id"
-        @dblclick="!i.missing && emit('cue', i)"
-        @keydown.enter.prevent="!i.missing && emit('cue', i)"
+        @dblclick="!i.missing && emit('play', i)"
+        @keydown.enter.prevent="!i.missing && emit('play', i)"
         @keydown.delete.prevent="remove(i)"
         @dragstart="(e) => dragStart(e, i)"
         @dragover.stop="(e) => dragOver(e, n)"
@@ -180,7 +180,11 @@ defineExpose({ add, remove })
             <span
               v-else-if="status?.next_id === i.id"
               class="shrink-0 rounded-sm border border-primary px-1 text-[9px] font-semibold uppercase tracking-wide text-primary"
-              :title="status.next_ready ? 'Cued in the background' : 'Cueing in the background'"
+              :title="
+                status.next_ready
+                  ? `Loaded: ${status.state === 'idle' ? 'Play starts it' : 'plays next'}`
+                  : 'Loading in the background'
+              "
             >
               Next{{ status.next_ready ? '' : '…' }}
             </span>
@@ -203,6 +207,19 @@ defineExpose({ add, remove })
             </span>
           </TooltipTrigger>
           <TooltipContent>At the out point: {{ END[i.end].hint.toLowerCase() }}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger as-child>
+            <button
+              class="size-6 grid place-items-center rounded text-muted-foreground opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground hover:bg-accent disabled:pointer-events-none"
+              :aria-label="`Play ${i.name} now`"
+              :disabled="i.missing"
+              @click.stop="emit('play', i)"
+            >
+              <Play class="size-3.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Play now (double-click)</TooltipContent>
         </Tooltip>
         <Tooltip>
           <TooltipTrigger as-child>

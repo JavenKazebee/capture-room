@@ -3,6 +3,7 @@ pub mod output;
 pub mod profile;
 pub mod recording;
 pub mod rtsp;
+pub mod whep;
 
 use std::sync::{Arc, Mutex};
 
@@ -47,6 +48,24 @@ pub type AudioMeter = Latest<Vec<ChannelLevelDto>>;
 pub type ThumbnailStore = Latest<Vec<u8>>;
 
 // ── Element builders ──────────────────────────────────────────────────────────
+
+/// Change `pipeline`'s state on a thread outside the tokio runtime. Some
+/// elements run their own runtime and block on it while changing state
+/// (`whipserversrc`), which panics — and aborts, across the FFI boundary —
+/// on a thread that's already inside one, as ours are.
+pub(crate) fn set_state(
+    pipeline: &gst::Pipeline,
+    state: gst::State,
+) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return pipeline.set_state(state);
+    }
+    std::thread::scope(|s| {
+        s.spawn(|| pipeline.set_state(state))
+            .join()
+            .unwrap_or(Err(gst::StateChangeError))
+    })
+}
 
 pub(crate) fn make_el(factory: &str, name: &str) -> Result<gst::Element> {
     gst::ElementFactory::make(factory)

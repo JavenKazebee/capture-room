@@ -323,6 +323,17 @@ pub enum OutputConfig {
         #[serde(default = "default_srt_bitrate")]
         bitrate_kbps: u32,
     },
+    /// WebRTC to browsers and other WHEP players, at
+    /// `http://<node>:<API port>/whep/<path>`, encoded for each viewer (H.264
+    /// or VP8, and Opus stereo).
+    Whep {
+        /// The endpoint path; the channel's name when unset. Made URL-safe.
+        #[serde(default)]
+        path: Option<String>,
+        /// The most each viewer is sent; less when their link can't take it.
+        #[serde(default = "default_srt_bitrate")]
+        bitrate_kbps: u32,
+    },
     /// Fullscreen on a screen attached to the node, set to the channel's
     /// format when the screen offers it (for HDMI→SDI converters).
     Display {

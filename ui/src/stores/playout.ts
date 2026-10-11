@@ -69,7 +69,16 @@ export const usePlayoutStore = defineStore('playout', () => {
     await loadMedia(nodeId)
   }
 
-  /** Cue a playlist item: loaded, paused at its in point. */
+  /** Play a playlist item now, straight on from what's on air. */
+  async function playItem(nodeId: string, sourceId: string, itemId: string) {
+    const s = await nodeApi(nodeId)<ChannelStatusDto>(`/channels/${sourceId}/play`, {
+      method: 'POST',
+      body: { item_id: itemId },
+    })
+    setStatus(nodeId, sourceId, s)
+  }
+
+  /** Cue a playlist item: paused at its in point, showing its first frame. */
   async function cue(nodeId: string, sourceId: string, itemId: string) {
     const s = await nodeApi(nodeId)<ChannelStatusDto>(`/channels/${sourceId}/cue`, {
       method: 'POST',
@@ -115,6 +124,7 @@ export const usePlayoutStore = defineStore('playout', () => {
     addMedia,
     removeMedia,
     cue,
+    playItem,
     transport,
   }
 })

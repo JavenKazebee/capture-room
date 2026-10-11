@@ -34,6 +34,7 @@ pub fn router() -> Router<Arc<AppState>> {
             get(get_playlist).put(put_playlist),
         )
         .route("/channels/{id}/cue", post(post_cue))
+        .route("/channels/{id}/play", post(post_play))
         .route("/channels/{id}/transport", post(post_transport))
 }
 
@@ -286,7 +287,8 @@ async fn put_playlist(
     Ok(Json(playlist_dto(&playout, &durations)))
 }
 
-/// Cue a playlist item: loaded, paused at its in point.
+/// Cue a playlist item: loaded, paused at its in point, showing its first
+/// frame.
 async fn post_cue(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -294,6 +296,19 @@ async fn post_cue(
 ) -> ApiResult<Json<ChannelStatusDto>> {
     let playout = playout(&state, &id).await?;
     let result = playout.cue_item(&req.item_id).await;
+    let reply = reply(&state, &id, &playout).await;
+    result.map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
+    Ok(reply)
+}
+
+/// Play a playlist item now.
+async fn post_play(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<CueRequest>,
+) -> ApiResult<Json<ChannelStatusDto>> {
+    let playout = playout(&state, &id).await?;
+    let result = playout.play_item(&req.item_id).await;
     let reply = reply(&state, &id, &playout).await;
     result.map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
     Ok(reply)

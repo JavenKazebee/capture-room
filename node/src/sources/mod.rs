@@ -27,13 +27,17 @@ use crate::api::types::{
 pub trait InputSource: Send + Sync {
     fn id(&self) -> &str;
     fn display_name(&self) -> &str;
+    /// Rename a source a rescan keeps: the name is never part of a
+    /// fingerprint, so a rename doesn't restart anything.
+    fn set_name(&mut self, _name: &str) {}
     fn source_type(&self) -> SourceType;
     /// The source's format, if known before it starts producing.
     fn capabilities(&self) -> Option<SourceCapabilitiesDto>;
 
     /// Identifies the configuration the bin was built from. A rescan keeps a
     /// source (and its running monitor) only if the id and fingerprint match;
-    /// otherwise the source is rebuilt and its monitor restarted.
+    /// otherwise the source is rebuilt and its monitor restarted. Leaves out
+    /// the name (see [`InputSource::set_name`]).
     fn fingerprint(&self) -> String;
 
     /// Build a new GStreamer bin for this source: a `gst::Bin` with two

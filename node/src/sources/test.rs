@@ -84,6 +84,10 @@ impl InputSource for TestSource {
         &self.name
     }
 
+    fn set_name(&mut self, name: &str) {
+        self.name = name.to_string();
+    }
+
     fn source_type(&self) -> SourceType {
         SourceType::Test
     }
@@ -98,7 +102,7 @@ impl InputSource for TestSource {
     }
 
     fn fingerprint(&self) -> String {
-        format!("{}|{:?}", self.name, self.config)
+        format!("{:?}", self.config)
     }
 
     fn build_bin(&self) -> Result<gst::Element> {

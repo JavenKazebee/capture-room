@@ -160,7 +160,9 @@ pub fn build_bin(input: LiveInput) -> Result<gst::Bin> {
         LiveAudio::Source { channels } | LiveAudio::Silence { channels } => *channels,
         LiveAudio::Element { channels, .. } => channels.len() as u32,
     };
-    let audio_inputs = audio_output(&bin, id, channels)?;
+    // Picked device channels are numbered; a source's own are laid out.
+    let numbered = matches!(audio, LiveAudio::Element { .. });
+    let audio_inputs = audio_output(&bin, id, channels, numbered)?;
 
     // ── Inputs ───────────────────────────────────────────────────────────────
     watch_source(&source, tracker.clone(), format.copied(), move |lock| {
@@ -238,8 +240,13 @@ pub(crate) fn video_output(
 
 /// The bin's audio output: a mixer over silence at 48 kHz F32 with
 /// `channels`, on the `"audio"` ghost pad.
-pub(crate) fn audio_output(bin: &gst::Bin, id: &str, channels: u32) -> Result<Inputs> {
-    let audio_caps = audio_caps(channels);
+pub(crate) fn audio_output(
+    bin: &gst::Bin,
+    id: &str,
+    channels: u32,
+    numbered: bool,
+) -> Result<Inputs> {
+    let audio_caps = audio_caps(channels, numbered);
     let mixer = make_el("audiomixer", &format!("live-amix-{id}"))?;
     let out_acaps = capsfilter(&format!("live-acaps-{id}"), audio_caps.clone())?;
     let silence = make_el("audiotestsrc", &format!("live-silence-{id}"))?;
@@ -259,13 +266,51 @@ pub(crate) fn audio_output(bin: &gst::Bin, id: &str, channels: u32) -> Result<In
     })
 }
 
-fn audio_caps(channels: u32) -> gst::Caps {
-    gst::Caps::builder("audio/x-raw")
+/// Audio at `channels`. Beyond stereo the mixer needs a channel layout:
+/// `numbered` channels have none (picked ones, mixed in by matrix), others
+/// get GStreamer's usual layout for their count (5.1 for 6, 7.1 for 8), so
+/// stereo clips and sources are spread onto it and outputs can mix it down.
+fn audio_caps(channels: u32, numbered: bool) -> gst::Caps {
+    let channels = channels.max(1);
+    let mut caps = gst::Caps::builder("audio/x-raw")
         .field("format", "F32LE")
         .field("rate", AUDIO_RATE)
-        .field("channels", channels.max(1) as i32)
-        .field("layout", "interleaved")
-        .build()
+        .field("channels", channels as i32)
+        .field("layout", "interleaved");
+    if channels > 2 {
+        let mask = if numbered {
+            0
+        } else {
+            channel_layout(channels)
+        };
+        caps = caps.field("channel-mask", gst::Bitmask::new(mask));
+    }
+    caps.build()
+}
+
+/// GStreamer's fallback channel mask for `channels` (as
+/// `gst_audio_channel_get_fallback_mask`): front left/right, then centre,
+/// LFE, rears and sides; numbered (0) beyond 8.
+pub(crate) fn channel_layout(channels: u32) -> u64 {
+    const FL: u64 = 1 << 0;
+    const FR: u64 = 1 << 1;
+    const FC: u64 = 1 << 2;
+    const LFE: u64 = 1 << 3;
+    const RL: u64 = 1 << 4;
+    const RR: u64 = 1 << 5;
+    const RC: u64 = 1 << 8;
+    const SL: u64 = 1 << 10;
+    const SR: u64 = 1 << 11;
+    match channels {
+        2 => FL | FR,
+        3 => FL | FR | LFE,
+        4 => FL | FR | RL | RR,
+        5 => FL | FR | FC | RL | RR,
+        6 => FL | FR | FC | LFE | RL | RR,
+        7 => FL | FR | FC | LFE | RL | RR | RC,
+        8 => FL | FR | FC | LFE | RL | RR | SL | SR,
+        _ => 0,
+    }
 }
 
 /// The video format inputs are converted to, and who has to know when it's

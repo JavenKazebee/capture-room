@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed, toRef } from 'vue'
+import { computed, ref, toRef } from 'vue'
+import { Eye } from '@lucide/vue'
 import { audioLevels, type Source } from '@/stores/sources'
+import { useNodesStore } from '@/stores/nodes'
 import { fpsLabel } from '@/lib/sourceFormat'
 import type { ChannelStatusDto } from '@/types/generated/ChannelStatusDto'
 import AudioMeter from '@/components/AudioMeter.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import { useThumbnail } from '@/components/record/useThumbnail'
 import { TRANSPORT } from './transport'
+import WhepViewer from './WhepViewer.vue'
 
 /** A channel's program: its picture and meters, what's on it, and its outputs. */
 const props = defineProps<{ source: Source; status?: ChannelStatusDto }>()
@@ -14,6 +17,22 @@ const props = defineProps<{ source: Source; status?: ChannelStatusDto }>()
 const thumb = useThumbnail(toRef(props, 'source'))
 const channels = computed(() => audioLevels.get(props.source.key) ?? [])
 const state = computed(() => TRANSPORT[props.status?.state ?? 'idle'])
+const nodes = useNodesStore()
+/** The node's API origin, where its WHEP outputs are served. */
+const origin = computed(() => {
+  const url = nodes.nodes.find((n) => n.id === props.source.node_id)?.url
+  try {
+    return url ? new URL(url).origin : window.location.origin
+  } catch {
+    return window.location.origin
+  }
+})
+/** A WHEP output's endpoint, from its label (`WHEP /path`). */
+function whepEndpoint(label: string) {
+  return label.startsWith('WHEP /') ? `${origin.value}/whep${label.slice(5)}` : null
+}
+const watching = ref<string | null>(null)
+
 const format = computed(() => {
   const c = props.source.capabilities
   return c ? `${c.max_width}×${c.max_height} · ${fpsLabel(c.max_framerate)} · ${c.audio_channels} ch` : null
@@ -77,7 +96,16 @@ const format = computed(() => {
         {{ o.label }}<template v-if="o.error">: {{ o.error }}</template
         ><template v-else-if="o.receivers !== null"> · {{ o.receivers }} receiver{{ o.receivers === 1 ? '' : 's' }}</template
         ><template v-else-if="o.detail"> · {{ o.detail }}</template>
+        <button
+          v-if="!o.error && whepEndpoint(o.label)"
+          type="button"
+          class="flex items-center gap-1 text-primary hover:underline"
+          @click="watching = whepEndpoint(o.label)"
+        >
+          <Eye class="size-3.5" /> Watch
+        </button>
       </span>
     </div>
   </div>
+  <WhepViewer v-if="watching" :title="source.display_name" :endpoint="watching" @close="watching = null" />
 </template>

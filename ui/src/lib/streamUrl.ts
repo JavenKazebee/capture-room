@@ -57,3 +57,11 @@ export function mountPath(path: string | null, channelName: string): string {
     .filter(Boolean)
   return segments.length ? `/${segments.join('/')}` : '/channel'
 }
+
+/**
+ * Where viewers open a WHEP output: on the node's API port (`origin`, like
+ * `http://10.0.0.5:8080`), at its mount path (`api/whep.rs`).
+ */
+export function whepUrl(origin: string, path: string | null, channelName: string): string {
+  return `${origin}/whep${mountPath(path, channelName)}`
+}

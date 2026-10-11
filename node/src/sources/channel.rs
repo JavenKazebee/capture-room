@@ -34,7 +34,7 @@ use crate::api::types::{
     ChannelConfig, ClipEnd, LiveVideoFormat, OutputConfig, SourceCapabilitiesDto, SourceType,
     TransportState,
 };
-use crate::pipeline::{make_el, output, rtsp};
+use crate::pipeline::{make_el, output, rtsp, whep};
 
 /// How far ahead of its slot a clip's buffer is stamped. Covers the
 /// program-side conversion, so frames are never late at the compositor.
@@ -72,6 +72,10 @@ impl InputSource for ChannelSource {
         &self.name
     }
 
+    fn set_name(&mut self, name: &str) {
+        self.name = name.to_string();
+    }
+
     fn source_type(&self) -> SourceType {
         SourceType::Channel
     }
@@ -89,10 +93,7 @@ impl InputSource for ChannelSource {
     /// Outputs are left out: changing them restarts the outputs, not the
     /// program (and the clip playing on it).
     fn fingerprint(&self) -> String {
-        format!(
-            "{}|{:?}|{}",
-            self.name, self.config.format, self.config.audio_channels
-        )
+        format!("{:?}|{}", self.config.format, self.config.audio_channels)
     }
 
     fn build_bin(&self) -> Result<gst::Element> {
@@ -101,7 +102,7 @@ impl InputSource for ChannelSource {
         let (video, _) = live::video_output(&bin, id, program_caps(&self.config.format))?;
         let compositor = video.aggregator().context("compositor")?;
         live::add_background(&bin, id, &compositor)?;
-        let audio = live::audio_output(&bin, id, self.config.audio_channels)?;
+        let audio = live::audio_output(&bin, id, self.config.audio_channels, false)?;
         self.playout.lanes.attach(video, audio);
         Ok(bin.upcast())
     }
@@ -147,8 +148,10 @@ pub fn validate(
     if f.fps_num == 0 || f.fps_den == 0 || f.fps_num / f.fps_den > 240 {
         return Err("the frame rate must be above 0 and at most 240".into());
     }
-    if !(1..=16).contains(&cfg.audio_channels) {
-        return Err("audio must have 1 to 16 channels".into());
+    // Up to 7.1: clips are spread onto (and outputs mix down from) a
+    // channel layout, and GStreamer has none beyond 8.
+    if !(1..=8).contains(&cfg.audio_channels) {
+        return Err("audio must have 1 to 8 channels".into());
     }
     for o in &cfg.outputs {
         match o {
@@ -160,6 +163,7 @@ pub fn validate(
             OutputConfig::Rtsp { bitrate_kbps, .. } => {
                 validate_rtsp(*bitrate_kbps, cfg.audio_channels, &available)?
             }
+            OutputConfig::Whep { bitrate_kbps, .. } => validate_whep(*bitrate_kbps, &available)?,
             OutputConfig::Display { display, .. } => {
                 if !available(output::DISPLAY_SINK) {
                     return Err(format!(
@@ -214,6 +218,18 @@ pub fn validate(
             .find(|(other, ocfg)| mount_paths(ocfg, other).contains(p))
         {
             return Err(format!("RTSP path {p} is already used by {other}"));
+        }
+    }
+    let mine = whep_paths(cfg, name);
+    for (i, p) in mine.iter().enumerate() {
+        if mine[..i].contains(p) {
+            return Err(format!("two WHEP outputs are both served at {p}"));
+        }
+        if let Some((other, _)) = others
+            .iter()
+            .find(|(other, ocfg)| whep_paths(ocfg, other).contains(p))
+        {
+            return Err(format!("WHEP path {p} is already used by {other}"));
         }
     }
     let mine = ndi_names(cfg, name);
@@ -315,6 +331,18 @@ fn validate_rtsp(
     Ok(())
 }
 
+fn validate_whep(bitrate_kbps: u32, available: impl Fn(&str) -> bool) -> Result<(), String> {
+    if let Some(missing) = whep::WHEP_ELEMENTS.iter().find(|e| !available(e)) {
+        return Err(format!(
+            "WHEP outputs need {missing}, which isn't installed on this node"
+        ));
+    }
+    if !(100..=100_000).contains(&bitrate_kbps) {
+        return Err("WHEP bitrate must be 100–100,000 kbps".into());
+    }
+    Ok(())
+}
+
 /// The screens a channel's display outputs show on.
 pub fn screens(cfg: &ChannelConfig) -> Vec<String> {
     cfg.outputs
@@ -332,6 +360,17 @@ pub fn mount_paths(cfg: &ChannelConfig, name: &str) -> Vec<String> {
         .iter()
         .filter_map(|o| match o {
             OutputConfig::Rtsp { path, .. } => Some(rtsp::mount_path(path.as_deref(), name)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Where a channel's WHEP outputs are served (`name` is the channel's).
+pub fn whep_paths(cfg: &ChannelConfig, name: &str) -> Vec<String> {
+    cfg.outputs
+        .iter()
+        .filter_map(|o| match o {
+            OutputConfig::Whep { path, .. } => Some(rtsp::mount_path(path.as_deref(), name)),
             _ => None,
         })
         .collect()
@@ -679,9 +718,9 @@ pub struct PlayoutStatus {
 /// runs its playlist. Lives as long as the channel, across monitor restarts
 /// and config changes (see [`InputSource::adopt`]).
 ///
-/// The *deck* holds the clip on air and, while one plays, the playlist's
-/// next item, cued in the background (in *standby*: prerolled, pushing
-/// nothing). A clip that ends into the next item hands over to it at the
+/// The *deck* holds the clip on air and the playlist's next item, cued in
+/// the background (in *standby*: prerolled, pushing nothing), so it starts
+/// at once: also while the channel is idle, when it's the item Play starts. A clip that ends into the next item hands over to it at the
 /// frame after its last one: the next player's base time is set so its
 /// first buffer lands there, on the same lanes.
 pub struct Playout {
@@ -701,8 +740,9 @@ struct Deck {
     next: Option<Clip>,
     /// The item being cued for `next`, meanwhile.
     preloading: Option<PlaylistItem>,
-    /// Where the item on air was in the playlist, for finding the next one
-    /// if it's removed while it plays.
+    /// Where the item on air (or the last one) was in the playlist, for
+    /// finding the next one if it's removed while it plays, and what's next
+    /// once the channel is idle.
     position: Option<usize>,
 }
 
@@ -853,11 +893,14 @@ impl Playout {
     }
 
     /// The item after the one on air, if there's one on air from the
-    /// playlist; the first item if the channel is idle.
+    /// playlist. Idle, the item after the last one played, or the first.
     fn following(&self, deck: &mut Deck) -> Option<PlaylistItem> {
         let p = self.playlist.lock().unwrap();
         let index = match deck.current.as_ref() {
-            None => 0,
+            None => {
+                let after = deck.position.map_or(0, |i| i + 1);
+                return p.items.get(after).or(p.items.first()).cloned();
+            }
             Some(clip) => {
                 let id = clip.item.as_ref()?;
                 match p.items.iter().position(|item| &item.id == id) {
@@ -876,14 +919,9 @@ impl Playout {
             .cloned()
     }
 
-    /// Cue the next item in standby, unless it already is (or nothing
-    /// plays: an idle channel cues nothing ahead).
+    /// Cue the next item in standby, unless it already is.
     fn refresh_next(self: &Arc<Self>, deck: &mut Deck) {
-        let want = if deck.current.is_some() {
-            self.following(deck)
-        } else {
-            None
-        };
+        let want = self.following(deck);
         if deck
             .next
             .as_ref()
@@ -912,7 +950,7 @@ impl Playout {
             match cued {
                 Ok(clip) => {
                     // Still the one wanted?
-                    if deck.current.is_some() && this.following(&mut deck) == Some(want) {
+                    if this.following(&mut deck) == Some(want) {
                         deck.next = Some(clip);
                         this.shared.lock().unwrap().next_ready = true;
                     } else {
@@ -933,18 +971,30 @@ impl Playout {
 
     // ── Transport ─────────────────────────────────────────────────────────────
 
-    /// Cue a playlist item: paused at its in point, showing its first frame.
-    pub async fn cue_item(self: &Arc<Self>, item_id: &str) -> Result<()> {
-        let item = self
-            .playlist
+    fn item(&self, item_id: &str) -> Result<PlaylistItem> {
+        self.playlist
             .lock()
             .unwrap()
             .items
             .iter()
             .find(|i| i.id == item_id)
             .cloned()
-            .context("no such playlist item")?;
-        self.load_clip(item.clip, Some(item.id)).await
+            .context("no such playlist item")
+    }
+
+    /// Cue a playlist item: paused at its in point, showing its first frame.
+    /// What's on air stays until it's ready.
+    pub async fn cue_item(self: &Arc<Self>, item_id: &str) -> Result<()> {
+        let item = self.item(item_id)?;
+        let mut deck = self.deck.lock().await;
+        self.take(&mut deck, item, false).await
+    }
+
+    /// Play a playlist item now, following straight on from what's on air.
+    pub async fn play_item(self: &Arc<Self>, item_id: &str) -> Result<()> {
+        let item = self.item(item_id)?;
+        let mut deck = self.deck.lock().await;
+        self.take(&mut deck, item, true).await
     }
 
     /// Load `request` (not from the playlist) and cue it. Replaces any clip.
@@ -953,6 +1003,7 @@ impl Playout {
         self.load_clip(request, None).await
     }
 
+    #[cfg(test)]
     async fn load_clip(self: &Arc<Self>, request: ClipRequest, item: Option<String>) -> Result<()> {
         let mut deck = self.deck.lock().await;
         if deck.current.take().is_some() {
@@ -1047,7 +1098,14 @@ impl Playout {
         if let Some(old) = &deck.current {
             old.mode.store(mode::OFF, Ordering::SeqCst);
         }
-        self.lanes.ensure(clip.has_audio)?;
+        let playing = self.shared.lock().unwrap().state == TransportState::Playing;
+        if play || !playing {
+            self.lanes.ensure(clip.has_audio)?;
+        } else {
+            // Cued over a clip playing: new lanes, or its frame would land
+            // behind what's queued and be dropped.
+            self.lanes.open(clip.has_audio)?;
+        }
         if play {
             self.start(&clip)?;
         } else {
@@ -1088,9 +1146,13 @@ impl Playout {
         Ok(())
     }
 
-    pub async fn play(&self) -> Result<()> {
-        let deck = self.deck.lock().await;
-        let clip = deck.current.as_ref().context("no clip loaded")?;
+    /// Play the clip on air; idle, the next item.
+    pub async fn play(self: &Arc<Self>) -> Result<()> {
+        let mut deck = self.deck.lock().await;
+        let Some(clip) = deck.current.as_ref() else {
+            let item = self.following(&mut deck).context("the playlist is empty")?;
+            return self.take(&mut deck, item, true).await;
+        };
         let state = self.shared.lock().unwrap().state;
         match state {
             TransportState::Playing => return Ok(()),
@@ -1129,16 +1191,13 @@ impl Playout {
         Ok(())
     }
 
-    /// Take the next playlist item: it plays at once if the channel is
-    /// playing (or has ended), else it's cued. Idle, the first item is cued.
+    /// Play the next playlist item now.
     pub async fn next(self: &Arc<Self>) -> Result<()> {
         let mut deck = self.deck.lock().await;
         let item = self
             .following(&mut deck)
             .context("nothing next in the playlist")?;
-        let state = self.shared.lock().unwrap().state;
-        let play = matches!(state, TransportState::Playing | TransportState::Ended);
-        self.take(&mut deck, item, play).await
+        self.take(&mut deck, item, true).await
     }
 
     /// Put `item` on air from standby (cueing it first if it isn't there).
@@ -1939,6 +1998,10 @@ mod tests {
     }
 
     fn channel() -> ChannelSource {
+        channel_with_audio(2)
+    }
+
+    fn channel_with_audio(audio_channels: u32) -> ChannelSource {
         ChannelSource::new(
             "c".into(),
             "c".into(),
@@ -1949,7 +2012,7 @@ mod tests {
                     fps_num: 30,
                     fps_den: 1,
                 },
-                audio_channels: 2,
+                audio_channels,
                 outputs: vec![],
             },
         )
@@ -2084,6 +2147,167 @@ mod tests {
 
         mon.stop().unwrap();
         assert_eq!(*program.stalls.lock().unwrap(), vec![], "program stalls");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The next item is cued while the channel is idle, so Play starts it at
+    /// once; an item can be played directly, and cueing one over a clip
+    /// playing shows its first frame.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "real-time (~8 s); run with --ignored"]
+    async fn plays_without_cueing() {
+        gst::init().unwrap();
+        let dir = std::env::temp_dir().join(format!("cr-direct-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("clip.mp4");
+        make_clip(&file);
+
+        let src = channel();
+        let playout = src.playout().unwrap().clone();
+        let mon = MonitorPipeline::new(
+            &src,
+            &MonitorSettingsDto::default(),
+            &gst::SystemClock::obtain(),
+        )
+        .unwrap();
+        let program = watch_program(&mon);
+        let sleep = |ms| tokio::time::sleep(Duration::from_millis(ms));
+        sleep(500).await;
+
+        playout
+            .set_playlist(
+                vec![
+                    item("a", clip(&file, 0.0, None, ClipEnd::Hold)),
+                    item("b", clip(&file, 2.0, None, ClipEnd::Hold)),
+                    item("c", clip(&file, 3.0, None, ClipEnd::Hold)),
+                ],
+                false,
+            )
+            .await;
+        for _ in 0..30 {
+            if playout.status().next_ready {
+                break;
+            }
+            sleep(100).await;
+        }
+        let status = playout.status();
+        assert_eq!(status.state, TransportState::Idle);
+        assert_eq!(status.next_id.as_deref(), Some("a"));
+        assert!(
+            status.next_ready,
+            "idle, the first item is in standby: {:?}",
+            status.error
+        );
+        assert!(take_pushed(&playout).is_empty(), "standby shows nothing");
+
+        // ── Play from idle: the next item ────────────────────────────────────
+        playout.play().await.unwrap();
+        sleep(500).await;
+        let status = playout.status();
+        assert_eq!(status.state, TransportState::Playing);
+        assert_eq!(status.item_id.as_deref(), Some("a"));
+        let video = played(&take_pushed(&playout), Kind::Video);
+        assert!(video[0].clip.mseconds() < 34, "from its in point");
+
+        // ── Play an item that isn't next: straight on, no gap ────────────────
+        playout.play_item("c").await.unwrap();
+        sleep(500).await;
+        let status = playout.status();
+        assert_eq!(status.item_id.as_deref(), Some("c"));
+        assert_eq!(status.state, TransportState::Playing);
+        let video = played(&take_pushed(&playout), Kind::Video);
+        assert!(video.iter().any(|p| p.clip.mseconds() >= 3000), "c plays");
+        for w in video.windows(2) {
+            let gap = w[1].program.saturating_sub(w[0].program).mseconds();
+            assert!((30..=40).contains(&gap), "gap {gap} ms at the cut");
+        }
+
+        // ── Cue over a clip playing: its first frame shows ───────────────────
+        playout.cue_item("b").await.unwrap();
+        sleep(300).await;
+        let status = playout.status();
+        assert_eq!(status.state, TransportState::Cued);
+        assert_eq!(status.item_id.as_deref(), Some("b"));
+        let pushed = take_pushed(&playout);
+        assert!(
+            pushed
+                .iter()
+                .any(|p| p.kind == Kind::Video && p.preroll && p.clip.mseconds() == 2000),
+            "b's first frame shows"
+        );
+
+        // ── Stopped, what's next is the item after the last one ──────────────
+        playout.stop().await;
+        sleep(500).await;
+        let status = playout.status();
+        assert_eq!(status.next_id.as_deref(), Some("c"));
+        assert!(status.next_ready);
+        playout.next().await.unwrap();
+        let status = playout.status();
+        assert_eq!(status.state, TransportState::Playing);
+        assert_eq!(status.item_id.as_deref(), Some("c"));
+
+        mon.stop().unwrap();
+        assert_eq!(*program.stalls.lock().unwrap(), vec![], "program stalls");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A 5.1 program runs, laid out as 5.1, and a stereo clip plays into
+    /// it.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "real-time (~3 s); run with --ignored"]
+    async fn surround_program_takes_stereo_clips() {
+        gst::init().unwrap();
+        let dir = std::env::temp_dir().join(format!("cr-surround-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("clip.mp4");
+        make_clip(&file);
+
+        let src = channel_with_audio(6);
+        let playout = src.playout().unwrap().clone();
+        let mon = MonitorPipeline::new(
+            &src,
+            &MonitorSettingsDto::default(),
+            &gst::SystemClock::obtain(),
+        )
+        .unwrap();
+        let caps = Arc::new(Mutex::new(None));
+        let c = caps.clone();
+        mon.audio.appsink().static_pad("sink").unwrap().add_probe(
+            gst::PadProbeType::BUFFER,
+            move |pad, _| {
+                *c.lock().unwrap() = pad.current_caps();
+                gst::PadProbeReturn::Ok
+            },
+        );
+        let sleep = |ms| tokio::time::sleep(Duration::from_millis(ms));
+        sleep(500).await;
+        assert_eq!(mon.error(), None, "the program runs");
+
+        playout
+            .set_playlist(
+                vec![item("a", clip(&file, 0.0, None, ClipEnd::Hold))],
+                false,
+            )
+            .await;
+        playout.play_item("a").await.unwrap();
+        sleep(1000).await;
+        assert_eq!(mon.error(), None);
+        assert_eq!(playout.status().state, TransportState::Playing);
+        assert!(
+            !played(&take_pushed(&playout), Kind::Audio).is_empty(),
+            "the clip's audio plays"
+        );
+        let caps = caps.lock().unwrap().clone().expect("program audio");
+        let s = caps.structure(0).unwrap();
+        assert_eq!(s.get::<i32>("channels").unwrap(), 6);
+        assert_eq!(
+            s.get::<gst::Bitmask>("channel-mask").unwrap().0,
+            0x3f,
+            "5.1"
+        );
+
+        mon.stop().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

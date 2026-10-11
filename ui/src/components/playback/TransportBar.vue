@@ -6,7 +6,7 @@ import type { ChannelStatusDto } from '@/types/generated/ChannelStatusDto'
 import { Button } from '@/components/ui/button'
 
 /**
- * Play, pause, stop and take the next item, the clip's times, and a scrubber
+ * Play (idle, the next item), pause, stop and take the next item, the clip's times, and a scrubber
  * over the whole file with the clip's in–out range marked. Dragging
  * previews; release seeks.
  */
@@ -16,7 +16,7 @@ const emit = defineEmits<{ play: []; pause: []; stop: []; next: []; seek: [ms: n
 const clip = computed(() => props.status?.clip ?? null)
 const duration = computed(() => props.status?.duration_ms ?? 0)
 const playing = computed(() => props.status?.state === 'playing')
-const canPlay = computed(() => !!clip.value && !playing.value)
+const canPlay = computed(() => (!!clip.value || !!props.nextName) && !playing.value)
 
 const dragging = ref<number | null>(null)
 const position = computed(() => dragging.value ?? props.status?.position_ms ?? 0)
@@ -55,7 +55,7 @@ function up() {
         size="sm"
         class="h-8 w-24 gap-1.5"
         :disabled="!canPlay || busy"
-        title="Play (Space)"
+        :title="clip ? 'Play (Space)' : `Play ${nextName} (Space)`"
         @click="emit('play')"
       >
         <Play class="size-3.5 fill-current" /> Play
@@ -78,7 +78,7 @@ function up() {
         variant="outline"
         class="h-8 gap-1.5 min-w-0"
         :disabled="!canNext || busy"
-        :title="nextName ? `Take the next item: ${nextName} (N)` : 'Cue the first item (N)'"
+        :title="`Play the next item now: ${nextName} (N)`"
         @click="emit('next')"
       >
         <SkipForward class="size-3.5 fill-current shrink-0" /> Next

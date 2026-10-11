@@ -27,7 +27,7 @@ gstreamer-video = { version = "0.23", features = ["v1_16"] }
 gstreamer-video-sys = "0.23"
 gst-plugin-ndi = { git = "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git", rev = "894e437dffa6851929ad48b85e7970943d650ed9", features = ["static"] }
 gst-plugin-fallbackswitch = { git = "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git", rev = "894e437dffa6851929ad48b85e7970943d650ed9", features = ["static"] }
-gst-plugin-webrtc = { git = "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git", rev = "894e437dffa6851929ad48b85e7970943d650ed9", default-features = false, features = ["static", "whip"] }
+gst-plugin-webrtc = { git = "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git", rev = "894e437dffa6851929ad48b85e7970943d650ed9", default-features = false, features = ["static", "whip", "whep"] }
 mdns-sd = "0.13"
 mime_guess = "2"
 reqwest = { version = "0.12", features = ["json", "stream"] }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Plus, X } from '@lucide/vue'
+import { Plus, TriangleAlert, X } from '@lucide/vue'
 import type { ChannelConfig } from '@/types/generated/ChannelConfig'
 import type { OutputConfig } from '@/types/generated/OutputConfig'
 import type { DisplayDto } from '@/types/generated/DisplayDto'
@@ -13,7 +13,7 @@ import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
 import { FRAMERATES, FRAMERATE_OPTIONS, RESOLUTIONS, RESOLUTION_OPTIONS } from '@/lib/videoPresets'
-import { RTSP_PORT, hostPort, mountPath, srtListens } from '@/lib/streamUrl'
+import { RTSP_PORT, hostPort, mountPath, srtListens, whepUrl } from '@/lib/streamUrl'
 
 /** A playout channel: its fixed program format, and where it's sent. */
 const props = defineProps<{
@@ -21,7 +21,9 @@ const props = defineProps<{
   name: string
   /** Where receivers reach the node, for SRT listener and RTSP addresses. */
   host: string
-  /** Output types the node can send (`ndi`, `srt`, `rtsp`, `display`). */
+  /** The node's API origin as receivers reach it, for WHEP addresses. */
+  origin: string
+  /** Output types the node can send (`ndi`, `srt`, `rtsp`, `whep`, `display`). */
   outputTypes: string[]
   /** The node's screens, for display outputs. */
   displays: DisplayDto[]
@@ -164,7 +166,7 @@ function addDisplay() {
   add({ type: 'display', display: screen?.id ?? '', audio_device: audio?.key ?? null, idle: 'black' })
 }
 
-const TYPE_LABELS: Record<string, string> = { ndi: 'NDI', srt: 'SRT', rtsp: 'RTSP', display: 'Screen' }
+const TYPE_LABELS: Record<string, string> = { ndi: 'NDI', srt: 'SRT', rtsp: 'RTSP', whep: 'WHEP', display: 'Screen' }
 </script>
 
 <template>
@@ -204,11 +206,11 @@ const TYPE_LABELS: Record<string, string> = { ndi: 'NDI', srt: 'SRT', rtsp: 'RTS
             @update:model-value="(v) => update(i, { display: String(v) })"
           />
           <Input
-            v-else-if="o.type === 'rtsp'"
+            v-else-if="o.type === 'rtsp' || o.type === 'whep'"
             :model-value="o.path ?? ''"
             class="h-7 flex-1 font-mono text-[0.6875rem]"
             :placeholder="mountPath(null, props.name)"
-            :aria-label="`RTSP path for output ${i + 1}`"
+            :aria-label="`${TYPE_LABELS[o.type]} path for output ${i + 1}`"
             @update:model-value="(v) => update(i, { path: String(v) || null })"
           />
           <template v-else>
@@ -286,6 +288,34 @@ const TYPE_LABELS: Record<string, string> = { ndi: 'NDI', srt: 'SRT', rtsp: 'RTS
           <p class="text-xs text-muted-foreground">Encoded only while someone is watching; every viewer shares one encode.</p>
         </template>
 
+        <template v-if="o.type === 'whep'">
+          <div class="grid grid-cols-3 gap-2">
+            <FormField label="Bitrate (kbps)">
+              <Input
+                :model-value="o.bitrate_kbps"
+                type="number"
+                min="100"
+                max="100000"
+                class="h-7"
+                @update:model-value="(v) => update(i, { bitrate_kbps: Number(v) })"
+              />
+            </FormField>
+          </div>
+          <div class="flex flex-wrap items-center gap-1 text-xs">
+            <span class="text-muted-foreground">Viewers open</span>
+            <span class="font-mono break-all">{{ whepUrl(props.origin, o.path, props.name) }}</span>
+            <CopyButton :value="whepUrl(props.origin, o.path, props.name)" />
+          </div>
+          <p class="text-xs text-muted-foreground">
+            In a WHEP player, or Watch on the channel in Playback. Each viewer gets their own encode, sized to their
+            connection; audio is mixed to stereo.
+          </p>
+          <p class="flex items-start gap-1.5 text-xs text-muted-foreground">
+            <TriangleAlert class="size-3.5 shrink-0 mt-px text-warning" />
+            No authentication yet: anyone who can reach the node can watch.
+          </p>
+        </template>
+
         <template v-if="o.type === 'srt'">
           <Input
             :model-value="o.url"
@@ -359,6 +389,14 @@ const TYPE_LABELS: Record<string, string> = { ndi: 'NDI', srt: 'SRT', rtsp: 'RTS
           >
             <span>RTSP</span>
             <span class="text-[11px] text-muted-foreground">Served by the node, for VLC, decoders and NVRs to pull</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            :disabled="!props.outputTypes.includes('whep')"
+            class="flex-col items-start gap-0"
+            @select="add({ type: 'whep', path: null, bitrate_kbps: 8000 })"
+          >
+            <span>WHEP</span>
+            <span class="text-[11px] text-muted-foreground">WebRTC, low latency, to browsers and WHEP players</span>
           </DropdownMenuItem>
           <DropdownMenuItem
             :disabled="!props.outputTypes.includes('display') || !props.displays.length"

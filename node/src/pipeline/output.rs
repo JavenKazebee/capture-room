@@ -25,10 +25,11 @@ use gstreamer_utils::{ConsumptionLink, StreamProducer};
 use gstreamer_video::{self as gst_video, prelude::*};
 use tracing::{info, warn};
 
-use super::make_el;
 use super::monitor::MonitorPipeline;
 use super::recording::set_property;
 use super::rtsp::{self, RtspOutput};
+use super::whep::WhepOutput;
+use super::{make_el, set_state};
 use crate::api::types::{DisplayIdle, OutputConfig, SourceCapabilitiesDto};
 use crate::display::{DisplayWindow, Displays, WantedFormat};
 use crate::sources::device::LocalDevices;
@@ -68,11 +69,11 @@ pub trait RunningOutput: Send + Sync {
 
 /// An output's own pipeline, taking the program at two appsrcs.
 pub struct OutputPipeline {
-    pipeline: gst::Pipeline,
-    video_src: gst_app::AppSrc,
-    audio_src: gst_app::AppSrc,
+    pub pipeline: gst::Pipeline,
+    pub video_src: gst_app::AppSrc,
+    pub audio_src: gst_app::AppSrc,
     /// Connected receivers, for outputs that can count them.
-    receivers: Option<Arc<AtomicU32>>,
+    pub receivers: Option<Arc<AtomicU32>>,
 }
 
 /// What a channel's program is, as its outputs need to know it up front.
@@ -100,6 +101,34 @@ pub struct OutputContext<'a> {
     pub devices: &'a Arc<LocalDevices>,
 }
 
+/// `config` with the defaults taken from the channel's `name` filled in: two
+/// outputs with the same identity send the same thing, so a rename restarts
+/// only the outputs named after the channel.
+pub fn identity(config: &OutputConfig, name: &str) -> OutputConfig {
+    match config {
+        OutputConfig::Ndi { ndi_name } => OutputConfig::Ndi {
+            ndi_name: Some(ndi_name_or(ndi_name.as_deref(), name)),
+        },
+        OutputConfig::Rtsp { path, bitrate_kbps } => OutputConfig::Rtsp {
+            path: Some(rtsp::mount_path(path.as_deref(), name)),
+            bitrate_kbps: *bitrate_kbps,
+        },
+        OutputConfig::Whep { path, bitrate_kbps } => OutputConfig::Whep {
+            path: Some(rtsp::mount_path(path.as_deref(), name)),
+            bitrate_kbps: *bitrate_kbps,
+        },
+        other => other.clone(),
+    }
+}
+
+fn ndi_name_or(ndi_name: Option<&str>, name: &str) -> String {
+    ndi_name
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .unwrap_or(name)
+        .to_string()
+}
+
 /// The sink `config` describes. `name` is the channel's, the default for
 /// what the output is called.
 pub fn sink(
@@ -110,12 +139,7 @@ pub fn sink(
 ) -> Box<dyn OutputSink> {
     match config {
         OutputConfig::Ndi { ndi_name } => Box::new(NdiOutput {
-            ndi_name: ndi_name
-                .as_deref()
-                .map(str::trim)
-                .filter(|n| !n.is_empty())
-                .unwrap_or(name)
-                .to_string(),
+            ndi_name: ndi_name_or(ndi_name.as_deref(), name),
         }),
         OutputConfig::Srt {
             url,
@@ -133,6 +157,10 @@ pub fn sink(
             path: rtsp::mount_path(path.as_deref(), name),
             bitrate_kbps: *bitrate_kbps,
             program,
+        }),
+        OutputConfig::Whep { path, bitrate_kbps } => Box::new(WhepOutput {
+            path: rtsp::mount_path(path.as_deref(), name),
+            bitrate_kbps: *bitrate_kbps,
         }),
         OutputConfig::Display {
             display,
@@ -185,6 +213,12 @@ impl OutputLeg {
     pub fn set_on_air(&self, on_air: bool) {
         self.running.set_on_air(on_air);
     }
+
+    /// Tells running legs apart: a restarted one has a new key.
+    #[cfg(test)]
+    pub fn key(&self) -> usize {
+        &*self.running as *const dyn RunningOutput as *const () as usize
+    }
 }
 
 impl Drop for OutputLeg {
@@ -205,7 +239,7 @@ pub struct PipelineOutput {
 }
 
 impl PipelineOutput {
-    fn start(monitor: &MonitorPipeline, label: String, output: OutputPipeline) -> Result<Self> {
+    pub fn start(monitor: &MonitorPipeline, label: String, output: OutputPipeline) -> Result<Self> {
         let OutputPipeline {
             pipeline,
             video_src,
@@ -236,13 +270,14 @@ impl PipelineOutput {
             pipeline.set_base_time(base_time);
             pipeline.set_start_time(gst::ClockTime::NONE);
         }
-        if pipeline.set_state(gst::State::Playing).is_err() {
+        // Off the runtime: the WebRTC elements block on their own.
+        if set_state(&pipeline, gst::State::Playing).is_err() {
             let reason = error
                 .lock()
                 .unwrap()
                 .clone()
                 .unwrap_or_else(|| "output failed to start".into());
-            let _ = pipeline.set_state(gst::State::Null);
+            let _ = set_state(&pipeline, gst::State::Null);
             return Err(anyhow!(reason));
         }
         let links = vec![
@@ -271,11 +306,11 @@ impl RunningOutput for PipelineOutput {
 impl Drop for PipelineOutput {
     fn drop(&mut self) {
         self.links.clear();
-        let _ = self.pipeline.set_state(gst::State::Null);
+        let _ = set_state(&self.pipeline, gst::State::Null);
     }
 }
 
-fn consumer(name: &str) -> gst_app::AppSrc {
+pub(crate) fn consumer(name: &str) -> gst_app::AppSrc {
     let src = gst_app::AppSrc::builder().name(name).build();
     StreamProducer::configure_consumer(&src);
     src

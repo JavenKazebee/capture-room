@@ -72,6 +72,18 @@ const host = computed(() => {
   }
   return window.location.hostname
 })
+/** The node's API as receivers on the network reach it, for WHEP outputs. */
+const origin = computed(() => {
+  const url = node.value?.url
+  if (url) {
+    try {
+      return new URL(url).origin
+    } catch {
+      // Fall through to the UI's own origin.
+    }
+  }
+  return window.location.origin
+})
 /** Output types the node's channels can send. */
 const outputTypes = computed(
   () => node.value?.source_types.find((t) => t.source_type === 'channel')?.protocols ?? ['ndi', 'srt', 'rtsp'],
@@ -180,6 +192,7 @@ async function destroy() {
         v-model="channel"
         :name="name"
         :host="host"
+        :origin="origin"
         :output-types="outputTypes"
         :displays="displays"
         :devices="devices.devices.value"

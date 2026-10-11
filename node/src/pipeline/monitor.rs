@@ -11,7 +11,9 @@ use tracing::{error, warn};
 use crate::api::types::MonitorSettingsDto;
 use crate::sources::InputSource;
 
-use super::{capsfilter, handle_level_message, link_tee, make_el, AudioMeter, ThumbnailStore};
+use super::{
+    capsfilter, handle_level_message, link_tee, make_el, set_state, AudioMeter, ThumbnailStore,
+};
 
 // ── MonitorPipeline ───────────────────────────────────────────────────────────
 
@@ -376,24 +378,6 @@ struct FrameCount {
     /// Nanoseconds; `u64::MAX` until a timestamped buffer arrives.
     last_pts: AtomicU64,
     skipped_ns: AtomicU64,
-}
-
-/// Change `pipeline`'s state on a thread outside the tokio runtime. Some
-/// elements run their own runtime and block on it while changing state
-/// (`whipserversrc`), which panics — and aborts, across the FFI boundary —
-/// on a thread that's already inside one, as ours are.
-fn set_state(
-    pipeline: &gst::Pipeline,
-    state: gst::State,
-) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-    if tokio::runtime::Handle::try_current().is_err() {
-        return pipeline.set_state(state);
-    }
-    std::thread::scope(|s| {
-        s.spawn(|| pipeline.set_state(state))
-            .join()
-            .unwrap_or(Err(gst::StateChangeError))
-    })
 }
 
 /// Count the buffers reaching `producer`'s appsink.

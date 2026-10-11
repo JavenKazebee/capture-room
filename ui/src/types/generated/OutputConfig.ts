@@ -13,7 +13,15 @@ passphrase: string | null, } | { "type": "rtsp",
 /**
  * The mount path; the channel's name when unset. Made URL-safe.
  */
-path: string | null, bitrate_kbps: number, } | { "type": "display", 
+path: string | null, bitrate_kbps: number, } | { "type": "whep", 
+/**
+ * The endpoint path; the channel's name when unset. Made URL-safe.
+ */
+path: string | null, 
+/**
+ * The most each viewer is sent; less when their link can't take it.
+ */
+bitrate_kbps: number, } | { "type": "display", 
 /**
  * A [`DisplayDto::id`].
  */

@@ -2,6 +2,7 @@ pub mod error;
 pub mod node;
 pub mod playout;
 pub mod types;
+pub mod whep;
 
 use std::sync::Arc;
 
@@ -23,11 +24,13 @@ pub fn node_router(state: Arc<AppState>) -> Router {
 
 /// No CORS layer: the UI is served from this origin (or proxied by Vite in
 /// development), and allowing other origins would let any page the operator
-/// has open start recordings or add nodes.
+/// has open start recordings or add nodes. Only `/whep` allows any origin,
+/// for web players (see [`whep`]).
 pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .nest("/api/v1/node", node::router())
         .merge(crate::controller::api::router())
+        .merge(whep::router())
         .fallback(serve_ui)
         .with_state(state)
 }

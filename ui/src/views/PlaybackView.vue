@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useEventListener, useStorage } from '@vueuse/core'
-import { ArrowDownToLine, Plus, Settings2 } from '@lucide/vue'
+import { ArrowDownToLine, Play, Plus, Settings2 } from '@lucide/vue'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { usePlayoutStore } from '@/stores/playout'
@@ -33,8 +33,8 @@ const router = useRouter()
 
 const SHORTCUTS: [string[], string][] = [
   [['Space'], 'Play / pause'],
-  [['N'], 'Take the next item'],
-  [['Enter'], 'Cue the selected item'],
+  [['N'], 'Play the next item'],
+  [['Enter'], 'Play the selected item'],
   [['I'], 'Set the in point at the playhead'],
   [['O'], 'Set the out point at the playhead'],
   [['Esc'], 'Stop (back to black)'],
@@ -144,7 +144,7 @@ const changed = computed(() => {
   if (!i) return false
   return i.in_ms !== inMs.value || i.out_ms !== outMs.value || i.end !== end.value
 })
-/** On air, new in and out points only apply once it's cued again. */
+/** On air, new in and out points only apply once it's played or cued again. */
 const onAirStale = computed(() => {
   const l = loaded.value
   const i = selected.value
@@ -188,6 +188,13 @@ function applySetup() {
   run(`Saving ${i.name}`, () => playout.savePlaylist(c.node_id, c.id, list, playlist.value?.loop_playlist ?? false))
 }
 
+function play(item: PlaylistItemDto | null = selected.value) {
+  const c = channel.value
+  if (!c || !item || item.missing) return
+  selectedId.value = item.id
+  run(`Playing ${item.name}`, () => playout.playItem(c.node_id, c.id, item.id))
+}
+
 function cue(item: PlaylistItemDto | null = selected.value) {
   const c = channel.value
   if (!c || !item) return
@@ -198,7 +205,7 @@ function cue(item: PlaylistItemDto | null = selected.value) {
 function transport(action: TransportAction, positionMs?: number) {
   const c = channel.value
   if (!c) return
-  const what = action === 'next' ? 'Taking the next item' : action[0].toUpperCase() + action.slice(1)
+  const what = action === 'next' ? 'Playing the next item' : action[0].toUpperCase() + action.slice(1)
   run(what, () => playout.transport(c.node_id, c.id, action, positionMs))
 }
 
@@ -219,12 +226,12 @@ useEventListener('keydown', (e: KeyboardEvent) => {
   if (key === ' ') {
     e.preventDefault()
     if (status.value?.state === 'playing') transport('pause')
-    else if (loaded.value) transport('play')
+    else if (loaded.value || status.value?.next_id) transport('play')
   } else if (key === 'enter' && !t.closest('[role="listbox"]')) {
     e.preventDefault()
-    cue()
+    play()
   } else if (key === 'n') {
-    if (status.value?.next_id || (!loaded.value && items.value.length)) transport('next')
+    if (status.value?.next_id) transport('next')
   } else if (key === 'escape') {
     if (loaded.value) transport('stop')
   } else if (key === 'i') {
@@ -307,7 +314,7 @@ onMounted(async () => {
             :status="status"
             :busy="busy"
             :next-name="nextItem?.name ?? null"
-            :can-next="!!status?.next_id || (!loaded && items.length > 0)"
+            :can-next="!!status?.next_id"
             @play="transport('play')"
             @pause="transport('pause')"
             @stop="transport('stop')"
@@ -320,7 +327,7 @@ onMounted(async () => {
             v-model:selected="selectedId"
             :channel="channel"
             :status="status"
-            @cue="cue"
+            @play="play"
           />
 
           <!-- Item setup -->
@@ -385,18 +392,28 @@ onMounted(async () => {
               </Button>
               <Button
                 size="sm"
-                class="h-8 min-w-24"
-                :variant="onAir && !onAirStale ? 'outline' : 'default'"
+                variant="outline"
+                class="h-8"
                 :disabled="selected.missing || changed || busy"
-                :title="changed ? 'Apply the changes first' : 'Load the item, paused at its in point (Enter)'"
+                :title="changed ? 'Apply the changes first' : 'On air, paused at its in point, ready to play'"
                 @click="cue()"
               >
-                {{ onAir ? 'Re-cue' : 'Cue' }}
+                Show first frame
+              </Button>
+              <Button
+                size="sm"
+                class="h-8 min-w-20 gap-1.5"
+                :variant="onAir && !onAirStale ? 'outline' : 'default'"
+                :disabled="selected.missing || changed || busy"
+                :title="changed ? 'Apply the changes first' : 'Play it now (Enter)'"
+                @click="play()"
+              >
+                <Play class="size-3.5 fill-current" /> {{ onAir ? 'Play again' : 'Play' }}
               </Button>
             </div>
             <p v-if="setupError" class="text-xs text-destructive">{{ setupError }}</p>
             <p v-else-if="onAirStale" class="text-xs text-muted-foreground">
-              It's on air with its old in and out points: cue it again to use the new ones.
+              It's on air with its old in and out points: play it again to use the new ones.
             </p>
           </section>
         </div>

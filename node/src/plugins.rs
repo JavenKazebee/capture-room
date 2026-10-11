@@ -114,6 +114,9 @@ pub fn source_types(can_display: bool) -> Vec<SourceTypeSupport> {
     if rtsp {
         channel.protocols.push("rtsp".into());
     }
+    if crate::pipeline::whep::WHEP_ELEMENTS.iter().all(|e| has(e)) {
+        channel.protocols.push("whep".into());
+    }
     if can_display && has(crate::pipeline::output::DISPLAY_SINK) {
         channel.protocols.push("display".into());
     }
