@@ -4,6 +4,7 @@ mod capacity;
 mod clock;
 mod controller;
 mod db;
+mod display;
 mod pipeline;
 mod plugins;
 mod session;
@@ -46,13 +47,17 @@ struct Args {
 fn main() -> Result<()> {
     // Before the runtime's threads start: it sets an environment variable.
     let ndi_dir = plugins::locate_ndi_runtime();
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(run(ndi_dir))
+    // The main thread runs the window loop for display outputs, where
+    // there's a window system; the node runs beside it.
+    display::run(move |displays| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?
+            .block_on(run(ndi_dir, displays))
+    })
 }
 
-async fn run(ndi_dir: Option<&'static str>) -> Result<()> {
+async fn run(ndi_dir: Option<&'static str>, displays: display::Displays) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -114,6 +119,7 @@ async fn run(ndi_dir: Option<&'static str>) -> Result<()> {
         node_clock.current(),
         ndi_monitor,
         std::sync::Arc::new(devices),
+        displays,
         leg_failure_tx,
         leg_file_tx,
     );

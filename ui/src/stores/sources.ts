@@ -6,6 +6,7 @@ import type { ChannelLevelDto } from '@/types/generated/ChannelLevelDto'
 import type { ConfiguredSourceDto } from '@/types/generated/ConfiguredSourceDto'
 import type { ConfiguredSourceRequest } from '@/types/generated/ConfiguredSourceRequest'
 import type { DeviceDto } from '@/types/generated/DeviceDto'
+import type { DisplayDto } from '@/types/generated/DisplayDto'
 import type { DirListingDto } from '@/types/generated/DirListingDto'
 import type { LinkState } from '@/types/generated/LinkState'
 import type { SourceDto } from '@/types/generated/SourceDto'
@@ -112,14 +113,20 @@ export const useSourcesStore = defineStore('sources', () => {
     return nodeApi(nodeId)<DirListingDto>('/files', { query: path ? { path } : {} })
   }
 
-  /** Capture devices on the node, for device sources and audio pairing. */
+  /** Capture devices and audio outputs on the node. */
   async function listDevices(nodeId: string) {
     return nodeApi(nodeId)<DeviceDto[]>('/devices')
+  }
+
+  /** Screens attached to the node, for display outputs. */
+  async function listDisplays(nodeId: string) {
+    return nodeApi(nodeId)<DisplayDto[]>('/displays')
   }
 
   return {
     sources,
     listDevices,
+    listDisplays,
     updateStatus,
     loadSources,
     scan,

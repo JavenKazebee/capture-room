@@ -323,6 +323,32 @@ pub enum OutputConfig {
         #[serde(default = "default_srt_bitrate")]
         bitrate_kbps: u32,
     },
+    /// Fullscreen on a screen attached to the node, set to the channel's
+    /// format when the screen offers it (for HDMI→SDI converters).
+    Display {
+        /// A [`DisplayDto::id`].
+        display: String,
+        /// The audio output to play to (a [`DeviceDto::key`]), usually the
+        /// screen's own HDMI audio so it's embedded; none for no audio.
+        #[serde(default)]
+        audio_device: Option<String>,
+        /// What the screen shows while the channel has nothing loaded.
+        #[serde(default)]
+        idle: DisplayIdle,
+    },
+}
+
+/// What a display output shows while its channel is idle (no clip loaded).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum DisplayIdle {
+    /// The channel's black: the signal never drops (what an HDMI→SDI
+    /// converter and whatever is downstream of it need).
+    #[default]
+    Black,
+    /// The output window hides, so the screen shows the desktop.
+    Desktop,
 }
 
 fn default_srt_latency() -> u32 {
@@ -398,8 +424,10 @@ pub struct OutputStatusDto {
     /// Why the output isn't sending, if it isn't.
     pub error: Option<String>,
     /// How many receivers are connected, for outputs that know (an SRT
-    /// listener).
+    /// listener, an RTSP mount).
     pub receivers: Option<u32>,
+    /// More about how it's sending: a display output's screen mode.
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -559,6 +587,33 @@ pub enum DeviceKind {
     Video,
     Audio,
     Screen,
+    /// Somewhere the node plays sound (for display outputs' audio).
+    Output,
+}
+
+/// A screen attached to the node, for display outputs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct DisplayDto {
+    /// What a display output names it by.
+    pub id: String,
+    pub name: String,
+    pub primary: bool,
+    /// Its current mode.
+    pub width: u32,
+    pub height: u32,
+    /// Refresh rate in millihertz (59.94 Hz is 59940); 0 when unknown.
+    pub refresh_mhz: u32,
+    /// The modes it offers, largest and fastest first.
+    pub modes: Vec<DisplayModeDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct DisplayModeDto {
+    pub width: u32,
+    pub height: u32,
+    pub refresh_mhz: u32,
 }
 
 /// A capture device the node can see, for picking one in a device source.

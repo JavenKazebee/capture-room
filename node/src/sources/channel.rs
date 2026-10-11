@@ -160,6 +160,26 @@ pub fn validate(
             OutputConfig::Rtsp { bitrate_kbps, .. } => {
                 validate_rtsp(*bitrate_kbps, cfg.audio_channels, &available)?
             }
+            OutputConfig::Display { display, .. } => {
+                if !available(output::DISPLAY_SINK) {
+                    return Err(format!(
+                        "display outputs need {}, which isn't installed on this node",
+                        output::DISPLAY_SINK
+                    ));
+                }
+                if display.trim().is_empty() {
+                    return Err("pick a display".into());
+                }
+            }
+        }
+    }
+    let mine = screens(cfg);
+    for (i, d) in mine.iter().enumerate() {
+        if mine[..i].contains(d) {
+            return Err(format!("two outputs both show on {d}"));
+        }
+        if let Some((other, _)) = others.iter().find(|(_, ocfg)| screens(ocfg).contains(d)) {
+            return Err(format!("{d} already shows {other}"));
         }
     }
     let ports = listen_ports(cfg);
@@ -180,7 +200,7 @@ pub fn validate(
                         .unwrap_or(name)
                         .to_lowercase(),
                 ),
-                OutputConfig::Srt { .. } | OutputConfig::Rtsp { .. } => None,
+                _ => None,
             })
             .collect()
     };
@@ -295,6 +315,17 @@ fn validate_rtsp(
     Ok(())
 }
 
+/// The screens a channel's display outputs show on.
+pub fn screens(cfg: &ChannelConfig) -> Vec<String> {
+    cfg.outputs
+        .iter()
+        .filter_map(|o| match o {
+            OutputConfig::Display { display, .. } => Some(display.trim().to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Where a channel's RTSP outputs are served (`name` is the channel's).
 pub fn mount_paths(cfg: &ChannelConfig, name: &str) -> Vec<String> {
     cfg.outputs
@@ -313,7 +344,7 @@ pub fn listen_ports(cfg: &ChannelConfig) -> Vec<u16> {
         .iter()
         .filter_map(|o| match o {
             OutputConfig::Srt { url, .. } => stream::url_listen_port(url),
-            OutputConfig::Ndi { .. } | OutputConfig::Rtsp { .. } => None,
+            _ => None,
         })
         .collect()
 }

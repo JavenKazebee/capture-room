@@ -7,6 +7,10 @@ export type OutputStatusDto = { label: string,
 error: string | null, 
 /**
  * How many receivers are connected, for outputs that know (an SRT
- * listener).
+ * listener, an RTSP mount).
  */
-receivers: number | null, };
+receivers: number | null, 
+/**
+ * More about how it's sending: a display output's screen mode.
+ */
+detail: string | null, };

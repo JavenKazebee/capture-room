@@ -5,6 +5,7 @@ import { defaultAdvanced } from '@/lib/advanced'
 import type { PresetCreateRequest } from '@/types/generated/PresetCreateRequest'
 import type { PresetDto } from '@/types/generated/PresetDto'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
+import { onReconnect } from '@/lib/reconnect'
 
 export function blankLeg(): PresetOutputInput {
   return {
@@ -39,6 +40,8 @@ export const usePresetsStore = defineStore('presets', () => {
   async function load() {
     presets.value = await api<PresetDto[]>('/presets').catch(() => [])
   }
+
+  onReconnect(load)
 
   async function create(input: PresetCreateRequest): Promise<PresetDto> {
     const p = await api<PresetDto>('/presets', { method: 'POST', body: input })

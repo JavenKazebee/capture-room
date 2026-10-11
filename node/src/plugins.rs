@@ -69,8 +69,9 @@ pub fn has(name: &str) -> bool {
 
 /// Source types that need more than the required plugins, and whether this
 /// node can run them. A type missing an element is unavailable rather than
-/// stopping the node.
-pub fn source_types() -> Vec<SourceTypeSupport> {
+/// stopping the node. `can_display`: the node has a window system, so
+/// channels can show on its screens.
+pub fn source_types(can_display: bool) -> Vec<SourceTypeSupport> {
     let stream_protocols: Vec<String> = crate::sources::stream::PROTOCOLS
         .iter()
         .filter(|(_, element)| has(element))
@@ -112,6 +113,9 @@ pub fn source_types() -> Vec<SourceTypeSupport> {
         && crate::pipeline::output::LIVE_H264.iter().any(|e| has(e));
     if rtsp {
         channel.protocols.push("rtsp".into());
+    }
+    if can_display && has(crate::pipeline::output::DISPLAY_SINK) {
+        channel.protocols.push("display".into());
     }
     vec![stream, device, whip, channel]
 }

@@ -22,13 +22,16 @@ use anyhow::{anyhow, Context, Result};
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app as gst_app;
 use gstreamer_utils::{ConsumptionLink, StreamProducer};
+use gstreamer_video::{self as gst_video, prelude::*};
 use tracing::{info, warn};
 
 use super::make_el;
 use super::monitor::MonitorPipeline;
 use super::recording::set_property;
 use super::rtsp::{self, RtspOutput};
-use crate::api::types::{OutputConfig, SourceCapabilitiesDto};
+use crate::api::types::{DisplayIdle, OutputConfig, SourceCapabilitiesDto};
+use crate::display::{DisplayWindow, Displays, WantedFormat};
+use crate::sources::device::LocalDevices;
 use crate::sources::stream;
 
 /// One type of output: how a channel's program leaves the node. The
@@ -52,6 +55,15 @@ pub trait RunningOutput: Send + Sync {
     fn receivers(&self) -> Option<u32> {
         None
     }
+
+    /// More about how it's sending (a display's screen mode).
+    fn detail(&self) -> Option<String> {
+        None
+    }
+
+    /// Whether the channel has something loaded (a display output can hide
+    /// while it doesn't). Called often; only changes matter.
+    fn set_on_air(&self, _on_air: bool) {}
 }
 
 /// An output's own pipeline, taking the program at two appsrcs.
@@ -66,6 +78,7 @@ pub struct OutputPipeline {
 /// What a channel's program is, as its outputs need to know it up front.
 #[derive(Debug, Clone, Copy)]
 pub struct Program {
+    pub size: (u32, u32),
     /// (numerator, denominator)
     pub fps: (u32, u32),
     pub audio_channels: u32,
@@ -74,15 +87,27 @@ pub struct Program {
 impl From<&SourceCapabilitiesDto> for Program {
     fn from(caps: &SourceCapabilitiesDto) -> Self {
         Self {
+            size: (caps.max_width, caps.max_height),
             fps: (caps.max_framerate[0], caps.max_framerate[1]),
             audio_channels: caps.audio_channels,
         }
     }
 }
 
+/// What the node has for outputs to use.
+pub struct OutputContext<'a> {
+    pub displays: &'a Displays,
+    pub devices: &'a Arc<LocalDevices>,
+}
+
 /// The sink `config` describes. `name` is the channel's, the default for
 /// what the output is called.
-pub fn sink(config: &OutputConfig, name: &str, program: Program) -> Box<dyn OutputSink> {
+pub fn sink(
+    config: &OutputConfig,
+    name: &str,
+    program: Program,
+    context: &OutputContext,
+) -> Box<dyn OutputSink> {
     match config {
         OutputConfig::Ndi { ndi_name } => Box::new(NdiOutput {
             ndi_name: ndi_name
@@ -108,6 +133,18 @@ pub fn sink(config: &OutputConfig, name: &str, program: Program) -> Box<dyn Outp
             path: rtsp::mount_path(path.as_deref(), name),
             bitrate_kbps: *bitrate_kbps,
             program,
+        }),
+        OutputConfig::Display {
+            display,
+            audio_device,
+            idle,
+        } => Box::new(DisplayOutput {
+            display: display.clone(),
+            audio_device: audio_device.clone().filter(|d| !d.is_empty()),
+            idle: *idle,
+            program,
+            displays: context.displays.clone(),
+            devices: context.devices.clone(),
         }),
     }
 }
@@ -140,6 +177,14 @@ impl OutputLeg {
     pub fn receivers(&self) -> Option<u32> {
         self.running.receivers()
     }
+
+    pub fn detail(&self) -> Option<String> {
+        self.running.detail()
+    }
+
+    pub fn set_on_air(&self, on_air: bool) {
+        self.running.set_on_air(on_air);
+    }
 }
 
 impl Drop for OutputLeg {
@@ -160,11 +205,7 @@ pub struct PipelineOutput {
 }
 
 impl PipelineOutput {
-    fn start(
-        monitor: &MonitorPipeline,
-        label: String,
-        output: OutputPipeline,
-    ) -> Result<Box<dyn RunningOutput>> {
+    fn start(monitor: &MonitorPipeline, label: String, output: OutputPipeline) -> Result<Self> {
         let OutputPipeline {
             pipeline,
             video_src,
@@ -208,12 +249,12 @@ impl PipelineOutput {
             monitor.video.add_consumer(&video_src)?,
             monitor.audio.add_consumer(&audio_src)?,
         ];
-        Ok(Box::new(Self {
+        Ok(Self {
             pipeline,
             links,
             error,
             receivers,
-        }))
+        })
     }
 }
 
@@ -253,7 +294,11 @@ impl OutputSink for NdiOutput {
     }
 
     fn start(&self, monitor: &Arc<MonitorPipeline>) -> Result<Box<dyn RunningOutput>> {
-        PipelineOutput::start(monitor, self.label(), self.build()?)
+        Ok(Box::new(PipelineOutput::start(
+            monitor,
+            self.label(),
+            self.build()?,
+        )?))
     }
 }
 
@@ -295,6 +340,129 @@ impl NdiOutput {
             audio_src,
             receivers: None,
         })
+    }
+}
+
+// ── Display ───────────────────────────────────────────────────────────────────
+
+/// The video sink display outputs draw into their window with.
+pub const DISPLAY_SINK: &str = "glimagesink";
+
+/// The program fullscreen on a screen attached to the node (see
+/// [`crate::display`]), its audio to an audio output: usually the screen's
+/// own HDMI audio, so an HDMI→SDI converter embeds it.
+struct DisplayOutput {
+    display: String,
+    audio_device: Option<String>,
+    idle: DisplayIdle,
+    program: Program,
+    displays: Displays,
+    devices: Arc<LocalDevices>,
+}
+
+impl OutputSink for DisplayOutput {
+    fn label(&self) -> String {
+        format!("Display {}", self.display)
+    }
+
+    fn start(&self, monitor: &Arc<MonitorPipeline>) -> Result<Box<dyn RunningOutput>> {
+        let (width, height) = self.program.size;
+        let (fps_num, fps_den) = self.program.fps;
+        // Hidden to start with when it hides while idle: the first status
+        // tick shows it if something's loaded.
+        let visible = self.idle == DisplayIdle::Black;
+        let window = self.displays.open(
+            &self.display,
+            WantedFormat {
+                width,
+                height,
+                fps_num,
+                fps_den,
+            },
+            visible,
+        )?;
+        let output = self.build(window.handle)?;
+        let pipeline = PipelineOutput::start(monitor, self.label(), output)?;
+        Ok(Box::new(DisplayRunning {
+            pipeline,
+            window,
+            idle: self.idle,
+            visible: AtomicBool::new(visible),
+        }))
+    }
+}
+
+impl DisplayOutput {
+    fn build(&self, window: usize) -> Result<OutputPipeline> {
+        let pipeline = gst::Pipeline::with_name(&format!("output-display-{}", self.display));
+        let video_src = consumer("video-src");
+        let audio_src = consumer("audio-src");
+        // The sink converts on the GPU: no videoconvert, which would cost a
+        // CPU pass per frame (a lot at 4K).
+        let vsink = make_el(DISPLAY_SINK, "vsink")?;
+        set_property(&vsink, "force-aspect-ratio", "true")?;
+        let overlay = vsink
+            .dynamic_cast_ref::<gst_video::VideoOverlay>()
+            .context("the display sink can't draw into a window")?;
+        // SAFETY: the window outlives the pipeline (`DisplayRunning` drops
+        // the pipeline first).
+        unsafe { overlay.set_window_handle(window) };
+        let aconv = make_el("audioconvert", "aconv")?;
+        let aresample = make_el("audioresample", "aresample")?;
+        let asink = match &self.audio_device {
+            Some(key) => self.devices.output(key)?.0,
+            // No audio: the program's is consumed and dropped.
+            None => make_el("fakesink", "asink")?,
+        };
+        pipeline
+            .add_many([
+                video_src.upcast_ref(),
+                &vsink,
+                audio_src.upcast_ref(),
+                &aconv,
+                &aresample,
+                &asink,
+            ])
+            .context("add display output")?;
+        video_src.link(&vsink).context("link display video")?;
+        gst::Element::link_many([audio_src.upcast_ref(), &aconv, &aresample, &asink])
+            .context("link display audio")?;
+        Ok(OutputPipeline {
+            pipeline,
+            video_src,
+            audio_src,
+            receivers: None,
+        })
+    }
+}
+
+struct DisplayRunning {
+    // Dropped first: the sink stops drawing before the window closes.
+    pipeline: PipelineOutput,
+    window: DisplayWindow,
+    idle: DisplayIdle,
+    visible: AtomicBool,
+}
+
+impl RunningOutput for DisplayRunning {
+    fn error(&self) -> Option<String> {
+        if !self.window.connected() {
+            return Some(
+                "the screen is unplugged; the output comes back when it's plugged in".into(),
+            );
+        }
+        self.pipeline.error()
+    }
+
+    fn detail(&self) -> Option<String> {
+        Some(self.window.mode.clone())
+    }
+
+    fn set_on_air(&self, on_air: bool) {
+        let visible = on_air || self.idle == DisplayIdle::Black;
+        if self.visible.swap(visible, Ordering::Relaxed) != visible {
+            self.window.set_visible(visible);
+        }
     }
 }
 
@@ -422,7 +590,11 @@ impl OutputSink for SrtOutput {
     }
 
     fn start(&self, monitor: &Arc<MonitorPipeline>) -> Result<Box<dyn RunningOutput>> {
-        PipelineOutput::start(monitor, self.label(), self.build()?)
+        Ok(Box::new(PipelineOutput::start(
+            monitor,
+            self.label(),
+            self.build()?,
+        )?))
     }
 }
 
@@ -513,9 +685,21 @@ mod tests {
     use crate::sources::channel::ChannelSource;
 
     const PROGRAM: Program = Program {
+        size: (640, 360),
         fps: (30, 1),
         audio_channels: 2,
     };
+
+    /// The sink for `config` on a channel called `c`, on a node without
+    /// screens.
+    fn test_sink(config: &OutputConfig) -> Box<dyn OutputSink> {
+        static DEVICES: std::sync::OnceLock<Arc<LocalDevices>> = std::sync::OnceLock::new();
+        let context = OutputContext {
+            displays: &Displays::none(),
+            devices: DEVICES.get_or_init(|| Arc::new(LocalDevices::start())),
+        };
+        sink(config, "c", PROGRAM, &context)
+    }
 
     /// A 640x360 channel's program, running.
     fn channel_monitor() -> Arc<MonitorPipeline> {
@@ -621,7 +805,7 @@ mod tests {
         let config = OutputConfig::Ndi {
             ndi_name: Some(name.clone()),
         };
-        let leg = OutputLeg::start(&mon, sink(&config, "c", PROGRAM).as_ref()).unwrap();
+        let leg = OutputLeg::start(&mon, test_sink(&config).as_ref()).unwrap();
 
         let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
             .unwrap()
@@ -655,11 +839,8 @@ mod tests {
         gst::init().unwrap();
         let port = 7751;
         let mon = channel_monitor();
-        let leg = OutputLeg::start(
-            &mon,
-            sink(&srt(format!("srt://:{port}")), "c", PROGRAM).as_ref(),
-        )
-        .unwrap();
+        let leg =
+            OutputLeg::start(&mon, test_sink(&srt(format!("srt://:{port}"))).as_ref()).unwrap();
         assert_eq!(leg.label(), format!("SRT listening on :{port}"));
         // Nobody listening yet: the program shouldn't back up or fail.
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -694,7 +875,7 @@ mod tests {
         let mon = channel_monitor();
         let leg = OutputLeg::start(
             &mon,
-            sink(&srt(format!("srt://127.0.0.1:{port}")), "c", PROGRAM).as_ref(),
+            test_sink(&srt(format!("srt://127.0.0.1:{port}"))).as_ref(),
         )
         .unwrap();
         assert_eq!(leg.label(), format!("SRT to 127.0.0.1:{port}"));
@@ -749,7 +930,7 @@ mod tests {
             path: Some("cr-test".into()),
             bitrate_kbps: 2000,
         };
-        let leg = OutputLeg::start(&mon, sink(&config, "c", PROGRAM).as_ref()).unwrap();
+        let leg = OutputLeg::start(&mon, test_sink(&config).as_ref()).unwrap();
         assert_eq!(leg.label(), "RTSP /cr-test");
         assert_eq!(leg.receivers(), Some(0));
 

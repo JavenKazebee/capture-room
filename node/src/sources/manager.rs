@@ -23,6 +23,7 @@ use crate::pipeline::recording::{self, OnLegError, OnLegFile, RecordingLeg};
 use super::device::LocalDevices;
 use super::ndi::NdiMonitor;
 use super::{configured, InputSource};
+use crate::display::Displays;
 
 // ── Stop / teardown handoff ───────────────────────────────────────────────────
 
@@ -151,6 +152,8 @@ pub struct SourceManager {
     stopping: HashMap<String, StopResult>,
     ndi_monitor: NdiMonitor,
     devices: Arc<LocalDevices>,
+    /// The node's screens, for display outputs.
+    displays: Displays,
     leg_failures: mpsc::UnboundedSender<LegFailure>,
     /// Session ids whose legs opened a new file (a split), so the file list
     /// can be saved.
@@ -163,6 +166,7 @@ impl SourceManager {
         (clock, clock_domain): (gst::Clock, String),
         ndi_monitor: NdiMonitor,
         devices: Arc<LocalDevices>,
+        displays: Displays,
         leg_failures: mpsc::UnboundedSender<LegFailure>,
         leg_files: mpsc::UnboundedSender<String>,
     ) -> Self {
@@ -178,6 +182,7 @@ impl SourceManager {
             stopping: HashMap::new(),
             ndi_monitor,
             devices,
+            displays,
             leg_failures,
             leg_files,
         }
@@ -188,6 +193,11 @@ impl SourceManager {
     /// The node's capture devices.
     pub fn devices(&self) -> &Arc<LocalDevices> {
         &self.devices
+    }
+
+    /// The node's screens.
+    pub fn displays(&self) -> &Displays {
+        &self.displays
     }
 
     pub fn sources(&self) -> &[Box<dyn InputSource>] {
@@ -390,7 +400,11 @@ impl SourceManager {
         let legs = configs
             .iter()
             .map(|config| {
-                let sink = output::sink(config, name, program);
+                let context = output::OutputContext {
+                    displays: &self.displays,
+                    devices: &self.devices,
+                };
+                let sink = output::sink(config, name, program, &context);
                 OutputLeg::start(monitor, sink.as_ref()).map_err(|e| {
                     let error = format!("{e:#}");
                     warn!(channel = %id, error = %error, "output failed to start");
@@ -408,6 +422,15 @@ impl SourceManager {
         );
     }
 
+    /// Tell a channel's outputs whether it has something loaded.
+    pub fn set_on_air(&self, source_id: &str, on_air: bool) {
+        if let Some(outputs) = self.outputs.get(source_id) {
+            for leg in outputs.legs.iter().flatten() {
+                leg.set_on_air(on_air);
+            }
+        }
+    }
+
     /// A channel's outputs and whether each is sending.
     pub fn output_status(&self, source_id: &str) -> Vec<OutputStatusDto> {
         let Some(outputs) = self.outputs.get(source_id) else {
@@ -421,11 +444,13 @@ impl SourceManager {
                     label: leg.label().to_string(),
                     error: leg.error(),
                     receivers: leg.receivers(),
+                    detail: leg.detail(),
                 },
                 Err((label, error)) => OutputStatusDto {
                     label: label.clone(),
                     error: Some(error.clone()),
                     receivers: None,
+                    detail: None,
                 },
             })
             .collect()

@@ -108,7 +108,9 @@ async fn get_nodes(State(state): State<Arc<AppState>>) -> Json<Vec<NodeDto>> {
         is_self: true,
         manual: false,
         encoders: crate::pipeline::profile::available_encoders(),
-        source_types: crate::plugins::source_types(),
+        source_types: crate::plugins::source_types(
+            state.source_manager.read().await.displays().available(),
+        ),
         clock: Some(state.clock_status().await),
     }];
 

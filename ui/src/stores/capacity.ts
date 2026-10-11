@@ -8,6 +8,7 @@ import type { MediaInfo } from '@/types/generated/MediaInfo'
 import type { NodeCapacityDto } from '@/types/generated/NodeCapacityDto'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import { fpsLabel } from '@/lib/sourceFormat'
+import { onReconnect } from '@/lib/reconnect'
 
 /** Recording time left on a volume below which the UI warns. */
 export const LOW_TIME_SECS = 3600
@@ -79,6 +80,16 @@ export const useCapacityStore = defineStore('capacity', () => {
       body: { outputs, source_ids: sourceIds },
     })
   }
+
+  /** Fetch again whatever was loaded: after a reconnect, when events may have been missed. */
+  async function reloadLoaded() {
+    await Promise.all([
+      ...[...capacity.keys()].map((id) => load(id)),
+      ...[...runs.keys()].map((id) => loadRuns(id).catch(() => {})),
+    ])
+  }
+
+  onReconnect(reloadLoaded)
 
   return { capacity, runs, load, loadRuns, applyRun, start, cancel, remove, check }
 })

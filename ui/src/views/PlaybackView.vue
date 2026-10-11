@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useEventListener, useStorage } from '@vueuse/core'
-import { ArrowDownToLine, Plus } from '@lucide/vue'
+import { ArrowDownToLine, Plus, Settings2 } from '@lucide/vue'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { usePlayoutStore } from '@/stores/playout'
@@ -22,6 +22,7 @@ import ProgramMonitor from '@/components/playback/ProgramMonitor.vue'
 import TransportBar from '@/components/playback/TransportBar.vue'
 import MediaLibrary from '@/components/playback/MediaLibrary.vue'
 import PlaylistPanel from '@/components/playback/PlaylistPanel.vue'
+import ChannelSheet from '@/components/playback/ChannelSheet.vue'
 import { TRANSPORT } from '@/components/playback/transport'
 
 const sources = useSourcesStore()
@@ -50,12 +51,32 @@ const nodeId = computed(() => channel.value?.node_id ?? nodes.self?.node_id ?? '
 const playlist = computed(() => (channel.value ? playout.playlists.get(channel.value.key) : undefined))
 const items = computed(() => playlist.value?.items ?? [])
 
-// `?channel=<key>` (from Sources) picks the channel.
+// ── Channel settings ──────────────────────────────────────────────────────────
+
+/** The channel sheet: `'new'`, the channel being edited, or closed. */
+const sheet = ref<'new' | { nodeId: string; id: string } | null>(null)
+
+function editChannel(key: string) {
+  const c = playout.channels.find((c) => c.key === key)
+  if (c) sheet.value = { nodeId: c.node_id, id: c.id }
+}
+
+// From Sources: `?channel=<key>` picks the channel, with `&edit` opening its
+// settings; `?add=channel` opens a new one.
 watch(
-  () => route.query.channel,
-  (key) => {
-    if (typeof key !== 'string') return
-    channelKey.value = key
+  () => [route.query.channel, route.query.edit, route.query.add],
+  async ([key, edit, add]) => {
+    if (typeof key === 'string') {
+      channelKey.value = key
+      if (edit !== undefined) {
+        if (!playout.channels.length) await sources.loadSources()
+        editChannel(key)
+      }
+    } else if (add === 'channel') {
+      sheet.value = 'new'
+    } else {
+      return
+    }
     router.replace({ query: {} })
   },
   { immediate: true },
@@ -225,7 +246,10 @@ onMounted(async () => {
   <div class="h-full flex flex-col min-h-0">
     <PageHeader title="Playback" :count="playout.channels.length" :shortcuts="SHORTCUTS">
       <template #actions>
-        <Button size="sm" variant="outline" class="h-7 gap-1.5 text-xs" @click="router.push('/setup/sources?add=channel')">
+        <Button v-if="channel" size="sm" variant="outline" class="h-7 gap-1.5 text-xs" @click="editChannel(channel.key)">
+          <Settings2 class="size-3.5" /> Channel settings
+        </Button>
+        <Button size="sm" variant="outline" class="h-7 gap-1.5 text-xs" @click="sheet = 'new'">
           <Plus class="size-3.5" /> New channel
         </Button>
       </template>
@@ -234,10 +258,10 @@ onMounted(async () => {
     <div v-if="!playout.channels.length" class="flex-1 grid place-items-center p-8">
       <div class="max-w-sm text-center text-sm text-muted-foreground flex flex-col items-center gap-3">
         <p>
-          No playout channels yet. A channel plays clips from a node's media library out over NDI, at a fixed
-          format, and shows up as a source you can record.
+          No playout channels yet. A channel plays clips from a node's media library out at a fixed format (over
+          NDI, SRT, RTSP or to a screen) and shows up as a source you can record.
         </p>
-        <Button size="sm" class="gap-1.5" @click="router.push('/setup/sources?add=channel')">
+        <Button size="sm" class="gap-1.5" @click="sheet = 'new'">
           <Plus class="size-3.5" /> Add a playout channel
         </Button>
       </div>
@@ -390,4 +414,11 @@ onMounted(async () => {
       </aside>
     </div>
   </div>
+
+  <ChannelSheet
+    v-if="sheet"
+    :editing="sheet === 'new' ? null : sheet"
+    @close="sheet = null"
+    @saved="(key) => (channelKey = key)"
+  />
 </template>

@@ -5,6 +5,7 @@ import type { DeviceSourceConfig } from '@/types/generated/DeviceSourceConfig'
 import type { DeviceDto } from '@/types/generated/DeviceDto'
 import type { DeviceMode } from '@/types/generated/DeviceMode'
 import { fpsLabel } from '@/lib/sourceFormat'
+import { withPairedAudio } from '@/lib/deviceAudio'
 import { Button } from '@/components/ui/button'
 import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
@@ -20,7 +21,7 @@ const emit = defineEmits<{ refresh: [] }>()
 
 const cfg = defineModel<DeviceSourceConfig>({ required: true })
 
-const video = computed(() => props.devices.filter((d) => d.kind !== 'audio'))
+const video = computed(() => props.devices.filter((d) => d.kind === 'video' || d.kind === 'screen'))
 const current = computed(() => video.value.find((d) => d.key === cfg.value.video_device))
 
 function modeLabel(m: DeviceMode) {
@@ -51,7 +52,16 @@ const deviceOptions = computed(() => {
 
 const deviceKey = computed({
   get: () => cfg.value.video_device,
-  set: (key: string) => (cfg.value = { ...cfg.value, video_device: key, format: null }),
+  set: (key: string) => {
+    const device = video.value.find((d) => d.key === key)
+    cfg.value = {
+      ...cfg.value,
+      video_device: key,
+      format: null,
+      // A capture card's own audio, so its HDMI sound isn't left out.
+      audio: withPairedAudio(cfg.value.audio, device, props.devices),
+    }
+  },
 })
 
 const DEFAULT = 'default'

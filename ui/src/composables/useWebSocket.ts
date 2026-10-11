@@ -6,12 +6,15 @@ import { sourceKey } from '@/composables/useApi'
 import { useEventsStore } from '@/stores/events'
 import { useCapacityStore } from '@/stores/capacity'
 import { usePlayoutStore } from '@/stores/playout'
+import { runReconnectReloads } from '@/lib/reconnect'
 import type { WsEvent } from '@/types/generated/WsEvent'
 
 export type WsStatus = 'connecting' | 'connected' | 'disconnected'
 
-const BASE_DELAY = 1_000
-const MAX_DELAY = 16_000
+// The server is on the local network (or this machine): retry often, so the
+// page catches up within a few seconds of it coming back.
+const BASE_DELAY = 500
+const MAX_DELAY = 3_000
 
 let socket: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -38,7 +41,7 @@ function connect() {
     }
     // Events sent while disconnected are lost (a recording that stopped or
     // failed, a node that went away), so reload rather than show stale state.
-    if (connectedBefore) reloadAll()
+    if (connectedBefore) reloadAfterReconnect()
     connectedBefore = true
   })
 
@@ -61,6 +64,27 @@ function connect() {
   socket.addEventListener('error', () => {
     socket?.close()
   })
+}
+
+/**
+ * Everything the UI holds, after missing events: nodes, sources and
+ * recordings, then whatever else registered with `onReconnect` (each store's
+ * data, and pages' own). Pages that follow the node list reload with it.
+ */
+async function reloadAfterReconnect() {
+  await reloadAll()
+  await runReconnectReloads()
+}
+
+/** Connect now instead of waiting out the backoff (the tab came back, the network did). */
+function reconnectNow() {
+  if (wsStatus.value !== 'disconnected') return
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  attempt = 0
+  connect()
 }
 
 /** Reload nodes, then every reachable node's sources and recordings. */
@@ -154,6 +178,11 @@ function handleEvent(event: NodeEvent) {
 
 export function startWebSocket() {
   setTimeout(connect, 0)
+  window.addEventListener('online', reconnectNow)
+  window.addEventListener('focus', reconnectNow)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') reconnectNow()
+  })
 }
 
 /** Record the notable events in the event log, before the stores apply them. */
@@ -255,4 +284,11 @@ function logEvent(event: NodeEvent) {
       break
     }
   }
+}
+
+// The socket and its handlers live in this module: a hot update would leave
+// the old ones running beside a new module that never connects. Reload the
+// page instead.
+if (import.meta.hot) {
+  import.meta.hot.accept(() => window.location.reload())
 }

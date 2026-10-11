@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, reactive } from 'vue'
 import { nodeApi } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
+import { onReconnect } from '@/lib/reconnect'
 import type { StorageVolumeDto } from '@/types/generated/StorageVolumeDto'
 
 export const useStorageStore = defineStore('storage', () => {
@@ -17,6 +18,8 @@ export const useStorageStore = defineStore('storage', () => {
     for (const id of volumes.keys()) if (!nodes.reachable.some((n) => n.id === id)) volumes.delete(id)
     await Promise.all(nodes.reachable.map((n) => loadForNode(n.id)))
   }
+
+  onReconnect(load)
 
   /** The volume with the least free space across every node. */
   const lowest = computed(() => {

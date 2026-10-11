@@ -14,8 +14,14 @@ use crate::api::types::{
 use crate::pipeline::{capsfilter, make_el};
 
 /// Device classes the monitor watches. Screens are `Source/Monitor` on
-/// Windows; macOS lists them as video sources.
-const CLASSES: &[&str] = &["Video/Source", "Audio/Source", "Source/Monitor"];
+/// Windows; macOS lists them as video sources. Audio sinks are where display
+/// outputs play their sound.
+const CLASSES: &[&str] = &[
+    "Video/Source",
+    "Audio/Source",
+    "Source/Monitor",
+    "Audio/Sink",
+];
 
 /// Modes listed per video device, at most.
 const MAX_MODES: usize = 32;
@@ -77,7 +83,21 @@ impl LocalDevices {
         let device = self
             .find(key)
             .ok_or_else(|| anyhow!("{} isn't connected", display(key, name)))?;
-        Ok((open(&device)?, describe(&device)))
+        let dto = describe(&device);
+        super::privacy::check(dto.kind, &dto.name)?;
+        Ok((open(&device)?, dto))
+    }
+
+    /// An element playing to audio output `key`, and its channel count.
+    pub fn output(&self, key: &str) -> Result<(gst::Element, u32)> {
+        let (element, dto) = self.element(key, "")?;
+        Ok((element, dto.channels.unwrap_or(2)))
+    }
+
+    /// Whether an audio output is connected.
+    pub fn has_output(&self, key: &str) -> bool {
+        self.find(key)
+            .is_some_and(|d| kind(&d) == DeviceKind::Output)
     }
 
     /// Resolve an audio plan to what [`live::build_bin`] takes.
@@ -178,6 +198,7 @@ fn device_key(device: &gst::Device) -> String {
         DeviceKind::Video => "video",
         DeviceKind::Audio => "audio",
         DeviceKind::Screen => "screen",
+        DeviceKind::Output => "output",
     };
     format!(
         "{kind}:{}",
@@ -205,7 +226,9 @@ fn is_monitor(device: &gst::Device) -> bool {
 
 fn kind(device: &gst::Device) -> DeviceKind {
     let class = device.device_class();
-    if class.contains("Monitor") || device.display_name().to_lowercase().contains("screen") {
+    if class.contains("Sink") {
+        DeviceKind::Output
+    } else if class.contains("Monitor") || device.display_name().to_lowercase().contains("screen") {
         DeviceKind::Screen
     } else if class.contains("Video") {
         DeviceKind::Video
@@ -281,7 +304,7 @@ fn describe(device: &gst::Device) -> DeviceDto {
             .or_else(|| p.get::<i32>("audio.channels").ok().map(|c| c as u32))
     });
     let channels = match kind {
-        DeviceKind::Audio => declared.or(channels).or(Some(2)),
+        DeviceKind::Audio | DeviceKind::Output => declared.or(channels).or(Some(2)),
         _ => None,
     };
     DeviceDto {
@@ -445,6 +468,7 @@ impl InputSource for DeviceSource {
                 display(&cfg.video_device, &cfg.video_device_name)
             )
         })?;
+        super::privacy::check(kind(&device), &device.display_name())?;
         let element = open(&device)?;
         let source = capture_bin(&self.id, element, device.caps(), cfg.format.as_ref())?;
         let bin = live::build_bin(LiveInput {
@@ -474,8 +498,8 @@ pub fn validate(cfg: &mut DeviceSourceConfig, devices: &LocalDevices) -> Result<
         .into_iter()
         .find(|d| d.key == cfg.video_device)
         .ok_or("pick a connected video device")?;
-    if device.kind == DeviceKind::Audio {
-        return Err(format!("{} is an audio device", device.name));
+    if !matches!(device.kind, DeviceKind::Video | DeviceKind::Screen) {
+        return Err(format!("{} isn't a video device", device.name));
     }
     cfg.video_device_name = device.name;
     if let Some(f) = &cfg.format {
@@ -503,6 +527,9 @@ pub fn validate_audio(plan: &AudioPlan, devices: &LocalDevices) -> Result<(), St
                 .into_iter()
                 .find(|d| &d.key == device_key)
                 .ok_or("pick a connected audio device")?;
+            if device.kind != DeviceKind::Audio {
+                return Err(format!("{} isn't an audio input", device.name));
+            }
             let inputs = device.channels.unwrap_or(2);
             if channels.is_empty() {
                 return Err("pick at least one audio channel".into());

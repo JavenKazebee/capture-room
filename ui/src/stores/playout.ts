@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, reactive } from 'vue'
 import { nodeApi, sourceKey } from '@/composables/useApi'
 import { useSourcesStore } from '@/stores/sources'
+import { onReconnect } from '@/lib/reconnect'
 import type { ChannelStatusDto } from '@/types/generated/ChannelStatusDto'
 import type { MediaItemDto } from '@/types/generated/MediaItemDto'
 import type { PlaylistDto } from '@/types/generated/PlaylistDto'
@@ -84,6 +85,22 @@ export const usePlayoutStore = defineStore('playout', () => {
     })
     setStatus(nodeId, sourceId, s)
   }
+
+  /** Fetch again whatever was loaded: after a reconnect, when events may have been missed. */
+  async function reloadLoaded() {
+    await Promise.all([
+      ...channels.value.map((c) => loadStatus(c.node_id, c.id).catch(() => {})),
+      ...[...playlists.keys()].map((key) => {
+        const c = channels.value.find((c) => c.key === key)
+        // A channel that's gone takes its playlist with it.
+        if (!c) return playlists.delete(key)
+        return loadPlaylist(c.node_id, c.id).catch(() => {})
+      }),
+      ...[...media.keys()].map((nodeId) => loadMedia(nodeId).catch(() => {})),
+    ])
+  }
+
+  onReconnect(reloadLoaded)
 
   return {
     status,

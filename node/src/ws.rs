@@ -118,6 +118,8 @@ pub fn spawn_emitter(state: Arc<AppState>) {
                     continue;
                 };
                 let status = playout.status();
+                // Display outputs that hide while idle follow this.
+                mgr.set_on_air(source.id(), status.state != TransportState::Idle);
                 if status.state == TransportState::Playing || tick.is_multiple_of(10) {
                     state.emit(&WsEvent::ChannelState {
                         source_id: source.id().to_string(),

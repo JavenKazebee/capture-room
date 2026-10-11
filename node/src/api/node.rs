@@ -25,9 +25,9 @@ use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     BenchmarkRequest, BenchmarkRunDto, CapacityCheckDto, CapacityCheckRequest, ClockClaim,
     ClockStatusDto, ClockTimeDto, ConfiguredSourceDto, ConfiguredSourceRequest, DeviceDto,
-    DirListingDto, NodeCapacityDto, NodeSettingsDto, NodeStatus, OutputConfig, RecordingSessionDto,
-    RecordingStatus, RecordingsQuery, SourceConfig, SourceDto, StartRecordingRequest,
-    StorageVolumeDto, UpdateNodeSettingsRequest, VolumeCheckDto, WsEvent,
+    DirListingDto, DisplayDto, NodeCapacityDto, NodeSettingsDto, NodeStatus, OutputConfig,
+    RecordingSessionDto, RecordingStatus, RecordingsQuery, SourceConfig, SourceDto,
+    StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
 use crate::capacity::{self, Capacity};
@@ -50,6 +50,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/storage", get(get_storage))
         .route("/files", get(get_files))
         .route("/devices", get(get_devices))
+        .route("/displays", get(get_displays))
         // Sources — static paths before dynamic {id}
         .route("/sources", get(get_sources))
         .route("/sources/scan", post(post_scan))
@@ -95,7 +96,9 @@ async fn get_status(State(state): State<Arc<AppState>>) -> Json<NodeStatus> {
         uptime_secs: state.started_at.elapsed().as_secs(),
         is_controller: state.is_controller().await,
         encoders: crate::pipeline::profile::available_encoders(),
-        source_types: crate::plugins::source_types(),
+        source_types: crate::plugins::source_types(
+            state.source_manager.read().await.displays().available(),
+        ),
         clock: Some(state.clock_status().await),
     })
 }
@@ -252,6 +255,17 @@ async fn validated(
                 .collect();
             crate::sources::channel::validate(cfg, &req.name, &others, crate::plugins::has)
                 .map_err(bad)?;
+            for o in &cfg.outputs {
+                if let OutputConfig::Display {
+                    audio_device: Some(key),
+                    ..
+                } = o
+                {
+                    if !key.is_empty() && !devices.has_output(key) {
+                        return Err(bad(format!("audio output {key} isn't connected")));
+                    }
+                }
+            }
         }
         _ => {}
     }
@@ -380,6 +394,17 @@ fn serves_rtsp(config: &SourceConfig) -> bool {
 async fn get_devices(State(state): State<Arc<AppState>>) -> Json<Vec<DeviceDto>> {
     let devices = state.source_manager.read().await.devices().clone();
     Json(devices.list())
+}
+
+// ── /displays ─────────────────────────────────────────────────────────────────
+
+/// The node's screens, for display outputs.
+async fn get_displays(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<DisplayDto>>> {
+    let displays = state.source_manager.read().await.displays().clone();
+    // Waits on the window loop.
+    Ok(Json(
+        tokio::task::spawn_blocking(move || displays.list()).await?,
+    ))
 }
 
 // ── /files ────────────────────────────────────────────────────────────────────

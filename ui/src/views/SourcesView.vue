@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { ChevronLeft, FolderOpen, MonitorPlay, Pencil, Plus, Radio, RefreshCw, Trash2 } from '@lucide/vue'
 import { CONFIGURED_TYPES, useSourcesStore, type ConfiguredKind, type Source } from '@/stores/sources'
@@ -11,6 +11,7 @@ import { notifyError } from '@/lib/notify'
 import { errorMessage } from '@/composables/useApi'
 import { fpsLabel, resolutionLabel } from '@/lib/sourceFormat'
 import { formatDuration } from '@/lib/format'
+import { withPairedAudio } from '@/lib/deviceAudio'
 import type { TestSourceConfig } from '@/types/generated/TestSourceConfig'
 import type { MediaInfo } from '@/types/generated/MediaInfo'
 import type { ConfiguredSourceRequest } from '@/types/generated/ConfiguredSourceRequest'
@@ -38,14 +39,12 @@ import SourceTypeCards from '@/components/sources/SourceTypeCards.vue'
 import StreamFields from '@/components/sources/StreamFields.vue'
 import DeviceFields from '@/components/sources/DeviceFields.vue'
 import WhipFields from '@/components/sources/WhipFields.vue'
-import ChannelFields from '@/components/sources/ChannelFields.vue'
 import { useNodeDevices } from '@/composables/useNodeDevices'
 import { LINK } from '@/lib/linkState'
 import { FRAMERATES, FRAMERATE_OPTIONS, RESOLUTIONS, RESOLUTION_OPTIONS } from '@/lib/videoPresets'
 import type { StreamSourceConfig } from '@/types/generated/StreamSourceConfig'
 import type { DeviceSourceConfig } from '@/types/generated/DeviceSourceConfig'
 import type { WhipSourceConfig } from '@/types/generated/WhipSourceConfig'
-import type { ChannelConfig } from '@/types/generated/ChannelConfig'
 import { useStorage } from '@vueuse/core'
 
 const store = useSourcesStore()
@@ -53,7 +52,6 @@ const nodesStore = useNodesStore()
 const recordings = useRecordingsStore()
 const desk = useRecordDeskStore()
 const router = useRouter()
-const route = useRoute()
 const nodes = computed(() => nodesStore.reachable)
 
 const loading = ref(false)
@@ -199,13 +197,9 @@ function blankDevice(): DeviceSourceConfig {
 function blankWhip(): WhipSourceConfig {
   return { port: 8890, audio: { from: 'source', channels: 2 }, format: null }
 }
-function blankChannel(): ChannelConfig {
-  return { format: { width: 1920, height: 1080, fps_num: 30, fps_den: 1 }, audio_channels: 2, outputs: [{ type: 'ndi', ndi_name: null }] }
-}
 const stream = ref<StreamSourceConfig>(blankStream())
 const device = ref<DeviceSourceConfig>(blankDevice())
 const whip = ref<WhipSourceConfig>(blankWhip())
-const channel = ref<ChannelConfig>(blankChannel())
 
 const formNode = computed(() => nodesStore.nodes.find((n) => n.id === formNodeId.value))
 /** The node's address as senders on the network see it. */
@@ -222,10 +216,6 @@ const formHost = computed(() => {
 })
 const protocols = computed(
   () => formNode.value?.source_types.find((t) => t.source_type === 'stream')?.protocols ?? ['rtsp', 'srt', 'rtmp', 'http', 'https', 'udp'],
-)
-/** Output types the node's channels can send. */
-const outputTypes = computed(
-  () => formNode.value?.source_types.find((t) => t.source_type === 'channel')?.protocols ?? ['ndi', 'srt', 'rtsp'],
 )
 /** Kinds the node can't run, and why. */
 const unavailable = computed(() => {
@@ -273,7 +263,6 @@ function openCreate() {
   stream.value = blankStream()
   device.value = blankDevice()
   whip.value = blankWhip()
-  channel.value = blankChannel()
   formError.value = null
   showForm.value = true
 }
@@ -284,13 +273,24 @@ function pickKind(k: Kind) {
   if (k === 'device' || k === 'stream' || k === 'whip') nodeDevices.refresh().then(() => {
     // Preselect the first camera for a new device source.
     if (k === 'device' && !device.value.video_device) {
-      const first = nodeDevices.devices.value.find((d) => d.kind !== 'audio')
-      if (first) device.value = { ...device.value, video_device: first.key }
+      const first = nodeDevices.devices.value.find((d) => d.kind === 'video' || d.kind === 'screen')
+      if (first) {
+        device.value = {
+          ...device.value,
+          video_device: first.key,
+          audio: withPairedAudio(device.value.audio, first, nodeDevices.devices.value),
+        }
+      }
     }
   })
 }
 
 async function openEdit(src: Source) {
+  // Channels are set up in Playback.
+  if (src.source_type === 'channel') {
+    router.push({ path: '/playback', query: { channel: src.key, edit: '1' } })
+    return
+  }
   formError.value = null
   let cfg
   try {
@@ -317,10 +317,7 @@ async function openEdit(src: Source) {
   } else if (c.type === 'device') {
     const { type: _type, ...rest } = c
     device.value = rest
-  } else if (c.type === 'channel') {
-    const { type: _type, ...rest } = c
-    channel.value = rest
-  } else {
+  } else if (c.type === 'whip') {
     const { type: _type, ...rest } = c
     whip.value = rest
   }
@@ -362,8 +359,6 @@ function formConfig(): ConfiguredSourceRequest['config'] {
       return { type: 'device', ...device.value }
     case 'whip':
       return { type: 'whip', ...whip.value }
-    case 'channel':
-      return { type: 'channel', ...channel.value }
     default:
       return { type: 'test', ...form }
   }
@@ -430,19 +425,6 @@ async function scan() {
     scanning.value = false
   }
 }
-
-// `?add=channel` (from Playback): open the form on that type.
-watch(
-  () => route.query.add,
-  async (add) => {
-    if (add !== 'channel') return
-    router.replace({ query: {} })
-    if (!nodes.value.length) await nodesStore.load()
-    openCreate()
-    pickKind('channel')
-  },
-  { immediate: true },
-)
 
 onMounted(async () => {
   if (store.sources.length) return
@@ -537,7 +519,7 @@ onMounted(async () => {
               <TooltipTrigger as-child>
                 <button class="row-btn" @click="openEdit(row)"><Pencil class="size-3.5" /></button>
               </TooltipTrigger>
-              <TooltipContent>Edit source</TooltipContent>
+              <TooltipContent>{{ row.source_type === 'channel' ? 'Channel settings (in Playback)' : 'Edit source' }}</TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger as-child>
@@ -615,13 +597,6 @@ onMounted(async () => {
         @refresh="nodeDevices.refresh"
       />
       <WhipFields v-else-if="kind === 'whip'" v-model="whip" :host="formHost" :devices="nodeDevices.devices.value" />
-      <ChannelFields
-        v-else-if="kind === 'channel'"
-        v-model="channel"
-        :name="name"
-        :host="formHost"
-        :output-types="outputTypes"
-      />
 
       <template v-if="kind === 'file'">
         <FormField label="File" class="col-span-2">

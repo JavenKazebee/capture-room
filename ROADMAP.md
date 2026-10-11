@@ -4,7 +4,7 @@ Active sequencing of work, decisions, and rationale. This complements
 [ARCHITECTURE.md](ARCHITECTURE.md) (the design spec) — when the two disagree on
 *order*, this file wins; ARCHITECTURE.md remains the source of truth for *design*.
 
-_Last updated: 2026-10-07_
+_Last updated: 2026-10-11_
 
 ---
 
@@ -93,7 +93,13 @@ Design detail for all of these lives in ARCHITECTURE.md; the history is in git.
   **Audio pairing**: any of them can take its audio from an audio device on the node
   (picking input channels) or play silence. Missing GStreamer elements make a type
   unavailable instead of stopping the node. Video device capture is untested on real
-  hardware so far.
+  hardware so far (OBS Virtual Camera goes live through the same AVFoundation path a
+  USB HDMI dongle uses). A dongle's own audio input is paired automatically when its
+  video device is picked, and macOS privacy denials (camera, microphone, screen
+  recording) fail the source with how to fix it instead of leaving it connecting.
+  Known issue: `avfvideosrc` opens a device by index only, and `fallbacksrc` restarts
+  the same element, so after another device is unplugged a retry can open the wrong
+  camera; re-resolve the index on restart once there's a dongle to test with.
 - **9. Playback, milestone 1 (2026-10-06)** — playout channels are configured sources
   whose program bin (compositor over black, mixer over silence, at a fixed format) runs
   through the ordinary monitor, so a channel shows in Record and can be recorded. A clip
@@ -136,6 +142,23 @@ A full playout system — capture in reverse. Design in ARCHITECTURE.md (Playbac
   RTSP server (port 8554), `rtsp://node:8554/<channel name>`; encoded only while someone
   watches, one encode shared by every viewer. Links `libgstrtspserver` (a new required
   package on Linux). Next: local display / HDMI out.
+- 🚧 **Display output (2026-10-11, macOS first)** — a channel fullscreen on a screen
+  attached to the node (a monitor, or an HDMI→SDI converter), its audio to an audio
+  output (the screen's own HDMI audio, so a converter embeds it). A winit window loop on
+  the main thread, `glimagesink` drawing into it; when the screen has the channel's
+  exact mode (or double its rate) it goes exclusive fullscreen in it, otherwise it
+  fills the screen and scales. On macOS the mode is set for the process only (put back
+  when the output closes) and a borderless window covers the screen above the menu bar:
+  winit's exclusive fullscreen leaves its window under the display-capture shield.
+  Screens are woken before they're listed or opened and kept awake while an output shows
+  (a sleeping screen isn't listed, and an output on one goes dark). Per output, an idle
+  channel shows black (the default; converters need a steady signal) or hides the window
+  to show the desktop. Tried on an external monitor. Still to do: the HDMI→SDI
+  converter; on macOS a screen's id is its display id, which can change when it's
+  replugged; screen sleep is only handled on macOS.
+- **Channels are set up in Playback (2026-10-11)** — New channel and Channel settings
+  (format, outputs, delete) open a sheet there; Sources still lists channels (they can
+  be recorded) and its edit button goes to Playback.
 - Renaming a channel still restarts its program (a brief glitch on air, the clip
   survives): the name is in its fingerprint because the kept source would otherwise
   show the old name.
