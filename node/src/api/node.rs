@@ -23,11 +23,12 @@ use tracing::{error, info};
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
-    BenchmarkRequest, BenchmarkRunDto, CapacityCheckDto, CapacityCheckRequest, ClockClaim,
-    ClockStatusDto, ClockTimeDto, ConfiguredSourceDto, ConfiguredSourceRequest, DeviceDto,
-    DirListingDto, DisplayDto, NodeCapacityDto, NodeSettingsDto, NodeStatus, OutputConfig,
-    RecordingSessionDto, RecordingStatus, RecordingsQuery, SourceConfig, SourceDto,
-    StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest, VolumeCheckDto, WsEvent,
+    BenchmarkRequest, BenchmarkRunDto, CapacityCheckDto, CapacityCheckRequest, CheckRequest,
+    ClockClaim, ClockStatusDto, ClockTimeDto, ConfiguredSourceDto, ConfiguredSourceRequest,
+    DeviceDto, DirListingDto, DisplayDto, NodeCapacityDto, NodeChecksDto, NodeSettingsDto,
+    NodeStatus, OutputConfig, RecordingSessionDto, RecordingStatus, RecordingsQuery, SourceConfig,
+    SourceDto, StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest, VolumeCheckDto,
+    WsEvent,
 };
 use crate::benchmark;
 use crate::capacity::{self, Capacity};
@@ -51,6 +52,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/files", get(get_files))
         .route("/devices", get(get_devices))
         .route("/displays", get(get_displays))
+        .route("/checks", get(get_checks))
+        .route("/checks/request", post(post_check_request))
         // Sources — static paths before dynamic {id}
         .route("/sources", get(get_sources))
         .route("/sources/scan", post(post_scan))
@@ -405,6 +408,28 @@ async fn get_displays(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<
     Ok(Json(
         tokio::task::spawn_blocking(move || displays.list()).await?,
     ))
+}
+
+// ── /checks ───────────────────────────────────────────────────────────────────
+
+/// What each feature needs from this machine, and whether it has it.
+async fn get_checks(State(state): State<Arc<AppState>>) -> ApiResult<Json<NodeChecksDto>> {
+    Ok(Json(crate::checks::run(&state).await?))
+}
+
+/// Ask the OS to show a permission prompt on this machine; answers once it
+/// has been asked (the prompt may still be open).
+async fn post_check_request(Json(req): Json<CheckRequest>) -> ApiResult<StatusCode> {
+    use crate::sources::privacy::Permission;
+    let permission = crate::checks::permission_of(&req.id)
+        .ok_or(ApiError::BadRequest("not a permission".into()))?;
+    if permission == Permission::ScreenRecording {
+        return Err(ApiError::BadRequest(
+            "macOS only asks about screen recording once: allow it in System Settings".into(),
+        ));
+    }
+    tokio::task::spawn_blocking(move || crate::sources::privacy::request(permission)).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ── /files ────────────────────────────────────────────────────────────────────

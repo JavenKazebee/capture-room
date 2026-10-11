@@ -23,7 +23,7 @@ _Last updated: 2026-10-11_
 10. **Clock sync across nodes** — ✅ shared node clock (controller's clock or PTP),
     synchronized start, and frame capture times as MOV timecode. Prerequisite for
     multi-angle replay
-11. **Setup page** — per-node permission and system checks, with shortcuts to fix them
+11. ✅ **Setup page** — per-node permission and system checks, with shortcuts to fix them
 12. **Instant replay**
 13. **Follow-on**, in rough priority order (see below)
 
@@ -153,9 +153,8 @@ A full playout system — capture in reverse. Design in ARCHITECTURE.md (Playbac
   Screens are woken before they're listed or opened and kept awake while an output shows
   (a sleeping screen isn't listed, and an output on one goes dark). Per output, an idle
   channel shows black (the default; converters need a steady signal) or hides the window
-  to show the desktop. Tried on an external monitor. Still to do: the HDMI→SDI
-  converter; on macOS a screen's id is its display id, which can change when it's
-  replugged; screen sleep is only handled on macOS.
+  to show the desktop. Tried on an external monitor, and its screen id survived a
+  replug. Still to do: the HDMI→SDI converter; screen sleep is only handled on macOS.
 - **Channels are set up in Playback (2026-10-11)** — New channel and Channel settings
   (format, outputs, delete) open a sheet there; Sources still lists channels (they can
   be recorded) and its edit button goes to Playback.
@@ -189,6 +188,20 @@ Design in ARCHITECTURE.md (Timecode › Clock sync).
 Per-node permission and system checks in one place, so it's obvious why a feature
 won't work on a machine and how to fix it. Design in ARCHITECTURE.md (Deployment ›
 Setup checks).
+
+- ✅ **Setup › Checks (2026-10-11, macOS first)** — each node checks live: macOS Screen
+  Recording, Camera and Microphone (naming the app that holds them, found from the
+  node's parent processes), the NDI Runtime, the default recording folder (writable,
+  room to record), and the shared clock (the controller's, or PTP). A check is a
+  *problem* only when a source on the node needs it (or it's essential); the rest only
+  matter once the feature is used. A controller probes each node's TCP ports (API,
+  WHIP, RTSP) from outside; UDP ports are listed but can't be tested. Shortcuts: Open
+  System Settings and Ask macOS (shows the camera or microphone prompt; macOS never re-asks, and
+  shows no prompt for screen recording) when the browser is on that machine,
+  a command to copy, or a download link. Node cards badge their problems, linking to the
+  node on Checks; the page re-checks when the window regains focus. Linux and Windows
+  only get the cross-platform checks so far (no `video` group, firewall or PTP-helper
+  capability checks yet).
 
 - **Checked live, not recorded:** the OS is the source of truth (permissions get
   revoked, machines reinstalled), so each check reads the real state: ok, missing or

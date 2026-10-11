@@ -1,4 +1,4 @@
-import { Circle, Film, Monitor, MonitorPlay, Server, Settings, SlidersHorizontal, Wrench } from '@lucide/vue'
+import { Circle, Film, Monitor, MonitorPlay, Server, Settings, ShieldCheck, SlidersHorizontal, Wrench } from '@lucide/vue'
 
 /**
  * Top-level workspaces: operating desks plus Setup. Replay joins here once
@@ -16,5 +16,6 @@ export const setupPages = [
   { to: '/setup/sources', label: 'Sources', icon: Monitor },
   { to: '/setup/presets', label: 'Presets', icon: SlidersHorizontal },
   { to: '/setup/nodes', label: 'Nodes', icon: Server },
+  { to: '/setup/checks', label: 'Checks', icon: ShieldCheck },
   { to: '/setup/settings', label: 'Settings', icon: Settings },
 ]

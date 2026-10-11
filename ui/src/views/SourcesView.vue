@@ -484,7 +484,11 @@ onMounted(async () => {
         <div v-if="row.error" class="text-destructive break-words">{{ row.error }}</div>
       </template>
       <template #cell-type="{ row }">
-        <Badge variant="secondary" class="uppercase">{{ row.source_type }}</Badge>
+        <!-- Channels play out rather than capture: set apart, they're managed in Playback. -->
+        <Badge v-if="row.source_type === 'channel'" variant="outline" class="uppercase" title="Plays out; managed in Playback">
+          <MonitorPlay /> Playout channel
+        </Badge>
+        <Badge v-else variant="secondary" class="uppercase">{{ row.source_type }}</Badge>
       </template>
       <template #cell-node="{ row }">{{ nodesStore.labelOf(row.node_id) }}</template>
       <template #cell-resolution="{ row }">
@@ -521,7 +525,8 @@ onMounted(async () => {
               </TooltipTrigger>
               <TooltipContent>{{ row.source_type === 'channel' ? 'Channel settings (in Playback)' : 'Edit source' }}</TooltipContent>
             </Tooltip>
-            <Tooltip>
+            <!-- Channels are deleted from their settings in Playback. -->
+            <Tooltip v-if="row.source_type !== 'channel'">
               <TooltipTrigger as-child>
                 <button class="row-btn hover:text-destructive! hover:bg-destructive/10!" @click="deleting = row"><Trash2 class="size-3.5" /></button>
               </TooltipTrigger>

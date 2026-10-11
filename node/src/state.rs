@@ -24,6 +24,8 @@ pub struct AppState {
     pub benchmark: std::sync::Mutex<Option<crate::benchmark::Running>>,
     /// What this node's pipelines run on.
     pub clock: Arc<crate::clock::NodeClock>,
+    /// The HTTP port this instance listens on.
+    pub port: u16,
     /// The UDP port this instance serves its clock on while a controller.
     pub clock_port: u16,
 

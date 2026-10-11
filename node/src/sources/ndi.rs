@@ -75,6 +75,9 @@ fn build_bin(id: &str, ndi_name: &str, url_address: &str) -> Result<gst::Bin> {
 /// monitor alive avoids that entirely.
 pub struct NdiMonitor {
     monitor: gst::DeviceMonitor,
+    /// The NDI library loaded. The plugin tries once per process, so a
+    /// runtime installed later needs a restart.
+    runtime_loaded: bool,
 }
 
 impl NdiMonitor {
@@ -89,7 +92,19 @@ impl NdiMonitor {
             // NDI SDK blocks up to 1 s on first poll; 1.5 s gives a safe margin.
             std::thread::sleep(Duration::from_millis(1500));
         }
-        Self { monitor }
+        // A provider that fails to start (no NDI library) is dropped.
+        let runtime_loaded = monitor
+            .providers()
+            .iter()
+            .any(|p| p.as_str() == "ndideviceprovider");
+        Self {
+            monitor,
+            runtime_loaded,
+        }
+    }
+
+    pub fn runtime_loaded(&self) -> bool {
+        self.runtime_loaded
     }
 
     /// Returns all NDI sources currently visible on the network.

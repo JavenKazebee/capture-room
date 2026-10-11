@@ -13,6 +13,7 @@ import {
 /**
  * A create/edit form in a right-side sheet, keeping the list visible behind
  * it: title, form body, error line, Cancel/Save. Mount it with `v-if`.
+ * `#footer-start` puts an action (e.g. Delete) at the footer's left.
  */
 defineProps<{
   title: string
@@ -44,7 +45,9 @@ const emit = defineEmits<{ close: []; save: [] }>()
       </form>
 
       <SheetFooter class="border-t border-border flex-row items-center justify-end gap-2">
+        <slot name="footer-start" />
         <p v-if="error" class="mr-auto text-xs text-destructive">{{ error }}</p>
+        <div v-else-if="$slots['footer-start']" class="mr-auto" />
         <Button variant="outline" :disabled="saving" @click="emit('close')">Cancel</Button>
         <Button v-if="!noSave" :disabled="saving" class="gap-1.5" @click="emit('save')">
           <Loader2 v-if="saving" class="size-3.5 animate-spin" />

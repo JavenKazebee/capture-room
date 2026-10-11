@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, type ComponentPublicInstance } from 'vue'
+import { computed, onMounted, ref, type ComponentPublicInstance } from 'vue'
 import { FetchError } from 'ofetch'
 import { toast } from 'vue-sonner'
 import { Plus } from '@lucide/vue'
@@ -8,6 +8,7 @@ import { reloadAll } from '@/composables/useWebSocket'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
 import { useStorageStore } from '@/stores/storage'
+import { useChecksStore } from '@/stores/checks'
 import type { NodeDto } from '@/types/generated/NodeDto'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -21,12 +22,16 @@ import NodeCard from '@/components/nodes/NodeCard.vue'
 
 const store = useNodesStore()
 const storage = useStorageStore()
+const checks = useChecksStore()
+
+// For each card's problem badge.
+onMounted(() => checks.load())
 
 const peers = computed(() => store.nodes.filter((n) => !n.is_self))
 
 async function refresh() {
   await reloadAll()
-  await storage.load()
+  await Promise.all([storage.load(), checks.load()])
 }
 
 // ── Controller ────────────────────────────────────────────────────────────────

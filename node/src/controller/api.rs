@@ -15,8 +15,8 @@ use axum::{
 use super::{clock_mode, discovery, forward, Controller, CLOCK_MODE_KEY, CONFIG_KEY};
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
-    AddNodeRequest, ClockMode, ControllerClockDto, ControllerToggleRequest, NodeDto,
-    PresetCreateRequest, PresetDto, PresetOutputDto, PresetOutputInput,
+    AddNodeRequest, CheckDto, ClockMode, ControllerClockDto, ControllerToggleRequest,
+    NodeChecksDto, NodeDto, PresetCreateRequest, PresetDto, PresetOutputDto, PresetOutputInput,
 };
 use crate::db;
 use crate::pipeline::profile::{plan_legs, unknown_token};
@@ -34,6 +34,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/v1/nodes", get(get_nodes).post(post_node))
         .route("/api/v1/nodes/{id}", delete(delete_node))
         .route("/api/v1/nodes/{id}/{*path}", any(forward::forward))
+        .route("/api/v1/reachability/{id}", get(get_reachability))
         .route("/api/v1/presets", get(get_presets).post(post_preset))
         .route(
             "/api/v1/presets/{id}",
@@ -122,6 +123,42 @@ async fn get_nodes(State(state): State<Arc<AppState>>) -> Json<Vec<NodeDto>> {
     }
 
     Json(dtos)
+}
+
+/// Probe a node's ports from this controller: a node can't see its own
+/// firewall.
+async fn get_reachability(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Vec<CheckDto>>> {
+    if id == state.node_id {
+        return Ok(Json(vec![crate::checks::own_firewall()]));
+    }
+    let url = match state.controller.read().await.as_ref() {
+        Some(c) => c.registry.read().await.url_of(&id),
+        None => return Err(NOT_CONTROLLER),
+    }
+    .ok_or(ApiError::NotFound("unknown node"))?;
+    let checks: NodeChecksDto = async {
+        state
+            .http
+            .get(format!("{url}/api/v1/node/checks"))
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await
+    }
+    .await
+    .map_err(|e| ApiError::BadGateway(e.to_string()))?;
+    let host = reqwest::Url::parse(&url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .ok_or(ApiError::BadGateway(format!("no host in {url}")))?;
+    Ok(Json(
+        crate::checks::probe_ports(&host, &checks.os, &checks.ports).await,
+    ))
 }
 
 async fn post_node(

@@ -660,6 +660,8 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 | GET | `/sources/{id}` | source details |
 | GET / POST | `/configured-sources` | configured source configs (test, file, stream, device, WHIP); saving validates them: a file is probed, a stream's protocol must be available and its listening port free, a device must be known (400 otherwise) |
 | PUT / DELETE | `/configured-sources/{id}` | |
+| GET | `/checks` | Setup checks, read live: each check's status (`ok \| missing \| not_asked \| unknown`), whether something on the node needs it, the fix (steps, System Settings link, command, download link, whether the node can show the OS prompt); the OS, the app holding macOS permissions, and the ports others connect to |
+| POST | `/checks/request` | `{ id }`: show the macOS permission prompt (`camera`, `microphone`) on this machine |
 | GET | `/devices` | capture and audio devices on the node (key, name, class, provider, modes), for picking one in a device source or audio plan |
 | GET / POST | `/media` | the media library (each entry flags a missing file) / add a file `{ path, name?, session_id? }`: probed, 400 if it can't be played, 409 if already in |
 | DELETE | `/media/{id}` | remove from the library (the file stays) |
@@ -690,6 +692,7 @@ Mounted on every instance; peer-related routes only do anything while the contro
 | GET | `/nodes` | self + registered peers |
 | POST | `/nodes` | add a node by URL (persisted) — 409 if not a controller |
 | DELETE | `/nodes/{id}` | remove a node |
+| GET | `/reachability/{id}` | probe a node's ports from this controller (TCP connect; UDP listed as unknown) as checks; for itself, one unknown row (a machine can't test its own firewall) |
 | ANY | `/nodes/{id}/{*path}` | forwarded to that node's `/api/v1/node/{path}`. Self is served in-process; peers over HTTP. |
 | GET / POST | `/presets` | presets stored on this instance |
 | PUT / DELETE | `/presets/{id}` | |
@@ -791,6 +794,7 @@ them — not before.
 | **Setup › Sources** | Sources grouped by node, capabilities, test and file source authoring (with a browser for the node's files) |
 | **Setup › Presets** | Create and edit recording presets (outputs, path preview) |
 | **Setup › Nodes** | A card per node: health, sources, storage (with time left while recording), capacity (benchmarked setups, load, running benchmark, history); controller toggle, add/remove nodes |
+| **Setup › Checks** | Per node: permissions, software, storage, clock and network checks, problems first in the counts, with how to fix each; Nodes cards badge their problems |
 | **Setup › Settings** | Appearance; monitoring settings (thumbnail/meter rate, applied to all nodes); About |
 | **Playback** _(planned)_ | Playout channels, playlists, transport |
 | **Replay** _(planned)_ | Replay buffers, marks and clips, variable-speed playout |
@@ -912,26 +916,37 @@ gstreamer-rs `branch=main`; pin it back with `cargo update --precise`.
 - **Linux:** the user must be in the `video` group for v4l2. Wayland screen capture needs
   a desktop session and the portal.
 
-### Setup checks (planned)
+### Setup checks
 
-A Setup page lists, per node, what each feature needs from the machine and whether it
-has it (ROADMAP #11). Checks run live on the node (the OS is the source of truth, so
-nothing is recorded), and the controller's Nodes page badges a node with a failing one.
-Checks are a list each feature adds to:
+Setup › Checks lists, per node, what each feature needs from the machine and whether it
+has it (`node/src/checks.rs`). Checks run live on the node on every request (the OS is
+the source of truth, so nothing is recorded). A check is a *problem* when it's missing
+and `required`: something on the node needs it now (a source using a camera, a channel
+with an NDI output) or it's essential (storage, the clock it's meant to follow). Missing
+but not required reads "Not set up": it only matters once the feature is used. Nodes
+cards badge their problem count. Checks are a list each feature adds to:
 
 | Check | Platforms | How |
 |-------|-----------|-----|
-| Screen Recording, Camera, Microphone | macOS | ask macOS for the authorization status |
-| NDI Runtime | all | `libndi` loads |
-| PTP helper permissions | Linux | `getcap` on `gst-ptp-helper`, or a test bind of 319/320 |
-| Clock / API / WHIP ports reachable | all | probed by the controller from outside (a node can't see its own firewall) |
-| Storage writable, free space | all | partly in Storage already |
+| Screen Recording, Camera, Microphone | macOS | `CGPreflightScreenCaptureAccess`, `AVCaptureDevice authorizationStatusForMediaType:` (screen recording can't tell denied from not asked) |
+| NDI Runtime | all | the NDI device provider started (it fails without `libndi`; the plugin tries once per process, so installing needs a restart) |
+| Recording folder | all | `~/capture-room` can be created and written, with at least the 1 GB a start needs on its volume |
+| Controller's clock / PTP | all | from the clock status, when following one |
+| API, WHIP and RTSP ports | all | TCP connect from the controller (`/reachability/{id}`); UDP listeners (SRT, UDP streams) listed as unknown |
 
-Shortcuts help the user grant what's missing; nothing grants it for them. macOS gets a
-button to the right System Settings pane (only when the browser is on that machine);
-otherwise a command to copy (`setcap` on Linux, `New-NetFirewallRule` on Windows).
-macOS privacy permissions belong to whatever launched capture-room (Terminal when run
-from a shell, until there's an app bundle), and the page says so.
+Not yet: Linux `video` group and PTP-helper capabilities, Windows privacy toggles.
+
+Shortcuts help the user grant what's missing; nothing grants it for them. When the
+browser is on that machine (loopback, and the node is this instance or at a loopback
+URL): a link to the right System Settings pane, and, for camera and microphone not yet
+asked, Ask macOS, which shows the permission prompt (`requestAccessForMediaType:`).
+Screen recording gets no prompt button: macOS can't say whether it has asked, and only
+asks once (`CGRequestScreenCaptureAccess` did nothing in testing), so the fix is System
+Settings, adding the app with + if it isn't listed. Otherwise a command to copy
+(`New-NetFirewallRule` on Windows, `ufw` / `setcap` on Linux) or a download link. macOS
+privacy permissions belong to whatever launched capture-room (the nearest app bundle
+among its parent processes: Terminal from a shell, until there's an app bundle), and
+the page names it.
 
 ### NDI licensing
 
@@ -975,6 +990,7 @@ capture-room/
 │   │   ├── benchmark.rs         # Benchmark runner
 │   │   ├── clock.rs             # Node clock: local, a controller's (net clock) or PTP; serving
 │   │   ├── capacity.rs          # Capacity estimates from benchmark results
+│   │   ├── checks.rs            # Setup checks (permissions, NDI, storage, clock) and port probes
 │   │   ├── storage.rs           # Storage volumes, write rates, file browsing
 │   │   ├── pipeline/
 │   │   │   ├── monitor.rs       # MonitorPipeline: thumbnail, audio meter, StreamProducers

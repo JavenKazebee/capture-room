@@ -195,6 +195,11 @@ impl SourceManager {
         &self.devices
     }
 
+    /// Whether the NDI library loaded (see [`NdiMonitor`]).
+    pub fn ndi_runtime_loaded(&self) -> bool {
+        self.ndi_monitor.runtime_loaded()
+    }
+
     /// The node's screens.
     pub fn displays(&self) -> &Displays {
         &self.displays

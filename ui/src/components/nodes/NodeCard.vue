@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, type ComponentPublicInstance } from 'vue'
-import { useRouter } from 'vue-router'
-import { Check, Clock, Pencil, Radio, Trash2, Video, X } from '@lucide/vue'
+import { RouterLink, useRouter } from 'vue-router'
+import { Check, Clock, Pencil, Radio, Trash2, TriangleAlert, Video, X } from '@lucide/vue'
 import { clockSummary } from '@/lib/clock'
 import { formatUptime } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
@@ -10,6 +10,7 @@ import { useSourcesStore } from '@/stores/sources'
 import { useRecordingsStore } from '@/stores/recordings'
 import { useStorageStore } from '@/stores/storage'
 import { useRecordDeskStore } from '@/stores/recordDesk'
+import { useChecksStore } from '@/stores/checks'
 import type { NodeDto } from '@/types/generated/NodeDto'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -31,6 +32,7 @@ const sources = useSourcesStore()
 const recordings = useRecordingsStore()
 const storage = useStorageStore()
 const desk = useRecordDeskStore()
+const checks = useChecksStore()
 const router = useRouter()
 
 const isController = computed(() => props.node.is_self && nodes.isController)
@@ -45,6 +47,7 @@ const stats = computed(() => ({
 }))
 
 const clock = computed(() => clockSummary(props.node.clock))
+const problems = computed(() => (props.node.healthy ? checks.problems(props.node.id) : 0))
 
 /** `undefined` while loading, `null` if it failed. */
 const volumes = computed(() => storage.volumes.get(props.node.id))
@@ -122,6 +125,11 @@ async function saveRename() {
             <Pencil class="size-3" />
           </Button>
           <div class="flex-1" />
+          <Badge v-if="problems" as-child variant="destructive">
+            <RouterLink :to="`/setup/checks#node-${node.id}`" title="See what's missing in Checks">
+              <TriangleAlert /> {{ problems }} {{ problems === 1 ? 'problem' : 'problems' }}
+            </RouterLink>
+          </Badge>
           <Badge v-if="isController" variant="default">Controller</Badge>
           <Badge v-if="node.is_self" variant="outline">This machine</Badge>
           <Badge v-else variant="secondary">{{ node.manual ? 'Added by address' : 'Discovered' }}</Badge>

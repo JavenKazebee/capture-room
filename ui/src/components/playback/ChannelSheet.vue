@@ -4,6 +4,7 @@ import { toast } from 'vue-sonner'
 import { Trash2 } from '@lucide/vue'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
+import { usePlayoutStore } from '@/stores/playout'
 import { errorMessage, sourceKey } from '@/composables/useApi'
 import { useNodeDevices } from '@/composables/useNodeDevices'
 import type { ChannelConfig } from '@/types/generated/ChannelConfig'
@@ -29,6 +30,7 @@ const emit = defineEmits<{
 
 const sources = useSourcesStore()
 const nodes = useNodesStore()
+const playout = usePlayoutStore()
 
 function blankChannel(): ChannelConfig {
   return {
@@ -45,6 +47,16 @@ const loading = ref(!!props.editing)
 const saving = ref(false)
 const error = ref<string | null>(null)
 const confirmDelete = ref(false)
+/** Playing or paused on a clip: deleting takes it off air. */
+const onAir = computed(() => {
+  if (!props.editing) return false
+  const state = playout.status.get(sourceKey(props.editing.nodeId, props.editing.id))?.state
+  return state === 'playing' || state === 'paused'
+})
+const deleteDescription = computed(
+  () =>
+    `It stops${onAir.value ? ", taking what it's playing off air," : ''} and is removed from its node with its playlist and outputs. Media and recordings are kept.`,
+)
 
 const node = computed(() => nodes.nodes.find((n) => n.id === nodeId.value))
 const nodeOptions = computed(() => nodes.nodes.map((n) => ({ value: n.id, label: nodes.labelOf(n.id) })))
@@ -172,25 +184,24 @@ async function destroy() {
         :displays="displays"
         :devices="devices.devices.value"
       />
-
-      <div v-if="editing" class="col-span-2 border-t border-border pt-3">
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          class="gap-1.5 text-destructive hover:text-destructive hover:bg-destructive/10"
-          @click="confirmDelete = true"
-        >
-          <Trash2 class="size-3.5" /> Delete channel
-        </Button>
-      </div>
     </div>
+    <template v-if="editing && !loading" #footer-start>
+      <Button
+        type="button"
+        variant="ghost"
+        class="gap-1.5 text-destructive hover:text-destructive hover:bg-destructive/10"
+        :disabled="saving"
+        @click="confirmDelete = true"
+      >
+        <Trash2 class="size-3.5" /> Delete channel
+      </Button>
+    </template>
   </EditSheet>
 
   <ConfirmDialog
     :open="confirmDelete"
-    :title="`Delete ${name}?`"
-    description="The channel stops and is removed from its node, with its playlist. Media and recordings are kept."
+    :title="`Delete playout channel ${name}?`"
+    :description="deleteDescription"
     @update:open="(v) => !v && (confirmDelete = false)"
     @confirm="destroy"
   />

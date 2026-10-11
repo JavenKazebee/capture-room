@@ -1,6 +1,7 @@
 mod api;
 mod benchmark;
 mod capacity;
+mod checks;
 mod clock;
 mod controller;
 mod db;
@@ -147,6 +148,7 @@ async fn run(ndi_dir: Option<&'static str>, displays: display::Displays) -> Resu
         ws_tx,
         benchmark: std::sync::Mutex::new(None),
         clock: node_clock,
+        port: args.port,
         clock_port: args.clock_port.unwrap_or(args.port.saturating_add(100)),
         controller: RwLock::new(None),
         http: reqwest::Client::new(),
