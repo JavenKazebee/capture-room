@@ -26,9 +26,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use futures_util::StreamExt;
 use gstreamer::{self as gst, glib, prelude::*};
 use gstreamer_app as gst_app;
-use tracing::{debug, warn};
+use tracing::warn;
 
 use super::live::{self, Chain, Inputs};
+use super::player::{self, Kind, QueueLimit};
 use super::{stream, InputSource};
 use crate::api::types::{
     ChannelConfig, ClipEnd, LiveVideoFormat, OutputConfig, SourceCapabilitiesDto, SourceType,
@@ -470,12 +471,6 @@ struct Lane {
     last: Option<(gst::ClockTime, gst::ClockTime)>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Kind {
-    Video,
-    Audio,
-}
-
 /// A buffer as pushed, for tests: its position in the clip (stream time)
 /// and its program timestamp.
 #[cfg(test)]
@@ -578,21 +573,13 @@ impl Lanes {
     fn lane(&self, inputs: &Inputs, tag: &str) -> Result<Lane> {
         let bin = inputs.bin().context("program bin gone")?;
         let mut chain = inputs.add(tag)?;
-        let src = gst_app::AppSrc::builder()
-            .name(format!("channel-src-{tag}-{}", self.id))
-            .is_live(true)
-            .format(gst::Format::Time)
-            // Buffers arrive LEAD early; hold that and some, then drop the
-            // oldest rather than block the player.
-            .max_bytes(0)
-            .max_time(Some(gst::ClockTime::from_mseconds(500)))
-            // Without its own latency a live appsrc reports a maximum of 0,
-            // which the aggregators can't configure.
-            .min_latency(0)
-            .max_latency(-1)
-            .build();
-        src.set_property("max-buffers", 0u64);
-        src.set_property_from_str("leaky-type", "downstream");
+        // Buffers arrive LEAD early; hold that and some, then drop the
+        // oldest rather than block the player.
+        let src = player::live_appsrc(
+            &format!("channel-src-{tag}-{}", self.id),
+            gst::ClockTime::ZERO,
+            QueueLimit::Time(gst::ClockTime::from_mseconds(500)),
+        );
         bin.add(&src).context("add lane")?;
         src.static_pad("src")
             .context("lane src pad")?
@@ -629,7 +616,7 @@ impl Lanes {
     /// base time while it plays; `None` for a preroll (a cued or paused
     /// frame), which is shown right away.
     fn push(&self, kind: Kind, sample: &gst::Sample, player_base: Option<gst::ClockTime>) {
-        let Some(buffer) = sample.buffer_owned() else {
+        let Some(duration) = sample.buffer().map(|b| b.duration()) else {
             return;
         };
         let (src, last) = {
@@ -657,22 +644,11 @@ impl Lanes {
             return;
         }
         let end = last.map(|(_, end)| end);
-        let duration = buffer.duration();
-        let mut buffer = buffer;
-        {
-            let buffer = buffer.make_mut();
-            buffer.set_pts(pts);
-            buffer.set_dts(gst::ClockTime::NONE);
-            // A gap (resume, seek): let the mixer resync rather than wait.
-            if end.is_some_and(|end| pts > end + gst::ClockTime::from_mseconds(20)) {
-                buffer.set_flags(gst::BufferFlags::DISCONT);
-            }
-        }
-        if let Some(caps) = sample.caps() {
-            if src.caps().is_none_or(|c| c.as_ref() != caps) {
-                src.set_caps(Some(&caps.to_owned()));
-            }
-        }
+        // A gap (resume, seek): let the mixer resync rather than wait.
+        let gap = end.is_some_and(|end| pts > end + gst::ClockTime::from_mseconds(20));
+        let Some(buffer) = player::restamp(sample, &src, pts, gap) else {
+            return;
+        };
         {
             let mut inner = self.inner.lock().unwrap();
             let lane = match kind {
@@ -1768,95 +1744,27 @@ fn build_player(
         Some(replay) => replay_source(&player, replay, &lanes.id)?,
         None => {
             let decode = make_el("uridecodebin", &format!("channel-decode-{}", lanes.id))?;
-            decode.set_property(
-                "uri",
-                glib::filename_to_uri(&clip.path, None)
-                    .with_context(|| format!("make a URI for {}", clip.path))?
-                    .to_string(),
-            );
+            decode.set_property("uri", player::uri(&clip.path)?);
             player.add(&decode).context("add uridecodebin")?;
             decode
         }
     };
 
-    let video = add_branch(
-        &player,
-        Kind::Video,
-        &["queue", "videoconvert"],
-        lanes,
-        mode,
-        marks,
-    )?;
-    let audio = add_branch(
-        &player,
-        Kind::Audio,
-        &["queue", "audioconvert", "audioresample"],
-        lanes,
-        mode,
-        marks,
-    )?;
+    let video = add_branch(&player, Kind::Video, &lanes.id, lanes, mode, marks)?;
+    let audio = add_branch(&player, Kind::Audio, &lanes.id, lanes, mode, marks)?;
 
     let streams = Arc::new(Streams::default());
     let streams_ref = streams.clone();
     let (video, audio) = (video.downgrade(), audio.downgrade());
     let branches = (video.clone(), audio.clone());
-    let player_weak = player.downgrade();
-    decode.connect_pad_added(move |_, pad| {
-        let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
-        // A replay's pads are named for what they carry, and its audio's
-        // caps come later.
-        let kind = match pad.name().as_str() {
-            "video" => "video/x-raw",
-            "audio" => "audio/x-raw",
-            _ => caps
-                .structure(0)
-                .map(|s| s.name().as_str())
-                .unwrap_or_default(),
+    player::route_streams(&player, &decode, move |kind| {
+        let (branch, found) = match kind {
+            Kind::Video => (video.upgrade(), &streams_ref.video),
+            Kind::Audio => (audio.upgrade(), &streams_ref.audio),
         };
-        let branch = if kind.starts_with("video/") {
-            video.upgrade()
-        } else if kind.starts_with("audio/") {
-            audio.upgrade()
-        } else {
-            None
-        };
-        let sink = match branch
-            .and_then(|b| b.static_pad("sink"))
-            .filter(|p| !p.is_linked())
-        {
-            Some(sink) => {
-                let found = if kind.starts_with("audio/") {
-                    &streams_ref.audio
-                } else {
-                    &streams_ref.video
-                };
-                found.store(true, Ordering::SeqCst);
-                sink
-            }
-            // Drain any other stream, so the demuxer doesn't stop on it.
-            None => {
-                let Some(player) = player_weak.upgrade() else {
-                    return;
-                };
-                let Ok(fake) = gst::ElementFactory::make("fakesink")
-                    .property("sync", true)
-                    .build()
-                else {
-                    return;
-                };
-                if player.add(&fake).is_err() || fake.sync_state_with_parent().is_err() {
-                    return;
-                }
-                let Some(sink) = fake.static_pad("sink") else {
-                    return;
-                };
-                debug!(pad = %pad.name(), kind, "clip stream not used");
-                sink
-            }
-        };
-        if let Err(e) = pad.link(&sink) {
-            warn!(pad = %pad.name(), error = ?e, "clip pad link failed");
-        }
+        let sink = branch?.static_pad("sink").filter(|p| !p.is_linked())?;
+        found.store(true, Ordering::SeqCst);
+        Some(sink)
     });
 
     // A file without audio (or video) leaves that branch unlinked; take it
@@ -1990,81 +1898,57 @@ struct Streams {
     audio: AtomicBool,
 }
 
-/// `elements` → appsink, pushing into `kind`'s lane as `mode` says. The
-/// video branch keeps where it is in `marks`.
+/// `kind`'s branch of channel `id`'s player, pushing into its lane as `mode`
+/// says. The video branch keeps where it is in `marks`.
 /// Returns the first element, for the decoder to link to.
 fn add_branch(
     player: &gst::Pipeline,
     kind: Kind,
-    elements: &[&str],
+    id: &str,
     lanes: &Arc<Lanes>,
     mode: &Arc<ModeCell>,
     marks: &Arc<Marks>,
 ) -> Result<gst::Element> {
-    let tag = match kind {
-        Kind::Video => "video",
-        Kind::Audio => "audio",
-    };
-    let id = player.name();
-    let id = id.trim_start_matches("channel-player-");
-    let mut chain = elements
-        .iter()
-        .map(|factory| make_el(factory, &format!("{id}-{factory}-{tag}")))
-        .collect::<Result<Vec<_>>>()?;
-    let sink = gst_app::AppSink::builder()
-        .name(format!("{id}-sink-{tag}"))
-        .caps(&gst::Caps::new_empty_simple(format!("{tag}/x-raw")))
-        // Paced by the clock: this is what plays the clip in real time.
-        .sync(true)
-        .max_buffers(2)
-        .build();
     let player_weak = player.downgrade();
     let (on_sample, on_preroll) = (lanes.clone(), lanes.clone());
     let (mode_s, mode_p) = (mode.clone(), mode.clone());
     let (marks_s, marks_p) = (marks.clone(), marks.clone());
-    sink.set_callbacks(
-        gst_app::AppSinkCallbacks::builder()
-            .new_sample(move |sink| {
-                let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                // Audio only at normal speed: the program plays silence
-                // meanwhile.
-                let normal = sample.segment().is_none_or(|s| s.rate() == 1.0);
-                if kind == Kind::Audio && !normal {
-                    return Ok(gst::FlowSuccess::Ok);
-                }
-                if mode_s.load() == ClipMode::Playing {
-                    let base = player_weak.upgrade().and_then(|p| p.base_time());
-                    if base.is_some() {
-                        on_sample.push(kind, &sample, base);
-                        if kind == Kind::Video {
-                            marks_s.show(&sample);
-                        }
+    let callbacks = gst_app::AppSinkCallbacks::builder()
+        .new_sample(move |sink| {
+            let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+            // Audio only at normal speed: the program plays silence
+            // meanwhile.
+            let normal = sample.segment().is_none_or(|s| s.rate() == 1.0);
+            if kind == Kind::Audio && !normal {
+                return Ok(gst::FlowSuccess::Ok);
+            }
+            if mode_s.load() == ClipMode::Playing {
+                let base = player_weak.upgrade().and_then(|p| p.base_time());
+                if base.is_some() {
+                    on_sample.push(kind, &sample, base);
+                    if kind == Kind::Video {
+                        marks_s.show(&sample);
                     }
                 }
-                Ok(gst::FlowSuccess::Ok)
-            })
-            .new_preroll(move |sink| {
-                let sample = sink.pull_preroll().map_err(|_| gst::FlowError::Eos)?;
-                if kind == Kind::Video {
-                    let rt = running_time(&sample).unwrap_or(gst::ClockTime::ZERO);
-                    marks_p.first_rt.store(rt.nseconds(), Ordering::SeqCst);
-                    marks_p.show(&sample);
-                    // Cued or paused: show the frame now. (While playing, a
-                    // preroll is followed by the same buffer as a sample.)
-                    if mode_p.load() == ClipMode::Cued {
-                        on_preroll.push(kind, &sample, None);
-                    }
+            }
+            Ok(gst::FlowSuccess::Ok)
+        })
+        .new_preroll(move |sink| {
+            let sample = sink.pull_preroll().map_err(|_| gst::FlowError::Eos)?;
+            if kind == Kind::Video {
+                let rt = running_time(&sample).unwrap_or(gst::ClockTime::ZERO);
+                marks_p.first_rt.store(rt.nseconds(), Ordering::SeqCst);
+                marks_p.show(&sample);
+                // Cued or paused: show the frame now. (While playing, a
+                // preroll is followed by the same buffer as a sample.)
+                if mode_p.load() == ClipMode::Cued {
+                    on_preroll.push(kind, &sample, None);
                 }
-                Ok(gst::FlowSuccess::Ok)
-            })
-            .build(),
-    );
-    chain.push(sink.upcast());
-    player
-        .add_many(&chain)
-        .with_context(|| format!("add {tag} branch"))?;
-    gst::Element::link_many(&chain).with_context(|| format!("link {tag} branch"))?;
-    Ok(chain.swap_remove(0))
+            }
+            Ok(gst::FlowSuccess::Ok)
+        })
+        .build();
+    player::add_branch(player, &format!("channel-{id}"), kind, callbacks)
 }
 
 /// Remove the branch starting at `first` from `player`.

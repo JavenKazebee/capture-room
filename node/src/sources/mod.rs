@@ -9,6 +9,7 @@ pub mod file;
 pub mod live;
 pub mod manager;
 pub mod ndi;
+mod player;
 pub mod privacy;
 pub mod stream;
 pub mod test;

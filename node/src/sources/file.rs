@@ -6,8 +6,9 @@ use futures_util::StreamExt;
 use gstreamer::{self as gst, glib, prelude::*};
 use gstreamer_app as gst_app;
 use gstreamer_pbutils as gst_pbutils;
-use tracing::{debug, warn};
+use tracing::warn;
 
+use super::player::{self, Kind, QueueLimit};
 use super::{add_ghost_pad, InputSource};
 use crate::api::types::{FileSourceConfig, MediaInfo, SourceCapabilitiesDto, SourceType};
 use crate::pipeline::{capsfilter, make_el};
@@ -116,7 +117,7 @@ pub fn probe(path: &str) -> Result<MediaInfo> {
     let discoverer = gst_pbutils::Discoverer::new(gst::ClockTime::from_seconds(10))
         .context("create discoverer")?;
     let info = discoverer
-        .discover_uri(&uri(path)?)
+        .discover_uri(&player::uri(path)?)
         .map_err(|e| anyhow!("can't read {path}: {e}"))?;
     if info.result() != gst_pbutils::DiscovererResult::Ok {
         bail!("can't read {path}: {:?}", info.result());
@@ -138,12 +139,6 @@ pub fn probe(path: &str) -> Result<MediaInfo> {
         audio_channels: info.audio_streams().first().map_or(0, |a| a.channels()),
         duration_ms: info.duration().map(|d| d.mseconds()),
     })
-}
-
-fn uri(path: &str) -> Result<String> {
-    Ok(glib::filename_to_uri(path, None)
-        .with_context(|| format!("make a URI for {path}"))?
-        .to_string())
 }
 
 // ── Monitor side ──────────────────────────────────────────────────────────────
@@ -234,18 +229,9 @@ fn build_bin(id: &str, path: &str, media: &MediaInfo) -> Result<gst::Bin> {
 }
 
 fn live_appsrc(name: &str, latency: gst::ClockTime) -> gst_app::AppSrc {
-    let src = gst_app::AppSrc::builder()
-        .name(name)
-        .is_live(true)
-        .format(gst::Format::Time)
-        .min_latency(latency.nseconds() as i64)
-        // Never queue more than a few buffers: drop the oldest if the
-        // monitor falls behind, as a live source would.
-        .max_bytes(0)
-        .build();
-    src.set_property("max-buffers", 4u64);
-    src.set_property_from_str("leaky-type", "downstream");
-    src
+    // Never queue more than a few buffers: drop the oldest if the monitor
+    // falls behind, as a live source would.
+    player::live_appsrc(name, latency, QueueLimit::Buffers(4))
 }
 
 // ── Player ────────────────────────────────────────────────────────────────────
@@ -261,120 +247,43 @@ fn build_player(
 ) -> Result<gst::Pipeline> {
     let player = gst::Pipeline::with_name(&format!("file-player-{id}"));
     let decode = make_el("uridecodebin", &format!("file-decode-{id}"))?;
-    decode.set_property("uri", uri(path)?);
+    decode.set_property("uri", player::uri(path)?);
     player.add(&decode).context("add uridecodebin")?;
 
-    let video = add_forward_chain(
-        &player,
-        &format!("{id}-video"),
-        &["queue", "videoconvert"],
-        "video/x-raw",
-        vsrc,
-    )?;
+    let prefix = format!("file-{id}");
+    let video = player::add_branch(&player, &prefix, Kind::Video, forward_to(vsrc))?;
     let audio = asrc
-        .map(|asrc| {
-            add_forward_chain(
-                &player,
-                &format!("{id}-audio"),
-                &["queue", "audioconvert", "audioresample"],
-                "audio/x-raw",
-                asrc,
-            )
-        })
+        .map(|asrc| player::add_branch(&player, &prefix, Kind::Audio, forward_to(asrc)))
         .transpose()?;
 
+    // The first video and audio streams feed the source.
     let video = video.downgrade();
     let audio = audio.map(|a| a.downgrade());
-    let player_weak = player.downgrade();
-    decode.connect_pad_added(move |_, pad| {
-        let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
-        let kind = caps
-            .structure(0)
-            .map(|s| s.name().as_str())
-            .unwrap_or_default();
-        let chain = if kind.starts_with("video/") {
-            video.upgrade()
-        } else if kind.starts_with("audio/") {
-            audio.as_ref().and_then(|a| a.upgrade())
-        } else {
-            None
+    player::route_streams(&player, &decode, move |kind| {
+        let branch = match kind {
+            Kind::Video => video.upgrade(),
+            Kind::Audio => audio.as_ref().and_then(|a| a.upgrade()),
         };
-        // The first video and audio streams feed the source; drain any other
-        // so the demuxer doesn't stop on an unlinked pad.
-        let sink = match chain
-            .and_then(|c| c.static_pad("sink"))
-            .filter(|p| !p.is_linked())
-        {
-            Some(sink) => sink,
-            None => {
-                let Some(player) = player_weak.upgrade() else {
-                    return;
-                };
-                let Ok(fake) = gst::ElementFactory::make("fakesink")
-                    .property("sync", true)
-                    .property("async", false)
-                    .build()
-                else {
-                    return;
-                };
-                if player.add(&fake).is_err() || fake.sync_state_with_parent().is_err() {
-                    return;
-                }
-                let Some(sink) = fake.static_pad("sink") else {
-                    return;
-                };
-                debug!(pad = %pad.name(), kind, "file stream not used");
-                sink
-            }
-        };
-        if let Err(e) = pad.link(&sink) {
-            warn!(pad = %pad.name(), error = ?e, "file player pad link failed");
-        }
+        branch?.static_pad("sink").filter(|p| !p.is_linked())
     });
 
     Ok(player)
 }
 
-/// Add `elements` → appsink to `player`, the appsink forwarding into `target`.
-/// Returns the first element, for the decoder to link to.
-fn add_forward_chain(
-    player: &gst::Pipeline,
-    name: &str,
-    elements: &[&str],
-    media_type: &str,
-    target: &gst_app::AppSrc,
-) -> Result<gst::Element> {
-    let mut chain = elements
-        .iter()
-        .map(|factory| make_el(factory, &format!("file-{factory}-{name}")))
-        .collect::<Result<Vec<_>>>()?;
-    let sink = gst_app::AppSink::builder()
-        .name(format!("file-sink-{name}"))
-        .caps(&gst::Caps::builder(media_type).build())
-        // Paced by the clock: this is what makes the file play in real time.
-        .sync(true)
-        .max_buffers(2)
-        .build();
+/// An appsink's callbacks forwarding into `target`.
+fn forward_to(target: &gst_app::AppSrc) -> gst_app::AppSinkCallbacks {
     let target = target.downgrade();
     let last_pts = AtomicU64::new(u64::MAX);
-    sink.set_callbacks(
-        gst_app::AppSinkCallbacks::builder()
-            .new_sample(move |sink| {
-                let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-                let Some(target) = target.upgrade() else {
-                    return Err(gst::FlowError::Flushing);
-                };
-                forward(&sample, &target, &last_pts);
-                Ok(gst::FlowSuccess::Ok)
-            })
-            .build(),
-    );
-    chain.push(sink.upcast());
-    player
-        .add_many(&chain)
-        .with_context(|| format!("add {name} chain"))?;
-    gst::Element::link_many(&chain).with_context(|| format!("link {name} chain"))?;
-    Ok(chain.swap_remove(0))
+    gst_app::AppSinkCallbacks::builder()
+        .new_sample(move |sink| {
+            let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+            let Some(target) = target.upgrade() else {
+                return Err(gst::FlowError::Flushing);
+            };
+            forward(&sample, &target, &last_pts);
+            Ok(gst::FlowSuccess::Ok)
+        })
+        .build()
 }
 
 /// Push `sample` into `target`, stamped with `target`'s running time: the
@@ -387,26 +296,13 @@ fn forward(sample: &gst::Sample, target: &gst_app::AppSrc, last_pts: &AtomicU64)
     let Some(now) = target.current_running_time() else {
         return;
     };
-    let Some(mut buffer) = sample.buffer_owned() else {
-        return;
-    };
-    let looped = buffer.pts().is_some_and(|pts| {
+    let looped = sample.buffer().and_then(|b| b.pts()).is_some_and(|pts| {
         let prev = last_pts.swap(pts.nseconds(), Ordering::Relaxed);
         prev != u64::MAX && pts.nseconds() <= prev
     });
-    if let Some(caps) = sample.caps() {
-        if target.caps().is_none_or(|c| c.as_ref() != caps) {
-            target.set_caps(Some(&caps.to_owned()));
-        }
-    }
-    {
-        let buffer = buffer.make_mut();
-        buffer.set_pts(now);
-        buffer.set_dts(gst::ClockTime::NONE);
-        if looped {
-            buffer.set_flags(gst::BufferFlags::DISCONT);
-        }
-    }
+    let Some(buffer) = player::restamp(sample, target, now, looped) else {
+        return;
+    };
     // Fails only while the monitor is stopping.
     let _ = target.push_buffer(buffer);
 }
