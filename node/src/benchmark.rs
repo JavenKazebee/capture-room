@@ -166,6 +166,10 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
             done: done_rx,
         });
     }
+    let slot = SlotGuard {
+        state,
+        armed: true,
+    };
     // Checked after taking the slot: a recording or replay buffer that
     // starts from here on cancels this run instead.
     let busy = {
@@ -179,7 +183,6 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
         }
     };
     if let Some(why) = busy {
-        state.benchmark.lock().unwrap().take();
         return Err(ApiError::Conflict(why));
     }
     // Channels always run, so they aren't stopped for a benchmark; the
@@ -193,7 +196,6 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
         .len();
     let memory = MemoryWatch::new();
     if memory.budget.short(memory.budget.baseline) {
-        state.benchmark.lock().unwrap().take();
         return Err(ApiError::Conflict(
             "this node is too short of memory to benchmark: close something and try again",
         ));
@@ -250,13 +252,7 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
         db::benchmark_save(&state.db, &dto).await?;
         anyhow::Ok((dto, scratch))
     };
-    let (dto, scratch) = match setup.await {
-        Ok(v) => v,
-        Err(e) => {
-            state.benchmark.lock().unwrap().take();
-            return Err(e.into());
-        }
-    };
+    let (dto, scratch) = setup.await?;
 
     info!(id = %id, media = %path, max_feeds = dto.max_feeds, "benchmark started");
     state.emit(&WsEvent::BenchmarkUpdated {
@@ -272,8 +268,30 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
         memory: Mutex::new(memory),
         channels_running,
     };
+    slot.disarm();
     tokio::spawn(run.run(done_tx));
     Ok(dto)
+}
+
+/// Frees the benchmark slot [`start`] took when dropped, unless disarmed
+/// once the run has started (it frees the slot itself when it ends).
+struct SlotGuard<'a> {
+    state: &'a AppState,
+    armed: bool,
+}
+
+impl SlotGuard<'_> {
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for SlotGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.state.benchmark.lock().unwrap().take();
+        }
+    }
 }
 
 /// Refuse a channel benchmark that can't run: one that also asks for
