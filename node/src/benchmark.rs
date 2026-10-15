@@ -48,7 +48,7 @@ use crate::api::types::{
     BenchmarkRequest, BenchmarkRunDto, BenchmarkStatus, BenchmarkStepDto, ChannelConfig, ClipEnd,
     FileSourceConfig, LiveVideoFormat, MediaInfo, OutputConfig, PresetOutputInput, WsEvent,
 };
-use crate::capacity;
+use crate::capacity::{self, Setup};
 use crate::db;
 use crate::pipeline::monitor::{MonitorPipeline, VideoProgress};
 use crate::pipeline::output::{self, OutputContext, OutputLeg, Program};
@@ -117,29 +117,27 @@ pub struct Running {
 /// keeping replay buffers (the result would be skewed, and the benchmark
 /// would compete with them) or while another benchmark runs.
 pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<BenchmarkRunDto> {
-    if let Some(outputs) = &req.channel {
-        check_channel(&req, outputs)?;
-    }
-    match req.replay {
-        Some(_) if !req.outputs.is_empty() => {
+    let setup = Setup::new(&req.outputs, req.replay, req.channel.as_deref());
+    match setup {
+        Setup::Channel(outputs) => check_channel(&req, outputs)?,
+        Setup::Replay(_) if !req.outputs.is_empty() => {
             return Err(ApiError::BadRequest(
                 "a replay buffer benchmark takes no outputs".into(),
             ));
         }
-        Some(codec) if !codec.available() => {
+        Setup::Replay(codec) if !codec.available() => {
             return Err(ApiError::BadRequest(
                 "this node can't keep replay buffers in that codec".into(),
             ));
         }
-        Some(_) => {}
-        None if req.channel.is_some() => {}
-        None if req.outputs.is_empty() => {
+        Setup::Replay(_) => {}
+        Setup::Record([]) => {
             return Err(ApiError::BadRequest(
                 "at least one output is required".into(),
             ));
         }
-        None => {
-            plan_legs(&req.outputs, None).map_err(|e| ApiError::BadRequest(e.into()))?;
+        Setup::Record(outputs) => {
+            plan_legs(outputs, None).map_err(|e| ApiError::BadRequest(e.into()))?;
         }
     }
     let path = req.media_path.trim().to_string();
@@ -202,10 +200,10 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
     }
 
     let setup = async {
-        let scratch = match req.replay {
+        let scratch = match setup {
             // A channel writes nothing.
-            _ if req.channel.is_some() => Vec::new(),
-            Some(_) => {
+            Setup::Channel(_) => Vec::new(),
+            Setup::Replay(_) => {
                 let root = state
                     .source_manager
                     .read()
@@ -214,7 +212,7 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
                     .to_path_buf();
                 vec![scratch_dir(&root, &id)?]
             }
-            None => scratch_dirs(&req.outputs, &id, &state.node_name(), &media)?,
+            Setup::Record(outputs) => scratch_dirs(outputs, &id, &state.node_name(), &media)?,
         };
         let dto = BenchmarkRunDto {
             id: id.clone(),
@@ -660,14 +658,8 @@ impl Run {
         secs: u32,
         system: &mut System,
     ) -> Result<BenchmarkStepDto, Stop> {
-        let fps = self.dto.media.fps_num as f64 / self.dto.media.fps_den as f64;
-        let replay = self.dto.replay.is_some();
-        let outputs = match (&self.dto.channel, replay) {
-            (Some(channel), _) => channel.len(),
-            (None, true) => 1,
-            (None, false) => self.dto.outputs.len(),
-        };
-        let before = Snapshot::take(feeds, replay).await?;
+        let setup = Setup::of(&self.dto);
+        let before = Snapshot::take(feeds, setup).await?;
         system.refresh_cpu_usage();
         let mut cpu = Vec::new();
         for _ in 0..secs {
@@ -675,13 +667,10 @@ impl Run {
             system.refresh_cpu_usage();
             cpu.push(system.global_cpu_usage() as f64);
         }
-        let after = Snapshot::take(feeds, replay).await?;
+        let after = Snapshot::take(feeds, setup).await?;
         system.refresh_memory();
         let memory_pct = system.used_memory() as f64 / system.total_memory().max(1) as f64 * 100.0;
-        let threshold = self.dto.drop_threshold_pct;
-        Ok(measure(
-            n, fps, outputs, &before, &after, &cpu, memory_pct, threshold,
-        ))
+        Ok(measure(&self.dto, n, &before, &after, &cpu, memory_pct))
     }
 
     /// Start or stop feeds until `target` run. Returns how many were started.
@@ -1204,15 +1193,15 @@ struct Snapshot {
 }
 
 impl Snapshot {
-    /// `replay` when the feeds keep replay buffers: their one "output" is
-    /// counted by what the buffers have written, since old segments go.
-    async fn take(feeds: &[Feed], replay: bool) -> anyhow::Result<Self> {
+    /// Replay buffers' one "output" is counted by what the buffers have
+    /// written, since old segments go.
+    async fn take(feeds: &[Feed], setup: Setup<'_>) -> anyhow::Result<Self> {
         let frames = feeds.iter().map(|f| f.monitor.video_progress()).collect();
         let played: Vec<PlayedProgress> = feeds.iter().filter_map(Feed::played).collect();
         let late = played.iter().map(|p| p.late).sum();
         let played = played.into_iter().map(|p| p.progress).collect();
         let dropped = feeds.iter().map(Feed::dropped_frames).sum();
-        if replay {
+        if let Setup::Replay(_) = setup {
             let written = feeds
                 .iter()
                 .map(|f| match &f.work {
@@ -1263,17 +1252,18 @@ impl Snapshot {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// `run`'s step at `feeds`, from the counters `before` and `after` it and
+/// the CPU use sampled in between.
 fn measure(
+    run: &BenchmarkRunDto,
     feeds: u32,
-    fps: f64,
-    outputs: usize,
     before: &Snapshot,
     after: &Snapshot,
     cpu: &[f64],
     memory_pct: f64,
-    threshold_pct: f64,
 ) -> BenchmarkStepDto {
+    let fps = run.media.fps_num as f64 / run.media.fps_den as f64;
+    let outputs = Setup::of(run).measured_outputs();
     let secs = (after.at - before.at).as_secs_f64();
     let (produced, program_expected, program_shortfall) =
         shortfall(&before.frames, &after.frames, fps, secs);
@@ -1310,7 +1300,7 @@ fn measure(
         memory_pct,
         write_bytes_per_sec: per_sec(written.iter().sum()),
         output_bytes_per_sec: written.iter().map(|&b| per_sec(b) / feeds as u64).collect(),
-        passed: drop_pct <= threshold_pct,
+        passed: drop_pct <= run.drop_threshold_pct,
         quick: false,
     }
 }
@@ -1458,6 +1448,7 @@ fn plural(n: u32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::types::{ChromaSubsampling, Container, OutputAdvanced, VideoCodec};
     use gstreamer as gst;
 
     fn secs(s: f64) -> gst::ClockTime {
@@ -1469,6 +1460,51 @@ mod tests {
             frames,
             last_pts: Some(secs(at)),
             skipped: gst::ClockTime::ZERO,
+        }
+    }
+
+    /// A recording run at 30 fps with `outputs` outputs.
+    fn run(outputs: usize) -> BenchmarkRunDto {
+        let output = PresetOutputInput {
+            name: "Main".into(),
+            codec: VideoCodec::H264,
+            container: Container::Mov,
+            resolution: None,
+            framerate: None,
+            bitrate_kbps: None,
+            chroma: ChromaSubsampling::Yuv420,
+            path_template: "~/{source}.{ext}".into(),
+            preview: false,
+            advanced: OutputAdvanced::default(),
+        };
+        BenchmarkRunDto {
+            id: "run".into(),
+            started_at: String::new(),
+            finished_at: None,
+            status: BenchmarkStatus::Running,
+            preset_id: None,
+            preset_name: None,
+            outputs: vec![output; outputs],
+            replay: None,
+            channel: None,
+            media_path: "/f.mov".into(),
+            media: MediaInfo {
+                width: 1920,
+                height: 1080,
+                fps_num: 30,
+                fps_den: 1,
+                audio_channels: 2,
+                duration_ms: None,
+            },
+            max_feeds: 64,
+            step_secs: 20,
+            drop_threshold_pct: 0.5,
+            feeds_running: 0,
+            steps: Vec::new(),
+            sustainable_feeds: 0,
+            encoders: Vec::new(),
+            message: None,
+            scratch_dirs: Vec::new(),
         }
     }
 
@@ -1499,7 +1535,7 @@ mod tests {
             3,
             vec![20_000_000, 2_000_000],
         );
-        let step = measure(2, 30.0, 2, &before, &after, &[50.0, 70.0], 40.0, 0.5);
+        let step = measure(&run(2), 2, &before, &after, &[50.0, 70.0], 40.0);
         assert_eq!(step.expected_frames, 600);
         assert_eq!(step.source_shortfall, 0);
         assert_eq!(step.output_dropped, 3);
@@ -1518,7 +1554,7 @@ mod tests {
         // The window ran 10 s by the clock, but the last frame counted is
         // from 9.9 s: 297 frames is everything that was due.
         let after = snapshot(t + Duration::from_secs(10), vec![ts(297, 9.9)], 0, vec![0]);
-        let step = measure(1, 30.0, 1, &before, &after, &[], 0.0, 0.5);
+        let step = measure(&run(1), 1, &before, &after, &[], 0.0);
         assert_eq!(step.source_shortfall, 0);
         assert!(step.passed);
     }
@@ -1535,7 +1571,7 @@ mod tests {
             skipped: secs(0.9),
         };
         let after = snapshot(t + Duration::from_secs(10), vec![after], 0, vec![0]);
-        let step = measure(1, 30.0, 1, &before, &after, &[], 0.0, 0.5);
+        let step = measure(&run(1), 1, &before, &after, &[], 0.0);
         assert_eq!(step.expected_frames, 273);
         assert_eq!(step.source_shortfall, 0);
     }
@@ -1551,7 +1587,7 @@ mod tests {
             0,
             vec![0],
         );
-        let step = measure(4, 30.0, 1, &before, &after, &[], 0.0, 0.5);
+        let step = measure(&run(1), 4, &before, &after, &[], 0.0);
         assert_eq!(step.source_shortfall, 49);
         assert!(!step.passed);
     }
@@ -1566,7 +1602,9 @@ mod tests {
         let mut after = snapshot(t + Duration::from_secs(10), vec![ts(300, 10.0)], 0, vec![]);
         after.played = vec![ts(300, 10.1)];
         after.late = 30;
-        let step = measure(1, 30.0, 0, &before, &after, &[], 0.0, 0.5);
+        let mut channel = run(0);
+        channel.channel = Some(Vec::new());
+        let step = measure(&channel, 1, &before, &after, &[], 0.0);
         assert_eq!(step.expected_frames, 600);
         assert_eq!(step.source_shortfall, 30);
         // Against the clip's frames, not diluted by the program's.

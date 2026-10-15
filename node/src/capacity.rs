@@ -85,12 +85,50 @@ pub fn channel_key(outputs: &[OutputConfig]) -> String {
     )
 }
 
-/// What a run measured.
-fn run_key(run: &BenchmarkRunDto) -> String {
-    match (&run.channel, run.replay) {
-        (Some(outputs), _) => channel_key(outputs),
-        (None, Some(codec)) => replay_key(codec),
-        (None, None) => outputs_key(&run.outputs),
+/// What a benchmark measures: a recording setup, replay buffers or playout
+/// channels. A run (or request) names one by which of its fields is set: a
+/// channel's outputs, else a replay codec, else recording outputs.
+#[derive(Debug, Clone, Copy)]
+pub enum Setup<'a> {
+    Record(&'a [PresetOutputInput]),
+    Replay(ReplayCodec),
+    Channel(&'a [OutputConfig]),
+}
+
+impl<'a> Setup<'a> {
+    pub fn new(
+        outputs: &'a [PresetOutputInput],
+        replay: Option<ReplayCodec>,
+        channel: Option<&'a [OutputConfig]>,
+    ) -> Self {
+        match (channel, replay) {
+            (Some(outputs), _) => Self::Channel(outputs),
+            (None, Some(codec)) => Self::Replay(codec),
+            (None, None) => Self::Record(outputs),
+        }
+    }
+
+    /// What `run` measured.
+    pub fn of(run: &'a BenchmarkRunDto) -> Self {
+        Self::new(&run.outputs, run.replay, run.channel.as_deref())
+    }
+
+    /// Identifies the setup, to look its results up by.
+    pub fn key(&self) -> String {
+        match *self {
+            Self::Record(outputs) => outputs_key(outputs),
+            Self::Replay(codec) => replay_key(codec),
+            Self::Channel(outputs) => channel_key(outputs),
+        }
+    }
+
+    /// The outputs each feed encodes: a replay buffer is one.
+    pub fn measured_outputs(&self) -> usize {
+        match self {
+            Self::Record(outputs) => outputs.len(),
+            Self::Replay(_) => 1,
+            Self::Channel(outputs) => outputs.len(),
+        }
     }
 }
 
@@ -170,7 +208,7 @@ impl Capacity {
             .iter()
             .filter(|r| r.status == BenchmarkStatus::Completed && !r.steps.is_empty())
         {
-            let key = run_key(run);
+            let key = Setup::of(run).key();
             let m = &run.media;
             if profiles.iter().any(|p| {
                 p.key == key && p.matches_format((m.width, m.height), (m.fps_num, m.fps_den))
