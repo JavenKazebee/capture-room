@@ -511,10 +511,7 @@ const CLIP_NOT_FOUND: ApiError = ApiError::NotFound("replay clip not found");
 
 /// Where exported clips go: a folder in the default recording folder.
 fn export_dir() -> std::path::PathBuf {
-    std::env::home_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("capture-room")
-        .join("Replay clips")
+    crate::storage::default_folder().join("Replay clips")
 }
 
 fn clip_dto(row: ReplayClipRow) -> ReplayClipDto {

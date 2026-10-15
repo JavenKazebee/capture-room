@@ -10,6 +10,18 @@ use sysinfo::Disks;
 use crate::api::types::{DirEntryDto, DirListingDto, StorageVolumeDto};
 use crate::sources::file::MEDIA_EXTENSIONS;
 
+/// The default recording folder's name, in the home folder.
+pub const DEFAULT_FOLDER: &str = "capture-room";
+
+/// The default recording folder, `~/capture-room`, where the default output
+/// path records and replay buffers and exported clips are kept. In the temp
+/// folder on a node with no home folder.
+pub fn default_folder() -> PathBuf {
+    std::env::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(DEFAULT_FOLDER)
+}
+
 /// Filesystems that never hold recordings.
 const PSEUDO_FS: &[&str] = &[
     "autofs", "devfs", "devtmpfs", "tmpfs", "overlay", "squashfs", "proc", "sysfs", "nullfs",

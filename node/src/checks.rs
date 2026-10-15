@@ -15,9 +15,6 @@ use crate::sources::privacy::{self, Access, Permission};
 use crate::state::AppState;
 use crate::storage;
 
-/// The folder the default output template records into.
-const DEFAULT_FOLDER: &str = "capture-room";
-
 pub async fn run(state: &AppState) -> anyhow::Result<NodeChecksDto> {
     let configured = crate::db::configured_sources_list(&state.db).await?;
     let (devices, ndi_loaded) = {
@@ -298,12 +295,13 @@ fn storage_check() -> CheckDto {
         "Recording folder",
         "Recording with the default output path",
     );
-    let Some(dir) = std::env::home_dir().map(|h| h.join(DEFAULT_FOLDER)) else {
+    if std::env::home_dir().is_none() {
         c.status = CheckStatus::Unknown;
         c.summary = "This node has no home folder.".into();
         return c;
-    };
-    let shown = format!("~/{DEFAULT_FOLDER}");
+    }
+    let dir = storage::default_folder();
+    let shown = format!("~/{}", storage::DEFAULT_FOLDER);
     if let Err(e) = write_test(&dir) {
         c.status = CheckStatus::Missing;
         c.summary = format!("Can't write to {shown}: {e}.");

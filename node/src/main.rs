@@ -50,11 +50,7 @@ struct Args {
 /// (several can run on one machine). On one volume, so a clip's files can be
 /// hard links to the buffer's.
 fn replay_root(folder: &str, node_id: &str) -> std::path::PathBuf {
-    std::env::home_dir()
-        .map(|h| h.join("capture-room"))
-        .unwrap_or_else(std::env::temp_dir)
-        .join(folder)
-        .join(node_id)
+    storage::default_folder().join(folder).join(node_id)
 }
 
 fn main() -> Result<()> {
