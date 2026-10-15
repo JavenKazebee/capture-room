@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useEventListener } from '@vueuse/core'
+import { useViewKeys } from '@/composables/useViewKeys'
 import { Eye, X } from '@lucide/vue'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
@@ -78,9 +78,7 @@ const allScope = computed(() => desk.selected.size === 0)
 
 // ── Keyboard ──────────────────────────────────────────────────────────────────
 
-useEventListener('keydown', (e: KeyboardEvent) => {
-  const t = e.target as HTMLElement
-  if (t.closest('input, textarea, select, [role="dialog"], [role="listbox"], [role="menu"]')) return
+useViewKeys((e) => {
   // Esc closes an open info popover first, then clears the selection.
   if (e.key === 'Escape') {
     if (desk.infoKey) desk.infoKey = null
@@ -92,7 +90,7 @@ useEventListener('keydown', (e: KeyboardEvent) => {
     e.preventDefault()
     desk.selectAll()
   }
-})
+}, { alsoIgnore: '[role="listbox"]', modifiers: true })
 </script>
 
 <template>

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useEventListener, useStorage } from '@vueuse/core'
+import { useStorage } from '@vueuse/core'
+import { useViewKeys } from '@/composables/useViewKeys'
 import { ArrowDownToLine, Play, Plus, Settings2 } from '@lucide/vue'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
@@ -218,10 +219,8 @@ function addMedia(item: MediaItemDto) {
 
 // ── Keyboard ──────────────────────────────────────────────────────────────────
 
-useEventListener('keydown', (e: KeyboardEvent) => {
+useViewKeys((e) => {
   const t = e.target as HTMLElement
-  if (t.closest('input, textarea, select, [role="dialog"], [role="menu"]')) return
-  if (e.ctrlKey || e.metaKey || e.altKey) return
   const key = e.key.toLowerCase()
   if (key === ' ') {
     e.preventDefault()

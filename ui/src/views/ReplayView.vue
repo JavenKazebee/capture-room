@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useEventListener, useIntervalFn, useStorage } from '@vueuse/core'
+import { useIntervalFn, useStorage } from '@vueuse/core'
+import { useViewKeys } from '@/composables/useViewKeys'
 import {
   ChevronLeft,
   ChevronRight,
@@ -350,10 +351,7 @@ function mark(which: 'in' | 'out') {
 
 // ── Keyboard ──────────────────────────────────────────────────────────────────
 
-useEventListener('keydown', (e: KeyboardEvent) => {
-  const t = e.target as HTMLElement
-  if (t.closest('input, textarea, select, [role="dialog"], [role="menu"], [role="listbox"]')) return
-  if (e.ctrlKey || e.metaKey || e.altKey) return
+useViewKeys((e) => {
   const key = e.key.toLowerCase()
   const handled = () => e.preventDefault()
   if (/^[1-9]$/.test(key)) {
@@ -389,7 +387,7 @@ useEventListener('keydown', (e: KeyboardEvent) => {
     playMarked()
   } else if (key === 's') saveMarked(e.shiftKey)
   else if (key === 'escape') stop()
-})
+}, { alsoIgnore: '[role="listbox"]' })
 
 onMounted(() => sources.ensureLoaded())
 

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { useEventListener, useNow, useStorage } from '@vueuse/core'
+import { useNow, useStorage } from '@vueuse/core'
+import { useViewKeys } from '@/composables/useViewKeys'
 import { Play } from '@lucide/vue'
 import { clockTime, dayKey, dayLabel, formatDuration } from '@/lib/format'
 import { CODECS } from '@/lib/codecs'
@@ -84,10 +85,8 @@ async function step(by: 1 | -1) {
   document.querySelector(`[data-row-key="${CSS.escape(key(next))}"]`)?.scrollIntoView({ block: 'nearest' })
 }
 
-useEventListener('keydown', (e: KeyboardEvent) => {
-  const t = e.target as HTMLElement
-  if (e.metaKey || e.ctrlKey || e.altKey) return
-  if (t.closest('input, textarea, select, video, button, a, [role="button"], [role="dialog"], [role="listbox"], [role="menu"]')) return
+// Not on buttons, links or the player: Space and the arrows are theirs there.
+useViewKeys((e) => {
   if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
     e.preventDefault()
     void step(e.key === 'ArrowDown' ? 1 : -1)
@@ -95,7 +94,7 @@ useEventListener('keydown', (e: KeyboardEvent) => {
     e.preventDefault()
     detail.value.togglePlay()
   } else if (e.key === 'Escape') selectedKey.value = null
-})
+}, { alsoIgnore: 'video, button, a, [role="button"], [role="listbox"]' })
 
 // ── Columns ───────────────────────────────────────────────────────────────────
 
