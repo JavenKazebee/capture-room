@@ -29,24 +29,24 @@ pub fn validate(
     if !(1..=8).contains(&cfg.audio_channels) {
         return Err("audio must have 1 to 8 channels".into());
     }
+    let available: &dyn Fn(&str) -> bool = &available;
+    let channels = cfg.audio_channels;
     for o in &cfg.outputs {
         match o {
-            OutputConfig::Ndi { .. } if !available("ndisink") => {
-                return Err("NDI outputs need ndisink, which isn't on this node".into());
-            }
-            OutputConfig::Ndi { .. } => {}
-            OutputConfig::Srt { .. } => validate_srt(o, cfg.audio_channels, &available)?,
+            OutputConfig::Ndi { .. } => needs("NDI", &["ndisink"], available)?,
+            OutputConfig::Srt { .. } => validate_srt(o, channels, available)?,
             OutputConfig::Rtsp { bitrate_kbps, .. } => {
-                validate_rtsp(*bitrate_kbps, cfg.audio_channels, &available)?
+                needs("RTSP", rtsp::RTSP_ELEMENTS, available)?;
+                needs_h264("RTSP", available)?;
+                bitrate("RTSP", *bitrate_kbps)?;
+                max_channels("RTSP", channels)?;
             }
-            OutputConfig::Whep { bitrate_kbps, .. } => validate_whep(*bitrate_kbps, &available)?,
+            OutputConfig::Whep { bitrate_kbps, .. } => {
+                needs("WHEP", whep::WHEP_ELEMENTS, available)?;
+                bitrate("WHEP", *bitrate_kbps)?;
+            }
             OutputConfig::Display { display, .. } => {
-                if !available(output::DISPLAY_SINK) {
-                    return Err(format!(
-                        "display outputs need {}, which isn't installed on this node",
-                        output::DISPLAY_SINK
-                    ));
-                }
+                needs("display", &[output::DISPLAY_SINK], available)?;
                 if display.trim().is_empty() {
                     return Err("pick a display".into());
                 }
@@ -67,21 +67,18 @@ pub fn validate(
             return Err(format!("two outputs both listen on port {port}"));
         }
     }
-    let ndi_names = |cfg: &ChannelConfig, name: &str| -> Vec<String> {
-        cfg.outputs
-            .iter()
-            .filter_map(|o| match o {
-                OutputConfig::Ndi { ndi_name } => Some(
-                    ndi_name
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|n| !n.is_empty())
-                        .unwrap_or(name)
-                        .to_lowercase(),
-                ),
-                _ => None,
-            })
-            .collect()
+    let ndi_names = |cfg: &ChannelConfig, name: &str| {
+        each(cfg, |o| match o {
+            OutputConfig::Ndi { ndi_name } => Some(
+                ndi_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or(name)
+                    .to_lowercase(),
+            ),
+            _ => None,
+        })
     };
     unique(
         cfg,
@@ -136,10 +133,48 @@ fn unique(
     Ok(())
 }
 
+/// `kind` outputs need every one of `elements`.
+fn needs(kind: &str, elements: &[&str], available: &dyn Fn(&str) -> bool) -> Result<(), String> {
+    match elements.iter().find(|e| !available(e)) {
+        Some(missing) => Err(format!(
+            "{kind} outputs need {missing}, which isn't installed on this node"
+        )),
+        None => Ok(()),
+    }
+}
+
+/// `kind` outputs need one of the live H.264 encoders.
+fn needs_h264(kind: &str, available: &dyn Fn(&str) -> bool) -> Result<(), String> {
+    if output::LIVE_H264.iter().any(|e| available(e)) {
+        return Ok(());
+    }
+    Err(format!(
+        "{kind} outputs need an H.264 encoder (x264enc), which isn't installed on this node"
+    ))
+}
+
+fn bitrate(kind: &str, kbps: u32) -> Result<(), String> {
+    if !(100..=100_000).contains(&kbps) {
+        return Err(format!("{kind} bitrate must be 100–100,000 kbps"));
+    }
+    Ok(())
+}
+
+/// MPEG-TS outputs (SRT, RTSP) carry at most `SRT_MAX_AUDIO_CHANNELS`.
+fn max_channels(kind: &str, audio_channels: u32) -> Result<(), String> {
+    if audio_channels > output::SRT_MAX_AUDIO_CHANNELS {
+        return Err(format!(
+            "{kind} outputs carry up to {} audio channels; this channel has {audio_channels}",
+            output::SRT_MAX_AUDIO_CHANNELS
+        ));
+    }
+    Ok(())
+}
+
 fn validate_srt(
     output: &OutputConfig,
     audio_channels: u32,
-    available: impl Fn(&str) -> bool,
+    available: &dyn Fn(&str) -> bool,
 ) -> Result<(), String> {
     let OutputConfig::Srt {
         url,
@@ -150,17 +185,8 @@ fn validate_srt(
     else {
         return Ok(());
     };
-    if let Some(missing) = output::SRT_ELEMENTS.iter().find(|e| !available(e)) {
-        return Err(format!(
-            "SRT outputs need {missing}, which isn't installed on this node"
-        ));
-    }
-    if !output::LIVE_H264.iter().any(|e| available(e)) {
-        return Err(
-            "SRT outputs need an H.264 encoder (x264enc), which isn't installed on this node"
-                .into(),
-        );
-    }
+    needs("SRT", output::SRT_ELEMENTS, available)?;
+    needs_h264("SRT", available)?;
     let url = url.trim();
     if stream::scheme(url).as_deref() != Some("srt") {
         return Err("an SRT output needs an srt:// URL, like srt://:9000".into());
@@ -175,104 +201,49 @@ fn validate_srt(
     if !(20..=8000).contains(latency_ms) {
         return Err("SRT latency must be 20–8000 ms".into());
     }
-    if !(100..=100_000).contains(bitrate_kbps) {
-        return Err("SRT bitrate must be 100–100,000 kbps".into());
-    }
+    bitrate("SRT", *bitrate_kbps)?;
     if let Some(p) = passphrase.as_deref().filter(|p| !p.is_empty()) {
         if !(10..=79).contains(&p.chars().count()) {
             return Err("an SRT passphrase must be 10–79 characters".into());
         }
     }
-    if audio_channels > output::SRT_MAX_AUDIO_CHANNELS {
-        return Err(format!(
-            "SRT outputs carry up to {} audio channels; this channel has {audio_channels}",
-            output::SRT_MAX_AUDIO_CHANNELS
-        ));
-    }
-    Ok(())
+    max_channels("SRT", audio_channels)
 }
 
-fn validate_rtsp(
-    bitrate_kbps: u32,
-    audio_channels: u32,
-    available: impl Fn(&str) -> bool,
-) -> Result<(), String> {
-    if let Some(missing) = rtsp::RTSP_ELEMENTS.iter().find(|e| !available(e)) {
-        return Err(format!(
-            "RTSP outputs need {missing}, which isn't installed on this node"
-        ));
-    }
-    if !output::LIVE_H264.iter().any(|e| available(e)) {
-        return Err(
-            "RTSP outputs need an H.264 encoder (x264enc), which isn't installed on this node"
-                .into(),
-        );
-    }
-    if !(100..=100_000).contains(&bitrate_kbps) {
-        return Err("RTSP bitrate must be 100–100,000 kbps".into());
-    }
-    if audio_channels > output::SRT_MAX_AUDIO_CHANNELS {
-        return Err(format!(
-            "RTSP outputs carry up to {} audio channels; this channel has {audio_channels}",
-            output::SRT_MAX_AUDIO_CHANNELS
-        ));
-    }
-    Ok(())
-}
-
-fn validate_whep(bitrate_kbps: u32, available: impl Fn(&str) -> bool) -> Result<(), String> {
-    if let Some(missing) = whep::WHEP_ELEMENTS.iter().find(|e| !available(e)) {
-        return Err(format!(
-            "WHEP outputs need {missing}, which isn't installed on this node"
-        ));
-    }
-    if !(100..=100_000).contains(&bitrate_kbps) {
-        return Err("WHEP bitrate must be 100–100,000 kbps".into());
-    }
-    Ok(())
+/// What `f` picks from each of a channel's outputs.
+fn each<T>(cfg: &ChannelConfig, f: impl FnMut(&OutputConfig) -> Option<T>) -> Vec<T> {
+    cfg.outputs.iter().filter_map(f).collect()
 }
 
 /// The screens a channel's display outputs show on.
 pub fn screens(cfg: &ChannelConfig) -> Vec<String> {
-    cfg.outputs
-        .iter()
-        .filter_map(|o| match o {
-            OutputConfig::Display { display, .. } => Some(display.trim().to_string()),
-            _ => None,
-        })
-        .collect()
+    each(cfg, |o| match o {
+        OutputConfig::Display { display, .. } => Some(display.trim().to_string()),
+        _ => None,
+    })
 }
 
 /// Where a channel's RTSP outputs are served (`name` is the channel's).
 pub fn mount_paths(cfg: &ChannelConfig, name: &str) -> Vec<String> {
-    cfg.outputs
-        .iter()
-        .filter_map(|o| match o {
-            OutputConfig::Rtsp { path, .. } => Some(rtsp::mount_path(path.as_deref(), name)),
-            _ => None,
-        })
-        .collect()
+    each(cfg, |o| match o {
+        OutputConfig::Rtsp { path, .. } => Some(rtsp::mount_path(path.as_deref(), name)),
+        _ => None,
+    })
 }
 
 /// Where a channel's WHEP outputs are served (`name` is the channel's).
 pub fn whep_paths(cfg: &ChannelConfig, name: &str) -> Vec<String> {
-    cfg.outputs
-        .iter()
-        .filter_map(|o| match o {
-            OutputConfig::Whep { path, .. } => Some(rtsp::mount_path(path.as_deref(), name)),
-            _ => None,
-        })
-        .collect()
+    each(cfg, |o| match o {
+        OutputConfig::Whep { path, .. } => Some(rtsp::mount_path(path.as_deref(), name)),
+        _ => None,
+    })
 }
 
 /// The local ports a channel's outputs listen on (SRT listeners; RTSP
 /// outputs share the node's RTSP server).
 pub fn listen_ports(cfg: &ChannelConfig) -> Vec<u16> {
-    cfg.outputs
-        .iter()
-        .filter_map(|o| match o {
-            OutputConfig::Srt { url, .. } => stream::url_listen_port(url),
-            _ => None,
-        })
-        .collect()
+    each(cfg, |o| match o {
+        OutputConfig::Srt { url, .. } => stream::url_listen_port(url),
+        _ => None,
+    })
 }
