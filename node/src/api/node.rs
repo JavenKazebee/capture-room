@@ -31,7 +31,7 @@ use crate::api::types::{
     UpdateNodeSettingsRequest, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
-use crate::capacity::{self, Capacity};
+use crate::capacity::{self, Capacity, Load};
 use crate::db;
 use crate::pipeline::monitor::SourceFormat;
 use crate::pipeline::profile::{plan_legs, PathVars, RecordingProfile};
@@ -900,31 +900,18 @@ async fn delete_benchmark(
 async fn get_capacity(State(state): State<Arc<AppState>>) -> ApiResult<Json<NodeCapacityDto>> {
     let runs = db::benchmarks_list(&state.db).await?;
     let capacity = Capacity::from_runs(&runs);
-    let (feeds, buffers, channels) = {
-        let mgr = state.source_manager.read().await;
-        (
-            mgr.active_feeds(),
-            mgr.active_buffers(),
-            mgr.active_channels(),
-        )
-    };
-    let load = capacity.load(
-        feeds
-            .iter()
-            .chain(&buffers)
-            .chain(&channels)
-            .map(|(key, format)| (key.as_str(), *format)),
-    );
-    let running =
+    let running = state.source_manager.read().await.running_load(&[], &[]);
+    let load = capacity.load(running.iter());
+    let benchmark =
         benchmark::running_id(&state).and_then(|id| runs.into_iter().find(|r| r.id == id));
     Ok(Json(NodeCapacityDto {
         profiles: capacity.profiles(),
-        active_feeds: feeds.len() as u32,
-        active_buffers: buffers.len() as u32,
-        active_channels: channels.len() as u32,
+        active_feeds: running.feeds.len() as u32,
+        active_buffers: running.buffers.len() as u32,
+        active_channels: running.channels.len() as u32,
         load: load.load,
         unknown_feeds: load.unknown,
-        running,
+        running: benchmark,
     }))
 }
 
@@ -948,31 +935,23 @@ async fn post_capacity_check(
     let (active, formats, active_legs) = {
         let mgr = state.source_manager.read().await;
         // A source whose buffer is being changed stops counting as it was.
-        let buffers =
-            mgr.active_buffers_except(req.replay.map_or(&[][..], |_| &req.source_ids[..]));
+        let active = mgr.running_load(req.replay.map_or(&[][..], |_| &req.source_ids[..]), &[]);
         let formats: Vec<_> = req
             .source_ids
             .iter()
             .map(|id| mgr.source_format(id))
             .collect();
-        let mut active = mgr.active_feeds();
-        active.extend(buffers);
-        active.extend(mgr.active_channels());
         (active, formats, mgr.active_leg_files())
     };
-    let active_iter = || active.iter().map(|(k, f)| (k.as_str(), *f));
-    let before = capacity.load(active_iter());
-    let after = capacity.load(active_iter().chain(formats.iter().map(|f| (key.as_str(), *f))));
+    let before = capacity.load(active.iter());
+    let after = capacity.load(
+        active
+            .iter()
+            .chain(formats.iter().map(|f| (key.as_str(), *f))),
+    );
     if req.replay.is_some() {
         // A buffer keeps a fixed length, so it doesn't fill a volume.
-        return Ok(Json(CapacityCheckDto {
-            verdict: after.verdict(),
-            load_before: before.load,
-            load_after: after.load,
-            unknown_feeds: after.unknown,
-            estimated: after.estimated,
-            volumes: Vec::new(),
-        }));
+        return Ok(Json(capacity_check(before, after, Vec::new())));
     }
 
     // What the new legs would write, and where: measured by a benchmark of
@@ -1024,14 +1003,7 @@ async fn post_capacity_check(
     })
     .await?;
 
-    Ok(Json(CapacityCheckDto {
-        verdict: after.verdict(),
-        load_before: before.load,
-        load_after: after.load,
-        unknown_feeds: after.unknown,
-        estimated: after.estimated,
-        volumes,
-    }))
+    Ok(Json(capacity_check(before, after, volumes)))
 }
 
 /// Would running the playout `channel` fit, on top of what runs already
@@ -1042,13 +1014,7 @@ async fn check_channel(
     channel: &ChannelConfig,
     editing: &[String],
 ) -> CapacityCheckDto {
-    let active = {
-        let mgr = state.source_manager.read().await;
-        let mut active = mgr.active_feeds();
-        active.extend(mgr.active_buffers());
-        active.extend(mgr.active_channels_except(editing));
-        active
-    };
+    let active = state.source_manager.read().await.running_load(&[], editing);
     let f = &channel.format;
     let format = SourceFormat {
         size: Some((f.width, f.height)),
@@ -1056,16 +1022,21 @@ async fn check_channel(
         audio: Some((channel.audio_channels, false)),
     };
     let key = capacity::channel_key(&channel.outputs);
-    let active_iter = || active.iter().map(|(k, f)| (k.as_str(), *f));
-    let before = capacity.load(active_iter());
-    let after = capacity.load(active_iter().chain([(key.as_str(), format)]));
+    let before = capacity.load(active.iter());
+    let after = capacity.load(active.iter().chain([(key.as_str(), format)]));
+    capacity_check(before, after, Vec::new())
+}
+
+/// The answer to a capacity check: the load `before` and `after` starting,
+/// and the `volumes` it would write to.
+fn capacity_check(before: Load, after: Load, volumes: Vec<VolumeCheckDto>) -> CapacityCheckDto {
     CapacityCheckDto {
         verdict: after.verdict(),
         load_before: before.load,
         load_after: after.load,
         unknown_feeds: after.unknown,
         estimated: after.estimated,
-        volumes: Vec::new(),
+        volumes,
     }
 }
 

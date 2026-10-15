@@ -177,7 +177,7 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
         let mgr = state.source_manager.read().await;
         if !mgr.active_sessions().is_empty() {
             Some("stop every recording on this node before benchmarking it")
-        } else if !mgr.active_buffers().is_empty() {
+        } else if !mgr.running_load(&[], &[]).buffers.is_empty() {
             Some("turn off this node's replay buffers before benchmarking it: they would skew the result")
         } else {
             None
@@ -189,7 +189,13 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
     }
     // Channels always run, so they aren't stopped for a benchmark; the
     // result says they ran.
-    let channels_running = state.source_manager.read().await.active_channels().len();
+    let channels_running = state
+        .source_manager
+        .read()
+        .await
+        .running_load(&[], &[])
+        .channels
+        .len();
     let memory = MemoryWatch::new();
     if memory.budget.short(memory.budget.baseline) {
         state.benchmark.lock().unwrap().take();

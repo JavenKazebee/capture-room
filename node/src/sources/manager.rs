@@ -89,6 +89,28 @@ pub struct Teardown {
     pub stops: Vec<StopJob>,
 }
 
+/// What runs on a node, each as its capacity key and its source's format
+/// (see [`SourceManager::running_load`]).
+pub struct RunningLoad {
+    /// Recording sessions.
+    pub feeds: Vec<(String, SourceFormat)>,
+    /// Replay buffers that record.
+    pub buffers: Vec<(String, SourceFormat)>,
+    /// Playout channels whose program runs.
+    pub channels: Vec<(String, SourceFormat)>,
+}
+
+impl RunningLoad {
+    /// All of it, to pass to [`crate::capacity::Capacity::load`].
+    pub fn iter(&self) -> impl Iterator<Item = (&str, SourceFormat)> + '_ {
+        self.feeds
+            .iter()
+            .chain(&self.buffers)
+            .chain(&self.channels)
+            .map(|(key, format)| (key.as_str(), *format))
+    }
+}
+
 /// A recording leg that failed while its session was running. Sent the moment
 /// it happens; the receiver applies it with [`SourceManager::note_leg_failure`].
 pub struct LegFailure {
@@ -864,51 +886,36 @@ impl SourceManager {
             .collect()
     }
 
-    /// Every active session's outputs key and its source's format, to add
-    /// up against the node's benchmarked capacity.
-    pub fn active_feeds(&self) -> Vec<(String, SourceFormat)> {
-        self.sessions
+    /// What runs on this node, to add up against its benchmarked capacity:
+    /// the recording sessions, the replay buffers that record but those of
+    /// the sources `skip_buffers`, and the playout channels but
+    /// `skip_channels`.
+    pub fn running_load(&self, skip_buffers: &[String], skip_channels: &[String]) -> RunningLoad {
+        let feeds = self
+            .sessions
             .values()
             .map(|s| (s.outputs_key.clone(), self.source_format(&s.dto.source_id)))
-            .collect()
-    }
-
-    /// Every replay buffer that's recording: its key and its source's format,
-    /// to add up against the node's benchmarked capacity.
-    pub fn active_buffers(&self) -> Vec<(String, SourceFormat)> {
-        self.active_buffers_except(&[])
-    }
-
-    /// [`Self::active_buffers`], leaving out the sources `except`.
-    pub fn active_buffers_except(&self, except: &[String]) -> Vec<(String, SourceFormat)> {
-        self.replays
+            .collect();
+        let buffers = self
+            .replays
             .iter()
-            .filter(|(id, r)| Self::recording(r) && !except.contains(id))
+            .filter(|(id, r)| Self::recording(r) && !skip_buffers.contains(id))
             .map(|(id, r)| {
                 (
                     crate::capacity::replay_key(r.config.codec),
                     self.source_format(id),
                 )
             })
-            .collect()
-    }
-
-    /// Every playout channel whose program runs: its key and format, to add
-    /// up against the node's benchmarked capacity. Idle or playing alike: a
-    /// channel's program and outputs run either way, and it can start
-    /// playing at any moment.
-    pub fn active_channels(&self) -> Vec<(String, SourceFormat)> {
-        self.active_channels_except(&[])
-    }
-
-    /// [`Self::active_channels`], leaving out the channels `except`.
-    pub fn active_channels_except(&self, except: &[String]) -> Vec<(String, SourceFormat)> {
-        self.sources
+            .collect();
+        // Idle or playing alike: a channel's program and outputs run either
+        // way, and it can start playing at any moment.
+        let channels = self
+            .sources
             .iter()
             .filter(|s| {
                 s.playout().is_some()
                     && self.monitors.contains_key(s.id())
-                    && !except.iter().any(|id| id == s.id())
+                    && !skip_channels.iter().any(|id| id == s.id())
             })
             .map(|s| {
                 (
@@ -916,7 +923,12 @@ impl SourceManager {
                     self.source_format(s.id()),
                 )
             })
-            .collect()
+            .collect();
+        RunningLoad {
+            feeds,
+            buffers,
+            channels,
+        }
     }
 
     /// What outputs need from the node, for the benchmark's channels.
