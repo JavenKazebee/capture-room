@@ -21,6 +21,16 @@ pub const MEDIA_EXTENSIONS: &[&str] = &[
 /// Channels of the silence played for a file without audio.
 const SILENCE_CHANNELS: u32 = 2;
 
+/// The audio channels a file source delivers: the footage's, or
+/// [`SILENCE_CHANNELS`] for footage without audio.
+pub fn audio_channels(media: &MediaInfo) -> u32 {
+    if media.audio_channels > 0 {
+        media.audio_channels
+    } else {
+        SILENCE_CHANNELS
+    }
+}
+
 // ── FileSource ────────────────────────────────────────────────────────────────
 
 /// A media file on the node, played in a loop as a live feed.
@@ -74,11 +84,7 @@ impl InputSource for FileSource {
             max_width: media.width,
             max_height: media.height,
             max_framerate: [media.fps_num, media.fps_den],
-            audio_channels: if media.audio_channels > 0 {
-                media.audio_channels
-            } else {
-                SILENCE_CHANNELS
-            },
+            audio_channels: audio_channels(media),
         })
     }
 

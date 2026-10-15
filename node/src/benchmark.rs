@@ -56,7 +56,7 @@ use crate::pipeline::profile::{plan_legs, PathVars, RecordingProfile};
 use crate::pipeline::recording::{self, OnLegError, OnLegFile, RecordingLeg};
 use crate::pipeline::replay::{Index, ReplayIndex, ReplayLeg};
 use crate::sources::channel::{ChannelSource, ClipRequest, PlayedProgress, Playout};
-use crate::sources::file::FileSource;
+use crate::sources::file::{self, FileSource};
 use crate::sources::InputSource;
 use crate::state::AppState;
 
@@ -119,7 +119,7 @@ pub struct Running {
 pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<BenchmarkRunDto> {
     let setup = Setup::new(&req.outputs, req.replay, req.channel.as_deref());
     match setup {
-        Setup::Channel(outputs) => check_channel(&req, outputs)?,
+        Setup::Channel(outputs) => check_channel_benchmark(&req, outputs)?,
         Setup::Replay(_) if !req.outputs.is_empty() => {
             return Err(ApiError::BadRequest(
                 "a replay buffer benchmark takes no outputs".into(),
@@ -166,10 +166,7 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
             done: done_rx,
         });
     }
-    let slot = SlotGuard {
-        state,
-        armed: true,
-    };
+    let slot = SlotGuard { state, armed: true };
     // Checked after taking the slot: a recording or replay buffer that
     // starts from here on cancels this run instead.
     let busy = {
@@ -297,7 +294,7 @@ impl Drop for SlotGuard<'_> {
 /// Refuse a channel benchmark that can't run: one that also asks for
 /// recording outputs or a replay codec, or for outputs it doesn't measure
 /// (see [`capacity::channel_outputs`]) or this node can't send.
-fn check_channel(req: &BenchmarkRequest, outputs: &[OutputConfig]) -> ApiResult<()> {
+fn check_channel_benchmark(req: &BenchmarkRequest, outputs: &[OutputConfig]) -> ApiResult<()> {
     if !req.outputs.is_empty() || req.replay.is_some() {
         return Err(ApiError::BadRequest(
             "a channel benchmark takes no recording outputs or replay codec".into(),
@@ -752,8 +749,8 @@ impl Run {
             return self.add_channel(n, outputs).await;
         }
         let source = FileSource::new(
-            format!("benchmark-{n}"),
-            format!("Benchmark feed {n}"),
+            feed_id(n),
+            feed_name(n),
             FileSourceConfig {
                 path: self.dto.media_path.clone(),
                 media: Some(self.dto.media.clone()),
@@ -830,7 +827,7 @@ impl Run {
     async fn add_channel(&self, n: u32, outputs: &[OutputConfig]) -> Result<Feed, Stop> {
         let m = &self.dto.media;
         let channel = ChannelSource::new(
-            format!("benchmark-{n}"),
+            feed_id(n),
             format!("Benchmark channel {n}"),
             ChannelConfig {
                 format: LiveVideoFormat {
@@ -839,11 +836,7 @@ impl Run {
                     fps_num: m.fps_num,
                     fps_den: m.fps_den,
                 },
-                audio_channels: if m.audio_channels == 0 {
-                    2
-                } else {
-                    m.audio_channels.min(8)
-                },
+                audio_channels: file::audio_channels(m).min(output::SRT_MAX_AUDIO_CHANNELS),
                 outputs: Vec::new(),
             },
         );
@@ -1436,14 +1429,10 @@ fn feed_output(config: &OutputConfig, n: u32) -> anyhow::Result<OutputConfig> {
 
 /// Path template values for benchmark feed `n`, with the footage's format.
 fn path_vars(media: &MediaInfo, node: &str, n: u32) -> PathVars {
-    let channels = if media.audio_channels > 0 {
-        media.audio_channels
-    } else {
-        2
-    };
+    let channels = file::audio_channels(media);
     PathVars {
-        source: format!("benchmark-{n}"),
-        source_name: format!("Benchmark feed {n}"),
+        source: feed_id(n),
+        source_name: feed_name(n),
         node: node.to_string(),
         preset: "benchmark".into(),
         at: chrono::Local::now(),
@@ -1453,6 +1442,16 @@ fn path_vars(media: &MediaInfo, node: &str, n: u32) -> PathVars {
         source_framerate: Some((media.fps_num, media.fps_den)),
         source_audio: Some((channels, channels <= 2)),
     }
+}
+
+/// Benchmark feed `n`'s source id…
+fn feed_id(n: u32) -> String {
+    format!("benchmark-{n}")
+}
+
+/// …and the name it plays under (a channel feed's is its own).
+fn feed_name(n: u32) -> String {
+    format!("Benchmark feed {n}")
 }
 
 fn plural(n: u32) -> &'static str {
