@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { capacityWarningText, useCapacityStore } from '@/stores/capacity'
 import { useSourcesStore, type Source } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
@@ -38,12 +38,8 @@ const DEFAULT_MINUTES = 30
 const candidates = computed(() => sources.sources.filter((s) => s.source_type !== 'channel'))
 const busy = ref<string | null>(null)
 
-onMounted(() => {
-  for (const n of new Set(candidates.value.map((s) => s.node_id))) replay.loadCodecs(n).catch(() => {})
-})
-
 function codecOptions(nodeId: string) {
-  return (replay.codecs.get(nodeId) ?? []).map((c) => ({ value: c, label: CODECS[c].label }))
+  return replay.codecsOf(nodeId).map((c) => ({ value: c, label: CODECS[c].label }))
 }
 
 function stateOf(s: Source): { dot: 'ok' | 'off' | 'error'; label: string } {
@@ -78,7 +74,7 @@ async function warnLoad(s: Source, codec: ReplayCodec) {
 
 async function toggle(s: Source, on: boolean) {
   if (!on) return apply(s, 'Removing the replay buffer', () => replay.removeBuffer(s.node_id, s.id))
-  const codecs = await replay.loadCodecs(s.node_id).catch(() => [] as ReplayCodec[])
+  const codecs = replay.codecsOf(s.node_id)
   if (!codecs.length) {
     notifyError(`${nodes.nameOf(s.node_id)} can't keep replay buffers`, new Error('It has none of the codecs installed.'))
     return

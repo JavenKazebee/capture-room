@@ -66,14 +66,10 @@ impl Controller {
                 id: row.id.clone(),
                 name: row.name,
                 url: row.url,
-                version: String::new(),
                 healthy: false,
-                uptime_secs: 0,
                 fail_count: 0,
                 manual: true,
-                encoders: Vec::new(),
-                source_types: Vec::new(),
-                clock: None,
+                status: None,
                 relay: ctx.cancel.child_token(),
             };
             let relay = entry.relay.clone();

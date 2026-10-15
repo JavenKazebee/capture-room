@@ -93,7 +93,12 @@ pub fn router() -> Router<Arc<AppState>> {
 // ── /status ───────────────────────────────────────────────────────────────────
 
 async fn get_status(State(state): State<Arc<AppState>>) -> Json<NodeStatus> {
-    Json(NodeStatus {
+    Json(local_status(&state).await)
+}
+
+/// This node's status, as its controller polls it and its own UI lists it.
+pub async fn local_status(state: &AppState) -> NodeStatus {
+    NodeStatus {
         id: state.node_id.clone(),
         name: state.node_name(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -105,7 +110,7 @@ async fn get_status(State(state): State<Arc<AppState>>) -> Json<NodeStatus> {
         ),
         clock: Some(state.clock_status().await),
         replay_codecs: crate::api::types::ReplayCodec::usable(),
-    })
+    }
 }
 
 // ── /clock ────────────────────────────────────────────────────────────────────

@@ -109,25 +109,17 @@ async fn put_controller_clock(
 
 async fn get_nodes(State(state): State<Arc<AppState>>) -> Json<Vec<NodeDto>> {
     let mut dtos = vec![NodeDto {
-        id: state.node_id.clone(),
-        name: state.node_name(),
         url: String::new(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
         healthy: true,
-        uptime_secs: state.started_at.elapsed().as_secs(),
         is_self: true,
         manual: false,
-        encoders: crate::pipeline::profile::available_encoders(),
-        source_types: crate::plugins::source_types(
-            state.source_manager.read().await.displays().available(),
-        ),
-        clock: Some(state.clock_status().await),
+        status: crate::api::node::local_status(&state).await,
     }];
 
     if let Some(c) = state.controller.read().await.as_ref() {
         let reg = c.registry.read().await;
         let mut peers: Vec<NodeDto> = reg.all().into_iter().map(NodeDto::from).collect();
-        peers.sort_by(|a, b| a.name.cmp(&b.name));
+        peers.sort_by(|a, b| a.status.name.cmp(&b.status.name));
         dtos.extend(peers);
     }
 

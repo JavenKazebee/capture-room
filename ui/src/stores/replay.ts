@@ -4,7 +4,6 @@ import { nodeApi, sourceKey } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
 import { usePlayoutStore } from '@/stores/playout'
 import type { ChannelStatusDto } from '@/types/generated/ChannelStatusDto'
-import type { NodeStatus } from '@/types/generated/NodeStatus'
 import type { ReplayBufferDto } from '@/types/generated/ReplayBufferDto'
 import type { ReplayClipRequest } from '@/types/generated/ReplayClipRequest'
 import type { ReplayCodec } from '@/types/generated/ReplayCodec'
@@ -46,8 +45,6 @@ export const useReplayStore = defineStore('replay', () => {
   const playout = usePlayoutStore()
   /** By source key. */
   const buffers = reactive(new Map<string, ReplayBuffer>())
-  /** The codecs each node can use, default first. */
-  const codecs = reactive(new Map<string, ReplayCodec[]>())
   /** Saved clips, by node, newest first. */
   const clips = reactive(new Map<string, ReplayClip[]>())
 
@@ -66,11 +63,9 @@ export const useReplayStore = defineStore('replay', () => {
     await Promise.all(nodes.reachable.map((n) => load(n.id).catch(() => {})))
   }
 
-  async function loadCodecs(nodeId: string) {
-    if (codecs.has(nodeId)) return codecs.get(nodeId)!
-    const status = await nodeApi(nodeId)<NodeStatus>('/status')
-    codecs.set(nodeId, status.replay_codecs ?? [])
-    return codecs.get(nodeId)!
+  /** The codecs a node can keep buffers in, default first; empty if it isn't listed. */
+  function codecsOf(nodeId: string): ReplayCodec[] {
+    return nodes.nodes.find((n) => n.id === nodeId)?.replay_codecs ?? []
   }
 
   /** A buffer's node clock now (µs), run on from when it was fetched. */
@@ -143,11 +138,10 @@ export const useReplayStore = defineStore('replay', () => {
 
   return {
     buffers,
-    codecs,
     clips,
     load,
     loadAll,
-    loadCodecs,
+    codecsOf,
     nowUs,
     setBuffer,
     removeBuffer,

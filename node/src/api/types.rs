@@ -31,6 +31,23 @@ pub struct NodeStatus {
     pub replay_codecs: Vec<ReplayCodec>,
 }
 
+impl NodeStatus {
+    /// A node that hasn't answered yet: only what the controller stored.
+    pub fn unanswered(id: String, name: String) -> Self {
+        Self {
+            id,
+            name,
+            version: String::new(),
+            uptime_secs: 0,
+            is_controller: false,
+            encoders: Vec::new(),
+            source_types: Vec::new(),
+            clock: None,
+            replay_codecs: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct SourceTypeSupport {
@@ -1659,25 +1676,16 @@ pub struct VolumeCheckDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct NodeDto {
-    pub id: String,
-    pub name: String,
     /// Empty for this instance.
     pub url: String,
-    pub version: String,
     pub healthy: bool,
-    #[cfg_attr(feature = "export-types", ts(type = "number"))]
-    pub uptime_secs: u64,
     pub is_self: bool,
     /// Whether this node was added by URL (persisted) rather than via mDNS.
     pub manual: bool,
-    /// See [`NodeStatus::encoders`]. Empty until the node has answered.
-    pub encoders: Vec<String>,
-    /// See [`NodeStatus::source_types`]. Empty until the node has answered.
-    #[serde(default)]
-    pub source_types: Vec<SourceTypeSupport>,
-    /// See [`NodeStatus::clock`]. `None` until the node has answered.
-    #[serde(default)]
-    pub clock: Option<ClockStatusDto>,
+    /// What the node last reported; see [`NodeStatus::unanswered`] for one
+    /// that hasn't answered yet.
+    #[serde(flatten)]
+    pub status: NodeStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

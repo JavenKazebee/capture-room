@@ -70,10 +70,10 @@ function likeChannel(outputs: OutputConfig[]) {
   channelOutputs.value = ndi && srt ? 'ndi_srt' : ndi ? 'ndi' : srt ? 'srt' : 'none'
 }
 
-/** The node's default codec once its list is in. */
-const codec = ref<ReplayCodec>('prores_proxy')
+/** The node's default codec. */
+const codec = ref<ReplayCodec>(replay.codecsOf(props.nodeId)[0] ?? 'prores_proxy')
 const codecOptions = computed(() =>
-  (replay.codecs.get(props.nodeId) ?? []).map((c) => ({ value: c, label: CODECS[c].label })),
+  replay.codecsOf(props.nodeId).map((c) => ({ value: c, label: CODECS[c].label })),
 )
 
 const presetId = ref('default')
@@ -95,12 +95,6 @@ const saving = ref(false)
 const error = ref<string | null>(null)
 
 onMounted(async () => {
-  replay
-    .loadCodecs(props.nodeId)
-    .then((list) => {
-      if (list[0]) codec.value = list[0]
-    })
-    .catch(() => {})
   const configs = await sources.configs(props.nodeId).catch(() => [])
   const channel = configs.find((c) => c.config.type === 'channel')
   if (channel?.config.type === 'channel') likeChannel(channel.config.outputs)

@@ -2,27 +2,23 @@ use std::collections::HashMap;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::api::types::{ClockStatusDto, NodeDto, NodeStatus, SourceTypeSupport};
+use crate::api::types::{ClockStatusDto, NodeDto, NodeStatus};
 
 #[derive(Clone)]
 pub struct NodeEntry {
     pub id: String,
+    /// The name it was stored under, shown until it answers.
     pub name: String,
     pub url: String,
-    pub version: String,
     pub healthy: bool,
-    pub uptime_secs: u64,
     /// Consecutive failed health checks. Reset to 0 on success.
     pub fail_count: u32,
     /// Added by URL and persisted in the `nodes` table. Manual nodes are never
     /// pruned for being unreachable; mDNS ones are (they re-announce).
     pub manual: bool,
-    /// Video encoders the node reported; see `NodeStatus::encoders`.
-    pub encoders: Vec<String>,
-    /// See `NodeStatus::source_types`.
-    pub source_types: Vec<SourceTypeSupport>,
-    /// See `NodeStatus::clock`.
-    pub clock: Option<ClockStatusDto>,
+    /// What it reported at its last successful health check; `None` until
+    /// it has answered once.
+    pub status: Option<NodeStatus>,
     /// Stops this node's WS relay. Cancelled when the entry is removed, so a
     /// node that is removed and re-added never ends up with two relays.
     pub relay: CancellationToken,
@@ -31,17 +27,14 @@ pub struct NodeEntry {
 impl From<&NodeEntry> for NodeDto {
     fn from(n: &NodeEntry) -> Self {
         NodeDto {
-            id: n.id.clone(),
-            name: n.name.clone(),
             url: n.url.clone(),
-            version: n.version.clone(),
             healthy: n.healthy,
-            uptime_secs: n.uptime_secs,
             is_self: false,
             manual: n.manual,
-            encoders: n.encoders.clone(),
-            source_types: n.source_types.clone(),
-            clock: n.clock.clone(),
+            status: n
+                .status
+                .clone()
+                .unwrap_or_else(|| NodeStatus::unanswered(n.id.clone(), n.name.clone())),
         }
     }
 }
@@ -95,22 +88,17 @@ impl NodeRegistry {
         let recovered = !e.healthy;
         // The delay and UTC offset wobble with every exchange; only state
         // changes count.
-        let state_of = |c: &Option<ClockStatusDto>| {
-            c.clone().map(|c| ClockStatusDto {
+        let state_of = |s: Option<&NodeStatus>| {
+            s.and_then(|s| s.clock.clone()).map(|c| ClockStatusDto {
                 delay_us: None,
                 utc_offset_us: None,
                 ..c
             })
         };
-        let clock_changed = state_of(&e.clock) != state_of(&status.clock);
-        e.clock = status.clock.clone();
+        let clock_changed = state_of(e.status.as_ref()) != state_of(Some(status));
+        e.status = Some(status.clone());
         e.healthy = true;
         e.fail_count = 0;
-        e.name = status.name.clone();
-        e.uptime_secs = status.uptime_secs;
-        e.version = status.version.clone();
-        e.encoders = status.encoders.clone();
-        e.source_types = status.source_types.clone();
         (recovered, clock_changed)
     }
 
