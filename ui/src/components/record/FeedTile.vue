@@ -9,7 +9,7 @@ import { useNodesStore } from '@/stores/nodes'
 import { useEventsStore } from '@/stores/events'
 import { usePreferences } from '@/composables/usePreferences'
 import { formatDuration } from '@/lib/format'
-import { fpsLabel } from '@/lib/sourceFormat'
+import { formatLabel } from '@/lib/sourceFormat'
 import { LINK } from '@/lib/linkState'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -58,7 +58,9 @@ const noSignal = computed(() => {
 
 const format = computed(() => {
   const c = props.source.capabilities
-  return c ? `${c.max_height}p${fpsLabel(c.max_framerate, true)}` : null
+  return c
+    ? formatLabel({ width: c.max_width, height: c.max_height, fps_num: c.max_framerate[0], fps_den: c.max_framerate[1] })
+    : null
 })
 
 function onClick(e: MouseEvent) {

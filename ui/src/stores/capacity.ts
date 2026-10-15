@@ -5,24 +5,15 @@ import type { BenchmarkRequest } from '@/types/generated/BenchmarkRequest'
 import type { BenchmarkRunDto } from '@/types/generated/BenchmarkRunDto'
 import type { CapacityCheckDto } from '@/types/generated/CapacityCheckDto'
 import type { ChannelConfig } from '@/types/generated/ChannelConfig'
-import type { MediaInfo } from '@/types/generated/MediaInfo'
 import type { NodeCapacityDto } from '@/types/generated/NodeCapacityDto'
 import type { OutputConfig } from '@/types/generated/OutputConfig'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import type { ReplayCodec } from '@/types/generated/ReplayCodec'
-import { fpsLabel } from '@/lib/sourceFormat'
 import { CODECS } from '@/stores/replay'
 import { onReconnect } from '@/lib/reconnect'
 
 /** Recording time left on a volume below which the UI warns. */
 export const LOW_TIME_SECS = 3600
-
-/** `1080p30`, `2160p59.94`; other sizes as `1440×1080 30`. */
-export function formatLabel(m: Pick<MediaInfo, 'width' | 'height' | 'fps_num' | 'fps_den'>) {
-  const rate = fpsLabel([m.fps_num, m.fps_den], true)
-  const standard = [480, 576, 720, 1080, 1440, 2160, 4320].includes(m.height) && m.width >= m.height
-  return standard ? `${m.height}p${rate}` : `${m.width}×${m.height} ${rate}`
-}
 
 /** A channel benchmark's outputs: `NDI + SRT 8 Mb/s`, or `program only`. */
 export function channelOutputsLabel(outputs: OutputConfig[]) {

@@ -5,7 +5,7 @@ import { FileWarning, Plus, X } from '@lucide/vue'
 import { usePlayoutStore } from '@/stores/playout'
 import { notifyError } from '@/lib/notify'
 import { formatClock } from '@/lib/format'
-import { fpsLabel } from '@/lib/sourceFormat'
+import { formatLabel } from '@/lib/sourceFormat'
 import type { MediaItemDto } from '@/types/generated/MediaItemDto'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -38,7 +38,7 @@ const items = computed(() => {
 
 function summary(m: MediaItemDto) {
   const i = m.info
-  const parts = [`${i.height}p${fpsLabel([i.fps_num, i.fps_den], true)}`]
+  const parts = [formatLabel(i)]
   parts.push(i.audio_channels ? `${i.audio_channels} ch` : 'no audio')
   return parts.join(' · ')
 }

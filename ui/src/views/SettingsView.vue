@@ -134,8 +134,8 @@ const sizeLabel = (v: string) => v.replace('x', '×')
 const thumbSizes = computed(() =>
   withValue(['320x180', '640x360', '1280x720'].map((v) => ({ value: v, label: sizeLabel(v) })), thumbSize.value || undefined, sizeLabel),
 )
-const fpsLabel = (v: number) => `${v} fps`
-const thumbRates = computed(() => withValue([1, 2, 5, 10].map((v) => ({ value: v, label: fpsLabel(v) })), draft.value?.thumb_fps, fpsLabel))
+const perSecond = (v: number) => `${v} fps`
+const thumbRates = computed(() => withValue([1, 2, 5, 10].map((v) => ({ value: v, label: perSecond(v) })), draft.value?.thumb_fps, perSecond))
 const msLabel = (v: number) => `${v} ms`
 const meterRates = computed(() =>
   withValue([50, 100, 200, 500].map((v) => ({ value: v, label: msLabel(v) })), draft.value?.level_interval_ms, msLabel),
