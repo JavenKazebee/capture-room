@@ -673,7 +673,7 @@ async fn get_recording_file(
 /// Each output's files: those it recorded, or its one planned path for
 /// sessions from before files were kept. An output can have none: a leg that
 /// never opened a file, or one whose files were all deleted.
-fn session_files(session: &RecordingSessionDto) -> Vec<Vec<String>> {
+pub(super) fn session_files(session: &RecordingSessionDto) -> Vec<Vec<String>> {
     if session.files.is_empty() {
         session
             .output_paths

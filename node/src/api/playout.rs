@@ -75,7 +75,11 @@ async fn post_media(
         let session = db::session_get(&state.db, session_id)
             .await?
             .ok_or(ApiError::NotFound("session not found"))?;
-        if !session.files.iter().flatten().any(|f| *f == path) {
+        if !super::node::session_files(&session)
+            .iter()
+            .flatten()
+            .any(|f| *f == path)
+        {
             return Err(ApiError::BadRequest(
                 "the file isn't one of the session's".into(),
             ));
