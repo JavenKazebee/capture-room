@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { ReplayBuffer } from '@/stores/replay'
+import { useRafFn } from '@vueuse/core'
+import { useReplayStore, type ReplayBuffer } from '@/stores/replay'
 
 /**
  * One angle's buffer on a strip running up to now (the right edge): what's
@@ -10,8 +11,6 @@ import type { ReplayBuffer } from '@/stores/replay'
  */
 const props = defineProps<{
   buffer: ReplayBuffer
-  /** The node clock now, µs. */
-  nowUs: number
   /** How far back the strip reaches, seconds; `null` for the whole buffer. */
   windowSecs: number | null
   playheadUs: number | null
@@ -20,10 +19,17 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ pick: [us: number] }>()
 
-const viewEnd = computed(() => props.nowUs)
+// The strip runs every frame: its own clock, so only it re-renders.
+const replay = useReplayStore()
+const tick = ref(performance.now())
+useRafFn(() => (tick.value = performance.now()))
+/** The node clock now, µs. */
+const nowUs = computed(() => replay.nowUs(props.buffer, tick.value))
+
+const viewEnd = nowUs
 const viewStart = computed(() => {
-  const start = props.buffer.start_us ?? props.nowUs - 10_000_000
-  return props.windowSecs === null ? Math.min(start, props.nowUs - 10_000_000) : props.nowUs - props.windowSecs * 1_000_000
+  const start = props.buffer.start_us ?? nowUs.value - 10_000_000
+  return props.windowSecs === null ? Math.min(start, nowUs.value - 10_000_000) : nowUs.value - props.windowSecs * 1_000_000
 })
 const span = computed(() => Math.max(1, viewEnd.value - viewStart.value))
 const pct = (us: number) => `${Math.min(100, Math.max(0, ((us - viewStart.value) / span.value) * 100))}%`

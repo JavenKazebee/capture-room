@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useEventListener, useIntervalFn, useRafFn, useStorage } from '@vueuse/core'
+import { useEventListener, useIntervalFn, useStorage } from '@vueuse/core'
 import {
   ChevronLeft,
   ChevronRight,
@@ -28,6 +28,7 @@ import OptionSelect from '@/components/OptionSelect.vue'
 import ProgramMonitor from '@/components/playback/ProgramMonitor.vue'
 import BuffersSheet from '@/components/replay/BuffersSheet.vue'
 import ReplayTimeline from '@/components/replay/ReplayTimeline.vue'
+import BehindLive from '@/components/replay/BehindLive.vue'
 import ClipList from '@/components/replay/ClipList.vue'
 import { useThumbnail } from '@/components/record/useThumbnail'
 
@@ -90,6 +91,8 @@ const angles = computed(() =>
     .map((s) => ({ source: s, buffer: replay.buffers.get(s.key)! })),
 )
 const usable = (b: ReplayBuffer) => !!channel.value && b.node_id === channel.value.node_id
+/** The angles that play on the channel: number keys 1–9 pick from these. */
+const usableAngles = computed(() => angles.value.filter((a) => usable(a.buffer)))
 const angleKey = useStorage('cr.replay.angle', '')
 const angle = computed(
   () =>
@@ -115,9 +118,6 @@ useIntervalFn(
   1000,
   { immediateCallback: true },
 )
-const tick = ref(performance.now())
-useRafFn(() => (tick.value = performance.now()))
-const nowUs = computed(() => (angle.value ? replay.nowUs(angle.value.buffer, tick.value) : 0))
 
 /** The replay on the channel, if it's showing one: its angle and the moment shown. */
 const showing = computed(() => {
@@ -140,7 +140,6 @@ function timeOfDay(us: number | null) {
   const t = d.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
   return `${t}.${String(Math.floor(d.getMilliseconds() / 10)).padStart(2, '0')}`
 }
-const behind = computed(() => (showing.value ? Math.max(0, nowUs.value - showing.value.us) / 1000 : null))
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 
@@ -201,7 +200,7 @@ function replayLast() {
   const a = angle.value
   if (!a) return
   // From the moment the key was pressed.
-  const from = nowUs.value - Math.max(1, Number(lastSecs.value) || 8) * 1_000_000
+  const from = replay.nowUs(a.buffer) - Math.max(1, Number(lastSecs.value) || 8) * 1_000_000
   outUs.value = null
   run('Replaying', () => load(a.source, from, true))
 }
@@ -319,7 +318,7 @@ function saveMarked(everyAngle: boolean) {
     const from = inUs.value
     const to = outUs.value
     if (from === null || to === null || to <= from) throw new Error('Mark an in point and a later out point first.')
-    const targets = everyAngle ? angles.value.filter((x) => usable(x.buffer)) : [a]
+    const targets = everyAngle ? usableAngles.value : [a]
     for (const t of targets) {
       await replay.saveClip(c.node_id, {
         source_id: t.source.id,
@@ -360,7 +359,7 @@ useEventListener('keydown', (e: KeyboardEvent) => {
   const key = e.key.toLowerCase()
   const handled = () => e.preventDefault()
   if (/^[1-9]$/.test(key)) {
-    const a = angles.value.filter((a) => usable(a.buffer))[Number(key) - 1]
+    const a = usableAngles.value[Number(key) - 1]
     if (a) selectAngle(a.source)
   } else if (key === ' ') {
     handled()
@@ -460,7 +459,7 @@ const angleThumb = useThumbnail(angleSource)
         >
           <span class="flex items-center gap-1.5 text-xs min-w-0">
             <span class="num text-[10px] rounded bg-muted px-1 text-muted-foreground shrink-0">
-              {{ usable(a.buffer) ? angles.filter((x) => usable(x.buffer)).indexOf(a) + 1 : '–' }}
+              {{ usable(a.buffer) ? usableAngles.indexOf(a) + 1 : '–' }}
             </span>
             <StatusDot :status="a.buffer.error ? 'error' : a.buffer.encoder ? 'ok' : 'off'" />
             <span class="font-medium truncate">{{ a.source.display_name }}</span>
@@ -573,7 +572,7 @@ const angleThumb = useThumbnail(angleSource)
                 </span>
                 <span class="flex flex-col items-end leading-tight">
                   <span class="text-[10px] uppercase tracking-wide text-muted-foreground font-sans">Behind live</span>
-                  <span class="text-lg">{{ behind === null ? '–' : `−${formatClock(behind)}` }}</span>
+                  <BehindLive class="text-lg" :buffer="angle?.buffer ?? null" :showing-us="showing?.us ?? null" />
                 </span>
               </div>
             </div>
@@ -581,7 +580,6 @@ const angleThumb = useThumbnail(angleSource)
             <ReplayTimeline
               v-if="angle"
               :buffer="angle.buffer"
-              :now-us="nowUs"
               :window-secs="windowSecs"
               :playhead-us="showing?.key === angle.source.key ? showing.us : null"
               :in-us="inUs"
