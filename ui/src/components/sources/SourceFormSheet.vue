@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import { ChevronLeft } from '@lucide/vue'
 import { useSourcesStore, type ConfiguredKind, type Source } from '@/stores/sources'
-import { useNodesStore } from '@/stores/nodes'
+import { nodeAddress, useNodesStore } from '@/stores/nodes'
 import { notifyError } from '@/lib/notify'
 import { errorMessage } from '@/composables/useApi'
 import { withPairedAudio } from '@/lib/deviceAudio'
@@ -96,17 +96,7 @@ const whip = ref<WhipSourceConfig>({ port: 8890, audio: { from: 'source', channe
 
 const node = computed(() => nodesStore.nodes.find((n) => n.id === nodeId.value))
 /** The node's address as senders on the network see it. */
-const host = computed(() => {
-  const url = node.value?.url
-  if (url) {
-    try {
-      return new URL(url).hostname
-    } catch {
-      // Fall through to the UI's own host.
-    }
-  }
-  return window.location.hostname
-})
+const host = computed(() => nodeAddress(node.value?.url).hostname)
 const protocols = computed(
   () => node.value?.source_types.find((t) => t.source_type === 'stream')?.protocols ?? ['rtsp', 'srt', 'rtmp', 'http', 'https', 'udp'],
 )

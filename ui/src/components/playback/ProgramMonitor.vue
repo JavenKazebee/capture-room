@@ -2,7 +2,7 @@
 import { computed, ref, toRef } from 'vue'
 import { Eye } from '@lucide/vue'
 import { audioLevels, type Source } from '@/stores/sources'
-import { useNodesStore } from '@/stores/nodes'
+import { nodeAddress, useNodesStore } from '@/stores/nodes'
 import { fpsLabel } from '@/lib/sourceFormat'
 import { plural } from '@/lib/format'
 import type { ChannelStatusDto } from '@/types/generated/ChannelStatusDto'
@@ -20,14 +20,7 @@ const channels = computed(() => audioLevels.get(props.source.key) ?? [])
 const state = computed(() => TRANSPORT[props.status?.state ?? 'idle'])
 const nodes = useNodesStore()
 /** The node's API origin, where its WHEP outputs are served. */
-const origin = computed(() => {
-  const url = nodes.nodes.find((n) => n.id === props.source.node_id)?.url
-  try {
-    return url ? new URL(url).origin : window.location.origin
-  } catch {
-    return window.location.origin
-  }
-})
+const origin = computed(() => nodeAddress(nodes.nodes.find((n) => n.id === props.source.node_id)?.url).origin)
 /** A WHEP output's endpoint, from its label (`WHEP /path`). */
 function whepEndpoint(label: string) {
   return label.startsWith('WHEP /') ? `${origin.value}/whep${label.slice(5)}` : null

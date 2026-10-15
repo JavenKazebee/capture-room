@@ -7,6 +7,21 @@ import type { AddNodeRequest } from '@/types/generated/AddNodeRequest'
 import type { ControllerToggleRequest } from '@/types/generated/ControllerToggleRequest'
 import type { UpdateNodeSettingsRequest } from '@/types/generated/UpdateNodeSettingsRequest'
 
+/**
+ * Where a node is on the network, as other machines reach it: its `url`, or
+ * the UI's own address when it has none (or one that won't parse).
+ */
+export function nodeAddress(url: string | null | undefined): { hostname: string; origin: string } {
+  if (url) {
+    try {
+      return new URL(url)
+    } catch {
+      // Fall through to the UI's own address.
+    }
+  }
+  return window.location
+}
+
 export const useNodesStore = defineStore('nodes', () => {
   const nodes = ref<NodeDto[]>([])
   /** Settings of the instance the UI is connected to. */

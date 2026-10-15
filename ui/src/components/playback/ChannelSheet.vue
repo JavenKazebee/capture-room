@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import { Trash2 } from '@lucide/vue'
 import { useSourcesStore } from '@/stores/sources'
-import { useNodesStore } from '@/stores/nodes'
+import { nodeAddress, useNodesStore } from '@/stores/nodes'
 import { usePlayoutStore } from '@/stores/playout'
 import { capacityWarningText, useCapacityStore } from '@/stores/capacity'
 import { notifyWarn } from '@/lib/notify'
@@ -68,29 +68,9 @@ const deleteDescription = computed(
 const node = computed(() => nodes.nodes.find((n) => n.id === nodeId.value))
 const nodeOptions = computed(() => nodes.nodes.map((n) => ({ value: n.id, label: nodes.labelOf(n.id) })))
 /** The node's address as receivers on the network see it. */
-const host = computed(() => {
-  const url = node.value?.url
-  if (url) {
-    try {
-      return new URL(url).hostname
-    } catch {
-      // Fall through to the UI's own host.
-    }
-  }
-  return window.location.hostname
-})
+const host = computed(() => nodeAddress(node.value?.url).hostname)
 /** The node's API as receivers on the network reach it, for WHEP outputs. */
-const origin = computed(() => {
-  const url = node.value?.url
-  if (url) {
-    try {
-      return new URL(url).origin
-    } catch {
-      // Fall through to the UI's own origin.
-    }
-  }
-  return window.location.origin
-})
+const origin = computed(() => nodeAddress(node.value?.url).origin)
 /** Output types the node's channels can send. */
 const outputTypes = computed(
   () => node.value?.source_types.find((t) => t.source_type === 'channel')?.protocols ?? ['ndi', 'srt', 'rtsp'],
