@@ -888,20 +888,43 @@ struct Shared {
 }
 
 /// What a clip's appsinks do with their buffers.
-mod mode {
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ClipMode {
     /// Standby: nothing.
-    pub const OFF: u8 = 0;
+    Off,
     /// Prerolls (a cued or paused frame) are shown.
-    pub const CUED: u8 = 1;
+    Cued,
     /// Buffers are played.
-    pub const PLAYING: u8 = 2;
+    Playing,
+}
+
+/// A clip's [`ClipMode`], shared with its appsinks.
+struct ModeCell(AtomicU8);
+
+impl ModeCell {
+    fn new(mode: ClipMode) -> Self {
+        Self(AtomicU8::new(mode as u8))
+    }
+
+    fn load(&self) -> ClipMode {
+        match self.0.load(Ordering::SeqCst) {
+            0 => ClipMode::Off,
+            1 => ClipMode::Cued,
+            _ => ClipMode::Playing,
+        }
+    }
+
+    fn store(&self, mode: ClipMode) {
+        self.0.store(mode as u8, Ordering::SeqCst);
+    }
 }
 
 struct Clip {
     player: gst::Pipeline,
     bus_task: tokio::task::JoinHandle<()>,
     serial: u64,
-    mode: Arc<AtomicU8>,
+    mode: Arc<ModeCell>,
     marks: Arc<Marks>,
     request: ClipRequest,
     item: Option<String>,
@@ -914,6 +937,21 @@ struct Clip {
 impl Clip {
     fn is(&self, item: &PlaylistItem) -> bool {
         self.item.as_ref() == Some(&item.id) && self.request == item.clip
+    }
+
+    /// Set what the appsinks do, then put the player in `state` (playing or
+    /// paused).
+    fn run(&self, mode: ClipMode, state: gst::State) -> Result<()> {
+        self.mode.store(mode);
+        let verb = if state == gst::State::Playing {
+            "play"
+        } else {
+            "pause"
+        };
+        self.player
+            .set_state(state)
+            .map_err(|_| anyhow!("can't {verb} {}", self.request.path))?;
+        Ok(())
     }
 }
 
@@ -1179,7 +1217,11 @@ impl Playout {
         item: Option<String>,
         on_air: bool,
     ) -> Result<Clip> {
-        let mode = Arc::new(AtomicU8::new(if on_air { mode::CUED } else { mode::OFF }));
+        let mode = Arc::new(ModeCell::new(if on_air {
+            ClipMode::Cued
+        } else {
+            ClipMode::Off
+        }));
         let marks = Arc::new(Marks::default());
         let (player, streams) = build_player(request, &self.lanes, &mode, &marks)?;
         let bus = player.bus().context("player has no bus")?;
@@ -1233,7 +1275,7 @@ impl Playout {
     /// the frame after the current one's last, or cued.
     fn put_on_air(&self, deck: &mut Deck, clip: Clip, play: bool) -> Result<()> {
         if let Some(old) = &deck.current {
-            old.mode.store(mode::OFF, Ordering::SeqCst);
+            old.mode.store(ClipMode::Off);
         }
         let playing = self.shared.lock().unwrap().state == TransportState::Playing;
         if play || !playing {
@@ -1246,7 +1288,7 @@ impl Playout {
         if play {
             self.start(&clip)?;
         } else {
-            clip.mode.store(mode::CUED, Ordering::SeqCst);
+            clip.mode.store(ClipMode::Cued);
             // Preroll again, now that it shows.
             seek(&clip.player, &clip.request, gst::SeekFlags::FLUSH)
                 .with_context(|| format!("can't seek {}", clip.request.path))?;
@@ -1270,16 +1312,13 @@ impl Playout {
     /// from what the program has queued.
     fn start(&self, clip: &Clip) -> Result<()> {
         let rt = gst::ClockTime::from_nseconds(clip.marks.first_rt.load(Ordering::SeqCst));
-        clip.mode.store(mode::PLAYING, Ordering::SeqCst);
         let base = self.lanes.follow_on_base(rt);
         if let Some(base) = base {
             // A fixed base time: the pipeline mustn't pick its own.
             clip.player.set_start_time(gst::ClockTime::NONE);
             clip.player.set_base_time(base);
         }
-        clip.player
-            .set_state(gst::State::Playing)
-            .map_err(|_| anyhow!("can't play {}", clip.request.path))?;
+        clip.run(ClipMode::Playing, gst::State::Playing)?;
         if base.is_some() {
             // Pausing and resuming move the base time again from here.
             clip.player.set_start_time(gst::ClockTime::ZERO);
@@ -1311,18 +1350,10 @@ impl Playout {
                 // Again from the in point; a black end removed the lanes.
                 self.lanes.open(clip.has_audio)?;
                 seek(&clip.player, &clip.request, gst::SeekFlags::FLUSH)?;
-                clip.mode.store(mode::PLAYING, Ordering::SeqCst);
-                clip.player
-                    .set_state(gst::State::Playing)
-                    .map_err(|_| anyhow!("can't play {}", clip.request.path))?;
+                clip.run(ClipMode::Playing, gst::State::Playing)?;
             }
             TransportState::Cued => self.start(clip)?,
-            _ => {
-                clip.mode.store(mode::PLAYING, Ordering::SeqCst);
-                clip.player
-                    .set_state(gst::State::Playing)
-                    .map_err(|_| anyhow!("can't play {}", clip.request.path))?;
-            }
+            _ => clip.run(ClipMode::Playing, gst::State::Playing)?,
         }
         self.shared.lock().unwrap().state = TransportState::Playing;
         Ok(())
@@ -1334,10 +1365,7 @@ impl Playout {
         if self.shared.lock().unwrap().state != TransportState::Playing {
             return Ok(());
         }
-        clip.mode.store(mode::CUED, Ordering::SeqCst);
-        clip.player
-            .set_state(gst::State::Paused)
-            .map_err(|_| anyhow!("can't pause {}", clip.request.path))?;
+        clip.run(ClipMode::Cued, gst::State::Paused)?;
         self.shared.lock().unwrap().state = TransportState::Paused;
         Ok(())
     }
@@ -1425,10 +1453,7 @@ impl Playout {
         let clip = deck.current.as_mut().context("no clip loaded")?;
         let state = self.shared.lock().unwrap().state;
         if state == TransportState::Playing {
-            clip.mode.store(mode::CUED, Ordering::SeqCst);
-            clip.player
-                .set_state(gst::State::Paused)
-                .map_err(|_| anyhow!("can't pause {}", clip.request.path))?;
+            clip.run(ClipMode::Cued, gst::State::Paused)?;
         }
         self.reopen_if_ended(clip)?;
         // A step goes the way the player plays: turn it round first.
@@ -1473,7 +1498,7 @@ impl Playout {
         let mut shared = self.shared.lock().unwrap();
         if shared.state == TransportState::Ended {
             self.lanes.open(clip.has_audio)?;
-            clip.mode.store(mode::CUED, Ordering::SeqCst);
+            clip.mode.store(ClipMode::Cued);
             shared.state = TransportState::Paused;
         }
         Ok(())
@@ -1502,8 +1527,7 @@ impl Playout {
         let Some(clip) = deck.current.as_ref().filter(|c| c.serial == serial) else {
             return;
         };
-        clip.mode.store(mode::CUED, Ordering::SeqCst);
-        let _ = clip.player.set_state(gst::State::Paused);
+        let _ = clip.run(ClipMode::Cued, gst::State::Paused);
         if end == ClipEnd::Black {
             self.lanes.close();
         }
@@ -1734,7 +1758,7 @@ async fn watch_player(
 fn build_player(
     clip: &ClipRequest,
     lanes: &Arc<Lanes>,
-    mode: &Arc<AtomicU8>,
+    mode: &Arc<ModeCell>,
     marks: &Arc<Marks>,
 ) -> Result<(gst::Pipeline, Arc<Streams>)> {
     let player = gst::Pipeline::with_name(&format!("channel-player-{}", lanes.id));
@@ -1974,7 +1998,7 @@ fn add_branch(
     kind: Kind,
     elements: &[&str],
     lanes: &Arc<Lanes>,
-    mode: &Arc<AtomicU8>,
+    mode: &Arc<ModeCell>,
     marks: &Arc<Marks>,
 ) -> Result<gst::Element> {
     let tag = match kind {
@@ -2008,7 +2032,7 @@ fn add_branch(
                 if kind == Kind::Audio && !normal {
                     return Ok(gst::FlowSuccess::Ok);
                 }
-                if mode_s.load(Ordering::SeqCst) == mode::PLAYING {
+                if mode_s.load() == ClipMode::Playing {
                     let base = player_weak.upgrade().and_then(|p| p.base_time());
                     if base.is_some() {
                         on_sample.push(kind, &sample, base);
@@ -2027,7 +2051,7 @@ fn add_branch(
                     marks_p.show(&sample);
                     // Cued or paused: show the frame now. (While playing, a
                     // preroll is followed by the same buffer as a sample.)
-                    if mode_p.load(Ordering::SeqCst) == mode::CUED {
+                    if mode_p.load() == ClipMode::Cued {
                         on_preroll.push(kind, &sample, None);
                     }
                 }
