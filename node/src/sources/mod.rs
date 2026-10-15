@@ -104,6 +104,16 @@ pub fn configured(
     }
 }
 
+/// Add `chain` to `bin`, link it in order, and expose its last element as
+/// the ghost pad `name` (see [`add_ghost_pad`]).
+fn add_chain(bin: &gst::Bin, chain: &[&gst::Element], name: &str) -> Result<()> {
+    bin.add_many(chain.iter().copied())
+        .with_context(|| format!("add {name} elements to {}", bin.name()))?;
+    gst::Element::link_many(chain.iter().copied())
+        .with_context(|| format!("link {name} chain in {}", bin.name()))?;
+    add_ghost_pad(bin, chain.last().context("empty chain")?, name)
+}
+
 /// Expose `element`'s static src pad on `bin` as the ghost pad `name`
 /// (`"video"` or `"audio"`, per the [`InputSource`] contract).
 fn add_ghost_pad(bin: &gst::Bin, element: &gst::Element, name: &str) -> Result<()> {

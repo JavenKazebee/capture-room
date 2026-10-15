@@ -1,8 +1,8 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Timelike;
 use gstreamer::{self as gst, prelude::*};
 
-use super::{add_ghost_pad, InputSource};
+use super::{add_chain, InputSource};
 use crate::api::types::{
     AudioTestSignal, SourceCapabilitiesDto, SourceType, TestSourceConfig, VideoTestPattern,
 };
@@ -44,11 +44,8 @@ fn build_bin(id: &str, cfg: &TestSourceConfig) -> Result<gst::Bin> {
             )
             .build(),
     )?;
-    let video = [
-        vsrc,
-        vcaps,
-        make_el("videoconvert", &format!("vconv-{id}"))?,
-    ];
+    let vconv = make_el("videoconvert", &format!("vconv-{id}"))?;
+    add_chain(&bin, &[&vsrc, &vcaps, &vconv], "video")?;
 
     // ── Audio: audiotestsrc → audioconvert → capsfilter ───────────────────────
     let asrc = make_el("audiotestsrc", &format!("asrc-{id}"))?;
@@ -63,18 +60,8 @@ fn build_bin(id: &str, cfg: &TestSourceConfig) -> Result<gst::Bin> {
             .field("channels", cfg.channels as i32)
             .build(),
     )?;
-    let audio = [
-        asrc,
-        make_el("audioconvert", &format!("aconv-{id}"))?,
-        acaps,
-    ];
-
-    bin.add_many(video.iter().chain(&audio))
-        .context("add elements to test bin")?;
-    gst::Element::link_many(&video).context("link test video chain")?;
-    gst::Element::link_many(&audio).context("link test audio chain")?;
-    add_ghost_pad(&bin, &video[2], "video")?;
-    add_ghost_pad(&bin, &audio[2], "audio")?;
+    let aconv = make_el("audioconvert", &format!("aconv-{id}"))?;
+    add_chain(&bin, &[&asrc, &aconv, &acaps], "audio")?;
 
     Ok(bin)
 }

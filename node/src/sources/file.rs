@@ -9,7 +9,7 @@ use gstreamer_pbutils as gst_pbutils;
 use tracing::warn;
 
 use super::player::{self, Kind, QueueLimit};
-use super::{add_ghost_pad, InputSource};
+use super::{add_chain, InputSource};
 use crate::api::types::{FileSourceConfig, MediaInfo, SourceCapabilitiesDto, SourceType};
 use crate::pipeline::{capsfilter, make_el};
 
@@ -149,19 +149,13 @@ fn build_bin(id: &str, path: &str, media: &MediaInfo) -> Result<gst::Bin> {
     // ── Video: appsrc → videoconvert ──────────────────────────────────────────
     let vsrc = live_appsrc(&format!("file-vsrc-{id}"), latency);
     let vconv = make_el("videoconvert", &format!("file-vconv-{id}"))?;
-    bin.add_many([vsrc.upcast_ref(), &vconv])
-        .context("add file video elements")?;
-    vsrc.link(&vconv).context("link file video")?;
-    add_ghost_pad(&bin, &vconv, "video")?;
+    add_chain(&bin, &[vsrc.upcast_ref(), &vconv], "video")?;
 
     // ── Audio: appsrc → audioconvert, or silence if the file has none ─────────
     let asrc = if media.audio_channels > 0 {
         let asrc = live_appsrc(&format!("file-asrc-{id}"), latency);
         let aconv = make_el("audioconvert", &format!("file-aconv-{id}"))?;
-        bin.add_many([asrc.upcast_ref(), &aconv])
-            .context("add file audio elements")?;
-        asrc.link(&aconv).context("link file audio")?;
-        add_ghost_pad(&bin, &aconv, "audio")?;
+        add_chain(&bin, &[asrc.upcast_ref(), &aconv], "audio")?;
         Some(asrc)
     } else {
         let silence = make_el("audiotestsrc", &format!("file-silence-{id}"))?;
@@ -173,14 +167,8 @@ fn build_bin(id: &str, path: &str, media: &MediaInfo) -> Result<gst::Bin> {
                 .field("channels", SILENCE_CHANNELS as i32)
                 .build(),
         )?;
-        let audio = [
-            silence,
-            make_el("audioconvert", &format!("file-aconv-{id}"))?,
-            caps,
-        ];
-        bin.add_many(&audio).context("add file silence")?;
-        gst::Element::link_many(&audio).context("link file silence")?;
-        add_ghost_pad(&bin, &audio[2], "audio")?;
+        let aconv = make_el("audioconvert", &format!("file-aconv-{id}"))?;
+        add_chain(&bin, &[&silence, &aconv, &caps], "audio")?;
         None
     };
 

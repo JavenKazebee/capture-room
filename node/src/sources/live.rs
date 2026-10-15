@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 use gstreamer::{self as gst, glib, prelude::*};
 use tracing::{info, warn};
 
-use super::add_ghost_pad;
+use super::add_chain;
 use crate::api::types::{LinkState, LiveVideoFormat};
 use crate::pipeline::{capsfilter, make_el, set_mix_matrix};
 
@@ -218,12 +218,7 @@ pub(crate) fn video_output(
     let compositor = make_el("compositor", &format!("live-vsync-{id}"))?;
     compositor.set_property_from_str("background", "black");
     let out_vcaps = capsfilter(&format!("live-outvcaps-{id}"), caps.clone())?;
-    bin.add_many([&compositor, &out_vcaps])
-        .context("add live video output")?;
-    compositor
-        .link(&out_vcaps)
-        .context("link live video output")?;
-    add_ghost_pad(bin, &out_vcaps, "video")?;
+    add_chain(bin, &[&compositor, &out_vcaps], "video")?;
     let format = Arc::new(Mutex::new(VideoFormat {
         pre: pre_compositor_caps(&caps),
         inputs: Vec::new(),
@@ -253,11 +248,7 @@ pub(crate) fn audio_output(
     silence.set_property("is-live", true);
     silence.set_property_from_str("wave", "silence");
     let silence_caps = capsfilter(&format!("live-scaps-{id}"), audio_caps.clone())?;
-    bin.add_many([&mixer, &out_acaps, &silence, &silence_caps])
-        .context("add live audio output")?;
-    gst::Element::link_many([&silence, &silence_caps, &mixer, &out_acaps])
-        .context("link live audio output")?;
-    add_ghost_pad(bin, &out_acaps, "audio")?;
+    add_chain(bin, &[&silence, &silence_caps, &mixer, &out_acaps], "audio")?;
     Ok(Inputs {
         bin: bin.downgrade(),
         id: id.to_string(),
