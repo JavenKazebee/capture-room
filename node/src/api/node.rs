@@ -31,7 +31,7 @@ use crate::api::types::{
     UpdateNodeSettingsRequest, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
-use crate::capacity::{self, Capacity, Load, Setup};
+use crate::capacity::{Capacity, Load, Setup};
 use crate::db;
 use crate::pipeline::monitor::SourceFormat;
 use crate::pipeline::profile::{plan_legs, PathVars, RecordingProfile};
@@ -736,16 +736,9 @@ async fn post_recording(
         info!("benchmark cancelled for a recording");
     }
 
-    let preset_id = req.preset_id.clone().unwrap_or_default();
-    let key = capacity::outputs_key(&req.outputs);
     let session = state.source_manager.write().await.start_recording(
-        &req.source_id,
-        &preset_id,
-        req.preset_name.as_deref(),
-        &req.outputs,
+        &req,
         &legs,
-        key,
-        req.start_at.as_ref(),
         state.clock.utc_offset_us(),
     )?;
 

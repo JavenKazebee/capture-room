@@ -11,9 +11,9 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::api::types::{
-    ChannelLevelDto, ClockTimeDto, ConfiguredSourceDto, LinkState, MonitorSettingsDto,
-    OutputConfig, OutputStatusDto, PresetOutputInput, RecordingSessionDto, RecordingStatus,
-    ReplayBufferDto, ReplayConfigInput, SessionClockDto, TransportState,
+    ChannelLevelDto, ConfiguredSourceDto, LinkState, MonitorSettingsDto, OutputConfig,
+    OutputStatusDto, RecordingSessionDto, RecordingStatus, ReplayBufferDto, ReplayConfigInput,
+    SessionClockDto, StartRecordingRequest, TransportState,
 };
 use crate::pipeline::monitor::{MonitorPipeline, SourceFormat};
 use crate::pipeline::output::{self, OutputLeg, Program};
@@ -717,24 +717,20 @@ impl SourceManager {
 
     // ── Recording ─────────────────────────────────────────────────────────────
 
-    /// Start recording `source_id` with `legs`, one per entry of `outputs`
-    /// (which supplies each leg's name and preview flag for the session).
-    /// With `start_at` on this node's clock domain, the legs begin at the
-    /// first frame due at or after it; on another domain they start now.
-    /// `utc_offset_us` is the domain's mapping to UTC (see
+    /// Start recording `req.source_id` with `legs`, one per entry of
+    /// `req.outputs` (which supplies each leg's name and preview flag for the
+    /// session). With `req.start_at` on this node's clock domain, the legs
+    /// begin at the first frame due at or after it; on another domain they
+    /// start now. `utc_offset_us` is the domain's mapping to UTC (see
     /// [`crate::clock::NodeClock::utc_offset_us`]), for timecode.
-    #[allow(clippy::too_many_arguments)]
     pub fn start_recording(
         &mut self,
-        source_id: &str,
-        preset_id: &str,
-        preset_name: Option<&str>,
-        outputs: &[PresetOutputInput],
+        req: &StartRecordingRequest,
         legs: &[(PathBuf, RecordingProfile)],
-        outputs_key: String,
-        start_at: Option<&ClockTimeDto>,
         utc_offset_us: Option<i64>,
     ) -> Result<RecordingSessionDto> {
+        let source_id = req.source_id.as_str();
+        let outputs = &req.outputs;
         if self.sessions.values().any(|s| s.dto.source_id == source_id) {
             bail!("source {source_id} already has an active recording");
         }
@@ -759,7 +755,7 @@ impl SourceManager {
         // A source still on a previous clock (it was busy when the clock
         // changed) can't be placed on the shared one.
         let on_node_clock = monitor.clock() == &self.clock;
-        let start_at = match start_at {
+        let start_at = match req.start_at.as_ref() {
             Some(at) if on_node_clock && at.domain == self.clock_domain => {
                 let at = gst::ClockTime::from_useconds(at.time_us);
                 let now = self.clock.time().unwrap_or(gst::ClockTime::ZERO);
@@ -828,11 +824,11 @@ impl SourceManager {
         let dto = RecordingSessionDto {
             id,
             source_id: source_id.to_string(),
-            preset_id: preset_id.to_string(),
+            preset_id: req.preset_id.clone().unwrap_or_default(),
             source_name: self
                 .get_source(source_id)
                 .map(|s| s.display_name().to_string()),
-            preset_name: preset_name.map(str::to_string),
+            preset_name: req.preset_name.clone(),
             started_at: Utc::now().to_rfc3339(),
             stopped_at: None,
             outputs: outputs
@@ -855,7 +851,7 @@ impl SourceManager {
                 legs: recording_legs,
                 dto: dto.clone(),
                 failed_legs: 0,
-                outputs_key,
+                outputs_key: crate::capacity::outputs_key(outputs),
                 started: Instant::now(),
             },
         );
