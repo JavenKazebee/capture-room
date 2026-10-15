@@ -248,6 +248,11 @@ impl SourceManager {
         self.clip_root = clips;
     }
 
+    /// The node's name, for NDI senders to see it by.
+    pub fn set_node_name(&mut self, name: &str) {
+        self.ndi_monitor.set_node_name(name);
+    }
+
     /// Where replay buffers are kept.
     pub fn replay_root(&self) -> &Path {
         &self.replay_root

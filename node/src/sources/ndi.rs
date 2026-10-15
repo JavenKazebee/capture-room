@@ -15,15 +15,23 @@ pub struct NdiSource {
     ndi_name: String,
     url_address: String,
     name: String,
+    /// What the sender sees this node as (see [`receiver_name`]).
+    receiver: String,
 }
 
-fn build_bin(id: &str, ndi_name: &str, url_address: &str) -> Result<gst::Bin> {
+/// The name a node receives NDI under, so senders and NDI Access Manager can
+/// tell nodes apart.
+pub fn receiver_name(node_name: &str) -> String {
+    format!("capture-room ({node_name})")
+}
+
+fn build_bin(id: &str, ndi_name: &str, url_address: &str, receiver: &str) -> Result<gst::Bin> {
     let bin = gst::Bin::with_name(&format!("ndisrc-bin-{id}"));
 
     let src = make_el("ndisrc", &format!("ndisrc-{id}"))?;
     src.set_property("ndi-name", ndi_name);
     src.set_property("url-address", url_address);
-    src.set_property("receiver-ndi-name", "capture-room");
+    src.set_property("receiver-ndi-name", receiver);
     let demux = make_el("ndisrcdemux", &format!("ndisrcdemux-{id}"))?;
 
     // Intermediate converters. Their static src pads anchor the ghost pads at
@@ -78,6 +86,8 @@ pub struct NdiMonitor {
     /// The NDI library loaded. The plugin tries once per process, so a
     /// runtime installed later needs a restart.
     runtime_loaded: bool,
+    /// Given to new connections; a rename leaves connected ones as they are.
+    receiver: String,
 }
 
 impl NdiMonitor {
@@ -100,7 +110,13 @@ impl NdiMonitor {
         Self {
             monitor,
             runtime_loaded,
+            receiver: receiver_name("capture-room"),
         }
+    }
+
+    /// Receive as `node_name` from now on.
+    pub fn set_node_name(&mut self, node_name: &str) {
+        self.receiver = receiver_name(node_name);
     }
 
     pub fn runtime_loaded(&self) -> bool {
@@ -112,7 +128,7 @@ impl NdiMonitor {
         self.monitor
             .devices()
             .into_iter()
-            .filter_map(device_to_source)
+            .filter_map(|d| device_to_source(d, &self.receiver))
             .collect()
     }
 }
@@ -123,7 +139,7 @@ impl Drop for NdiMonitor {
     }
 }
 
-fn device_to_source(device: gst::Device) -> Option<NdiSource> {
+fn device_to_source(device: gst::Device, receiver: &str) -> Option<NdiSource> {
     let props = device.properties()?;
     let ndi_name: String = props.get("ndi-name").ok()?;
     Some(NdiSource {
@@ -131,6 +147,7 @@ fn device_to_source(device: gst::Device) -> Option<NdiSource> {
         url_address: props.get("url-address").ok().unwrap_or_default(),
         name: device.display_name().to_string(),
         ndi_name,
+        receiver: receiver.to_string(),
     })
 }
 
@@ -174,6 +191,6 @@ impl InputSource for NdiSource {
     }
 
     fn build_bin(&self) -> Result<gst::Element> {
-        Ok(build_bin(&self.id, &self.ndi_name, &self.url_address)?.upcast())
+        Ok(build_bin(&self.id, &self.ndi_name, &self.url_address, &self.receiver)?.upcast())
     }
 }

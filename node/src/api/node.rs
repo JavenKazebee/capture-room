@@ -160,6 +160,7 @@ async fn put_settings(
         .filter(|n| !n.is_empty())
     {
         db::config_set(&state.db, "name", &name).await?;
+        state.source_manager.write().await.set_node_name(&name);
         *state.node_name.write().unwrap() = name;
     }
     if let Some(monitor) = req.monitor {
