@@ -45,6 +45,17 @@ pub fn router() -> Router<Arc<AppState>> {
 
 const NOT_CONTROLLER: ApiError = ApiError::Conflict("this node is not acting as a controller");
 
+/// `f` of this node's controller, or a conflict if it isn't acting as one.
+async fn with_controller<T>(state: &AppState, f: impl FnOnce(&Controller) -> T) -> ApiResult<T> {
+    state
+        .controller
+        .read()
+        .await
+        .as_ref()
+        .map(f)
+        .ok_or(NOT_CONTROLLER)
+}
+
 // ── /api/v1/controller ───────────────────────────────────────────────────────
 
 async fn put_controller(
@@ -63,10 +74,7 @@ async fn put_controller(
 // ── /api/v1/controller/clock ─────────────────────────────────────────────────
 
 async fn controller_clock(state: &AppState) -> ApiResult<ControllerClockDto> {
-    let serving = match state.controller.read().await.as_ref() {
-        Some(c) => c.serves_clock(),
-        None => return Err(NOT_CONTROLLER),
-    };
+    let serving = with_controller(state, Controller::serves_clock).await?;
     Ok(ControllerClockDto {
         mode: clock_mode(state).await?,
         port: state.clock_port,
@@ -134,11 +142,12 @@ async fn get_reachability(
     if id == state.node_id {
         return Ok(Json(vec![crate::checks::own_firewall()]));
     }
-    let url = match state.controller.read().await.as_ref() {
-        Some(c) => c.registry.read().await.url_of(&id),
-        None => return Err(NOT_CONTROLLER),
-    }
-    .ok_or(ApiError::NotFound("unknown node"))?;
+    let registry = with_controller(&state, |c| Arc::clone(&c.registry)).await?;
+    let url = registry
+        .read()
+        .await
+        .url_of(&id)
+        .ok_or(ApiError::NotFound("unknown node"))?;
     let checks: NodeChecksDto = async {
         state
             .http
@@ -165,10 +174,7 @@ async fn post_node(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AddNodeRequest>,
 ) -> ApiResult<StatusCode> {
-    let ctx = match state.controller.read().await.as_ref() {
-        Some(c) => c.ctx(&state),
-        None => return Err(NOT_CONTROLLER),
-    };
+    let ctx = with_controller(&state, |c| c.ctx(&state)).await?;
     let mut url = req.url.trim().trim_end_matches('/').to_string();
     if !url.starts_with("http://") && !url.starts_with("https://") {
         url = format!("http://{url}");
@@ -192,10 +198,7 @@ async fn delete_node(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let registry = match state.controller.read().await.as_ref() {
-        Some(c) => Arc::clone(&c.registry),
-        None => return Err(NOT_CONTROLLER),
-    };
+    let registry = with_controller(&state, |c| Arc::clone(&c.registry)).await?;
     // Removing the entry also stops its WS relay.
     registry.write().await.remove(&id);
     db::node_delete(&state.db, &id).await?;
