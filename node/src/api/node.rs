@@ -31,7 +31,7 @@ use crate::api::types::{
     UpdateNodeSettingsRequest, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
-use crate::capacity::{self, Capacity, Load};
+use crate::capacity::{self, Capacity, Load, Setup};
 use crate::db;
 use crate::pipeline::monitor::SourceFormat;
 use crate::pipeline::profile::{plan_legs, PathVars, RecordingProfile};
@@ -925,14 +925,13 @@ async fn post_capacity_check(
     Json(req): Json<CapacityCheckRequest>,
 ) -> ApiResult<Json<CapacityCheckDto>> {
     let capacity = Capacity::from_runs(&db::benchmarks_list(&state.db).await?);
+    let channel_outputs = req.channel.as_ref().map(|c| &c.outputs[..]);
+    let key = Setup::new(&req.outputs, req.replay, channel_outputs).key();
     if let Some(channel) = &req.channel {
         return Ok(Json(
-            check_channel(&state, &capacity, channel, &req.source_ids).await,
+            check_channel(&state, &capacity, channel, &key, &req.source_ids).await,
         ));
     }
-    let key = req
-        .replay
-        .map_or_else(|| capacity::outputs_key(&req.outputs), capacity::replay_key);
     let (active, formats, active_legs) = {
         let mgr = state.source_manager.read().await;
         // A source whose buffer is being changed stops counting as it was.
@@ -1007,12 +1006,14 @@ async fn post_capacity_check(
     Ok(Json(capacity_check(before, after, volumes)))
 }
 
-/// Would running the playout `channel` fit, on top of what runs already
-/// but the channels `editing`? Channels write nothing, so no volumes.
+/// Would running the playout `channel` (its setup's `key`) fit, on top of
+/// what runs already but the channels `editing`? Channels write nothing, so
+/// no volumes.
 async fn check_channel(
     state: &AppState,
     capacity: &Capacity,
     channel: &ChannelConfig,
+    key: &str,
     editing: &[String],
 ) -> CapacityCheckDto {
     let active = state.source_manager.read().await.running_load(&[], editing);
@@ -1022,9 +1023,8 @@ async fn check_channel(
         rate: Some((f.fps_num, f.fps_den)),
         audio: Some((channel.audio_channels, false)),
     };
-    let key = capacity::channel_key(&channel.outputs);
     let before = capacity.load(active.iter());
-    let after = capacity.load(active.iter().chain([(key.as_str(), format)]));
+    let after = capacity.load(active.iter().chain([(key, format)]));
     capacity_check(before, after, Vec::new())
 }
 
