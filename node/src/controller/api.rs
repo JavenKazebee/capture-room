@@ -273,7 +273,7 @@ fn validate_outputs(mut outputs: Vec<PresetOutputInput>) -> ApiResult<Vec<Preset
         }
     }
     let legs = plan_legs(&outputs, None).map_err(|e| ApiError::BadRequest(e.into()))?;
-    recording::check_legs(&legs).map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
+    recording::check_legs(&legs).map_err(ApiError::bad)?;
     Ok(outputs)
 }
 

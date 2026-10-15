@@ -20,6 +20,13 @@ pub enum ApiError {
     Internal(anyhow::Error),
 }
 
+impl ApiError {
+    /// A 400 carrying `e` with its full context chain.
+    pub fn bad(e: impl std::fmt::Display) -> Self {
+        Self::BadRequest(format!("{e:#}").into())
+    }
+}
+
 impl<E: Into<anyhow::Error>> From<E> for ApiError {
     fn from(e: E) -> Self {
         Self::Internal(e.into())

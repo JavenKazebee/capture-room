@@ -146,7 +146,7 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
     let probe_path = path.clone();
     let media = tokio::task::spawn_blocking(move || probe(&probe_path))
         .await?
-        .map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
+        .map_err(ApiError::bad)?;
     if media.fps_num == 0 {
         return Err(ApiError::BadRequest(
             "the footage has no fixed frame rate, so dropped frames can't be counted; pick another file".into(),

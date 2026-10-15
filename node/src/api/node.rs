@@ -318,7 +318,7 @@ async fn validated(
         let path = cfg.path.clone();
         let media = tokio::task::spawn_blocking(move || crate::sources::file::probe(&path))
             .await?
-            .map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
+            .map_err(ApiError::bad)?;
         cfg.media = Some(media);
     }
     Ok(req)
@@ -445,7 +445,7 @@ struct FilesQuery {
 async fn get_files(Query(q): Query<FilesQuery>) -> ApiResult<Json<DirListingDto>> {
     let listing = tokio::task::spawn_blocking(move || crate::storage::list_dir(q.path.as_deref()))
         .await?
-        .map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
+        .map_err(ApiError::bad)?;
     Ok(Json(listing))
 }
 

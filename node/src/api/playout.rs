@@ -84,7 +84,7 @@ async fn post_media(
     let probe_path = path.clone();
     let info = tokio::task::spawn_blocking(move || crate::sources::file::probe(&probe_path))
         .await?
-        .map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
+        .map_err(ApiError::bad)?;
     let name = req
         .name
         .map(|n| n.trim().to_string())
@@ -319,7 +319,7 @@ async fn post_cue(
     let playout = playout(&state, &id).await?;
     let result = playout.cue_item(&req.item_id).await;
     let reply = reply(&state, &id, &playout).await;
-    result.map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
+    result.map_err(ApiError::bad)?;
     Ok(reply)
 }
 
@@ -332,7 +332,7 @@ async fn post_play(
     let playout = playout(&state, &id).await?;
     let result = playout.play_item(&req.item_id).await;
     let reply = reply(&state, &id, &playout).await;
-    result.map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
+    result.map_err(ApiError::bad)?;
     Ok(reply)
 }
 
@@ -365,7 +365,7 @@ async fn post_transport(
         TransportAction::Step => playout.step(req.frames.unwrap_or(1)).await,
     };
     let reply = reply(&state, &id, &playout).await;
-    result.map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
+    result.map_err(ApiError::bad)?;
     Ok(reply)
 }
 
@@ -478,7 +478,7 @@ async fn post_replay(
                 gst::ClockTime::from_useconds(req.from_us),
                 req.to_us.map(gst::ClockTime::from_useconds),
             )
-            .map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
+            .map_err(ApiError::bad)?;
         let name = mgr
             .get_source(&req.source_id)
             .map(|s| s.display_name().to_string())
@@ -504,7 +504,7 @@ async fn post_replay(
     };
     let result = playout.load(request, req.play).await;
     let reply = reply(&state, &id, &playout).await;
-    result.map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
+    result.map_err(ApiError::bad)?;
     Ok(reply)
 }
 
@@ -592,7 +592,7 @@ async fn post_clip(
                 gst::ClockTime::from_useconds(req.from_us),
                 Some(gst::ClockTime::from_useconds(req.to_us)),
             )
-            .map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
+            .map_err(ApiError::bad)?;
         let name = mgr
             .get_source(&req.source_id)
             .map(|s| s.display_name().to_string())
@@ -790,7 +790,7 @@ async fn post_replay_clip(
     };
     let result = playout.load(request, req.play).await;
     let reply = reply(&state, &id, &playout).await;
-    result.map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
+    result.map_err(ApiError::bad)?;
     Ok(reply)
 }
 
