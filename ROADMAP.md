@@ -178,8 +178,11 @@ A full playout system — capture in reverse. Design in ARCHITECTURE.md (Playbac
   left out of the measurement and of a channel's key. Running channels, idle or playing,
   add to a node's load beside recordings and replay buffers. Clip frames that reach the
   program too late to show count as dropped. On the 8 GB dev Mac (1080p30, NDI + SRT)
-  3 channels kept up with nothing dropped, and memory stopped the run at 4. Next: check
-  capacity when a channel is created or its outputs change, as Record does.
+  3 channels kept up with nothing dropped, and memory stopped the run at 4.
+- ✅ **Capacity check on saving a channel (2026-10-14)** — saving a new channel or Channel
+  settings in Playback checks the node's capacity (`POST /capacity/check` with
+  `channel`, leaving out the channel's own load before the change) and warns, never
+  blocks, past 80%, as Record and Replay › Buffers do.
 
 ## 10. Clock sync across nodes
 

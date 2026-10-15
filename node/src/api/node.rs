@@ -23,16 +23,17 @@ use tracing::{error, info};
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
-    BenchmarkRequest, BenchmarkRunDto, CapacityCheckDto, CapacityCheckRequest, CheckRequest,
-    ClockClaim, ClockStatusDto, ClockTimeDto, ConfiguredSourceDto, ConfiguredSourceRequest,
-    DeviceDto, DirListingDto, DisplayDto, NodeCapacityDto, NodeChecksDto, NodeSettingsDto,
-    NodeStatus, OutputConfig, RecordingSessionDto, RecordingStatus, RecordingsQuery, SourceConfig,
-    SourceDto, StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest, VolumeCheckDto,
-    WsEvent,
+    BenchmarkRequest, BenchmarkRunDto, CapacityCheckDto, CapacityCheckRequest, ChannelConfig,
+    CheckRequest, ClockClaim, ClockStatusDto, ClockTimeDto, ConfiguredSourceDto,
+    ConfiguredSourceRequest, DeviceDto, DirListingDto, DisplayDto, NodeCapacityDto, NodeChecksDto,
+    NodeSettingsDto, NodeStatus, OutputConfig, RecordingSessionDto, RecordingStatus,
+    RecordingsQuery, SourceConfig, SourceDto, StartRecordingRequest, StorageVolumeDto,
+    UpdateNodeSettingsRequest, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
 use crate::capacity::{self, Capacity};
 use crate::db;
+use crate::pipeline::monitor::SourceFormat;
 use crate::pipeline::profile::{plan_legs, PathVars, RecordingProfile};
 use crate::session;
 use crate::sources::manager::{SourceManager, StopOutcome, StopResult};
@@ -938,6 +939,11 @@ async fn post_capacity_check(
     Json(req): Json<CapacityCheckRequest>,
 ) -> ApiResult<Json<CapacityCheckDto>> {
     let capacity = Capacity::from_runs(&db::benchmarks_list(&state.db).await?);
+    if let Some(channel) = &req.channel {
+        return Ok(Json(
+            check_channel(&state, &capacity, channel, &req.source_ids).await,
+        ));
+    }
     let key = req
         .replay
         .map_or_else(|| capacity::outputs_key(&req.outputs), capacity::replay_key);
@@ -1028,6 +1034,41 @@ async fn post_capacity_check(
         estimated: after.estimated,
         volumes,
     }))
+}
+
+/// Would running the playout `channel` fit, on top of what runs already
+/// but the channels `editing`? Channels write nothing, so no volumes.
+async fn check_channel(
+    state: &AppState,
+    capacity: &Capacity,
+    channel: &ChannelConfig,
+    editing: &[String],
+) -> CapacityCheckDto {
+    let active = {
+        let mgr = state.source_manager.read().await;
+        let mut active = mgr.active_feeds();
+        active.extend(mgr.active_buffers());
+        active.extend(mgr.active_channels_except(editing));
+        active
+    };
+    let f = &channel.format;
+    let format = SourceFormat {
+        size: Some((f.width, f.height)),
+        rate: Some((f.fps_num, f.fps_den)),
+        audio: Some((channel.audio_channels, false)),
+    };
+    let key = capacity::channel_key(&channel.outputs);
+    let active_iter = || active.iter().map(|(k, f)| (k.as_str(), *f));
+    let before = capacity.load(active_iter());
+    let after = capacity.load(active_iter().chain([(key.as_str(), format)]));
+    CapacityCheckDto {
+        verdict: after.verdict(),
+        load_before: before.load,
+        load_after: after.load,
+        unknown_feeds: after.unknown,
+        estimated: after.estimated,
+        volumes: Vec::new(),
+    }
 }
 
 // ── /thumbnails/{source_id} ───────────────────────────────────────────────────

@@ -1583,17 +1583,22 @@ pub struct NodeCapacityDto {
 }
 
 /// Would recording `source_ids` with `outputs` (or giving them replay
-/// buffers in `replay`) fit, on top of what's recording already (and the
-/// buffers and playout channels running)?
+/// buffers in `replay`, or running the playout `channel`) fit, on top of
+/// what's recording already (and the buffers and playout channels running)?
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct CapacityCheckRequest {
-    /// Empty when checking replay buffers.
+    /// Empty when checking replay buffers or a channel.
     pub outputs: Vec<PresetOutputInput>,
+    /// For a channel, the channel being changed (it stops counting as it
+    /// was), or none for a new one.
     pub source_ids: Vec<String>,
     /// Check replay buffers in this codec instead of recordings.
     #[serde(default)]
     pub replay: Option<ReplayCodec>,
+    /// Check a playout channel with this format and outputs instead.
+    #[serde(default)]
+    pub channel: Option<ChannelConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

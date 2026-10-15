@@ -503,8 +503,10 @@ preset) and warns, never blocks, when a node would pass 80% of its capacity or a
 would fill within the hour. Replay › Buffers checks the same way when a buffer is turned
 on or changes codec (the check leaves out the source's own buffer, so it isn't counted
 twice); a buffer keeps a fixed length, so it has no volume check. Running playout
-channels count in the load these checks start from; creating or changing a channel
-doesn't check yet.
+channels count in the load these checks start from. Playback checks when a channel is
+created or changed (`channel` in the request: one feed of its `channel_key` at its
+format, leaving out the channel being changed, named in `source_ids`); channels write
+nothing, so there's no volume check either.
 
 ---
 
@@ -842,7 +844,7 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 | GET / DELETE | `/benchmarks/{id}` | a run / delete it (not while running) |
 | POST | `/benchmarks/{id}/cancel` | cancel; answers once it has torn down |
 | GET | `/capacity` | each benchmarked setup's result, the load of active recordings, replay buffers and channels, the running benchmark |
-| POST | `/capacity/check` | `{ outputs, source_ids, replay? }` → verdict, load before/after, time left on the volumes they'd write to (with `replay`, giving them buffers in that codec instead: no volumes) |
+| POST | `/capacity/check` | `{ outputs, source_ids, replay?, channel? }` → verdict, load before/after, time left on the volumes they'd write to (with `replay`, giving them buffers in that codec instead; with `channel`, running a playout channel of that format and outputs in place of the one in `source_ids`, if any: no volumes either way) |
 | GET | `/thumbnails/{source_id}` | latest JPEG |
 | WS | `/ws` | this node's events only |
 

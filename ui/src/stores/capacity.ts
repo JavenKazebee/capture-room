@@ -4,6 +4,7 @@ import { nodeApi } from '@/composables/useApi'
 import type { BenchmarkRequest } from '@/types/generated/BenchmarkRequest'
 import type { BenchmarkRunDto } from '@/types/generated/BenchmarkRunDto'
 import type { CapacityCheckDto } from '@/types/generated/CapacityCheckDto'
+import type { ChannelConfig } from '@/types/generated/ChannelConfig'
 import type { MediaInfo } from '@/types/generated/MediaInfo'
 import type { NodeCapacityDto } from '@/types/generated/NodeCapacityDto'
 import type { OutputConfig } from '@/types/generated/OutputConfig'
@@ -95,7 +96,7 @@ export const useCapacityStore = defineStore('capacity', () => {
   function check(nodeId: string, outputs: PresetOutputInput[], sourceIds: string[]) {
     return nodeApi(nodeId)<CapacityCheckDto>('/capacity/check', {
       method: 'POST',
-      body: { outputs, source_ids: sourceIds, replay: null },
+      body: { outputs, source_ids: sourceIds, replay: null, channel: null },
     })
   }
 
@@ -103,7 +104,18 @@ export const useCapacityStore = defineStore('capacity', () => {
   function checkReplay(nodeId: string, codec: ReplayCodec, sourceIds: string[]) {
     return nodeApi(nodeId)<CapacityCheckDto>('/capacity/check', {
       method: 'POST',
-      body: { outputs: [], source_ids: sourceIds, replay: codec },
+      body: { outputs: [], source_ids: sourceIds, replay: codec, channel: null },
+    })
+  }
+
+  /**
+   * Would running a playout channel like `channel` fit on the node? `editing`
+   * is the channel it replaces, which stops counting as it was.
+   */
+  function checkChannel(nodeId: string, channel: ChannelConfig, editing?: string) {
+    return nodeApi(nodeId)<CapacityCheckDto>('/capacity/check', {
+      method: 'POST',
+      body: { outputs: [], source_ids: editing ? [editing] : [], replay: null, channel },
     })
   }
 
@@ -117,5 +129,5 @@ export const useCapacityStore = defineStore('capacity', () => {
 
   onReconnect(reloadLoaded)
 
-  return { capacity, runs, load, loadRuns, applyRun, start, cancel, remove, check, checkReplay }
+  return { capacity, runs, load, loadRuns, applyRun, start, cancel, remove, check, checkReplay, checkChannel }
 })

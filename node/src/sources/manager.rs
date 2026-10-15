@@ -898,9 +898,18 @@ impl SourceManager {
     /// channel's program and outputs run either way, and it can start
     /// playing at any moment.
     pub fn active_channels(&self) -> Vec<(String, SourceFormat)> {
+        self.active_channels_except(&[])
+    }
+
+    /// [`Self::active_channels`], leaving out the channels `except`.
+    pub fn active_channels_except(&self, except: &[String]) -> Vec<(String, SourceFormat)> {
         self.sources
             .iter()
-            .filter(|s| s.playout().is_some() && self.monitors.contains_key(s.id()))
+            .filter(|s| {
+                s.playout().is_some()
+                    && self.monitors.contains_key(s.id())
+                    && !except.iter().any(|id| id == s.id())
+            })
             .map(|s| {
                 (
                     crate::capacity::channel_key(s.outputs()),

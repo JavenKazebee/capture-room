@@ -5,6 +5,7 @@ import { Trash2 } from '@lucide/vue'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { usePlayoutStore } from '@/stores/playout'
+import { useCapacityStore } from '@/stores/capacity'
 import { errorMessage, sourceKey } from '@/composables/useApi'
 import { useNodeDevices } from '@/composables/useNodeDevices'
 import type { ChannelConfig } from '@/types/generated/ChannelConfig'
@@ -17,7 +18,11 @@ import EditSheet from '@/components/common/EditSheet.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import ChannelFields from '@/components/sources/ChannelFields.vue'
 
-/** Create a playout channel, or edit one: its name, format and outputs. */
+/**
+ * Create a playout channel, or edit one: its name, format and outputs. A
+ * channel counts against its node's benchmarked capacity, so saving one warns
+ * (never blocks) when that runs short.
+ */
 const props = defineProps<{
   /** The channel to edit; a new one when unset. */
   editing?: { nodeId: string; id: string } | null
@@ -31,6 +36,7 @@ const emit = defineEmits<{
 const sources = useSourcesStore()
 const nodes = useNodesStore()
 const playout = usePlayoutStore()
+const capacity = useCapacityStore()
 
 function blankChannel(): ChannelConfig {
   return {
@@ -139,21 +145,34 @@ async function save() {
   saving.value = true
   error.value = null
   try {
+    let id: string
     if (props.editing) {
-      await sources.updateSource(nodeId.value, props.editing.id, req)
+      id = props.editing.id
+      await sources.updateSource(nodeId.value, id, req)
       toast.success(`Saved ${req.name}`)
-      emit('saved', sourceKey(nodeId.value, props.editing.id))
     } else {
-      const created = await sources.createSource(nodeId.value, req)
+      id = (await sources.createSource(nodeId.value, req)).id
       toast.success(`Added ${req.name}`)
-      emit('saved', sourceKey(nodeId.value, created.id))
     }
+    emit('saved', sourceKey(nodeId.value, id))
+    warnLoad(nodeId.value, id, channel.value)
     emit('close')
   } catch (e) {
     error.value = errorMessage(e, 'Save failed.')
   } finally {
     saving.value = false
   }
+}
+
+/** Warn if the node is near or past its benchmarked capacity with channel `id` running as `config`. */
+async function warnLoad(node: string, id: string, config: ChannelConfig) {
+  const check = await capacity.checkChannel(node, config, id).catch(() => null)
+  if (!check) return
+  const pct = Math.round(check.load_after * 100)
+  const name = nodes.nameOf(node)
+  if (pct > 100) toast.warning(`${name} is over its benchmarked capacity (${pct}%): expect dropped frames.`)
+  else if (pct > 80) toast.warning(`${name} is near its benchmarked capacity (${pct}%).`)
+  if (capacity.capacity.has(node)) capacity.load(node)
 }
 
 async function destroy() {
