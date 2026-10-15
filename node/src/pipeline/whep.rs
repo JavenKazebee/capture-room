@@ -17,7 +17,6 @@ use gstreamer::{self as gst, glib, prelude::*};
 use super::make_el;
 use super::monitor::MonitorPipeline;
 use super::output::{count_receivers, OutputPipeline, OutputSink, PipelineOutput, RunningOutput};
-use super::ConsumerPipeline;
 
 /// Elements a WHEP output needs (the libnice plugin for ICE, an Opus
 /// encoder for audio).
@@ -81,15 +80,7 @@ impl OutputSink for WhepOutput {
 impl WhepOutput {
     fn build(&self, port: u16) -> Result<OutputPipeline> {
         let mut output = OutputPipeline::new(&format!("output-whep-{}", self.path))?;
-        let ConsumerPipeline {
-            pipeline,
-            video_src,
-            audio_src,
-            ..
-        } = &output.consumer;
-        let vconv = make_el("videoconvert", "vconv")?;
-        let aconv = make_el("audioconvert", "aconv")?;
-        let aresample = make_el("audioresample", "aresample")?;
+        let consumer = &output.consumer;
         // Opus in browsers is stereo: a wider program is mixed down.
         let stereo = super::capsfilter(
             "stereo",
@@ -115,8 +106,9 @@ impl WhepOutput {
 
         let receivers = count_receivers(&sink, "consumer-added", "consumer-removed");
 
-        pipeline
-            .add_many([&vconv, &aconv, &aresample, &stereo, &sink])
+        consumer
+            .pipeline
+            .add_many([&stereo, &sink])
             .context("add WHEP output")?;
         let video_pad = sink
             .request_pad_simple("video_%u")
@@ -124,15 +116,14 @@ impl WhepOutput {
         let audio_pad = sink
             .request_pad_simple("audio_%u")
             .context("WHEP audio pad")?;
-        gst::Element::link_many([video_src.upcast_ref(), &vconv]).context("link WHEP video")?;
-        vconv
+        consumer
+            .video_chain(&[])?
             .static_pad("src")
             .context("videoconvert src pad")?
             .link(&video_pad)
             .context("link WHEP video → sink")?;
-        gst::Element::link_many([audio_src.upcast_ref(), &aconv, &aresample, &stereo])
-            .context("link WHEP audio")?;
-        stereo
+        consumer
+            .audio_chain(&[&stereo])?
             .static_pad("src")
             .context("stereo src pad")?
             .link(&audio_pad)

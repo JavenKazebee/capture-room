@@ -353,28 +353,20 @@ impl OutputSink for NdiOutput {
 impl NdiOutput {
     fn build(&self) -> Result<OutputPipeline> {
         let output = OutputPipeline::new(&format!("output-ndi-{}", self.ndi_name))?;
-        let ConsumerPipeline {
-            pipeline,
-            video_src,
-            audio_src,
-            ..
-        } = &output.consumer;
-        let vconv = make_el("videoconvert", "vconv")?;
-        let aconv = make_el("audioconvert", "aconv")?;
-        let aresample = make_el("audioresample", "aresample")?;
+        let consumer = &output.consumer;
         let combiner = make_el("ndisinkcombiner", "combiner")?;
         let sink = make_el("ndisink", "ndisink")?;
         sink.set_property("ndi-name", &self.ndi_name);
-        pipeline
-            .add_many([&vconv, &aconv, &aresample, &combiner, &sink])
+        consumer
+            .pipeline
+            .add_many([&combiner, &sink])
             .context("add NDI output")?;
-        gst::Element::link_many([video_src.upcast_ref(), &vconv]).context("link NDI video")?;
-        vconv
+        consumer
+            .video_chain(&[])?
             .link_pads(Some("src"), &combiner, Some("video"))
             .context("link NDI video to combiner")?;
-        gst::Element::link_many([audio_src.upcast_ref(), &aconv, &aresample])
-            .context("link NDI audio")?;
-        aresample
+        consumer
+            .audio_chain(&[])?
             .link_pads(Some("src"), &combiner, Some("audio"))
             .context("link NDI audio to combiner")?;
         combiner.link(&sink).context("link NDI combiner → sink")?;
@@ -434,12 +426,6 @@ impl OutputSink for DisplayOutput {
 impl DisplayOutput {
     fn build(&self, window: usize) -> Result<OutputPipeline> {
         let output = OutputPipeline::new(&format!("output-display-{}", self.display))?;
-        let ConsumerPipeline {
-            pipeline,
-            video_src,
-            audio_src,
-            ..
-        } = &output.consumer;
         // The sink converts on the GPU: no videoconvert, which would cost a
         // CPU pass per frame (a lot at 4K).
         let vsink = make_el(DISPLAY_SINK, "vsink")?;
@@ -450,19 +436,21 @@ impl DisplayOutput {
         // SAFETY: the window outlives the pipeline (`DisplayRunning` drops
         // the pipeline first).
         unsafe { overlay.set_window_handle(window) };
-        let aconv = make_el("audioconvert", "aconv")?;
-        let aresample = make_el("audioresample", "aresample")?;
         let asink = match &self.audio_device {
             Some(key) => self.devices.output(key)?.0,
             // No audio: the program's is consumed and dropped.
             None => make_el("fakesink", "asink")?,
         };
-        pipeline
-            .add_many([&vsink, &aconv, &aresample, &asink])
+        let consumer = &output.consumer;
+        consumer
+            .pipeline
+            .add_many([&vsink, &asink])
             .context("add display output")?;
-        video_src.link(&vsink).context("link display video")?;
-        gst::Element::link_many([audio_src.upcast_ref(), &aconv, &aresample, &asink])
-            .context("link display audio")?;
+        consumer
+            .video_src
+            .link(&vsink)
+            .context("link display video")?;
+        consumer.audio_chain(&[&asink])?;
         Ok(output)
     }
 }
@@ -636,19 +624,11 @@ impl OutputSink for SrtOutput {
 impl SrtOutput {
     fn build(&self) -> Result<OutputPipeline> {
         let mut output = OutputPipeline::new(&format!("output-srt-{}", self.url))?;
-        let ConsumerPipeline {
-            pipeline,
-            video_src,
-            audio_src,
-            ..
-        } = &output.consumer;
-        let vconv = make_el("videoconvert", "vconv")?;
+        let consumer = &output.consumer;
         let venc = self.video_encoder()?;
         let vparse = make_el("h264parse", "vparse")?;
         // Parameter sets with every keyframe, for receivers that join late.
         vparse.set_property("config-interval", -1i32);
-        let aconv = make_el("audioconvert", "aconv")?;
-        let aresample = make_el("audioresample", "aresample")?;
         let aenc = make_el("avenc_aac", "aenc")?;
         set_property(
             &aenc,
@@ -672,15 +652,12 @@ impl SrtOutput {
             .listens()
             .then(|| count_receivers(&sink, "caller-added", "caller-removed"));
 
-        pipeline
-            .add_many([
-                &vconv, &venc, &vparse, &aconv, &aresample, &aenc, &mux, &sink,
-            ])
+        consumer
+            .pipeline
+            .add_many([&venc, &vparse, &aenc, &mux, &sink])
             .context("add SRT output")?;
-        gst::Element::link_many([video_src.upcast_ref(), &vconv, &venc, &vparse, &mux])
-            .context("link SRT video")?;
-        gst::Element::link_many([audio_src.upcast_ref(), &aconv, &aresample, &aenc, &mux])
-            .context("link SRT audio")?;
+        consumer.video_chain(&[&venc, &vparse, &mux])?;
+        consumer.audio_chain(&[&aenc, &mux])?;
         mux.link(&sink).context("link SRT mux → sink")?;
         start_together(&vparse, &aenc)?;
         output.receivers = receivers;

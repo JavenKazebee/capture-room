@@ -212,6 +212,43 @@ impl ConsumerPipeline {
         Ok(())
     }
 
+    /// Link the video appsrc through a new `videoconvert`, then through
+    /// `then` (already in the pipeline), in order: the last element linked.
+    pub fn video_chain(&self, then: &[&gst::Element]) -> Result<gst::Element> {
+        let convert = [make_el("videoconvert", "vconv")?];
+        self.chain(self.video_src.upcast_ref(), &convert, then, "video")
+    }
+
+    /// Link the audio appsrc through a new `audioconvert → audioresample`,
+    /// so `then` can take any format, then through `then` (already in the
+    /// pipeline), in order: the last element linked.
+    pub fn audio_chain(&self, then: &[&gst::Element]) -> Result<gst::Element> {
+        let convert = [
+            make_el("audioconvert", "aconv")?,
+            make_el("audioresample", "aresample")?,
+        ];
+        self.chain(self.audio_src.upcast_ref(), &convert, then, "audio")
+    }
+
+    fn chain(
+        &self,
+        src: &gst::Element,
+        convert: &[gst::Element],
+        then: &[&gst::Element],
+        kind: &str,
+    ) -> Result<gst::Element> {
+        self.pipeline
+            .add_many(convert)
+            .with_context(|| format!("add {kind} convert"))?;
+        let chain: Vec<&gst::Element> = std::iter::once(src)
+            .chain(convert)
+            .chain(then.iter().copied())
+            .collect();
+        gst::Element::link_many(chain.iter().copied())
+            .with_context(|| format!("link {} {kind}", self.pipeline.name()))?;
+        Ok(chain[chain.len() - 1].clone())
+    }
+
     /// Stop taking the monitor's streams.
     pub fn disconnect(&mut self) {
         self.links.clear();
