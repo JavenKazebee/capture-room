@@ -207,6 +207,14 @@ impl Drop for Clip {
     }
 }
 
+/// A speed a replay can play at: up to 4x either way, and not stopped.
+pub fn check_rate(rate: f64) -> Result<()> {
+    if !rate.is_finite() || rate == 0.0 || rate.abs() > 4.0 {
+        bail!("the speed must be between -4 and 4, and not 0");
+    }
+    Ok(())
+}
+
 impl Playout {
     pub(super) fn new(id: &str) -> Self {
         Self {
@@ -669,9 +677,7 @@ impl Playout {
     /// Play the clip on air at `rate` from where it is (1 normal, 0.5 half
     /// speed, negative backwards). Only replays change speed.
     pub async fn set_rate(&self, rate: f64) -> Result<()> {
-        if !rate.is_finite() || rate == 0.0 || rate.abs() > 4.0 {
-            bail!("the speed must be between -4 and 4, and not 0");
-        }
+        check_rate(rate)?;
         let mut deck = self.deck.lock().await;
         let clip = deck.current.as_mut().context("no clip loaded")?;
         if clip.request.replay.is_none() && rate != 1.0 {

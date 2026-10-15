@@ -37,7 +37,7 @@ mod tests;
 mod validate;
 
 pub use lanes::PlayedProgress;
-pub use playout::{ClipRequest, PlaylistItem, Playout, PlayoutStatus, ReplayClip};
+pub use playout::{check_rate, ClipRequest, PlaylistItem, Playout, PlayoutStatus, ReplayClip};
 pub use validate::{listen_ports, validate};
 
 /// How far ahead of its slot a clip's buffer is stamped. Covers the

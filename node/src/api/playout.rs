@@ -24,7 +24,9 @@ use crate::api::types::{
 use crate::benchmark;
 use crate::db::{self, ReplayClipRow};
 use crate::pipeline::replay::{self, ReplaySpan};
-use crate::sources::channel::{ClipRequest, PlaylistItem, Playout, PlayoutStatus, ReplayClip};
+use crate::sources::channel::{
+    check_rate, ClipRequest, PlaylistItem, Playout, PlayoutStatus, ReplayClip,
+};
 use crate::state::AppState;
 
 pub fn router() -> Router<Arc<AppState>> {
@@ -236,6 +238,19 @@ pub fn status_dto(status: PlayoutStatus, outputs: Vec<OutputStatusDto>) -> Chann
     }
 }
 
+/// Answer an action on the channel: its status, sent to everyone whether or
+/// not the action worked, or the action's error as a 400.
+async fn reply_to(
+    state: &AppState,
+    id: &str,
+    playout: &Playout,
+    result: anyhow::Result<()>,
+) -> ApiResult<Json<ChannelStatusDto>> {
+    let reply = reply(state, id, playout).await;
+    result.map_err(ApiError::bad)?;
+    Ok(reply)
+}
+
 /// Answer with the channel's status, and tell everyone.
 async fn reply(state: &AppState, id: &str, playout: &Playout) -> Json<ChannelStatusDto> {
     let status = channel_status(state, id, playout).await;
@@ -319,9 +334,7 @@ async fn post_cue(
 ) -> ApiResult<Json<ChannelStatusDto>> {
     let playout = playout(&state, &id).await?;
     let result = playout.cue_item(&req.item_id).await;
-    let reply = reply(&state, &id, &playout).await;
-    result.map_err(ApiError::bad)?;
-    Ok(reply)
+    reply_to(&state, &id, &playout, result).await
 }
 
 /// Play a playlist item now.
@@ -332,9 +345,7 @@ async fn post_play(
 ) -> ApiResult<Json<ChannelStatusDto>> {
     let playout = playout(&state, &id).await?;
     let result = playout.play_item(&req.item_id).await;
-    let reply = reply(&state, &id, &playout).await;
-    result.map_err(ApiError::bad)?;
-    Ok(reply)
+    reply_to(&state, &id, &playout, result).await
 }
 
 async fn post_transport(
@@ -365,9 +376,7 @@ async fn post_transport(
         }
         TransportAction::Step => playout.step(req.frames.unwrap_or(1)).await,
     };
-    let reply = reply(&state, &id, &playout).await;
-    result.map_err(ApiError::bad)?;
-    Ok(reply)
+    reply_to(&state, &id, &playout, result).await
 }
 
 // ── /replay ───────────────────────────────────────────────────────────────────
@@ -466,11 +475,7 @@ async fn post_replay(
 ) -> ApiResult<Json<ChannelStatusDto>> {
     let playout = playout(&state, &id).await?;
     let rate = req.rate.unwrap_or(1.0);
-    if !rate.is_finite() || rate == 0.0 || rate.abs() > 4.0 {
-        return Err(ApiError::BadRequest(
-            "the speed must be between -4 and 4, and not 0".into(),
-        ));
-    }
+    check_rate(rate).map_err(ApiError::bad)?;
     let (replay, name) = {
         let mgr = state.source_manager.read().await;
         let replay = mgr
@@ -504,9 +509,7 @@ async fn post_replay(
         replay: Some(replay),
     };
     let result = playout.load(request, req.play).await;
-    let reply = reply(&state, &id, &playout).await;
-    result.map_err(ApiError::bad)?;
-    Ok(reply)
+    reply_to(&state, &id, &playout, result).await
 }
 
 // ── /replay/clips ─────────────────────────────────────────────────────────────
@@ -750,11 +753,7 @@ async fn post_replay_clip(
 ) -> ApiResult<Json<ChannelStatusDto>> {
     let playout = playout(&state, &id).await?;
     let rate = req.rate.unwrap_or(1.0);
-    if !rate.is_finite() || rate == 0.0 || rate.abs() > 4.0 {
-        return Err(ApiError::BadRequest(
-            "the speed must be between -4 and 4, and not 0".into(),
-        ));
-    }
+    check_rate(rate).map_err(ApiError::bad)?;
     let row = clip_row(&state, &req.clip_id).await?;
     let (from, to) = clip_points(&row);
     let path = state
@@ -787,9 +786,7 @@ async fn post_replay_clip(
         replay: Some(replay),
     };
     let result = playout.load(request, req.play).await;
-    let reply = reply(&state, &id, &playout).await;
-    result.map_err(ApiError::bad)?;
-    Ok(reply)
+    reply_to(&state, &id, &playout, result).await
 }
 
 #[cfg(test)]
