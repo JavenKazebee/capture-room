@@ -2,36 +2,25 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useIntervalFn, useStorage } from '@vueuse/core'
 import { useViewKeys } from '@/composables/useViewKeys'
-import {
-  ChevronLeft,
-  ChevronRight,
-  History,
-  Pause,
-  Play,
-  Rewind,
-  Save,
-  Settings2,
-  Square,
-  X,
-} from '@lucide/vue'
-import { useSourcesStore, type Source } from '@/stores/sources'
+import { ChevronLeft, ChevronRight, History, Pause, Play, Rewind, Save, Settings2, Square, X } from '@lucide/vue'
+import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { usePlayoutStore } from '@/stores/playout'
-import { useReplayStore, type ReplayBuffer, type ReplayClip } from '@/stores/replay'
-import { notifyError } from '@/lib/notify'
-import { clockTimeFine, formatClock } from '@/lib/format'
+import { useReplayStore } from '@/stores/replay'
+import { clockTimeFine } from '@/lib/format'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import PageHeader from '@/components/common/PageHeader.vue'
-import StatusDot from '@/components/common/StatusDot.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
 import ProgramMonitor from '@/components/playback/ProgramMonitor.vue'
+import AngleList from '@/components/replay/AngleList.vue'
+import AngleLive from '@/components/replay/AngleLive.vue'
 import BuffersSheet from '@/components/replay/BuffersSheet.vue'
 import ReplayTimeline from '@/components/replay/ReplayTimeline.vue'
 import BehindLive from '@/components/replay/BehindLive.vue'
 import ClipList from '@/components/replay/ClipList.vue'
-import { useThumbnail } from '@/components/record/useThumbnail'
+import { SPEEDS, useReplayControl } from '@/components/replay/useReplayControl'
 
 const sources = useSourcesStore()
 const nodes = useNodesStore()
@@ -52,9 +41,6 @@ const SHORTCUTS: [string[], string][] = [
   [['Esc'], 'Stop (back to black)'],
 ]
 
-/** Speeds offered, slowest first; either way round. */
-const SPEEDS = [0.25, 0.5, 0.75, 1] as const
-
 // ── Channel and angles ────────────────────────────────────────────────────────
 
 const channelKey = useStorage('cr.replay.channel', '')
@@ -72,7 +58,6 @@ const channelChoice = computed({
   get: () => channel.value?.key ?? '',
   set: (key: string) => (channelKey.value = key),
 })
-const status = computed(() => (channel.value ? playout.status.get(channel.value.key) : undefined))
 watch(
   channel,
   (c) => {
@@ -91,18 +76,14 @@ const angles = computed(() =>
     .filter((s) => replay.buffers.has(s.key))
     .map((s) => ({ source: s, buffer: replay.buffers.get(s.key)! })),
 )
-const usable = (b: ReplayBuffer) => !!channel.value && b.node_id === channel.value.node_id
 /** The angles that play on the channel: number keys 1–9 pick from these. */
-const usableAngles = computed(() => angles.value.filter((a) => usable(a.buffer)))
+const usableAngles = computed(() =>
+  angles.value.filter((a) => !!channel.value && a.buffer.node_id === channel.value.node_id),
+)
 const angleKey = useStorage('cr.replay.angle', '')
 const angle = computed(
-  () =>
-    angles.value.find((a) => a.source.key === angleKey.value && usable(a.buffer)) ??
-    angles.value.find((a) => usable(a.buffer)) ??
-    null,
+  () => usableAngles.value.find((a) => a.source.key === angleKey.value) ?? usableAngles.value[0] ?? null,
 )
-
-// ── Time ──────────────────────────────────────────────────────────────────────
 
 // One poll at a time: a slow node mustn't pile requests up.
 let polling = false
@@ -120,26 +101,6 @@ useIntervalFn(
   { immediateCallback: true },
 )
 
-/** The replay on the channel, if it's showing one: its angle and the moment shown. */
-const showing = computed(() => {
-  const clip = status.value?.clip
-  if (!clip?.replay_source_id || clip.replay_start_us == null || !channel.value) return null
-  const pos = status.value?.position_ms ?? clip.in_ms
-  return {
-    key: `${channel.value.node_id}/${clip.replay_source_id}`,
-    us: clip.replay_start_us + pos * 1000,
-    rate: clip.rate,
-  }
-})
-const playing = computed(() => status.value?.state === 'playing')
-
-/** The time of day a node clock time shows, from the buffer's UTC mapping. */
-function timeOfDay(us: number | null) {
-  const offset = angle.value?.buffer.utc_offset_us
-  if (us === null || offset == null) return '–'
-  return clockTimeFine(new Date((us + offset) / 1000), 2)
-}
-
 // ── Settings ──────────────────────────────────────────────────────────────────
 
 const rate = useStorage('cr.replay.rate', 0.5)
@@ -149,257 +110,59 @@ const windowChoice = computed({
   get: () => String(windowSecs.value ?? 'all'),
   set: (v: string) => (windowSecs.value = v === 'all' ? null : Number(v)),
 })
-const inUs = ref<number | null>(null)
-const outUs = ref<number | null>(null)
 const buffersOpen = ref(false)
 
-// ── Commands ──────────────────────────────────────────────────────────────────
+// ── Control ───────────────────────────────────────────────────────────────────
 
-/**
- * Commands run one after another, in the order given: a key pressed while
- * one is in flight (a step, a cue) waits its turn rather than being lost.
- */
-let queue: Promise<unknown> = Promise.resolve()
-/** Commands queued or running. */
-const queued = ref(0)
-const busyQueue = computed(() => queued.value > 0)
-function run(what: string, fn: () => Promise<unknown>) {
-  queued.value++
-  queue = queue
-    .then(fn)
-    .catch((e) => notifyError(`${what} failed`, e, channel.value?.node_id ?? null))
-    .finally(() => queued.value--)
+const ctl = useReplayControl({ channel, angles, usableAngles, angle, angleKey, clips, rate, lastSecs })
+const { status, showing, playing, inUs, outUs, reverse } = ctl
+
+/** The time of day a node clock time shows, from the buffer's UTC mapping. */
+function timeOfDay(us: number | null) {
+  const offset = angle.value?.buffer.utc_offset_us
+  if (us === null || offset == null) return '–'
+  return clockTimeFine(new Date((us + offset) / 1000), 2)
 }
-
-/** Put `source`'s buffer on air from `fromUs`, up to the out mark if it's later. */
-function load(source: Source, fromUs: number, play: boolean, r = rate.value) {
-  const c = channel.value
-  if (!c) return Promise.resolve()
-  const to = outUs.value !== null && outUs.value > fromUs ? outUs.value : null
-  return replay.play(c.node_id, c.id, {
-    source_id: source.id,
-    from_us: Math.round(fromUs),
-    to_us: to === null ? null : Math.round(to),
-    rate: r,
-    play,
-  })
-}
-
-// Each command decides what to do when its turn comes, from the state
-// the commands before it left, not from the state when its key was pressed.
-
-/** Show a moment of the current angle, paused. */
-function pick(us: number) {
-  const a = angle.value
-  if (a) run('Cueing', () => load(a.source, us, false))
-}
-
-/** The classic: the last few seconds again, at the chosen speed. */
-function replayLast() {
-  const a = angle.value
-  if (!a) return
-  // From the moment the key was pressed.
-  const from = replay.nowUs(a.buffer) - Math.max(1, Number(lastSecs.value) || 8) * 1_000_000
-  outUs.value = null
-  run('Replaying', () => load(a.source, from, true))
-}
-
-function playMarked() {
-  const a = angle.value
-  if (!a) return
-  run('Playing the marked clip', async () => {
-    if (inUs.value !== null) await load(a.source, inUs.value, true)
-  })
-}
-
-/** Switch angle; a replay on air carries on from the same moment on the new one. */
-function selectAngle(source: Source) {
-  const b = replay.buffers.get(source.key)
-  if (!b || !usable(b)) return
-  angleKey.value = source.key
-  run(`Switching to ${source.display_name}`, async () => {
-    const s = showing.value
-    if (s && s.key !== source.key) await load(source, s.us, playing.value, s.rate)
-  })
-}
-
-/** Play from the frame shown at the chosen speed; with nothing shown, the last few seconds. */
-function play() {
-  const c = channel.value
-  if (!c) return
-  if (!showing.value && !busyQueue.value) return replayLast()
-  run('Playing', async () => {
-    const s = showing.value
-    const clip = status.value?.clip
-    if (!s || !clip || playing.value) return
-    if (status.value?.state === 'ended') {
-      // Again from its in point (its out point backwards).
-      const saved = clips.value.find((x) => x.id === clip.replay_clip_id)
-      if (saved) return replay.playClip(c.id, saved, rate.value, true)
-      const a = angles.value.find((x) => x.source.key === s.key)
-      if (!a) return
-      const start = clip.replay_start_us! + clip.in_ms * 1000
-      const end = clip.out_ms == null ? null : clip.replay_start_us! + clip.out_ms * 1000
-      return replay.play(c.node_id, c.id, {
-        source_id: a.source.id,
-        from_us: Math.round(start),
-        to_us: end === null ? null : Math.round(end),
-        rate: rate.value,
-        play: true,
-      })
-    }
-    if (s.rate !== rate.value) await playout.transport(c.node_id, c.id, 'speed', { rate: rate.value })
-    await playout.transport(c.node_id, c.id, 'play')
-  })
-}
-
-function pause() {
-  const c = channel.value
-  if (!c) return
-  run('Pausing', async () => {
-    if (playing.value) await playout.transport(c.node_id, c.id, 'pause')
-  })
-}
-
-function playPause() {
-  // Decided now: a Space pressed while a replay is starting pauses it.
-  if (playing.value || busyQueue.value) {
-    run('Pausing', async () => {
-      const c = channel.value
-      if (c && playing.value) await playout.transport(c.node_id, c.id, 'pause')
-      else if (c && showing.value) await playout.transport(c.node_id, c.id, 'play')
-    })
-  } else play()
-}
-
-function stop() {
-  const c = channel.value
-  if (!c) return
-  run('Stopping', async () => {
-    if (status.value?.clip) await playout.transport(c.node_id, c.id, 'stop')
-  })
-}
-
-function step(frames: number) {
-  const c = channel.value
-  if (!c) return
-  run('Stepping', async () => {
-    if (showing.value) await playout.transport(c.node_id, c.id, 'step', { frames })
-  })
-}
-
-function setRate(r: number) {
-  rate.value = r
-  const c = channel.value
-  if (!c) return
-  run('Changing speed', async () => {
-    if (showing.value && playing.value && showing.value.rate !== r) await playout.transport(c.node_id, c.id, 'speed', { rate: r })
-  })
-}
-
-function nudgeRate(dir: 1 | -1) {
-  const i = SPEEDS.indexOf(Math.abs(rate.value) as (typeof SPEEDS)[number])
-  const next = SPEEDS[Math.min(SPEEDS.length - 1, Math.max(0, (i < 0 ? 1 : i) + dir))]
-  setRate(rate.value < 0 ? -next : next)
-}
-
-const reverse = computed(() => rate.value < 0)
-function setReverse(on: boolean) {
-  setRate(on ? -Math.abs(rate.value) : Math.abs(rate.value))
-}
-
-/** Save in → out as a clip of the selected angle, or of every angle on the channel's node. */
-function saveMarked(everyAngle: boolean) {
-  const c = channel.value
-  const a = angle.value
-  if (!c || !a) return
-  run('Saving the clip', async () => {
-    const from = inUs.value
-    const to = outUs.value
-    if (from === null || to === null || to <= from) throw new Error('Mark an in point and a later out point first.')
-    const targets = everyAngle ? usableAngles.value : [a]
-    for (const t of targets) {
-      await replay.saveClip(c.node_id, {
-        source_id: t.source.id,
-        from_us: Math.round(from),
-        to_us: Math.round(to),
-        name: null,
-      })
-    }
-  })
-}
-
-function cueClip(clip: ReplayClip) {
-  const c = channel.value
-  if (c) run(`Cueing ${clip.name}`, () => replay.playClip(c.id, clip, rate.value, false))
-}
-
-function playClip(clip: ReplayClip) {
-  const c = channel.value
-  if (c) run(`Playing ${clip.name}`, () => replay.playClip(c.id, clip, rate.value, true))
-}
-
-/** Mark the frame shown, once the commands before have shown it. */
-function mark(which: 'in' | 'out') {
-  run('Marking', async () => {
-    const us = showing.value?.us ?? null
-    if (us === null) return
-    if (which === 'in') inUs.value = us
-    else outUs.value = us
-  })
-}
-
-// ── Keyboard ──────────────────────────────────────────────────────────────────
 
 useViewKeys((e) => {
   const key = e.key.toLowerCase()
   const handled = () => e.preventDefault()
   if (/^[1-9]$/.test(key)) {
     const a = usableAngles.value[Number(key) - 1]
-    if (a) selectAngle(a.source)
+    if (a) ctl.selectAngle(a.source)
   } else if (key === ' ') {
     handled()
-    playPause()
-  } else if (key === 'r') replayLast()
+    ctl.playPause()
+  } else if (key === 'r') ctl.replayLast()
   else if (key === 'arrowleft') {
     handled()
-    step(-1)
+    ctl.step(-1)
   } else if (key === 'arrowright') {
     handled()
-    step(1)
+    ctl.step(1)
   } else if (key === 'arrowup') {
     handled()
-    nudgeRate(1)
+    ctl.nudgeRate(1)
   } else if (key === 'arrowdown') {
     handled()
-    nudgeRate(-1)
+    ctl.nudgeRate(-1)
   } else if (key === 'j') {
-    setReverse(true)
-    play()
-  } else if (key === 'k') pause()
+    ctl.setReverse(true)
+    ctl.play()
+  } else if (key === 'k') ctl.pause()
   else if (key === 'l') {
-    setReverse(false)
-    play()
-  } else if (key === 'i') mark('in')
-  else if (key === 'o') mark('out')
+    ctl.setReverse(false)
+    ctl.play()
+  } else if (key === 'i') ctl.mark('in')
+  else if (key === 'o') ctl.mark('out')
   else if (key === 'enter') {
     handled()
-    playMarked()
-  } else if (key === 's') saveMarked(e.shiftKey)
-  else if (key === 'escape') stop()
+    ctl.playMarked()
+  } else if (key === 's') ctl.saveMarked(e.shiftKey)
+  else if (key === 'escape') ctl.stop()
 }, { alsoIgnore: '[role="listbox"]' })
 
 onMounted(() => sources.ensureLoaded())
-
-// ── Angle tiles ───────────────────────────────────────────────────────────────
-
-/** Held span of a buffer, as "4:32". */
-function held(b: ReplayBuffer) {
-  return b.start_us !== null && b.end_us !== null ? formatClock((b.end_us - b.start_us) / 1000) : '0:00.0'
-}
-
-const angleSource = computed(() => angle.value?.source ?? null)
-const angleThumb = useThumbnail(angleSource)
 </script>
 
 <template>
@@ -432,59 +195,19 @@ const angleThumb = useThumbnail(angleSource)
     </div>
 
     <div v-else class="flex-1 min-h-0 flex">
-      <!-- Angles -->
-      <nav class="w-60 shrink-0 border-r border-border overflow-y-auto p-2 flex flex-col gap-2" aria-label="Angles">
-        <button
-          v-for="a in angles"
-          :key="a.source.key"
-          class="text-left rounded-md border p-1.5 flex flex-col gap-1"
-          :class="[
-            a.source.key === angle?.source.key ? 'border-primary ring-1 ring-primary' : 'border-border hover:bg-accent/40',
-            !usable(a.buffer) && 'opacity-50 cursor-not-allowed',
-            showing?.key === a.source.key && 'bg-success/10',
-          ]"
-          :disabled="!usable(a.buffer)"
-          :title="usable(a.buffer) ? undefined : `On ${nodes.nameOf(a.buffer.node_id)}: it plays on that node's channels`"
-          :aria-current="a.source.key === angle?.source.key || undefined"
-          @click="selectAngle(a.source)"
-        >
-          <span class="flex items-center gap-1.5 text-xs min-w-0">
-            <span class="num text-[10px] rounded bg-muted px-1 text-muted-foreground shrink-0">
-              {{ usable(a.buffer) ? usableAngles.indexOf(a) + 1 : '–' }}
-            </span>
-            <StatusDot :status="a.buffer.error ? 'error' : a.buffer.encoder ? 'ok' : 'off'" />
-            <span class="font-medium truncate">{{ a.source.display_name }}</span>
-            <span class="flex-1" />
-            <span class="num text-[10px] text-muted-foreground shrink-0">{{ held(a.buffer) }}</span>
-          </span>
-          <span v-if="a.buffer.error" class="text-[11px] text-destructive line-clamp-2">{{ a.buffer.error }}</span>
-        </button>
-      </nav>
+      <AngleList
+        :angles="angles"
+        :usable-angles="usableAngles"
+        :selected-key="angle?.source.key ?? null"
+        :showing-key="showing?.key ?? null"
+        @select="ctl.selectAngle"
+      />
 
       <main class="flex-1 min-w-0 overflow-y-auto p-4">
         <div v-if="channel" class="max-w-4xl mx-auto flex flex-col gap-4">
           <div class="grid grid-cols-[2fr_1fr] gap-3 items-start">
             <ProgramMonitor :source="channel" :status="status" />
-            <!-- The selected angle, live -->
-            <div v-if="angle" class="rounded-lg border border-border overflow-hidden bg-card">
-              <div class="relative aspect-video bg-black">
-                <img
-                  v-if="angleThumb.src.value"
-                  :src="angleThumb.src.value"
-                  :alt="`${angle.source.display_name} live`"
-                  class="w-full h-full object-contain"
-                  draggable="false"
-                  @error="angleThumb.onError"
-                />
-                <span class="absolute top-1.5 left-1.5 rounded-sm bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-300">
-                  Live
-                </span>
-              </div>
-              <div class="px-2 py-1.5 text-xs flex flex-col gap-0.5">
-                <span class="font-medium truncate">{{ angle.source.display_name }}</span>
-                <span class="text-muted-foreground num">{{ held(angle.buffer) }} held · {{ angle.buffer.encoder ?? 'not recording' }}</span>
-              </div>
-            </div>
+            <AngleLive v-if="angle" :angle="angle" />
           </div>
 
           <div
@@ -498,7 +221,7 @@ const angleThumb = useThumbnail(angleSource)
           <section class="flex flex-col gap-3">
             <div class="flex flex-wrap items-center gap-2">
               <div class="flex items-center gap-1">
-                <Button size="sm" class="h-8 gap-1.5" :disabled="!angle" title="Replay the last few seconds (R)" @click="replayLast">
+                <Button size="sm" class="h-8 gap-1.5" :disabled="!angle" title="Replay the last few seconds (R)" @click="ctl.replayLast">
                   <History class="size-3.5" /> Last
                 </Button>
                 <Input
@@ -511,7 +234,7 @@ const angleThumb = useThumbnail(angleSource)
                 <span class="text-xs text-muted-foreground">s</span>
               </div>
               <div class="w-px h-6 bg-border mx-1" />
-              <Button size="icon" variant="outline" class="size-8" :disabled="!showing" title="Step back a frame (←)" aria-label="Step back a frame" @click="step(-1)">
+              <Button size="icon" variant="outline" class="size-8" :disabled="!showing" title="Step back a frame (←)" aria-label="Step back a frame" @click="ctl.step(-1)">
                 <ChevronLeft class="size-4" />
               </Button>
               <Button
@@ -520,17 +243,17 @@ const angleThumb = useThumbnail(angleSource)
                 class="h-8 w-24 gap-1.5"
                 :disabled="!angle"
                 :title="showing ? 'Play from the frame shown (Space)' : 'Replay the last few seconds (Space)'"
-                @click="play"
+                @click="ctl.play"
               >
                 <component :is="rate < 0 ? Rewind : Play" class="size-3.5 fill-current" /> Play
               </Button>
-              <Button v-else size="sm" variant="secondary" class="h-8 w-24 gap-1.5" title="Pause (Space)" @click="pause">
+              <Button v-else size="sm" variant="secondary" class="h-8 w-24 gap-1.5" title="Pause (Space)" @click="ctl.pause">
                 <Pause class="size-3.5 fill-current" /> Pause
               </Button>
-              <Button size="icon" variant="outline" class="size-8" :disabled="!showing" title="Step forward a frame (→)" aria-label="Step forward a frame" @click="step(1)">
+              <Button size="icon" variant="outline" class="size-8" :disabled="!showing" title="Step forward a frame (→)" aria-label="Step forward a frame" @click="ctl.step(1)">
                 <ChevronRight class="size-4" />
               </Button>
-              <Button size="sm" variant="outline" class="h-8 gap-1.5" :disabled="!status?.clip" title="Stop: back to black (Esc)" @click="stop">
+              <Button size="sm" variant="outline" class="h-8 gap-1.5" :disabled="!status?.clip" title="Stop: back to black (Esc)" @click="ctl.stop">
                 <Square class="size-3 fill-current" /> Stop
               </Button>
               <div class="w-px h-6 bg-border mx-1" />
@@ -540,7 +263,7 @@ const angleThumb = useThumbnail(angleSource)
                 class="h-8 gap-1.5 text-xs"
                 :aria-pressed="reverse"
                 title="Play backwards (J backwards, L forwards)"
-                @click="setReverse(!reverse)"
+                @click="ctl.setReverse(!reverse)"
               >
                 <Rewind class="size-3.5" /> Reverse
               </Button>
@@ -549,7 +272,7 @@ const angleThumb = useThumbnail(angleSource)
                 type="single"
                 variant="segmented"
                 aria-label="Speed"
-                @update:model-value="(v) => v && setRate((reverse ? -1 : 1) * Number(v))"
+                @update:model-value="(v) => v && ctl.setRate((reverse ? -1 : 1) * Number(v))"
               >
                 <ToggleGroupItem v-for="s in SPEEDS" :key="s" :value="String(s)" class="h-8 px-2.5 text-xs" :title="'↑ faster, ↓ slower'">
                   {{ Math.round(s * 100) }}%
@@ -575,15 +298,15 @@ const angleThumb = useThumbnail(angleSource)
               :playhead-us="showing?.key === angle.source.key ? showing.us : null"
               :in-us="inUs"
               :out-us="outUs"
-              @pick="pick"
+              @pick="ctl.pick"
             />
 
             <div class="flex flex-wrap items-center gap-2 text-xs">
-              <Button size="sm" variant="outline" class="h-7 text-xs" :disabled="!showing" title="Mark in at the frame shown (I)" @click="mark('in')">
+              <Button size="sm" variant="outline" class="h-7 text-xs" :disabled="!showing" title="Mark in at the frame shown (I)" @click="ctl.mark('in')">
                 Mark in
               </Button>
               <span class="num w-24">{{ inUs === null ? 'In –' : `In ${timeOfDay(inUs)}` }}</span>
-              <Button size="sm" variant="outline" class="h-7 text-xs" :disabled="!showing" title="Mark out at the frame shown (O)" @click="mark('out')">
+              <Button size="sm" variant="outline" class="h-7 text-xs" :disabled="!showing" title="Mark out at the frame shown (O)" @click="ctl.mark('out')">
                 Mark out
               </Button>
               <span class="num w-24">{{ outUs === null ? 'Out –' : `Out ${timeOfDay(outUs)}` }}</span>
@@ -592,7 +315,7 @@ const angleThumb = useThumbnail(angleSource)
                 class="h-7 text-xs gap-1.5"
                 :disabled="inUs === null"
                 title="Play from in to out at the chosen speed (Enter)"
-                @click="playMarked"
+                @click="ctl.playMarked"
               >
                 <Play class="size-3 fill-current" /> Play in → out
               </Button>
@@ -602,7 +325,7 @@ const angleThumb = useThumbnail(angleSource)
                 class="h-7 text-xs gap-1.5"
                 :disabled="inUs === null || outUs === null || outUs <= inUs"
                 title="Save in → out as a clip (S; Shift+S on every angle)"
-                @click="saveMarked(false)"
+                @click="ctl.saveMarked(false)"
               >
                 <Save class="size-3" /> Save clip
               </Button>
@@ -613,7 +336,7 @@ const angleThumb = useThumbnail(angleSource)
                 class="size-7"
                 title="Clear the marks"
                 aria-label="Clear the marks"
-                @click="(inUs = null), (outUs = null)"
+                @click="ctl.clearMarks"
               >
                 <X class="size-3.5" />
               </Button>
@@ -630,8 +353,8 @@ const angleThumb = useThumbnail(angleSource)
           <ClipList
             :clips="clips"
             :on-air-id="status?.clip?.replay_clip_id ?? null"
-            @cue="cueClip"
-            @play="playClip"
+            @cue="ctl.cueClip"
+            @play="ctl.playClip"
           />
         </div>
       </main>
