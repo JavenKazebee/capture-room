@@ -424,19 +424,29 @@ impl ReplayLeg {
                 set("realtime", "true")?;
                 set("allow-frame-reordering", "false")?;
                 set("max-keyframe-interval", "1")?;
-                set("quality", "0.85")?;
+                // Matches ProRes Proxy's picture (VMAF) at about 60% of its
+                // size; 0.85 was ProRes's size for little gain. A bitrate
+                // instead is ignored with every frame a keyframe.
+                set("quality", "0.75")?;
             }
             "x264enc" => {
                 set("key-int-max", "1")?;
                 set("speed-preset", "superfast")?;
                 set("pass", "qual")?;
                 set("quantizer", "18")?;
+                // `qual` caps the rate at `bitrate` (2 Mbit/s by default):
+                // lift the cap so the quantizer alone sets the quality.
+                set("bitrate", "2048000")?;
             }
             "jpegenc" => {
+                // JPEG is full-range BT.601, and jpegdec reads it as that:
+                // handed limited-range BT.709, the replay showed lifted
+                // blacks and shifted colours.
                 video.push(capsfilter(
                     "venc-caps",
                     gst::Caps::builder("video/x-raw")
                         .field("format", "I420")
+                        .field("colorimetry", "1:4:0:0")
                         .build(),
                 )?);
                 set("quality", "85")?;
@@ -847,14 +857,19 @@ mod tests {
         AudioTestSignal, MonitorSettingsDto, TestSourceConfig, VideoTestPattern,
     };
     use crate::sources::test::TestSource;
+    use gstreamer_video as gst_video;
     use std::time::Duration;
 
     pub(crate) fn test_source() -> TestSource {
+        test_pattern(VideoTestPattern::Smpte)
+    }
+
+    fn test_pattern(pattern: VideoTestPattern) -> TestSource {
         TestSource::new(
             "t".into(),
             "t".into(),
             TestSourceConfig {
-                pattern: VideoTestPattern::Smpte,
+                pattern,
                 width: 320,
                 height: 180,
                 fps_num: 30,
@@ -932,6 +947,75 @@ mod tests {
         drop(span);
         drop(index);
         assert!(!dir.exists(), "the buffer's folder was left behind");
+    }
+
+    /// Motion JPEG keeps the picture's levels: white comes back from a
+    /// segment as white (235) on a channel, not grey (218, read as full range).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mjpeg_keeps_levels() {
+        gst::init().unwrap();
+        let source = test_pattern(VideoTestPattern::White);
+        let clock = gst::SystemClock::obtain();
+        let monitor =
+            MonitorPipeline::new(&source, &MonitorSettingsDto::default(), &clock).unwrap();
+        let dir = std::env::temp_dir().join(format!("capture-room-levels-{}", std::process::id()));
+        let index = Index::create(&dir, gst::ClockTime::from_seconds(3));
+        while monitor.video_frames() == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let leg = ReplayLeg::start(&monitor, ReplayCodec::Mjpeg, &index, "test").unwrap();
+        let mut first = None;
+        for _ in 0..100 {
+            first = index
+                .lock()
+                .unwrap()
+                .segments
+                .front()
+                .map(|s| s.path.clone());
+            if first.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let white = mean_luma(&first.expect("no segment closed"));
+        assert!((white - 235.0).abs() < 3.0, "white came back as {white}");
+        drop(leg);
+        let _ = monitor.stop();
+    }
+
+    /// A JPEG segment's first frame's mean luma, decoded as a channel's player
+    /// does and converted to the program's format.
+    fn mean_luma(file: &Path) -> f64 {
+        let p = gst::parse::launch(&format!(
+            "filesrc location=\"{}\" ! qtdemux ! jpegdec ! videoconvert \
+             ! video/x-raw,format=I420,colorimetry=bt709 ! appsink name=out",
+            file.display()
+        ))
+        .unwrap()
+        .downcast::<gst::Pipeline>()
+        .unwrap();
+        let sink = p
+            .by_name("out")
+            .unwrap()
+            .downcast::<gst_app::AppSink>()
+            .unwrap();
+        p.set_state(gst::State::Playing).unwrap();
+        let sample = sink
+            .try_pull_sample(gst::ClockTime::from_seconds(5))
+            .expect("no frame decoded");
+        p.set_state(gst::State::Null).unwrap();
+        let info = gst_video::VideoInfo::from_caps(sample.caps().unwrap()).unwrap();
+        let map = sample.buffer().unwrap().map_readable().unwrap();
+        let (stride, width, height) = (
+            info.stride()[0] as usize,
+            info.width() as usize,
+            info.height() as usize,
+        );
+        let sum: u64 = (0..height)
+            .flat_map(|y| &map[y * stride..y * stride + width])
+            .map(|&v| v as u64)
+            .sum();
+        sum as f64 / (width * height) as f64
     }
 
     /// Video frames in a .mov, and how long its sound lasts.

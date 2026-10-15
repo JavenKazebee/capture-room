@@ -29,8 +29,11 @@ export type ReplayClip = ReplayClipDto & {
 
 export const CODECS: Record<ReplayCodec, { label: string; note: string }> = {
   prores_proxy: { label: 'ProRes 422 Proxy', note: 'About 40 GB an hour at 1080p59.94. Mac only.' },
-  h264_intra: { label: 'H.264, every frame a keyframe', note: 'A fraction of the size.' },
-  mjpeg: { label: 'Motion JPEG', note: 'About 40 GB an hour at 1080p59.94. Any platform.' },
+  h264_intra: {
+    label: 'H.264, every frame a keyframe',
+    note: "As good a picture as ProRes Proxy's at about 60% of the size: 20–30 GB an hour at 1080p59.94.",
+  },
+  mjpeg: { label: 'Motion JPEG', note: 'About 40–55 GB an hour at 1080p59.94. Any platform.' },
 }
 
 /**

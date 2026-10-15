@@ -584,9 +584,10 @@ pub enum ReplayCodec {
     /// ProRes 422 Proxy (VideoToolbox: macOS only). About 40 GB an hour at
     /// 1080p59.94.
     ProresProxy,
-    /// H.264 with every frame a keyframe: a fraction of the size.
+    /// H.264 with every frame a keyframe: ProRes Proxy's picture at about
+    /// 60% of the size, 20–30 GB an hour at 1080p59.94.
     H264Intra,
-    /// Motion JPEG: any platform, in software. About 40 GB an hour at
+    /// Motion JPEG: any platform, in software. About 40–55 GB an hour at
     /// 1080p59.94.
     Mjpeg,
 }

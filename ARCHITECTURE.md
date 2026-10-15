@@ -716,9 +716,14 @@ plays from it at variable speed.
   are drifting"), as a looping file source's does at each loop.
 - **Codec is the operator's choice, per buffer:** all-intra, so slow motion, reverse
   and frame stepping are smooth and any frame can be cut. ProRes 422 Proxy (VideoToolbox,
-  the default where it exists), intra-only H.264 (VideoToolbox, else x264) at a fraction
-  of the size, or Motion JPEG on any platform. A 2 s GOP is fine for recording but not
-  here. `/status` lists the ones a node can use.
+  the default where it exists), intra-only H.264 (VideoToolbox, else x264) with as good
+  a picture at about 60% of the size, or Motion JPEG on any platform. A 2 s GOP is fine
+  for recording but not here. `/status` lists the ones a node can use. Settings come
+  from a picture comparison (see What the comparison showed): `vtenc_h264` at quality
+  0.75 (a bitrate is ignored with every frame a keyframe), `x264enc` at quantizer 18
+  with its rate cap lifted (`pass=qual` otherwise caps at `bitrate`, 2 Mbit/s by
+  default), and `jpegenc` given full-range BT.601, which is what JPEG is and what
+  `jpegdec` reads it as.
 - **Index:** each finished segment's span on the node clock, from splitmuxsink's
   fragment messages (running time plus the monitor's base time). The index outlives the
   leg: a source restart starts a new leg on it, leaving a gap; a new codec or clock
@@ -796,11 +801,48 @@ player would (`splitmuxsrc` → decoder → appsink synced to the clock).
   | H.264 intra (`vtenc_h264`) | 16 Mbit/s | 7 GB | 3.6× |
   | ProRes Proxy (`avenc_prores_ks`) | 83 Mbit/s | 37 GB | 0.2×: unusable |
 
-  The intra H.264 encoder stayed far under its 120 Mbit/s target, so its picture quality
-  still needs comparing before it's chosen for its size.
+  The intra H.264 encoder stayed far under its 120 Mbit/s target: with every frame a
+  keyframe, `vtenc_h264` ignores a bitrate and falls back to its default quality. Its
+  picture is compared below.
 
 Not covered yet: audio (typically only played at 1×), several sources at once, and
 playing through an actual channel.
+
+### What the comparison showed
+
+`node/examples/replay_quality.sh` (2026-10-14, M3): three 10 s clips of real footage
+(4K30 worship practice scaled to 1080p30: a wide shot with fine detail, drums, a dark
+close-up with lens flare), each codec with the settings replay records with, scored by
+VMAF, PSNR and SSIM as a channel shows it (the replay decoder, then the program's I420
+BT.709). Rates scaled to 1080p59.94:
+
+| Codec | Per hour | VMAF | Worst 1% |
+|---|---|---|---|
+| ProRes Proxy (`vtenc_prores`) | 38–40 GB | 95.4–97.2 | 93.7–93.9 |
+| H.264 intra, `vtenc_h264` quality 0.75 | 20–31 GB | 97.1–97.8 | 95.0–95.7 |
+| H.264 intra, `vtenc_h264` quality 0.85 (before) | 37–55 GB | 98.1–98.7 | 96.8–96.9 |
+| H.264 intra, `x264enc` q18, rate cap lifted | 20–27 GB | 95.6–97.0 | 93.1–94.0 |
+| H.264 intra, `x264enc` q18 (before: 2 Mbit/s cap) | 2 GB | 32–42 | 7–30 |
+| MJPEG q85, full-range BT.601 | 38–54 GB | 94.7–96.4 | 90.9–93.1 |
+| MJPEG q85 (before: range mismatch) | 35–49 GB | 63–68 | 60–61 |
+
+- **Intra H.264 at quality 0.75 is ProRes Proxy's picture at about 60% of the size.**
+  It scores at least as well on every clip, worst frames included; side by side, with
+  the shadows lifted, it smooths dark background grain a little more than ProRes and
+  shows no banding. 0.70 (VMAF 96.3–97.1, 16–25 GB) is about level with ProRes; 0.85
+  costs as much as ProRes for a VMAF gain hardly visible, and each 0.05 above it adds
+  half again or more to the size for under 0.2 VMAF.
+- **x264 was capped at 2 Mbit/s.** `pass=qual` caps the rate at `bitrate` (2048 kbit/s
+  by default), so the fallback recorded a smeared picture. Lifted, quantizer 18 lands
+  about level with ProRes Proxy at half its size.
+- **MJPEG was recorded as the wrong range.** `jpegenc` stored limited-range BT.709 as
+  is; `jpegdec` reads every JPEG as full-range BT.601, so a replay showed lifted blacks
+  and greys for white. Converted to full-range BT.601 first, it's about level with
+  ProRes Proxy. The Test source type now says what it draws (limited-range BT.709):
+  left open, a JPEG encoder downstream negotiated it to full range, which
+  `videotestsrc` ignores, and hid the bug in the tests.
+- **Decoding keeps up.** In software, all of them decode 1080p at over 200 fps, more
+  than three times 59.94 (ProRes 390–580, H.264 310–530, JPEG about 230).
 
 ---
 

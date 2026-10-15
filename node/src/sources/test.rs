@@ -31,7 +31,11 @@ fn build_bin(id: &str, cfg: &TestSourceConfig) -> Result<gst::Bin> {
     vsrc.set_property_from_str("pattern", pattern_gst_name(cfg.pattern));
     let vcaps = capsfilter(
         &format!("vcaps-{id}"),
+        // videotestsrc draws limited range whatever it negotiates, so say so:
+        // left open, a full-range consumer (a JPEG encoder) gets it mislabelled.
         gst::Caps::builder("video/x-raw")
+            .field("format", "I420")
+            .field("colorimetry", "bt709")
             .field("width", cfg.width as i32)
             .field("height", cfg.height as i32)
             .field(

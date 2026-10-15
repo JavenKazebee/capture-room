@@ -278,9 +278,15 @@ Builds on playback (#9) and clock sync (#10). Design in ARCHITECTURE.md (Instant
   since a hardware encoder never drops frames; memory is now watched as feeds start and
   run, and the search won't try a count that wouldn't fit. On that Mac (already
   swapping) a ProRes run stops at 2 feeds, for memory.
-- **Next:** compare intra H.264's picture with ProRes Proxy's before recommending it
-  for its size. Then a replay node subscribing to the same NDI sources as the capture
-  nodes. Not yet: clips from several angles grouped as one, downloading an export from
+- ✅ **Replay codecs compared (2026-10-14)** — on real footage, scored by VMAF as a
+  channel shows it (`node/examples/replay_quality.sh`): intra H.264 now records at
+  `vtenc_h264` quality 0.75, ProRes Proxy's picture at about 60% of its size (20–31 GB
+  an hour at 1080p59.94 against 38–40); 0.85 had been ProRes's size. Fixed on the way:
+  the x264 fallback was capped at 2 Mbit/s (VMAF 32–42), and MJPEG replays showed
+  lifted blacks and grey whites (stored as the wrong range). Results in ARCHITECTURE.md
+  (Instant Replay › What the comparison showed). Benchmark results for intra H.264 and
+  MJPEG buffers predate the change: re-run them.
+- **Next:** a replay node subscribing to the same NDI sources as the capture nodes. Not yet: clips from several angles grouped as one, downloading an export from
   the browser, MOV timecode on exports.
 
 ## 13. Follow-on
