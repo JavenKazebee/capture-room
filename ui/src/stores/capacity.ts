@@ -7,7 +7,9 @@ import type { CapacityCheckDto } from '@/types/generated/CapacityCheckDto'
 import type { MediaInfo } from '@/types/generated/MediaInfo'
 import type { NodeCapacityDto } from '@/types/generated/NodeCapacityDto'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
+import type { ReplayCodec } from '@/types/generated/ReplayCodec'
 import { fpsLabel } from '@/lib/sourceFormat'
+import { CODECS } from '@/stores/replay'
 import { onReconnect } from '@/lib/reconnect'
 
 /** Recording time left on a volume below which the UI warns. */
@@ -18,6 +20,12 @@ export function formatLabel(m: Pick<MediaInfo, 'width' | 'height' | 'fps_num' | 
   const rate = fpsLabel([m.fps_num, m.fps_den], true)
   const standard = [480, 576, 720, 1080, 1440, 2160, 4320].includes(m.height) && m.width >= m.height
   return standard ? `${m.height}p${rate}` : `${m.width}×${m.height} ${rate}`
+}
+
+/** What a benchmark run or profile measured: a preset's outputs, or replay buffers. */
+export function setupLabel(s: { preset_name: string | null; replay: ReplayCodec | null }) {
+  if (s.replay) return `Replay buffer · ${CODECS[s.replay].label}`
+  return s.preset_name ?? 'H.264 (default)'
 }
 
 /**
@@ -77,7 +85,15 @@ export const useCapacityStore = defineStore('capacity', () => {
   function check(nodeId: string, outputs: PresetOutputInput[], sourceIds: string[]) {
     return nodeApi(nodeId)<CapacityCheckDto>('/capacity/check', {
       method: 'POST',
-      body: { outputs, source_ids: sourceIds },
+      body: { outputs, source_ids: sourceIds, replay: null },
+    })
+  }
+
+  /** Would giving `sourceIds` replay buffers in `codec` fit on the node? */
+  function checkReplay(nodeId: string, codec: ReplayCodec, sourceIds: string[]) {
+    return nodeApi(nodeId)<CapacityCheckDto>('/capacity/check', {
+      method: 'POST',
+      body: { outputs: [], source_ids: sourceIds, replay: codec },
     })
   }
 
@@ -91,5 +107,5 @@ export const useCapacityStore = defineStore('capacity', () => {
 
   onReconnect(reloadLoaded)
 
-  return { capacity, runs, load, loadRuns, applyRun, start, cancel, remove, check }
+  return { capacity, runs, load, loadRuns, applyRun, start, cancel, remove, check, checkReplay }
 })

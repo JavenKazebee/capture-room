@@ -3,7 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { Gauge, Loader2 } from '@lucide/vue'
 import { formatRate } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
-import { formatLabel, useCapacityStore } from '@/stores/capacity'
+import { formatLabel, setupLabel, useCapacityStore } from '@/stores/capacity'
 import type { NodeDto } from '@/types/generated/NodeDto'
 import type { ProfileCapacityDto } from '@/types/generated/ProfileCapacityDto'
 import { Button } from '@/components/ui/button'
@@ -13,8 +13,8 @@ import BenchmarkDialog from './BenchmarkDialog.vue'
 
 /**
  * A node card's Capacity section: how many feeds each benchmarked setup
- * sustains, how much of that the node's recordings use, and the benchmark
- * running now.
+ * sustains, how much of that the node's recordings and replay buffers use,
+ * and the benchmark running now.
  */
 const props = defineProps<{ node: NodeDto; recording: number }>()
 
@@ -48,12 +48,21 @@ function feedsLabel(p: ProfileCapacityDto) {
 }
 
 function profileTitle(p: ProfileCapacityDto) {
-  const lines = p.outputs.map((o, i) => `${o.name}: ${o.codec}/${o.container}${p.encoders[i] ? ` via ${p.encoders[i]}` : ''}`)
+  const lines = p.replay
+    ? [`Replay buffers${p.encoders[0] ? ` via ${p.encoders[0]}` : ''}`]
+    : p.outputs.map((o, i) => `${o.name}: ${o.codec}/${o.container}${p.encoders[i] ? ` via ${p.encoders[i]}` : ''}`)
   if (p.at_limit) lines.push('Every step kept up: run again with a higher feed limit to find the maximum.')
   return lines.join('\n')
 }
 
 // ── Running ─────────────────────────────────────────────────────────────────
+
+/** Recordings and replay buffers counted in the load. */
+const active = computed(() => (cap.value ? cap.value.active_feeds + cap.value.active_buffers : 0))
+
+function plural(n: number, word: string) {
+  return `${n} ${word}${n === 1 ? '' : 's'}`
+}
 
 const lastStep = computed(() => running.value?.steps.at(-1) ?? null)
 const cancelling = ref(false)
@@ -79,6 +88,7 @@ const history = ref<{ selectId?: string } | null>(null)
 const startBlocked = computed(() => {
   if (running.value) return 'A benchmark is running.'
   if (props.recording) return 'Stop the recordings on this node first: they would skew the result.'
+  if (cap.value?.active_buffers) return 'Turn off the replay buffers on this node first (Replay › Buffers): they would skew the result.'
   return null
 })
 </script>
@@ -138,7 +148,7 @@ const startBlocked = computed(() => {
           to <span class="num">{{ running.max_feeds }}</span>
         </p>
         <p class="text-muted-foreground">
-          {{ running.preset_name ?? 'H.264 (default)' }} · <span class="num">{{ formatLabel(running.media) }}</span>
+          {{ setupLabel(running) }} · <span class="num">{{ formatLabel(running.media) }}</span>
           <template v-if="lastStep">
             · last {{ lastStep.quick ? 'check' : 'step' }}: <span class="num">{{ lastStep.feeds }}</span> feeds,
             <span class="num" :class="!lastStep.passed && 'text-warning'">{{ lastStep.drop_pct.toFixed(2) }}%</span> dropped,
@@ -147,21 +157,23 @@ const startBlocked = computed(() => {
         </p>
       </div>
 
-      <!-- Load from active recordings -->
-      <div v-if="cap.active_feeds" class="text-xs">
+      <!-- Load from active recordings and replay buffers -->
+      <div v-if="active" class="text-xs">
         <div class="flex justify-between gap-2 mb-1">
           <span>
-            <template v-if="cap.active_feeds > cap.unknown_feeds">
+            <template v-if="active > cap.unknown_feeds">
               Using <span class="num">{{ loadPct }}%</span> of benchmarked capacity
             </template>
-            <template v-else>No benchmark matches what's recording</template>
+            <template v-else>No benchmark matches what's running</template>
           </span>
-          <span class="text-muted-foreground shrink-0">
-            <span class="num">{{ cap.active_feeds }}</span> recording<template v-if="cap.unknown_feeds && cap.unknown_feeds < cap.active_feeds">
-              · <span class="num">{{ cap.unknown_feeds }}</span> not benchmarked</template>
+          <span class="text-muted-foreground shrink-0 num">
+            <template v-if="cap.active_feeds">{{ cap.active_feeds }} recording</template>
+            <template v-if="cap.active_feeds && cap.active_buffers"> · </template>
+            <template v-if="cap.active_buffers">{{ plural(cap.active_buffers, 'replay buffer') }}</template>
+            <template v-if="cap.unknown_feeds && cap.unknown_feeds < active"> · {{ cap.unknown_feeds }} not benchmarked</template>
           </span>
         </div>
-        <div v-if="cap.active_feeds > cap.unknown_feeds" class="h-1.5 rounded-full bg-muted overflow-hidden">
+        <div v-if="active > cap.unknown_feeds" class="h-1.5 rounded-full bg-muted overflow-hidden">
           <div class="h-full rounded-full" :class="loadClass" :style="{ width: `${Math.min(loadPct, 100)}%` }" />
         </div>
       </div>
@@ -176,7 +188,7 @@ const startBlocked = computed(() => {
             @click="history = { selectId: p.run_id }"
           >
             <span class="flex items-center gap-2">
-              <span class="truncate">{{ p.preset_name ?? 'H.264 (default)' }}</span>
+              <span class="truncate">{{ setupLabel(p) }}</span>
               <span class="num text-muted-foreground shrink-0">{{ formatLabel(p.media) }}</span>
               <span class="flex-1" />
               <span class="num font-medium shrink-0" :class="p.sustainable_feeds === 0 && 'text-destructive'">
@@ -197,7 +209,8 @@ const startBlocked = computed(() => {
         </li>
       </ul>
       <p v-else-if="!running" class="text-xs text-muted-foreground">
-        Not benchmarked yet. A benchmark finds how many feeds this node can record with a preset.
+        Not benchmarked yet. A benchmark finds how many feeds this node can record with a preset, or keep replay
+        buffers of.
       </p>
     </template>
   </section>

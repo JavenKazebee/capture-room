@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { toast } from 'vue-sonner'
+import { useCapacityStore } from '@/stores/capacity'
 import { useSourcesStore, type Source } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { CODECS, useReplayStore } from '@/stores/replay'
@@ -20,13 +22,16 @@ import StatusDot from '@/components/common/StatusDot.vue'
 
 /**
  * Which sources keep a replay buffer, in what codec, and for how long.
- * Changes apply at once; a new codec starts the buffer afresh.
+ * Changes apply at once; a new codec starts the buffer afresh. A buffer
+ * counts against its node's benchmarked capacity, so starting one warns
+ * (never blocks) when that runs short.
  */
 const emit = defineEmits<{ close: [] }>()
 
 const sources = useSourcesStore()
 const nodes = useNodesStore()
 const replay = useReplayStore()
+const capacity = useCapacityStore()
 
 const DEFAULT_MINUTES = 30
 
@@ -50,15 +55,28 @@ function stateOf(s: Source): { dot: 'ok' | 'off' | 'error'; label: string } {
   return { dot: 'off', label: 'Starting' }
 }
 
-async function apply(s: Source, what: string, fn: () => Promise<unknown>) {
+/** Apply a change; with `codec`, then warn if the node is near or past its benchmarked capacity. */
+async function apply(s: Source, what: string, fn: () => Promise<unknown>, codec?: ReplayCodec) {
   busy.value = s.key
   try {
     await fn()
   } catch (e) {
     notifyError(`${what} for ${s.display_name} failed`, e, s.node_id)
+    return
   } finally {
     busy.value = null
   }
+  if (codec) await warnLoad(s, codec)
+  if (capacity.capacity.has(s.node_id)) capacity.load(s.node_id)
+}
+
+async function warnLoad(s: Source, codec: ReplayCodec) {
+  const check = await capacity.checkReplay(s.node_id, codec, [s.id]).catch(() => null)
+  if (!check) return
+  const pct = Math.round(check.load_after * 100)
+  const name = nodes.nameOf(s.node_id)
+  if (pct > 100) toast.warning(`${name} is over its benchmarked capacity (${pct}%): expect dropped frames.`)
+  else if (pct > 80) toast.warning(`${name} is near its benchmarked capacity (${pct}%).`)
 }
 
 async function toggle(s: Source, on: boolean) {
@@ -68,15 +86,18 @@ async function toggle(s: Source, on: boolean) {
     notifyError(`${nodes.nameOf(s.node_id)} can't keep replay buffers`, new Error('It has none of the codecs installed.'))
     return
   }
-  return apply(s, 'Starting a replay buffer', () =>
-    replay.setBuffer(s.node_id, s.id, { codec: codecs[0], minutes: DEFAULT_MINUTES }),
+  return apply(
+    s,
+    'Starting a replay buffer',
+    () => replay.setBuffer(s.node_id, s.id, { codec: codecs[0], minutes: DEFAULT_MINUTES }),
+    codecs[0],
   )
 }
 
 function setCodec(s: Source, codec: ReplayCodec) {
   const b = replay.buffers.get(s.key)
   if (!b || b.codec === codec) return
-  apply(s, 'Changing the codec', () => replay.setBuffer(s.node_id, s.id, { codec, minutes: b.minutes }))
+  apply(s, 'Changing the codec', () => replay.setBuffer(s.node_id, s.id, { codec, minutes: b.minutes }), codec)
 }
 
 function setMinutes(s: Source, text: string | number) {

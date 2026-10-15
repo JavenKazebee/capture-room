@@ -3,11 +3,20 @@ import type { BenchmarkStatus } from "./BenchmarkStatus";
 import type { BenchmarkStepDto } from "./BenchmarkStepDto";
 import type { MediaInfo } from "./MediaInfo";
 import type { PresetOutputInput } from "./PresetOutputInput";
+import type { ReplayCodec } from "./ReplayCodec";
 
 /**
  * A benchmark run, as stored and as served.
  */
-export type BenchmarkRunDto = { id: string, started_at: string, finished_at: string | null, status: BenchmarkStatus, preset_id: string | null, preset_name: string | null, outputs: Array<PresetOutputInput>, media_path: string, media: MediaInfo, max_feeds: number, step_secs: number, drop_threshold_pct: number, 
+export type BenchmarkRunDto = { id: string, started_at: string, finished_at: string | null, status: BenchmarkStatus, preset_id: string | null, preset_name: string | null, 
+/**
+ * Empty for a replay buffer run.
+ */
+outputs: Array<PresetOutputInput>, 
+/**
+ * What a replay buffer run's feeds keep their buffers in.
+ */
+replay: ReplayCodec | null, media_path: string, media: MediaInfo, max_feeds: number, step_secs: number, drop_threshold_pct: number, 
 /**
  * Feeds currently running (0 once finished). Goes down as well as up:
  * the search narrows in on the answer.
@@ -19,7 +28,8 @@ feeds_running: number, steps: Array<BenchmarkStepDto>,
  */
 sustainable_feeds: number, 
 /**
- * The encoder element each output used, ordered like `outputs`.
+ * The encoder element each output used, ordered like `outputs` (for a
+ * replay buffer run, the buffer's).
  */
 encoders: Array<string>, 
 /**

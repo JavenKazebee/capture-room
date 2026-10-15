@@ -4,7 +4,7 @@ import { Trash2 } from '@lucide/vue'
 import { errorMessage } from '@/composables/useApi'
 import { formatRate } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
-import { formatLabel, useCapacityStore } from '@/stores/capacity'
+import { formatLabel, setupLabel, useCapacityStore } from '@/stores/capacity'
 import { useNodesStore } from '@/stores/nodes'
 import type { BenchmarkRunDto } from '@/types/generated/BenchmarkRunDto'
 import type { BenchmarkStatus } from '@/types/generated/BenchmarkStatus'
@@ -61,11 +61,18 @@ const details = computed(() => {
   const r = selected.value
   if (!r) return []
   return [
-    { label: 'Preset', value: r.preset_name ?? 'H.264 (default)' },
-    {
-      label: 'Outputs',
-      value: r.outputs.map((o, i) => `${o.name}${r.encoders[i] ? ` (${r.encoders[i]})` : ''}`).join(', '),
-    },
+    ...(r.replay
+      ? [
+          { label: 'Measured', value: setupLabel(r) },
+          { label: 'Encoder', value: r.encoders[0] ?? '—' },
+        ]
+      : [
+          { label: 'Preset', value: setupLabel(r) },
+          {
+            label: 'Outputs',
+            value: r.outputs.map((o, i) => `${o.name}${r.encoders[i] ? ` (${r.encoders[i]})` : ''}`).join(', '),
+          },
+        ]),
     { label: 'Footage', value: r.media_path, mono: true, copy: true },
     { label: 'Format', value: `${formatLabel(r.media)}${r.media.audio_channels ? `, ${r.media.audio_channels} ch audio` : ''}` },
     { label: 'Settings', value: `up to ${r.max_feeds} feeds, ${r.step_secs} s steps, ${r.drop_threshold_pct}% drop limit` },
@@ -95,7 +102,7 @@ async function remove() {
       <DialogHeader>
         <DialogTitle>Benchmarks on {{ nodes.nameOf(nodeId) }}</DialogTitle>
         <DialogDescription>
-          Each run adds feeds until frames drop. A recording setup's capacity comes from its latest completed run.
+          Each run adds feeds until frames drop. A setup's capacity comes from its latest completed run.
         </DialogDescription>
       </DialogHeader>
 
@@ -113,7 +120,7 @@ async function remove() {
               @click="selectedId = run.id"
             >
               <span class="flex items-center gap-2">
-                <span class="font-medium truncate">{{ run.preset_name ?? 'H.264 (default)' }}</span>
+                <span class="font-medium truncate">{{ setupLabel(run) }}</span>
                 <span class="flex-1" />
                 <span class="num shrink-0">{{ result(run) }}</span>
               </span>

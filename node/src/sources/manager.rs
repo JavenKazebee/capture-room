@@ -226,6 +226,11 @@ impl SourceManager {
         self.clip_root = clips;
     }
 
+    /// Where replay buffers are kept.
+    pub fn replay_root(&self) -> &Path {
+        &self.replay_root
+    }
+
     /// The folder a saved replay clip's files are in.
     pub fn replay_clip_dir(&self, clip_id: &str) -> PathBuf {
         self.clip_root.join(clip_id)
@@ -865,6 +870,26 @@ impl SourceManager {
         self.sessions
             .values()
             .map(|s| (s.outputs_key.clone(), self.source_format(&s.dto.source_id)))
+            .collect()
+    }
+
+    /// Every replay buffer that's recording: its key and its source's format,
+    /// to add up against the node's benchmarked capacity.
+    pub fn active_buffers(&self) -> Vec<(String, SourceFormat)> {
+        self.active_buffers_except(&[])
+    }
+
+    /// [`Self::active_buffers`], leaving out the sources `except`.
+    pub fn active_buffers_except(&self, except: &[String]) -> Vec<(String, SourceFormat)> {
+        self.replays
+            .iter()
+            .filter(|(id, r)| Self::recording(r) && !except.contains(id))
+            .map(|(id, r)| {
+                (
+                    crate::capacity::replay_key(r.config.codec),
+                    self.source_format(id),
+                )
+            })
             .collect()
     }
 

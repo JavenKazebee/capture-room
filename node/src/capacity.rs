@@ -1,17 +1,17 @@
 //! Capacity estimates from benchmark results: how many feeds a recording
-//! setup sustains on this node, and how much of that the active recordings
-//! use.
+//! setup (or replay buffers of a codec) sustains on this node, and how much
+//! of that the active recordings and replay buffers use.
 //!
-//! A benchmark measures one setup — a set of outputs, recording footage of
-//! one format — so results are looked up by both. Each feed of a setup that
-//! sustains N feeds uses 1/N of the node, and the active recordings' shares
-//! add up to the node's load (1 = full). That holds across setups only
+//! A benchmark measures one setup — a set of outputs or a replay codec, fed
+//! footage of one format — so results are looked up by both. Each feed of a
+//! setup that sustains N feeds uses 1/N of the node, and the shares of the
+//! active recordings and buffers add up to the node's load (1 = full). That holds across setups only
 //! roughly (an encoder bound by the GPU and one bound by the CPU share less
 //! than this assumes), so it's a guide, not a guarantee.
 
 use crate::api::types::{
     BenchmarkRunDto, BenchmarkStatus, CapacityVerdict, OutputAdvanced, PresetOutputInput,
-    ProfileCapacityDto,
+    ProfileCapacityDto, ReplayCodec,
 };
 use crate::pipeline::monitor::SourceFormat;
 
@@ -37,6 +37,21 @@ pub fn outputs_key(outputs: &[PresetOutputInput]) -> String {
         })
         .collect();
     serde_json::to_string(&normalized).unwrap_or_default()
+}
+
+/// Identifies replay buffers in `codec`, alongside [`outputs_key`]'s
+/// recording setups.
+pub fn replay_key(codec: ReplayCodec) -> String {
+    format!(
+        "replay:{}",
+        serde_json::to_string(&codec).unwrap_or_default()
+    )
+}
+
+/// What a run measured.
+fn run_key(run: &BenchmarkRunDto) -> String {
+    run.replay
+        .map_or_else(|| outputs_key(&run.outputs), replay_key)
 }
 
 struct Profile {
@@ -115,7 +130,7 @@ impl Capacity {
             .iter()
             .filter(|r| r.status == BenchmarkStatus::Completed && !r.steps.is_empty())
         {
-            let key = outputs_key(&run.outputs);
+            let key = run_key(run);
             let m = &run.media;
             if profiles.iter().any(|p| {
                 p.key == key && p.matches_format((m.width, m.height), (m.fps_num, m.fps_den))
@@ -147,6 +162,7 @@ impl Capacity {
                         .unwrap_or_else(|| run.started_at.clone()),
                     preset_name: run.preset_name.clone(),
                     outputs: run.outputs.clone(),
+                    replay: run.replay,
                     media: run.media.clone(),
                     sustainable_feeds: run.sustainable_feeds,
                     at_limit,
@@ -242,6 +258,7 @@ mod tests {
             preset_id: None,
             preset_name: None,
             outputs: vec![output("Main", "~/a/{source}.{ext}")],
+            replay: None,
             media_path: "/f.mov".into(),
             media: MediaInfo {
                 width: w,
@@ -327,6 +344,31 @@ mod tests {
         assert!((m.feeds - 9.0).abs() < 1e-9);
 
         assert!(cap.lookup("other", format(1920, 1080, 30, 1)).is_none());
+    }
+
+    #[test]
+    fn replay_runs_are_their_own_setup() {
+        let mut replay = run("replay", (1920, 1080, 30, 1), 6, &[true; 7]);
+        replay.outputs.clear();
+        replay.replay = Some(ReplayCodec::ProresProxy);
+        let cap = Capacity::from_runs(&[
+            replay,
+            run("rec", (1920, 1080, 30, 1), 3, &[true, true, true, false]),
+        ]);
+        assert_eq!(cap.profiles().len(), 2);
+        let hd = format(1920, 1080, 30, 1);
+        let prores = replay_key(ReplayCodec::ProresProxy);
+        assert_eq!(prores, r#"replay:"prores_proxy""#);
+        assert_eq!(cap.lookup(&prores, hd).unwrap().feeds, 6.0);
+        assert!(cap.lookup(&replay_key(ReplayCodec::Mjpeg), hd).is_none());
+        // A recording and two buffers: 1/3 + 2/6.
+        let rec = outputs_key(&[output("x", "y")]);
+        let load = cap.load([
+            (rec.as_str(), hd),
+            (prores.as_str(), hd),
+            (prores.as_str(), hd),
+        ]);
+        assert!((load.load - 2.0 / 3.0).abs() < 1e-9);
     }
 
     #[test]

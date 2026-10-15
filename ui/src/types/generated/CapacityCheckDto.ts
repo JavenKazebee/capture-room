@@ -17,6 +17,7 @@ unknown_feeds: number,
  */
 estimated: boolean, 
 /**
- * Volumes the new recordings would write to.
+ * Volumes the new recordings would write to (none for replay buffers,
+ * which keep a fixed length).
  */
 volumes: Array<VolumeCheckDto>, };

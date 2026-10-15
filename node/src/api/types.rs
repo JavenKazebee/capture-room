@@ -1433,6 +1433,10 @@ pub struct BenchmarkRequest {
     /// Default 0.5.
     #[serde(default)]
     pub drop_threshold_pct: Option<f64>,
+    /// Benchmark replay buffers in this codec instead: each feed keeps a
+    /// buffer rather than recording, and `outputs` is empty.
+    #[serde(default)]
+    pub replay: Option<ReplayCodec>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
@@ -1493,7 +1497,11 @@ pub struct BenchmarkRunDto {
     pub status: BenchmarkStatus,
     pub preset_id: Option<String>,
     pub preset_name: Option<String>,
+    /// Empty for a replay buffer run.
     pub outputs: Vec<PresetOutputInput>,
+    /// What a replay buffer run's feeds keep their buffers in.
+    #[serde(default)]
+    pub replay: Option<ReplayCodec>,
     pub media_path: String,
     pub media: MediaInfo,
     pub max_feeds: u32,
@@ -1506,7 +1514,8 @@ pub struct BenchmarkRunDto {
     /// The most feeds that kept up (while running, the most so far). 0 if
     /// even one feed couldn't.
     pub sustainable_feeds: u32,
-    /// The encoder element each output used, ordered like `outputs`.
+    /// The encoder element each output used, ordered like `outputs` (for a
+    /// replay buffer run, the buffer's).
     pub encoders: Vec<String>,
     /// Why the run ended: the failed step, the feed limit, a cancel, or an
     /// error.
@@ -1517,15 +1526,18 @@ pub struct BenchmarkRunDto {
 
 // ── Capacity ──────────────────────────────────────────────────────────────────
 
-/// What one benchmarked recording setup sustains on this node: the latest
-/// finished run for those outputs and that footage format.
+/// What one benchmarked setup sustains on this node: the latest finished
+/// run for those outputs (or that replay codec) and that footage format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct ProfileCapacityDto {
     pub run_id: String,
     pub finished_at: String,
     pub preset_name: Option<String>,
+    /// Empty for replay buffers.
     pub outputs: Vec<PresetOutputInput>,
+    /// Set for replay buffers in this codec.
+    pub replay: Option<ReplayCodec>,
     pub media: MediaInfo,
     pub sustainable_feeds: u32,
     /// Every step passed, so the node may sustain more than
@@ -1542,23 +1554,31 @@ pub struct ProfileCapacityDto {
 pub struct NodeCapacityDto {
     /// Latest result per benchmarked setup, newest first.
     pub profiles: Vec<ProfileCapacityDto>,
+    /// Active recordings.
     pub active_feeds: u32,
-    /// Share of the benchmarked capacity the active recordings use (1 = full),
-    /// counting only those with a matching benchmark.
+    /// Replay buffers recording.
+    pub active_buffers: u32,
+    /// Share of the benchmarked capacity the active recordings and replay
+    /// buffers use (1 = full), counting only those with a matching benchmark.
     pub load: f64,
-    /// Active recordings with no benchmark to judge them by.
+    /// Active recordings and replay buffers with no benchmark to judge them
+    /// by.
     pub unknown_feeds: u32,
     /// The benchmark running now, if any.
     pub running: Option<BenchmarkRunDto>,
 }
 
-/// Would recording `source_ids` with `outputs` fit, on top of what's
-/// recording already?
+/// Would recording `source_ids` with `outputs` (or giving them replay
+/// buffers in `replay`) fit, on top of what's recording already?
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct CapacityCheckRequest {
+    /// Empty when checking replay buffers.
     pub outputs: Vec<PresetOutputInput>,
     pub source_ids: Vec<String>,
+    /// Check replay buffers in this codec instead of recordings.
+    #[serde(default)]
+    pub replay: Option<ReplayCodec>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1586,7 +1606,8 @@ pub struct CapacityCheckDto {
     /// A benchmark for these outputs was scaled from footage of another
     /// format, so the numbers are approximate.
     pub estimated: bool,
-    /// Volumes the new recordings would write to.
+    /// Volumes the new recordings would write to (none for replay buffers,
+    /// which keep a fixed length).
     pub volumes: Vec<VolumeCheckDto>,
 }
 

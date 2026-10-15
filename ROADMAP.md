@@ -257,13 +257,20 @@ Builds on playback (#9) and clock sync (#10). Design in ARCHITECTURE.md (Instant
   remuxes a clip, frame-exact with its sound, into one .mov in `~/capture-room/Replay
   clips/` and adds it to the media library. Fixed on the way: replacing a channel's
   lanes could fail its program (`not-linked`) when loads came quickly.
-- **Next:** replay buffers in capacity and the benchmark. Compare intra H.264's picture
-  with ProRes Proxy's before recommending it for its size. Then a replay node
-  subscribing to the same NDI sources as the capture nodes. Not yet: clips from several
-  angles grouped as one, downloading an export from the browser, MOV timecode on
-  exports.
-- Replay buffers count against capacity; extend the benchmark to cover them and
-  playout channels.
+- ✅ **Replay buffers in capacity and the benchmark (2026-10-14)** — a benchmark can
+  measure replay buffers of a codec instead of a preset's recording; running buffers add
+  to a node's load beside its recordings, and turning one on in Replay › Buffers checks
+  and warns like Record. Benchmarks now refuse to start while buffers run, and starting
+  one cancels a benchmark. Fixed on the way: a buffer failed (qtmux, "timestamps are
+  drifting") when its source's sound jumped, as a looping file's does at each loop. And
+  memory guards a run: a ProRes buffer run climbed past 24 feeds and froze an 8 GB Mac,
+  since a hardware encoder never drops frames; memory is now watched as feeds start and
+  run, and the search won't try a count that wouldn't fit. On that Mac (already
+  swapping) a ProRes run stops at 2 feeds, for memory.
+- **Next:** compare intra H.264's picture with ProRes Proxy's before recommending it
+  for its size. Then a replay node subscribing to the same NDI sources as the capture
+  nodes. Not yet: clips from several angles grouped as one, downloading an export from
+  the browser, MOV timecode on exports, playout channels in capacity and the benchmark.
 
 ## 13. Follow-on
 

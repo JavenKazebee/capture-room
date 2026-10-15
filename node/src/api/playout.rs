@@ -21,6 +21,7 @@ use crate::api::types::{
     PlaylistItemDto, ReplayBufferDto, ReplayClipDto, ReplayClipRequest, ReplayConfigInput,
     SaveReplayClipRequest, TransportAction, TransportRequest, UpdateReplayClipRequest, WsEvent,
 };
+use crate::benchmark;
 use crate::db::{self, ReplayClipRow};
 use crate::pipeline::replay::{self, ReplaySpan};
 use crate::sources::channel::{ClipRequest, PlaylistItem, Playout, PlayoutStatus, ReplayClip};
@@ -410,6 +411,16 @@ async fn put_replay(
         return Err(ApiError::NotFound("source not found"));
     }
     db::replay_buffer_set(&state.db, &source_id, &req).await?;
+    // Like a recording, a buffer would compete with a benchmark and skew it.
+    if benchmark::cancel(
+        &state,
+        None,
+        "Cancelled: a replay buffer started on this node.",
+    )
+    .await
+    {
+        tracing::info!("benchmark cancelled for a replay buffer");
+    }
     let utc = state.clock.utc_offset_us();
     let mut mgr = state.source_manager.write().await;
     mgr.set_replay(&source_id, Some(req));

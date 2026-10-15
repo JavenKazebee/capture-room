@@ -901,39 +901,67 @@ async fn delete_benchmark(
 async fn get_capacity(State(state): State<Arc<AppState>>) -> ApiResult<Json<NodeCapacityDto>> {
     let runs = db::benchmarks_list(&state.db).await?;
     let capacity = Capacity::from_runs(&runs);
-    let feeds = state.source_manager.read().await.active_feeds();
-    let load = capacity.load(feeds.iter().map(|(key, format)| (key.as_str(), *format)));
+    let (feeds, buffers) = {
+        let mgr = state.source_manager.read().await;
+        (mgr.active_feeds(), mgr.active_buffers())
+    };
+    let load = capacity.load(
+        feeds
+            .iter()
+            .chain(&buffers)
+            .map(|(key, format)| (key.as_str(), *format)),
+    );
     let running =
         benchmark::running_id(&state).and_then(|id| runs.into_iter().find(|r| r.id == id));
     Ok(Json(NodeCapacityDto {
         profiles: capacity.profiles(),
         active_feeds: feeds.len() as u32,
+        active_buffers: buffers.len() as u32,
         load: load.load,
         unknown_feeds: load.unknown,
         running,
     }))
 }
 
-/// Would recording these sources with these outputs fit on this node — its
-/// benchmarked capacity, and the space on the volumes they'd write to?
+/// Would recording these sources with these outputs (or giving them replay
+/// buffers) fit on this node — its benchmarked capacity, and the space on the
+/// volumes they'd write to?
 async fn post_capacity_check(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CapacityCheckRequest>,
 ) -> ApiResult<Json<CapacityCheckDto>> {
     let capacity = Capacity::from_runs(&db::benchmarks_list(&state.db).await?);
-    let key = capacity::outputs_key(&req.outputs);
+    let key = req
+        .replay
+        .map_or_else(|| capacity::outputs_key(&req.outputs), capacity::replay_key);
     let (active, formats, active_legs) = {
         let mgr = state.source_manager.read().await;
+        // A source whose buffer is being changed stops counting as it was.
+        let buffers =
+            mgr.active_buffers_except(req.replay.map_or(&[][..], |_| &req.source_ids[..]));
         let formats: Vec<_> = req
             .source_ids
             .iter()
             .map(|id| mgr.source_format(id))
             .collect();
-        (mgr.active_feeds(), formats, mgr.active_leg_files())
+        let mut active = mgr.active_feeds();
+        active.extend(buffers);
+        (active, formats, mgr.active_leg_files())
     };
     let active_iter = || active.iter().map(|(k, f)| (k.as_str(), *f));
     let before = capacity.load(active_iter());
     let after = capacity.load(active_iter().chain(formats.iter().map(|f| (key.as_str(), *f))));
+    if req.replay.is_some() {
+        // A buffer keeps a fixed length, so it doesn't fill a volume.
+        return Ok(Json(CapacityCheckDto {
+            verdict: after.verdict(),
+            load_before: before.load,
+            load_after: after.load,
+            unknown_feeds: after.unknown,
+            estimated: after.estimated,
+            volumes: Vec::new(),
+        }));
+    }
 
     // What the new legs would write, and where: measured by a benchmark of
     // these outputs where there is one, else estimated from their settings.

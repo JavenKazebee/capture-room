@@ -1,17 +1,17 @@
 //! The benchmark runner: how many feeds this node can record with a set of
-//! outputs.
+//! outputs, or keep replay buffers of in a codec.
 //!
 //! Each feed is a looping media file (real footage: test patterns compress
-//! unrealistically) with its own monitor and recording legs, built the same
-//! way as a real recording but kept out of the [`SourceManager`], so they
-//! never show up as sources. Each step runs some number of feeds and, after a
-//! warm-up, measures:
+//! unrealistically) with its own monitor and recording legs (or replay
+//! buffer), built the same way as a real recording but kept out of the
+//! [`SourceManager`], so they never show up as sources. Each step runs some
+//! number of feeds and, after a warm-up, measures:
 //!
 //! - **Source shortfall:** frames the feeds didn't deliver, from the
 //!   monitors' frame counts against the footage's frame rate. Decoding (or
 //!   the monitors) fell behind.
-//! - **Output drops:** frames the legs' input queues dropped because an
-//!   encoder couldn't keep up.
+//! - **Output drops:** frames the legs' (or buffers') input queues dropped
+//!   because an encoder couldn't keep up.
 //! - CPU, memory, and what the legs wrote per second.
 //!
 //! The feed count is searched for (see [`Search`]): doubled with quick checks
@@ -33,6 +33,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context};
+use gstreamer as gst;
 use sysinfo::System;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -47,6 +48,7 @@ use crate::db;
 use crate::pipeline::monitor::{MonitorPipeline, VideoProgress};
 use crate::pipeline::profile::{plan_legs, PathVars, RecordingProfile};
 use crate::pipeline::recording::{self, OnLegError, OnLegFile, RecordingLeg};
+use crate::pipeline::replay::{Index, ReplayIndex, ReplayLeg};
 use crate::sources::file::{probe, FileSource};
 use crate::state::AppState;
 
@@ -71,15 +73,25 @@ const QUICK_FAIL_FACTOR: f64 = 4.0;
 /// Times a full step is measured before it fails.
 const MEASURE_ATTEMPTS: u32 = 2;
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(15);
-/// A run stops (and keeps its result) before a scratch volume gets this full…
+/// A run stops (and keeps its result) before a scratch volume gets this full.
 const MIN_FREE_BYTES: u64 = 2_000_000_000;
-/// …or the machine runs out of memory.
-const MAX_MEMORY_PCT: f64 = 95.0;
+/// The machine's available memory is never let fall below this…
+const MIN_FREE_MEMORY: u64 = 3 << 29;
+/// …or this share of all of it, whichever is more. See [`MemoryBudget`].
+const MIN_FREE_MEMORY_SHARE: u64 = 8;
+/// A feed is assumed to need this much more than the most any has used so
+/// far, when deciding whether more of them fit.
+const MEMORY_MARGIN: f64 = 1.25;
+/// How often memory is looked at while feeds run.
+const MEMORY_POLL: Duration = Duration::from_millis(500);
 /// How long a recording start waits for a cancelled benchmark to tear down.
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(15);
 /// Scratch folders are named this plus the start of the run id. Only folders
 /// named so are ever deleted.
 const SCRATCH_PREFIX: &str = ".capture-room-benchmark-";
+/// How much a replay buffer feed keeps. Old segments are deleted as they
+/// would be in a real buffer, and the scratch volume doesn't fill.
+const REPLAY_KEEP: gst::ClockTime = gst::ClockTime::from_seconds(30);
 
 /// The benchmark running on this node; there's at most one.
 pub struct Running {
@@ -93,16 +105,31 @@ pub struct Running {
 
 // ── Control ───────────────────────────────────────────────────────────────────
 
-/// Check a request, set up the run and start it. Refused while recording (the
-/// result would be skewed, and the benchmark would compete with real
-/// recordings) or while another benchmark runs.
+/// Check a request, set up the run and start it. Refused while recording or
+/// keeping replay buffers (the result would be skewed, and the benchmark
+/// would compete with them) or while another benchmark runs.
 pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<BenchmarkRunDto> {
-    if req.outputs.is_empty() {
-        return Err(ApiError::BadRequest(
-            "at least one output is required".into(),
-        ));
+    match req.replay {
+        Some(_) if !req.outputs.is_empty() => {
+            return Err(ApiError::BadRequest(
+                "a replay buffer benchmark takes no outputs".into(),
+            ));
+        }
+        Some(codec) if !codec.available() => {
+            return Err(ApiError::BadRequest(
+                "this node can't keep replay buffers in that codec".into(),
+            ));
+        }
+        Some(_) => {}
+        None if req.outputs.is_empty() => {
+            return Err(ApiError::BadRequest(
+                "at least one output is required".into(),
+            ));
+        }
+        None => {
+            plan_legs(&req.outputs, None).map_err(|e| ApiError::BadRequest(e.into()))?;
+        }
     }
-    plan_legs(&req.outputs, None).map_err(|e| ApiError::BadRequest(e.into()))?;
     let path = req.media_path.trim().to_string();
     let probe_path = path.clone();
     let media = tokio::task::spawn_blocking(move || probe(&probe_path))
@@ -132,23 +159,43 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
             done: done_rx,
         });
     }
-    // Checked after taking the slot: a recording that starts from here on
-    // cancels this run instead.
-    if !state
-        .source_manager
-        .read()
-        .await
-        .active_sessions()
-        .is_empty()
-    {
+    // Checked after taking the slot: a recording or replay buffer that
+    // starts from here on cancels this run instead.
+    let busy = {
+        let mgr = state.source_manager.read().await;
+        if !mgr.active_sessions().is_empty() {
+            Some("stop every recording on this node before benchmarking it")
+        } else if !mgr.active_buffers().is_empty() {
+            Some("turn off this node's replay buffers before benchmarking it: they would skew the result")
+        } else {
+            None
+        }
+    };
+    if let Some(why) = busy {
+        state.benchmark.lock().unwrap().take();
+        return Err(ApiError::Conflict(why));
+    }
+    let memory = MemoryWatch::new();
+    if memory.budget.short(memory.budget.baseline) {
         state.benchmark.lock().unwrap().take();
         return Err(ApiError::Conflict(
-            "stop every recording on this node before benchmarking it",
+            "this node is too short of memory to benchmark: close something and try again",
         ));
     }
 
     let setup = async {
-        let scratch = scratch_dirs(&req.outputs, &id, &state.node_name(), &media)?;
+        let scratch = match req.replay {
+            Some(_) => {
+                let root = state
+                    .source_manager
+                    .read()
+                    .await
+                    .replay_root()
+                    .to_path_buf();
+                vec![scratch_dir(&root, &id)?]
+            }
+            None => scratch_dirs(&req.outputs, &id, &state.node_name(), &media)?,
+        };
         let dto = BenchmarkRunDto {
             id: id.clone(),
             started_at: chrono::Utc::now().to_rfc3339(),
@@ -157,6 +204,7 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
             preset_id: req.preset_id.clone(),
             preset_name: req.preset_name.clone(),
             outputs: req.outputs.clone(),
+            replay: req.replay,
             media_path: path.clone(),
             media: media.clone(),
             max_feeds: req
@@ -200,6 +248,7 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
         cancel,
         reason,
         failure: Default::default(),
+        memory: Mutex::new(memory),
     };
     tokio::spawn(run.run(done_tx));
     Ok(dto)
@@ -260,15 +309,49 @@ pub async fn recover(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
 
 // ── Run ───────────────────────────────────────────────────────────────────────
 
-/// One feed: a looping file with its monitor and recording legs.
+/// One feed: a looping file with its monitor, and what it feeds.
 struct Feed {
     monitor: MonitorPipeline,
-    legs: Vec<RecordingLeg>,
+    work: Work,
+}
+
+/// What a feed's footage goes to.
+enum Work {
+    Record(Vec<RecordingLeg>),
+    /// A replay buffer. The leg is dropped before the index it writes into.
+    Replay(ReplayLeg, ReplayIndex),
+}
+
+impl Feed {
+    fn dropped_frames(&self) -> u64 {
+        match &self.work {
+            Work::Record(legs) => legs.iter().map(RecordingLeg::dropped_frames).sum(),
+            Work::Replay(leg, _) => leg.dropped_frames(),
+        }
+    }
+
+    /// The encoder elements it uses, one per output.
+    fn encoders(&self) -> Vec<String> {
+        match &self.work {
+            Work::Record(legs) => legs.iter().map(|l| l.encoder().to_string()).collect(),
+            Work::Replay(leg, _) => vec![leg.encoder().to_string()],
+        }
+    }
+
+    /// Why it failed, if it has. Recording legs report theirs as they go.
+    fn error(&self) -> Option<String> {
+        self.monitor.error().or_else(|| match &self.work {
+            Work::Record(_) => None,
+            Work::Replay(leg, _) => leg.error().map(|e| format!("replay buffer: {e}")),
+        })
+    }
 }
 
 /// Why a run ended early.
 enum Stop {
     Cancelled,
+    /// The machine's memory ran short: the step is abandoned, not the run.
+    ShortOfMemory,
     Failed(anyhow::Error),
 }
 
@@ -287,6 +370,7 @@ struct Run {
     reason: Arc<Mutex<Option<String>>>,
     /// The first leg error, reported from a streaming thread.
     failure: Arc<Mutex<Option<String>>>,
+    memory: Mutex<MemoryWatch>,
 }
 
 impl Run {
@@ -322,6 +406,7 @@ impl Run {
                 dto.status = BenchmarkStatus::Error;
                 dto.message = Some(format!("{e:#}"));
             }
+            Err(Stop::ShortOfMemory) => unreachable!("handled by the search"),
         }
         info!(id = %dto.id, status = ?dto.status, sustainable = dto.sustainable_feeds, message = ?dto.message, "benchmark finished");
         self.publish().await;
@@ -350,34 +435,64 @@ impl Run {
                 Next::Measure { feeds, full } => (feeds, full),
             };
 
-            let started = self.set_feeds(feeds, n).await?;
-            self.dto.feeds_running = n;
-            self.publish().await;
-            let warmup =
-                WARMUP + Duration::from_secs(started.div_ceil(WARMUP_FEEDS_PER_SEC) as u64);
-            self.pause(feeds, warmup).await?;
+            // More feeds than have run so far: only if they'd fit in memory.
+            if n > search.best() {
+                let fit = self.memory.lock().unwrap().budget.fits();
+                if let Some(fit) = fit.filter(|&fit| n > fit) {
+                    info!(
+                        feeds = n,
+                        fit, "benchmark capped: more feeds wouldn't fit in memory"
+                    );
+                    search.cap(fit.max(search.best()));
+                    capped = Some(format!(
+                        "{n} feeds wouldn't fit in the memory left (about {fit} would)"
+                    ));
+                    continue;
+                }
+            }
 
-            match self.check(feeds, n, full, &mut system).await? {
-                Some(full) => {
+            match self.step(feeds, n, full, &mut system).await {
+                Ok(Some(full)) => {
                     search.passed(n, full);
-                    let memory_pct = self.dto.steps.last().map_or(0.0, |s| s.memory_pct);
-                    let reason = if memory_pct > MAX_MEMORY_PCT {
-                        Some("memory is nearly full".to_string())
-                    } else {
-                        self.low_volume()
-                            .await
-                            .map(|volume| format!("{volume} is nearly full"))
-                    };
-                    if let Some(reason) = reason {
+                    if let Some(volume) = self.low_volume().await {
                         search.cap(n);
-                        capped = Some(reason);
+                        capped = Some(format!("{volume} is nearly full"));
                     }
                 }
-                None => search.failed(n),
+                Ok(None) => search.failed(n),
+                Err(Stop::ShortOfMemory) => {
+                    warn!(feeds = n, "benchmark step stopped: memory ran short");
+                    // Back below this count at once, so memory recovers.
+                    let back = search.best().min(n - 1);
+                    discard_feeds(feeds.drain(back as usize..).collect()).await;
+                    self.dto.feeds_running = back;
+                    search.failed(n);
+                    capped = Some(format!("memory ran short at {n} feed{}", plural(n)));
+                }
+                Err(e) => return Err(e),
             }
             self.dto.sustainable_feeds = search.best();
             self.publish().await;
         }
+    }
+
+    /// Run `n` feeds and measure them (see [`Self::check`]), noting how much
+    /// memory they take.
+    async fn step(
+        &mut self,
+        feeds: &mut Vec<Feed>,
+        n: u32,
+        full: bool,
+        system: &mut System,
+    ) -> Result<Option<bool>, Stop> {
+        let started = self.set_feeds(feeds, n).await?;
+        self.dto.feeds_running = n;
+        self.publish().await;
+        let warmup = WARMUP + Duration::from_secs(started.div_ceil(WARMUP_FEEDS_PER_SEC) as u64);
+        self.pause(feeds, warmup).await?;
+        let result = self.check(feeds, n, full, system).await?;
+        self.memory.lock().unwrap().observe(n);
+        Ok(result)
     }
 
     /// Measure `n` feeds: a quick check that passes only well clear of the
@@ -450,7 +565,8 @@ impl Run {
         system: &mut System,
     ) -> Result<BenchmarkStepDto, Stop> {
         let fps = self.dto.media.fps_num as f64 / self.dto.media.fps_den as f64;
-        let before = Snapshot::take(feeds).await?;
+        let replay = self.dto.replay.is_some();
+        let before = Snapshot::take(feeds, replay).await?;
         system.refresh_cpu_usage();
         let mut cpu = Vec::new();
         for _ in 0..secs {
@@ -458,14 +574,14 @@ impl Run {
             system.refresh_cpu_usage();
             cpu.push(system.global_cpu_usage() as f64);
         }
-        let after = Snapshot::take(feeds).await?;
+        let after = Snapshot::take(feeds, replay).await?;
         system.refresh_memory();
         let memory_pct = system.used_memory() as f64 / system.total_memory().max(1) as f64 * 100.0;
         let threshold = self.dto.drop_threshold_pct;
         Ok(measure(
             n,
             fps,
-            self.dto.outputs.len(),
+            if replay { 1 } else { self.dto.outputs.len() },
             &before,
             &after,
             &cpu,
@@ -482,9 +598,12 @@ impl Run {
         }
         let mut started = 0;
         while feeds.len() < target {
+            if self.memory.lock().unwrap().short() {
+                return Err(Stop::ShortOfMemory);
+            }
             let feed = self.add_feed(feeds.len() as u32 + 1).await?;
             if self.dto.encoders.is_empty() {
-                self.dto.encoders = feed.legs.iter().map(|l| l.encoder().to_string()).collect();
+                self.dto.encoders = feed.encoders();
             }
             feeds.push(feed);
             started += 1;
@@ -556,6 +675,16 @@ impl Run {
             }
         }
 
+        if let Some(codec) = self.dto.replay {
+            let index = Index::create(&self.scratch[0].join(format!("feed{n:02}")), REPLAY_KEEP);
+            let leg = ReplayLeg::start(&monitor, codec, &index, &format!("bench-{n}"))
+                .with_context(|| format!("start feed {n}'s replay buffer"))?;
+            return Ok(Feed {
+                monitor,
+                work: Work::Replay(leg, index),
+            });
+        }
+
         let legs = self.feed_legs(n, &monitor)?;
         let failure = Arc::clone(&self.failure);
         let on_error: OnLegError = Arc::new(move |path, error| {
@@ -575,7 +704,10 @@ impl Run {
             None,
         )
         .with_context(|| format!("start feed {n}'s outputs"))?;
-        Ok(Feed { monitor, legs })
+        Ok(Feed {
+            monitor,
+            work: Work::Record(legs),
+        })
     }
 
     /// Feed `n`'s legs: the run's outputs, writing into the scratch folders.
@@ -606,11 +738,22 @@ impl Run {
         plan_legs(&outputs, Some(&vars)).map_err(|e| anyhow!(e))
     }
 
-    /// Wait `duration`, returning early on a cancel or a failure.
+    /// Wait `duration`, returning early on a cancel, a failure, or memory
+    /// running short (checked every [`MEMORY_POLL`]).
     async fn pause(&self, feeds: &[Feed], duration: Duration) -> Result<(), Stop> {
-        tokio::select! {
-            _ = self.cancel.cancelled() => return Err(Stop::Cancelled),
-            _ = tokio::time::sleep(duration) => {}
+        let until = tokio::time::Instant::now() + duration;
+        loop {
+            let wake = until.min(tokio::time::Instant::now() + MEMORY_POLL);
+            tokio::select! {
+                _ = self.cancel.cancelled() => return Err(Stop::Cancelled),
+                _ = tokio::time::sleep_until(wake) => {}
+            }
+            if self.memory.lock().unwrap().short() {
+                return Err(Stop::ShortOfMemory);
+            }
+            if wake >= until {
+                break;
+            }
         }
         if let Some(e) = self.failure.lock().unwrap().clone() {
             return Err(Stop::Failed(anyhow!("an output failed: {e}")));
@@ -618,7 +761,7 @@ impl Run {
         if let Some((i, e)) = feeds
             .iter()
             .enumerate()
-            .find_map(|(i, f)| f.monitor.error().map(|e| (i, e)))
+            .find_map(|(i, f)| f.error().map(|e| (i, e)))
         {
             return Err(Stop::Failed(anyhow!("feed {} failed: {e}", i + 1)));
         }
@@ -656,8 +799,12 @@ impl Run {
 async fn discard_feeds(feeds: Vec<Feed>) {
     let teardown = tokio::task::spawn_blocking(move || {
         for feed in feeds {
-            for leg in feed.legs {
-                leg.discard();
+            match feed.work {
+                Work::Record(legs) => legs.into_iter().for_each(RecordingLeg::discard),
+                Work::Replay(leg, index) => {
+                    drop(leg);
+                    drop(index);
+                }
             }
             drop(feed.monitor);
         }
@@ -747,6 +894,118 @@ impl Search {
     }
 }
 
+// ── Memory ────────────────────────────────────────────────────────────────────
+
+/// How much memory feeds take, and how many more fit. Each feed (a decoder,
+/// a monitor, encoders, and on macOS VideoToolbox's own service) takes
+/// memory outside what a step measures, and an encoder that keeps up never
+/// fails a step, so without this a run would add feeds until the machine
+/// ran out.
+#[derive(Debug, Clone, Copy)]
+struct MemoryBudget {
+    /// Available before any feed ran.
+    baseline: u64,
+    /// Never go below this much available.
+    floor: u64,
+    /// The most any one feed has taken so far: the drop from the baseline
+    /// over the feeds running.
+    per_feed: u64,
+}
+
+impl MemoryBudget {
+    fn new(total: u64, available: u64) -> Self {
+        Self {
+            baseline: available,
+            floor: MIN_FREE_MEMORY.max(total / MIN_FREE_MEMORY_SHARE),
+            per_feed: 0,
+        }
+    }
+
+    fn short(&self, available: u64) -> bool {
+        available < self.floor
+    }
+
+    fn observe(&mut self, available: u64, feeds: u32) {
+        if feeds > 0 {
+            let used = self.baseline.saturating_sub(available) / u64::from(feeds);
+            self.per_feed = self.per_feed.max(used);
+        }
+    }
+
+    /// How many feeds fit, with a margin; `None` until feeds have shown
+    /// what they take.
+    fn fits(&self) -> Option<u32> {
+        (self.per_feed > 0).then(|| {
+            let room = self.baseline.saturating_sub(self.floor) as f64;
+            (room / (self.per_feed as f64 * MEMORY_MARGIN)) as u32
+        })
+    }
+}
+
+/// [`MemoryBudget`] over the machine's available memory.
+struct MemoryWatch {
+    system: System,
+    total: u64,
+    budget: MemoryBudget,
+}
+
+impl MemoryWatch {
+    fn new() -> Self {
+        let mut system = System::new();
+        system.refresh_memory();
+        let total = system.total_memory();
+        let mut watch = Self {
+            system,
+            total,
+            budget: MemoryBudget::new(total, 0),
+        };
+        watch.budget = MemoryBudget::new(total, watch.available());
+        watch
+    }
+
+    /// Memory new feeds could have. On macOS, the kernel's own measure (the
+    /// share it counts as free, as `memory_pressure` shows it): sysinfo's
+    /// subtracts compressed memory, and reads nothing at all on a Mac that's
+    /// merely compressing. Elsewhere, sysinfo's (`MemAvailable` on Linux).
+    fn available(&mut self) -> u64 {
+        #[cfg(target_os = "macos")]
+        if let Some(pct) = macos_free_pct() {
+            return self.total / 100 * pct;
+        }
+        self.system.refresh_memory();
+        self.system.available_memory()
+    }
+
+    fn short(&mut self) -> bool {
+        let available = self.available();
+        self.budget.short(available)
+    }
+
+    fn observe(&mut self, feeds: u32) {
+        let available = self.available();
+        self.budget.observe(available, feeds);
+    }
+}
+
+/// `kern.memorystatus_level`: the percentage of memory macOS counts as free.
+#[cfg(target_os = "macos")]
+fn macos_free_pct() -> Option<u64> {
+    let mut level: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>();
+    // SAFETY: the name is a C string and `level` is an int `len` bytes long,
+    // which is what this sysctl writes.
+    let ok = unsafe {
+        libc::sysctlbyname(
+            c"kern.memorystatus_level".as_ptr(),
+            (&mut level as *mut libc::c_int).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    } == 0;
+    (ok && (0..=100).contains(&level)).then_some(level as u64)
+}
+
 // ── Measuring ─────────────────────────────────────────────────────────────────
 
 /// Counters across every feed at one moment.
@@ -760,17 +1019,36 @@ struct Snapshot {
 }
 
 impl Snapshot {
-    async fn take(feeds: &[Feed]) -> anyhow::Result<Self> {
-        let outputs = feeds.first().map_or(0, |f| f.legs.len());
-        let files: Vec<Vec<String>> = (0..outputs)
-            .map(|i| feeds.iter().flat_map(|f| f.legs[i].files()).collect())
-            .collect();
+    /// `replay` when the feeds keep replay buffers: their one "output" is
+    /// counted by what the buffers have written, since old segments go.
+    async fn take(feeds: &[Feed], replay: bool) -> anyhow::Result<Self> {
         let frames = feeds.iter().map(|f| f.monitor.video_progress()).collect();
-        let dropped = feeds
-            .iter()
-            .flat_map(|f| &f.legs)
-            .map(RecordingLeg::dropped_frames)
-            .sum();
+        let dropped = feeds.iter().map(Feed::dropped_frames).sum();
+        if replay {
+            let written = feeds
+                .iter()
+                .map(|f| match &f.work {
+                    Work::Replay(_, index) => index.lock().unwrap().written(),
+                    Work::Record(_) => 0,
+                })
+                .sum();
+            return Ok(Self {
+                at: Instant::now(),
+                frames,
+                dropped,
+                bytes: vec![written],
+            });
+        }
+        // Per output, every feed's files.
+        let mut files: Vec<Vec<String>> = Vec::new();
+        for feed in feeds {
+            if let Work::Record(legs) = &feed.work {
+                files.resize(legs.len(), Vec::new());
+                for (list, leg) in files.iter_mut().zip(legs) {
+                    list.extend(leg.files());
+                }
+            }
+        }
         let at = Instant::now();
         let bytes = tokio::task::spawn_blocking(move || {
             files
@@ -865,21 +1143,23 @@ fn scratch_dirs(
     media: &MediaInfo,
 ) -> anyhow::Result<Vec<PathBuf>> {
     let legs = plan_legs(outputs, Some(&path_vars(media, node, 1))).map_err(|e| anyhow!(e))?;
-    let name = format!("{SCRATCH_PREFIX}{}", &id[..8]);
-    let mut dirs = Vec::with_capacity(legs.len());
-    for (path, _) in &legs {
-        let parent = path.parent().context("output path has no folder")?;
-        let existing = parent
-            .ancestors()
-            .find(|p| p.is_dir())
-            .context("no existing folder for the output")?;
-        let dir = existing.join(&name);
-        if !dir.exists() {
-            std::fs::create_dir(&dir).with_context(|| format!("create {}", dir.display()))?;
-        }
-        dirs.push(dir);
+    legs.iter()
+        .map(|(path, _)| scratch_dir(path.parent().context("output path has no folder")?, id))
+        .collect()
+}
+
+/// A scratch folder on the volume `folder` is on: in its nearest existing
+/// folder. Created here.
+fn scratch_dir(folder: &std::path::Path, id: &str) -> anyhow::Result<PathBuf> {
+    let existing = folder
+        .ancestors()
+        .find(|p| p.is_dir())
+        .context("no existing folder to write in")?;
+    let dir = existing.join(format!("{SCRATCH_PREFIX}{}", &id[..8]));
+    if !dir.exists() {
+        std::fs::create_dir(&dir).with_context(|| format!("create {}", dir.display()))?;
     }
-    Ok(dirs)
+    Ok(dir)
 }
 
 /// Delete scratch folders, refusing anything not named like one.
@@ -1122,6 +1402,26 @@ mod tests {
         search.passed(4, true);
         search.cap(4);
         assert_eq!(search.next(), Next::Done(4));
+    }
+
+    #[test]
+    fn memory_budget() {
+        const GB: u64 = 1 << 30;
+        const MB: u64 = 1 << 20;
+        // 8 GB with 3 GB available: never below 1.5 GB, so 1.5 GB to use.
+        let mut budget = MemoryBudget::new(8 * GB, 3 * GB);
+        assert_eq!(budget.floor, 1536 * MB);
+        assert_eq!(budget.fits(), None);
+        assert!(!budget.short(1536 * MB));
+        assert!(budget.short(1535 * MB));
+        // 4 feeds took 400 MB: 100 MB each, 125 MB with the margin.
+        budget.observe(3 * GB - 400 * MB, 4);
+        assert_eq!(budget.fits(), Some(12));
+        // A step where they took less doesn't lower the estimate.
+        budget.observe(3 * GB - 400 * MB, 8);
+        assert_eq!(budget.fits(), Some(12));
+        // On 32 GB, an eighth is kept free.
+        assert_eq!(MemoryBudget::new(32 * GB, 20 * GB).floor, 4 * GB);
     }
 
     #[test]

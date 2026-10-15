@@ -3,9 +3,9 @@
 //! all-intra codec; the oldest are deleted past the buffer's length.
 //!
 //! ```text
-//! appsrc(video) → videoconvert → [caps] → venc → [caps | parse] ─┐
-//!                                                      splitmuxsink (qtmux, 1 s)
-//! appsrc(audio) → queue → audioconvert → audioresample → S24LE ──┘
+//! appsrc(video) → videoconvert → [caps] → venc → [caps | parse] ──────────┐
+//!                                                                splitmuxsink (qtmux, 1 s)
+//! appsrc(audio) → queue → audioconvert → audioresample → S24LE → audiorate ┘
 //! ```
 //!
 //! The [`Index`] knows each finished segment's span on the monitor's clock,
@@ -100,6 +100,8 @@ pub struct Index {
     open: Option<(PathBuf, gst::ClockTime)>,
     /// Numbers the files, across legs.
     next_number: u64,
+    /// Bytes of every segment finished, deleted ones included.
+    written: u64,
     /// How long a span it keeps.
     keep: gst::ClockTime,
     /// Clips playing from it, with the earliest time each needs.
@@ -123,6 +125,7 @@ impl Index {
             segments: VecDeque::new(),
             open: None,
             next_number: 0,
+            written: 0,
             keep,
             holds: Vec::new(),
             next_hold: 0,
@@ -151,6 +154,11 @@ impl Index {
 
     pub fn bytes(&self) -> u64 {
         self.segments.iter().map(|s| s.bytes).sum()
+    }
+
+    /// Bytes written so far, including segments since deleted.
+    pub fn written(&self) -> u64 {
+        self.written
     }
 
     /// The clock the segments' times are on.
@@ -206,6 +214,7 @@ impl Index {
             return;
         }
         let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        self.written += bytes;
         self.segments.push_back(Segment {
             path: open,
             start,
@@ -464,6 +473,14 @@ impl ReplayLeg {
                     .field("format", "S24LE")
                     .build(),
             )?,
+            // qtmux fails on PCM that jumps ("timestamps are drifting"): a
+            // file source's loop, a dropout. Fill gaps with silence and trim
+            // overlaps, from the first sample on.
+            gst::ElementFactory::make("audiorate")
+                .name("arate")
+                .property("skip-to-first", true)
+                .build()
+                .context("create audiorate")?,
         ];
 
         let muxer = make_el("qtmux", "mux")?;
@@ -577,6 +594,16 @@ impl ReplayLeg {
 
     pub fn encoder(&self) -> &'static str {
         self.encoder
+    }
+
+    /// Video frames dropped so far because the encoder couldn't keep up (its
+    /// input queue overflowed), as [`RecordingLeg::dropped_frames`] counts
+    /// them.
+    ///
+    /// [`RecordingLeg::dropped_frames`]: super::recording::RecordingLeg::dropped_frames
+    pub fn dropped_frames(&self) -> u64 {
+        self.video_src()
+            .map_or(0, |src| src.property::<u64>("dropped"))
     }
 
     /// Why it stopped recording, if it has.

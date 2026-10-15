@@ -6,8 +6,10 @@ import { errorMessage } from '@/composables/useApi'
 import { useCapacityStore } from '@/stores/capacity'
 import { useNodesStore } from '@/stores/nodes'
 import { blankLeg, presetLegs, usePresetsStore } from '@/stores/presets'
+import { CODECS, useReplayStore } from '@/stores/replay'
 import { useSourcesStore } from '@/stores/sources'
 import type { ConfiguredSourceDto } from '@/types/generated/ConfiguredSourceDto'
+import type { ReplayCodec } from '@/types/generated/ReplayCodec'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -30,6 +32,20 @@ const capacity = useCapacityStore()
 const nodes = useNodesStore()
 const presets = usePresetsStore()
 const sources = useSourcesStore()
+const replay = useReplayStore()
+
+/** What each feed does: record with a preset, or keep a replay buffer. */
+const measure = ref<'record' | 'replay'>('record')
+const measureOptions = [
+  { value: 'record' as const, label: 'Recording' },
+  { value: 'replay' as const, label: 'Replay buffers' },
+]
+
+/** The node's default codec once its list is in. */
+const codec = ref<ReplayCodec>('prores_proxy')
+const codecOptions = computed(() =>
+  (replay.codecs.get(props.nodeId) ?? []).map((c) => ({ value: c, label: CODECS[c].label })),
+)
 
 const presetId = ref('default')
 const presetOptions = computed(() => [
@@ -50,6 +66,12 @@ const saving = ref(false)
 const error = ref<string | null>(null)
 
 onMounted(async () => {
+  replay
+    .loadCodecs(props.nodeId)
+    .then((list) => {
+      if (list[0]) codec.value = list[0]
+    })
+    .catch(() => {})
   const configs = await sources.configs(props.nodeId).catch(() => [])
   fileSources.value = configs.flatMap((c) => (c.config.type === 'file' ? [{ ...c, path: c.config.path }] : []))
   if (!mediaPath.value && fileSources.value[0]) mediaPath.value = fileSources.value[0].path
@@ -72,13 +94,19 @@ async function start() {
     error.value = 'Pick the footage to play.'
     return
   }
-  const preset = presets.presets.find((p) => p.id === presetId.value) ?? null
+  const forReplay = measure.value === 'replay'
+  if (forReplay && !codecOptions.value.length) {
+    error.value = "This node can't keep replay buffers: it has none of the codecs installed."
+    return
+  }
+  const preset = forReplay ? null : (presets.presets.find((p) => p.id === presetId.value) ?? null)
   saving.value = true
   try {
     await capacity.start(props.nodeId, {
       preset_id: preset?.id ?? null,
       preset_name: preset?.name ?? null,
-      outputs: preset ? presetLegs(preset) : [blankLeg()],
+      outputs: forReplay ? [] : preset ? presetLegs(preset) : [blankLeg()],
+      replay: forReplay ? codec.value : null,
       media_path: mediaPath.value.trim(),
       max_feeds: maxFeeds.value,
       step_secs: stepSecs.value,
@@ -100,14 +128,21 @@ async function start() {
       <DialogHeader>
         <DialogTitle>Benchmark {{ nodes.nameOf(nodeId) }}</DialogTitle>
         <DialogDescription>
-          Records more and more copies of the footage with a preset's outputs until frames drop, to find how many
-          feeds this node can record.
+          Records more and more copies of the footage until frames drop, to find how many feeds this node can record
+          with a preset, or keep replay buffers of.
         </DialogDescription>
       </DialogHeader>
 
       <form class="grid grid-cols-3 gap-3" @submit.prevent="start">
-        <FormField label="Preset" class="col-span-3">
+        <FormField label="Measure">
+          <OptionSelect v-model="measure" :options="measureOptions" />
+        </FormField>
+        <FormField v-if="measure === 'record'" label="Preset" class="col-span-2">
           <OptionSelect v-model="presetId" :options="presetOptions" />
+        </FormField>
+        <FormField v-else label="Codec" class="col-span-2">
+          <OptionSelect v-if="codecOptions.length" v-model="codec" :options="codecOptions" />
+          <p v-else class="text-xs text-muted-foreground h-8 flex items-center">This node has no replay codecs.</p>
         </FormField>
 
         <FormField label="Footage" class="col-span-3">
@@ -155,9 +190,14 @@ async function start() {
             <span class="num">{{ threshold }}%</span> dropped frames, up to <span class="num">{{ maxFeeds }}</span>.
             Usually about <span class="num">{{ minutes }}</span> min.
           </p>
-          <p>
+          <p v-if="measure === 'record'">
             Files are written beside where the preset records, so the same disks are measured, and deleted afterwards.
-            Starting a recording on this node cancels the benchmark.
+            Starting a recording or a replay buffer on this node cancels the benchmark.
+          </p>
+          <p v-else>
+            Each feed keeps a replay buffer beside the node's real ones, so the same disk is measured; old segments are
+            deleted as they would be, and everything afterwards. Starting a recording or a replay buffer on this node
+            cancels the benchmark.
           </p>
         </div>
         <button type="submit" hidden />

@@ -6,14 +6,23 @@ export type NodeCapacityDto = {
 /**
  * Latest result per benchmarked setup, newest first.
  */
-profiles: Array<ProfileCapacityDto>, active_feeds: number, 
+profiles: Array<ProfileCapacityDto>, 
 /**
- * Share of the benchmarked capacity the active recordings use (1 = full),
- * counting only those with a matching benchmark.
+ * Active recordings.
+ */
+active_feeds: number, 
+/**
+ * Replay buffers recording.
+ */
+active_buffers: number, 
+/**
+ * Share of the benchmarked capacity the active recordings and replay
+ * buffers use (1 = full), counting only those with a matching benchmark.
  */
 load: number, 
 /**
- * Active recordings with no benchmark to judge them by.
+ * Active recordings and replay buffers with no benchmark to judge them
+ * by.
  */
 unknown_feeds: number, 
 /**

@@ -388,8 +388,8 @@ the same capture times as one timeline across nodes.
 
 ## Benchmark Runner
 
-Finds how many feeds a node can record with a set of outputs (`benchmark.rs`), and
-estimates capacity from the results (`capacity.rs`).
+Finds how many feeds a node can record with a set of outputs, or keep replay buffers of
+in a codec (`benchmark.rs`), and estimates capacity from the results (`capacity.rs`).
 
 **A run** records more and more feeds of real footage (a file on the node played in a
 loop: test patterns compress unrealistically) with a preset's outputs, sent inline like
@@ -424,8 +424,25 @@ A full step that fails is measured once more before it counts, so one hiccup els
 on the machine doesn't decide it; every measurement is kept. A node that sustains 40
 feeds takes about a dozen steps (5 min or so) instead of 40. The search goes no higher
 than the feed limit (default 64; reaching it reads "at least N") and stops climbing when
-memory passes 95% or a scratch volume drops under 2 GB free; a run also ends on an error
+memory runs short or a scratch volume drops under 2 GB free; a run also ends on an error
 or when cancelled.
+
+- **Memory:** an encoder that keeps up never fails a step, so memory is what stops a
+  run on a machine with a fast encoder (ProRes on VideoToolbox: a run once climbed past
+  24 feeds and froze an 8 GB Mac). Available memory is never let fall below 1.5 GB or an
+  eighth of the machine's, whichever is more. It's read before each feed starts and
+  every 0.5 s while feeds run; falling under that abandons the step (the feeds above the
+  last count that passed go at once) and the count counts as failed. Each step also
+  notes the most memory any one feed has taken, and the search doesn't try a count that
+  wouldn't fit with 25% to spare. A run won't start on a machine already under the
+  floor. On macOS "available" is the kernel's own free level (`kern.memorystatus_level`,
+  as `memory_pressure` shows it): sysinfo's figure subtracts compressed memory and reads
+  nothing on a Mac that's merely compressing. Elsewhere it's `MemAvailable`. The cap is
+  cautious on a machine that's already swapping, and says so in the run's message.
+- **Replay buffer runs:** each feed keeps a replay buffer (`ReplayLeg`, the real one)
+  instead of recording, in a scratch folder beside the node's buffers, keeping 30 s so
+  old segments are deleted as they would be. Output drops are the buffer's input-queue
+  drops; what it writes is counted from the segments it finished, deleted ones included.
 
 - **Where it writes:** each output writes into a scratch folder,
   `.capture-room-benchmark-{id}`, in the nearest existing folder of where the output
@@ -433,19 +450,19 @@ or when cancelled.
   finalized, and the folders deleted when the run ends. A run left `running` by a crash
   is marked failed on startup and its folders deleted. Only folders named so are ever
   removed.
-- **Real recordings win:** a benchmark won't start while anything records, only one runs
-  at a time, and starting a recording cancels a running benchmark (the start waits for
-  its teardown, up to 15 s).
+- **Real recordings win:** a benchmark won't start while anything records or a replay
+  buffer runs, only one runs at a time, and starting a recording or a replay buffer
+  cancels a running benchmark (the start waits for its teardown, up to 15 s).
 - **Results** are stored whole as JSON in `benchmark_results`, saved at every step and
   sent as `benchmark.updated`.
 
 **Capacity estimate.** A result is looked up by what the outputs encode
-(`outputs_key`: the outputs without their names, paths and split settings) and the
-footage format; a setup's latest completed run counts. A source of the same format gets
+(`outputs_key`: the outputs without their names, paths and split settings; replay buffers
+by codec, `replay_key`) and the footage format; a setup's latest completed run counts. A source of the same format gets
 that result as is; another format scales the nearest result by pixels per second, and a
 source whose format isn't known yet takes the newest (both flagged `estimated`). A feed
 of a setup that sustains N feeds uses 1/N of the node, and the shares of the active
-recordings add up to its **load** (1 = full; one that couldn't sustain a single feed
+recordings and the replay buffers recording add up to its **load** (1 = full; one that couldn't sustain a single feed
 counts double). Shares only roughly add across different setups (a GPU-bound encoder and
 a CPU-bound one share less than this assumes), so the estimate is a guide. Verdicts:
 fits (≤ 80%), tight (≤ 100%), over, or unknown when something has no benchmark.
@@ -459,8 +476,11 @@ started on a volume with less than 1 GB free.
 
 The Record workspace checks before starting (`POST /capacity/check`, per node and
 preset) and warns, never blocks, when a node would pass 80% of its capacity or a volume
-would fill within the hour. Later, playout channels and replay buffers count against the
-same capacity and should be part of the measurement.
+would fill within the hour. Replay › Buffers checks the same way when a buffer is turned
+on or changes codec (the check leaves out the source's own buffer, so it isn't counted
+twice); a buffer keeps a fixed length, so it has no volume check. Playout channels don't
+count yet: benchmarking one means outputs that bind ports, publish NDI names or need a
+screen.
 
 ---
 
@@ -659,8 +679,10 @@ plays from it at variable speed.
   continuously, an extra consumer of its monitor like a recording leg, into one-second
   segments (`splitmuxsink` → `qtmux`, PCM audio) under
   `~/capture-room/.replay/<node id>/<source id>/`. The oldest are deleted past the
-  buffer's length (minutes, per source). An always-on leg: it counts against capacity
-  (not yet in the benchmark).
+  buffer's length (minutes, per source). An always-on leg: it counts against capacity,
+  and the benchmark measures it (see Benchmark Runner). The sound goes through
+  `audiorate` (from the first sample): qtmux fails a PCM stream that jumps ("timestamps
+  are drifting"), as a looping file source's does at each loop.
 - **Codec is the operator's choice, per buffer:** all-intra, so slow motion, reverse
   and frame stepping are smooth and any frame can be cut. ProRes 422 Proxy (VideoToolbox,
   the default where it exists), intra-only H.264 (VideoToolbox, else x264) at a fraction
@@ -790,11 +812,11 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 | GET / DELETE | `/recordings/{id}` | session details / remove a finished session from history; `?files` deletes its files from disk first, and if any can't be deleted the session stays, listing those still on disk (409 while recording) |
 | GET / HEAD / DELETE | `/recordings/{id}/outputs/{i}/files/{j}` | a finished session's file, with range requests; `?download` adds `Content-Disposition` / delete it from disk and the session's list (`?path=` must match, so a stale index is refused; the session stays in history). 409 while recording |
 | POST | `/recordings/{id}/stop` | stop (waits for EOS drain) |
-| GET / POST | `/benchmarks` | runs, newest first / start one: `{ outputs, media_path, max_feeds?, step_secs?, drop_threshold_pct?, preset_id?, preset_name? }` (409 while recording or benchmarking) |
+| GET / POST | `/benchmarks` | runs, newest first / start one: `{ outputs, media_path, max_feeds?, step_secs?, drop_threshold_pct?, preset_id?, preset_name?, replay? }` (`replay`: a codec, with `outputs` empty, to benchmark replay buffers; 409 while recording, keeping replay buffers, benchmarking, or short of memory) |
 | GET / DELETE | `/benchmarks/{id}` | a run / delete it (not while running) |
 | POST | `/benchmarks/{id}/cancel` | cancel; answers once it has torn down |
 | GET | `/capacity` | each benchmarked setup's result, the load of active recordings, the running benchmark |
-| POST | `/capacity/check` | `{ outputs, source_ids }` → verdict, load before/after, time left on the volumes they'd write to |
+| POST | `/capacity/check` | `{ outputs, source_ids, replay? }` → verdict, load before/after, time left on the volumes they'd write to (with `replay`, giving them buffers in that codec instead: no volumes) |
 | GET | `/thumbnails/{source_id}` | latest JPEG |
 | WS | `/ws` | this node's events only |
 
@@ -910,7 +932,7 @@ join when the backend supports them — not before.
 | **Recordings** | Session history across nodes, filtered by text, status and node and paged per node ("load older"); detail pane with a browser preview, each output's files (play, download, copy path) and remove from history |
 | **Setup › Sources** | Sources grouped by node, capabilities, test and file source authoring (with a browser for the node's files) |
 | **Setup › Presets** | Create and edit recording presets (outputs, path preview) |
-| **Setup › Nodes** | A card per node: health, sources, storage (with time left while recording), capacity (benchmarked setups, load, running benchmark, history); controller toggle, add/remove nodes |
+| **Setup › Nodes** | A card per node: health, sources, storage (with time left while recording), capacity (benchmarked setups and replay codecs, load from recordings and replay buffers, running benchmark, history); controller toggle, add/remove nodes |
 | **Setup › Checks** | Per node: permissions, software, storage, clock and network checks, problems first in the counts, with how to fix each; Nodes cards badge their problems |
 | **Setup › Settings** | Appearance; monitoring settings (thumbnail/meter rate, applied to all nodes); About |
 | **Playback** | Playout channels, playlists, transport, channel settings |

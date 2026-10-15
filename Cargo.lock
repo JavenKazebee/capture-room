@@ -400,6 +400,7 @@ dependencies = [
  "gstreamer-utils 0.23.6",
  "gstreamer-video 0.23.6",
  "gstreamer-video-sys 0.23.6",
+ "libc",
  "mdns-sd",
  "mime_guess",
  "objc2 0.6.5",
