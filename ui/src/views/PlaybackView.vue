@@ -1,29 +1,26 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useStorage } from '@vueuse/core'
 import { useViewKeys } from '@/composables/useViewKeys'
-import { ArrowDownToLine, Play, Plus, Settings2 } from '@lucide/vue'
+import { Plus, Settings2 } from '@lucide/vue'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { usePlayoutStore } from '@/stores/playout'
 import { notifyError } from '@/lib/notify'
-import { formatClock, parseClock } from '@/lib/format'
 import type { ClipEnd } from '@/types/generated/ClipEnd'
 import type { MediaItemDto } from '@/types/generated/MediaItemDto'
 import type { PlaylistItemDto } from '@/types/generated/PlaylistItemDto'
 import type { TransportAction } from '@/types/generated/TransportAction'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import PageHeader from '@/components/common/PageHeader.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
-import FormField from '@/components/FormField.vue'
 import ProgramMonitor from '@/components/playback/ProgramMonitor.vue'
 import TransportBar from '@/components/playback/TransportBar.vue'
 import MediaLibrary from '@/components/playback/MediaLibrary.vue'
 import PlaylistPanel from '@/components/playback/PlaylistPanel.vue'
 import ChannelSheet from '@/components/playback/ChannelSheet.vue'
+import ItemSetup from '@/components/playback/ItemSetup.vue'
+import { useChannelChoice } from '@/components/playback/useChannelChoice'
 import { TRANSPORT } from '@/components/playback/transport'
 
 const sources = useSourcesStore()
@@ -43,10 +40,7 @@ const SHORTCUTS: [string[], string][] = [
 
 // ── Channel ───────────────────────────────────────────────────────────────────
 
-const channelKey = useStorage('cr.playback.channel', '')
-const channel = computed(
-  () => playout.channels.find((c) => c.key === channelKey.value) ?? playout.channels[0] ?? null,
-)
+const { channelKey, channel } = useChannelChoice('cr.playback.channel')
 const status = computed(() => (channel.value ? playout.status.get(channel.value.key) : undefined))
 const nodeId = computed(() => channel.value?.node_id ?? nodes.self?.node_id ?? '')
 const playlist = computed(() => (channel.value ? playout.playlists.get(channel.value.key) : undefined))
@@ -102,23 +96,9 @@ const selected = computed(() => items.value.find((i) => i.id === selectedId.valu
 /** The library entry picked (only for the library's own highlight). */
 const mediaId = ref<string | null>(null)
 const loaded = computed(() => status.value?.clip ?? null)
-const onAir = computed(() => !!selected.value && status.value?.item_id === selected.value.id)
 const nextItem = computed(() => items.value.find((i) => i.id === status.value?.next_id) ?? null)
+const itemSetup = ref<InstanceType<typeof ItemSetup> | null>(null)
 
-const inText = ref('')
-const outText = ref('')
-const end = ref<ClipEnd>('next')
-
-/** Picking an item (or the item changing) shows its setup. */
-watch(
-  selected,
-  (i) => {
-    inText.value = i?.in_ms ? formatClock(i.in_ms) : ''
-    outText.value = i?.out_ms != null ? formatClock(i.out_ms) : ''
-    end.value = i?.end ?? 'next'
-  },
-  { immediate: true },
-)
 // Follow the channel's item when it changes (auto-advance, another operator).
 watch(
   () => status.value?.item_id,
@@ -127,37 +107,6 @@ watch(
   },
   { immediate: true },
 )
-
-const inMs = computed(() => (inText.value.trim() ? parseClock(inText.value) : 0))
-const outMs = computed(() => (outText.value.trim() ? parseClock(outText.value) : null))
-const setupError = computed(() => {
-  if (inMs.value === null) return 'The in point should look like 1:23.4 or 83.4.'
-  if (outText.value.trim() && outMs.value === null) return 'The out point should look like 1:23.4 or 83.4.'
-  if (outMs.value !== null && outMs.value <= inMs.value) return 'The out point must be after the in point.'
-  const d = selected.value?.duration_ms
-  if (d != null && inMs.value >= d) return `The in point is past the end (${formatClock(d)}).`
-  return null
-})
-
-/** The setup differs from the saved item. */
-const changed = computed(() => {
-  const i = selected.value
-  if (!i) return false
-  return i.in_ms !== inMs.value || i.out_ms !== outMs.value || i.end !== end.value
-})
-/** On air, new in and out points only apply once it's played or cued again. */
-const onAirStale = computed(() => {
-  const l = loaded.value
-  const i = selected.value
-  return onAir.value && !!l && !!i && (l.in_ms !== i.in_ms || l.out_ms !== i.out_ms)
-})
-
-function setAtPlayhead(which: 'in' | 'out') {
-  const p = status.value?.position_ms
-  if (p == null || !onAir.value) return
-  if (which === 'in') inText.value = formatClock(p)
-  else outText.value = formatClock(p)
-}
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
@@ -175,16 +124,15 @@ async function run(what: string, fn: () => Promise<unknown>) {
   }
 }
 
-function applySetup() {
+/** Save the selected item's new in, out and end into the playlist. */
+function applySetup(setup: { in_ms: number; out_ms: number | null; end: ClipEnd }) {
   const c = channel.value
   const i = selected.value
-  if (!c || !i || setupError.value || !changed.value) return
+  if (!c || !i) return
   const list = items.value.map((x) => ({
     id: x.id,
     media_id: x.media_id,
-    in_ms: x.id === i.id ? inMs.value! : x.in_ms,
-    out_ms: x.id === i.id ? outMs.value : x.out_ms,
-    end: x.id === i.id ? end.value : x.end,
+    ...(x.id === i.id ? setup : { in_ms: x.in_ms, out_ms: x.out_ms, end: x.end }),
   }))
   run(`Saving ${i.name}`, () => playout.savePlaylist(c.node_id, c.id, list, playlist.value?.loop_playlist ?? false))
 }
@@ -234,9 +182,9 @@ useViewKeys((e) => {
   } else if (key === 'escape') {
     if (loaded.value) transport('stop')
   } else if (key === 'i') {
-    setAtPlayhead('in')
+    itemSetup.value?.setAtPlayhead('in')
   } else if (key === 'o') {
-    setAtPlayhead('out')
+    itemSetup.value?.setAtPlayhead('out')
   }
 })
 
@@ -324,92 +272,16 @@ onMounted(() => sources.ensureLoaded())
             @play="play"
           />
 
-          <!-- Item setup -->
-          <section v-if="selected" class="rounded-lg border border-border p-3 flex flex-col gap-3">
-            <div class="flex items-center gap-2 min-w-0">
-              <span class="text-xs text-muted-foreground shrink-0">Item</span>
-              <span class="text-sm font-medium truncate">{{ selected.name }}</span>
-              <span v-if="selected.duration_ms != null" class="num text-xs text-muted-foreground shrink-0">
-                {{ formatClock(selected.duration_ms) }}
-              </span>
-            </div>
-            <div class="flex flex-wrap items-end gap-3">
-              <FormField label="In">
-                <div class="flex gap-1">
-                  <Input v-model="inText" class="w-24 num h-8" placeholder="0:00.0" @keydown.enter="applySetup" />
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    class="size-8"
-                    :disabled="!onAir"
-                    title="Set at the playhead (I)"
-                    aria-label="Set the in point at the playhead"
-                    @click="setAtPlayhead('in')"
-                  >
-                    <ArrowDownToLine class="size-3.5" />
-                  </Button>
-                </div>
-              </FormField>
-              <FormField label="Out">
-                <div class="flex gap-1">
-                  <Input v-model="outText" class="w-24 num h-8" placeholder="End" @keydown.enter="applySetup" />
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    class="size-8"
-                    :disabled="!onAir"
-                    title="Set at the playhead (O)"
-                    aria-label="Set the out point at the playhead"
-                    @click="setAtPlayhead('out')"
-                  >
-                    <ArrowDownToLine class="size-3.5" />
-                  </Button>
-                </div>
-              </FormField>
-              <FormField label="At the out point">
-                <ToggleGroup v-model="end" type="single" variant="segmented">
-                  <ToggleGroupItem value="next" class="h-8 px-3 text-xs">Next</ToggleGroupItem>
-                  <ToggleGroupItem value="hold" class="h-8 px-3 text-xs">Hold</ToggleGroupItem>
-                  <ToggleGroupItem value="black" class="h-8 px-3 text-xs">Black</ToggleGroupItem>
-                  <ToggleGroupItem value="loop" class="h-8 px-3 text-xs">Loop</ToggleGroupItem>
-                </ToggleGroup>
-              </FormField>
-              <div class="flex-1" />
-              <Button
-                size="sm"
-                variant="outline"
-                class="h-8"
-                :disabled="!changed || !!setupError || busy"
-                @click="applySetup"
-              >
-                Apply
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                class="h-8"
-                :disabled="selected.missing || changed || busy"
-                :title="changed ? 'Apply the changes first' : 'On air, paused at its in point, ready to play'"
-                @click="cue()"
-              >
-                Show first frame
-              </Button>
-              <Button
-                size="sm"
-                class="h-8 min-w-20 gap-1.5"
-                :variant="onAir && !onAirStale ? 'outline' : 'default'"
-                :disabled="selected.missing || changed || busy"
-                :title="changed ? 'Apply the changes first' : 'Play it now (Enter)'"
-                @click="play()"
-              >
-                <Play class="size-3.5 fill-current" /> {{ onAir ? 'Play again' : 'Play' }}
-              </Button>
-            </div>
-            <p v-if="setupError" class="text-xs text-destructive">{{ setupError }}</p>
-            <p v-else-if="onAirStale" class="text-xs text-muted-foreground">
-              It's on air with its old in and out points: play it again to use the new ones.
-            </p>
-          </section>
+          <ItemSetup
+            v-if="selected"
+            ref="itemSetup"
+            :item="selected"
+            :status="status"
+            :busy="busy"
+            @apply="applySetup"
+            @cue="cue()"
+            @play="play()"
+          />
         </div>
       </main>
 

@@ -14,6 +14,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import PageHeader from '@/components/common/PageHeader.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
 import ProgramMonitor from '@/components/playback/ProgramMonitor.vue'
+import { useChannelChoice } from '@/components/playback/useChannelChoice'
 import AngleList from '@/components/replay/AngleList.vue'
 import AngleLive from '@/components/replay/AngleLive.vue'
 import BuffersSheet from '@/components/replay/BuffersSheet.vue'
@@ -43,21 +44,13 @@ const SHORTCUTS: [string[], string][] = [
 
 // ── Channel and angles ────────────────────────────────────────────────────────
 
-const channelKey = useStorage('cr.replay.channel', '')
-const channel = computed(
-  () => playout.channels.find((c) => c.key === channelKey.value) ?? playout.channels[0] ?? null,
-)
+const { channel, choice: channelChoice } = useChannelChoice('cr.replay.channel')
 const channelOptions = computed(() =>
   playout.channels.map((c) => ({
     value: c.key,
     label: nodes.nodes.length > 1 ? `${c.display_name} (${nodes.nameOf(c.node_id)})` : c.display_name,
   })),
 )
-/** The picker shows the channel in use, also before one's been picked. */
-const channelChoice = computed({
-  get: () => channel.value?.key ?? '',
-  set: (key: string) => (channelKey.value = key),
-})
 watch(
   channel,
   (c) => {
