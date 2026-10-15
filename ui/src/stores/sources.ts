@@ -101,6 +101,11 @@ export const useSourcesStore = defineStore('sources', () => {
     return nodeApi(nodeId)<ConfiguredSourceDto[]>('/configured-sources')
   }
 
+  /** One configured source's stored config; null if the node no longer has it. */
+  async function getConfig(nodeId: string, id: string) {
+    return (await configs(nodeId)).find((c) => c.id === id) ?? null
+  }
+
   async function createSource(nodeId: string, input: ConfiguredSourceRequest) {
     const created = await nodeApi(nodeId)<ConfiguredSourceDto>('/configured-sources', {
       method: 'POST',
@@ -150,6 +155,7 @@ export const useSourcesStore = defineStore('sources', () => {
     scan,
     scanAll,
     configs,
+    getConfig,
     createSource,
     updateSource,
     deleteSource,

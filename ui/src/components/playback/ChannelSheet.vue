@@ -121,7 +121,7 @@ onMounted(async () => {
   refreshScreens()
   if (!props.editing) return
   try {
-    const cfg = (await sources.configs(props.editing.nodeId)).find((c) => c.id === props.editing!.id)
+    const cfg = await sources.getConfig(props.editing.nodeId, props.editing.id)
     if (cfg?.config.type === 'channel') {
       const { type: _type, ...rest } = cfg.config
       name.value = cfg.name
