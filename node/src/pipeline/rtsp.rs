@@ -21,7 +21,7 @@ use anyhow::{anyhow, Context, Result};
 use gstreamer::{self as gst, glib, prelude::*};
 use gstreamer_app as gst_app;
 use gstreamer_rtsp_server::{self as rtsp, prelude::*};
-use gstreamer_utils::{ConsumptionLink, StreamProducer};
+use gstreamer_utils::StreamProducer;
 use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
@@ -171,13 +171,13 @@ fn connect_media(media: &rtsp::RTSPMedia, monitor: &Weak<MonitorPipeline>) -> Re
         .element()
         .downcast::<gst::Bin>()
         .map_err(|_| anyhow!("RTSP media isn't a bin"))?;
-    if let (Some(clock), Some(base_time)) = monitor.timing() {
+    if let (Some(clock), Some(_)) = monitor.timing() {
         media.set_clock(Some(&clock));
         if let Some(pipeline) = bin
             .parent()
             .and_then(|p| p.downcast::<gst::Pipeline>().ok())
         {
-            super::share_clock(&pipeline, &clock, base_time);
+            monitor.share_timing(&pipeline);
         }
     }
     let appsrc = |name: &str| -> Result<gst_app::AppSrc> {
@@ -188,10 +188,7 @@ fn connect_media(media: &rtsp::RTSPMedia, monitor: &Weak<MonitorPipeline>) -> Re
         StreamProducer::configure_consumer(&src);
         Ok(src)
     };
-    let links: Vec<ConsumptionLink> = vec![
-        monitor.video.add_consumer(&appsrc("video-src")?)?,
-        monitor.audio.add_consumer(&appsrc("audio-src")?)?,
-    ];
+    let links = monitor.feed(&appsrc("video-src")?, &appsrc("audio-src")?)?;
     let links = Mutex::new(Some(links));
     media.connect_unprepared(move |_| {
         links.lock().unwrap().take();

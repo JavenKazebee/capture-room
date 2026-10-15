@@ -5,15 +5,15 @@ use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app as gst_app;
-use gstreamer_utils::StreamProducer;
+use gstreamer_utils::{ConsumptionLink, StreamProducer};
 use tracing::{error, warn};
 
 use crate::api::types::MonitorSettingsDto;
 use crate::sources::InputSource;
 
 use super::{
-    capsfilter, handle_level_message, link_tee, make_el, set_state, AudioMeter, FirstError,
-    ThumbnailStore,
+    capsfilter, handle_level_message, link_tee, make_el, set_state, share_clock, AudioMeter,
+    FirstError, ThumbnailStore,
 };
 
 // ── MonitorPipeline ───────────────────────────────────────────────────────────
@@ -195,6 +195,30 @@ impl MonitorPipeline {
     /// timestamps mean the same thing on both sides.
     pub fn timing(&self) -> (Option<gst::Clock>, Option<gst::ClockTime>) {
         (self.pipeline.clock(), self.pipeline.base_time())
+    }
+
+    /// Run `pipeline` on the monitor's clock and base time (see
+    /// [`share_clock`]), answering the base time; `None`, leaving `pipeline`
+    /// as it is, while the monitor has neither.
+    pub fn share_timing(&self, pipeline: &gst::Pipeline) -> Option<gst::ClockTime> {
+        let (Some(clock), Some(base_time)) = self.timing() else {
+            return None;
+        };
+        share_clock(pipeline, &clock, base_time);
+        Some(base_time)
+    }
+
+    /// Feed `video` and `audio` from the producers, until the links are
+    /// dropped.
+    pub fn feed(
+        &self,
+        video: &gst_app::AppSrc,
+        audio: &gst_app::AppSrc,
+    ) -> Result<Vec<ConsumptionLink>> {
+        Ok(vec![
+            self.video.add_consumer(video)?,
+            self.audio.add_consumer(audio)?,
+        ])
     }
 
     /// The format the source is currently producing.

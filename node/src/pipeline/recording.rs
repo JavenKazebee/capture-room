@@ -20,15 +20,14 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use gstreamer::{self as gst, glib, prelude::*};
 use gstreamer_app as gst_app;
-use gstreamer_utils::ConsumptionLink;
 use gstreamer_video as gst_video;
 use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
 use super::profile::{segment_number, AudioFormat, RecordingProfile, VideoEncoder, PCM_MAX_FILE};
 use super::{
-    audio_hold_queue, capsfilter, consumer, describe_error, make_el, mark_prores_keyframes,
-    pcm_audiorate, set_mix_matrix, share_clock, start_or_reason, FirstError,
+    audio_hold_queue, capsfilter, describe_error, make_el, mark_prores_keyframes, pcm_audiorate,
+    set_mix_matrix, start_or_reason, ConsumerPipeline,
 };
 use crate::api::types::{Container, RateControl};
 
@@ -60,11 +59,9 @@ pub type OnLegError = Arc<dyn Fn(&Path, String) + Send + Sync>;
 
 /// One running output leg.
 pub struct RecordingLeg {
-    pipeline: gst::Pipeline,
-    video_src: gst_app::AppSrc,
-    audio_src: gst_app::AppSrc,
-    /// Connections to the monitor's producers; dropping one stops the feed.
-    links: Vec<ConsumptionLink>,
+    /// Its error is why it failed, from the bus: the reason given when it
+    /// won't start.
+    consumer: ConsumerPipeline,
     /// The leg's (first) file.
     location: PathBuf,
     /// Every file written so far: just `location`, unless the leg splits.
@@ -78,8 +75,6 @@ pub struct RecordingLeg {
     /// The encoder's output, stamped with timecode for containers that
     /// keep it (MOV).
     timecode_pad: Option<gst::Pad>,
-    /// Why it failed, from the bus: the reason given when it won't start.
-    error: FirstError,
 }
 
 /// Called when a splitting leg opens a new file. Runs on a GStreamer
@@ -198,12 +193,18 @@ impl RecordingLeg {
         on_file: OnLegFile,
     ) -> Result<Self> {
         let location = path.to_str().context("output path not valid UTF-8")?;
-        let pipeline = gst::Pipeline::with_name(name);
+        let consumer = ConsumerPipeline::new(name);
+        let ConsumerPipeline {
+            pipeline,
+            video_src,
+            audio_src,
+            error,
+            ..
+        } = &consumer;
         // Only errors and EOS are ever read from this bus; drop the rest so a
         // long recording doesn't accumulate messages nobody pops. Errors are
         // also reported straight away (once per leg) — they still pass, so
         // `stop` finds them too.
-        let error = FirstError::default();
         let first_error = error.clone();
         let error_path = path.to_path_buf();
         pipeline
@@ -219,9 +220,6 @@ impl RecordingLeg {
                 gst::MessageView::Eos(_) => gst::BusSyncReply::Pass,
                 _ => gst::BusSyncReply::Drop,
             });
-
-        let video_src = consumer("video-src");
-        let audio_src = consumer("audio-src");
 
         let mut video = vec![video_src.clone().upcast::<gst::Element>()];
         // Interlaced sources are deinterlaced before scaling (`mode=auto`
@@ -461,17 +459,13 @@ impl RecordingLeg {
         }
 
         Ok(Self {
-            pipeline,
-            video_src,
-            audio_src,
-            links: Vec::new(),
+            consumer,
             location: path.to_path_buf(),
             files,
             encoder: encoder.element(),
             first_frame: Arc::new(AtomicU64::new(u64::MAX)),
             base_time: None,
             timecode_pad,
-            error,
         })
     }
 
@@ -482,19 +476,16 @@ impl RecordingLeg {
         start_at: Option<gst::ClockTime>,
         utc_offset_us: Option<i64>,
     ) -> Result<()> {
-        if let (Some(clock), Some(base_time)) = monitor.timing() {
-            share_clock(&self.pipeline, &clock, base_time);
-            self.base_time = Some(base_time);
-        }
+        self.base_time = monitor.share_timing(&self.consumer.pipeline);
         let start_rt = start_at
             .zip(self.base_time)
             .map(|(at, base)| at.saturating_sub(base));
         gate(
-            &self.video_src,
+            &self.consumer.video_src,
             start_rt,
             Some(Arc::clone(&self.first_frame)),
         )?;
-        gate(&self.audio_src, start_rt, None)?;
+        gate(&self.consumer.audio_src, start_rt, None)?;
         if let (Some(pad), Some(base), Some(offset)) =
             (&self.timecode_pad, self.base_time, utc_offset_us)
         {
@@ -502,13 +493,13 @@ impl RecordingLeg {
         }
 
         // The bus handler keeps the reason (e.g. "Could not open file … for writing").
-        start_or_reason(&self.pipeline, &self.error, "pipeline failed to start")
+        let ConsumerPipeline {
+            pipeline, error, ..
+        } = &self.consumer;
+        start_or_reason(pipeline, error, "pipeline failed to start")
             .map_err(|reason| anyhow!("{}: {reason}", self.location.display()))?;
 
-        self.links
-            .push(monitor.video.add_consumer(&self.video_src)?);
-        self.links
-            .push(monitor.audio.add_consumer(&self.audio_src)?);
+        self.consumer.connect(monitor)?;
         info!(path = ?self.location, "recording leg started");
         Ok(())
     }
@@ -520,23 +511,21 @@ impl RecordingLeg {
         (rt != u64::MAX).then(|| gst::ClockTime::from_nseconds(rt) + base)
     }
 
-    /// Video frames dropped so far because the leg couldn't keep up (its
-    /// leaky input queue overflowed). Read from the appsrc rather than the
-    /// `ConsumptionLink`: the link's count includes these same drops, plus
-    /// keyframe waits that raw video never has.
+    /// See [`ConsumerPipeline::dropped_frames`].
     pub fn dropped_frames(&self) -> u64 {
-        self.video_src.property::<u64>("dropped")
+        self.consumer.dropped_frames()
     }
 
     /// Stop feeding the leg, let it drain to EOS so the muxer writes its
     /// index, and wait up to `timeout` for that. An error the leg hit while
     /// recording, or a timeout, is returned as the stop's error.
     pub async fn stop(mut self, timeout: Duration) -> Result<()> {
-        self.links.clear();
-        let _ = self.video_src.end_of_stream();
-        let _ = self.audio_src.end_of_stream();
+        self.consumer.disconnect();
+        let _ = self.consumer.video_src.end_of_stream();
+        let _ = self.consumer.audio_src.end_of_stream();
 
         let bus = self
+            .consumer
             .pipeline
             .bus()
             .context("recording pipeline has no bus")?;
@@ -562,7 +551,7 @@ impl RecordingLeg {
                 ))
             }
         };
-        let _ = self.pipeline.set_state(gst::State::Null);
+        self.consumer.stop();
         // A leg that never wrote anything (it failed straight away) leaves an
         // empty file behind. Anything with data is kept: a leg that failed
         // mid-recording (disk full) may still be recoverable.
@@ -578,8 +567,7 @@ impl RecordingLeg {
     /// Only for rolling back a start that failed part-way, and for benchmark
     /// legs, whose files are thrown away.
     pub fn discard(mut self) {
-        self.links.clear();
-        let _ = self.pipeline.set_state(gst::State::Null);
+        self.consumer.stop();
         for file in self.files.lock().unwrap().iter() {
             remove_file(file);
         }
@@ -707,12 +695,6 @@ fn remove_file(location: &Path) {
 fn leg_error(err: &gst::message::Error) -> String {
     let element = err.src().map(|s| s.name().to_string()).unwrap_or_default();
     format!("recording failed in {element}: {}", describe_error(err))
-}
-
-impl Drop for RecordingLeg {
-    fn drop(&mut self) {
-        let _ = self.pipeline.set_state(gst::State::Null);
-    }
 }
 
 // ── Element builders ──────────────────────────────────────────────────────────

@@ -20,8 +20,6 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use gstreamer::{self as gst, prelude::*};
-use gstreamer_app as gst_app;
-use gstreamer_utils::ConsumptionLink;
 use gstreamer_video::{self as gst_video, prelude::*};
 use tracing::{info, warn};
 
@@ -29,7 +27,7 @@ use super::monitor::MonitorPipeline;
 use super::recording::set_property;
 use super::rtsp::{self, RtspOutput};
 use super::whep::WhepOutput;
-use super::{consumer, make_el, set_state, share_clock, start_or_reason, FirstError};
+use super::{make_el, start_or_reason, ConsumerPipeline};
 use crate::api::types::{DisplayIdle, OutputConfig, SourceCapabilitiesDto};
 use crate::display::{DisplayWindow, Displays, WantedFormat};
 use crate::sources::device::LocalDevices;
@@ -75,11 +73,27 @@ pub trait RunningOutput: Send + Sync {
 
 /// An output's own pipeline, taking the program at two appsrcs.
 pub struct OutputPipeline {
-    pub pipeline: gst::Pipeline,
-    pub video_src: gst_app::AppSrc,
-    pub audio_src: gst_app::AppSrc,
+    pub consumer: ConsumerPipeline,
     /// Connected receivers, for outputs that can count them.
     pub receivers: Option<Arc<AtomicU32>>,
+}
+
+impl OutputPipeline {
+    /// A pipeline called `name` with its appsrcs added.
+    pub fn new(name: &str) -> Result<Self> {
+        let consumer = ConsumerPipeline::new(name);
+        consumer
+            .pipeline
+            .add_many([
+                consumer.video_src.upcast_ref::<gst::Element>(),
+                consumer.audio_src.upcast_ref(),
+            ])
+            .context("add output appsrcs")?;
+        Ok(Self {
+            consumer,
+            receivers: None,
+        })
+    }
 }
 
 /// What a channel's program is, as its outputs need to know it up front.
@@ -241,27 +255,21 @@ impl Drop for OutputLeg {
 /// An [`OutputPipeline`] running, fed by the monitor's producers like a
 /// recording leg, on the monitor's clock and base time.
 pub struct PipelineOutput {
-    pipeline: gst::Pipeline,
-    /// Connections to the monitor's producers; dropping one stops the feed.
-    links: Vec<ConsumptionLink>,
-    /// The first error the pipeline hit; it stops sending after one.
-    error: FirstError,
+    /// It stops sending after its first error.
+    consumer: ConsumerPipeline,
     receivers: Option<Arc<AtomicU32>>,
-    video_src: gst_app::AppSrc,
 }
 
 impl PipelineOutput {
     pub fn start(monitor: &MonitorPipeline, label: String, output: OutputPipeline) -> Result<Self> {
         let OutputPipeline {
-            pipeline,
-            video_src,
-            audio_src,
+            mut consumer,
             receivers,
         } = output;
-        let error = FirstError::default();
-        let error_ref = error.clone();
+        let error_ref = consumer.error.clone();
         let error_label = label.clone();
-        pipeline
+        consumer
+            .pipeline
             .bus()
             .context("output pipeline has no bus")?
             .set_sync_handler(move |_, msg| {
@@ -273,45 +281,33 @@ impl PipelineOutput {
                 gst::BusSyncReply::Drop
             });
 
-        if let (Some(clock), Some(base_time)) = monitor.timing() {
-            share_clock(&pipeline, &clock, base_time);
-        }
+        monitor.share_timing(&consumer.pipeline);
         // Off the runtime: the WebRTC elements block on their own.
-        start_or_reason(&pipeline, &error, "output failed to start")?;
-        let links = vec![
-            monitor.video.add_consumer(&video_src)?,
-            monitor.audio.add_consumer(&audio_src)?,
-        ];
+        start_or_reason(
+            &consumer.pipeline,
+            &consumer.error,
+            "output failed to start",
+        )?;
+        consumer.connect(monitor)?;
         Ok(Self {
-            pipeline,
-            links,
-            error,
+            consumer,
             receivers,
-            video_src,
         })
     }
 }
 
 impl RunningOutput for PipelineOutput {
     fn error(&self) -> Option<String> {
-        self.error.get()
+        self.consumer.error.get()
     }
 
     fn receivers(&self) -> Option<u32> {
         self.receivers.as_ref().map(|n| n.load(Ordering::Relaxed))
     }
 
-    /// The video appsrc's: like a recording leg's, a 500 ms queue that drops
-    /// the oldest frames (see `StreamProducer::configure_consumer`).
+    /// Like a recording leg's: see [`ConsumerPipeline::dropped_frames`].
     fn dropped_frames(&self) -> Option<u64> {
-        Some(self.video_src.property::<u64>("dropped"))
-    }
-}
-
-impl Drop for PipelineOutput {
-    fn drop(&mut self) {
-        self.links.clear();
-        let _ = set_state(&self.pipeline, gst::State::Null);
+        Some(self.consumer.dropped_frames())
     }
 }
 
@@ -338,9 +334,13 @@ impl OutputSink for NdiOutput {
 
 impl NdiOutput {
     fn build(&self) -> Result<OutputPipeline> {
-        let pipeline = gst::Pipeline::with_name(&format!("output-ndi-{}", self.ndi_name));
-        let video_src = consumer("video-src");
-        let audio_src = consumer("audio-src");
+        let output = OutputPipeline::new(&format!("output-ndi-{}", self.ndi_name))?;
+        let ConsumerPipeline {
+            pipeline,
+            video_src,
+            audio_src,
+            ..
+        } = &output.consumer;
         let vconv = make_el("videoconvert", "vconv")?;
         let aconv = make_el("audioconvert", "aconv")?;
         let aresample = make_el("audioresample", "aresample")?;
@@ -348,15 +348,7 @@ impl NdiOutput {
         let sink = make_el("ndisink", "ndisink")?;
         sink.set_property("ndi-name", &self.ndi_name);
         pipeline
-            .add_many([
-                video_src.upcast_ref(),
-                audio_src.upcast_ref(),
-                &vconv,
-                &aconv,
-                &aresample,
-                &combiner,
-                &sink,
-            ])
+            .add_many([&vconv, &aconv, &aresample, &combiner, &sink])
             .context("add NDI output")?;
         gst::Element::link_many([video_src.upcast_ref(), &vconv]).context("link NDI video")?;
         vconv
@@ -368,12 +360,7 @@ impl NdiOutput {
             .link_pads(Some("src"), &combiner, Some("audio"))
             .context("link NDI audio to combiner")?;
         combiner.link(&sink).context("link NDI combiner → sink")?;
-        Ok(OutputPipeline {
-            pipeline,
-            video_src,
-            audio_src,
-            receivers: None,
-        })
+        Ok(output)
     }
 }
 
@@ -428,9 +415,13 @@ impl OutputSink for DisplayOutput {
 
 impl DisplayOutput {
     fn build(&self, window: usize) -> Result<OutputPipeline> {
-        let pipeline = gst::Pipeline::with_name(&format!("output-display-{}", self.display));
-        let video_src = consumer("video-src");
-        let audio_src = consumer("audio-src");
+        let output = OutputPipeline::new(&format!("output-display-{}", self.display))?;
+        let ConsumerPipeline {
+            pipeline,
+            video_src,
+            audio_src,
+            ..
+        } = &output.consumer;
         // The sink converts on the GPU: no videoconvert, which would cost a
         // CPU pass per frame (a lot at 4K).
         let vsink = make_el(DISPLAY_SINK, "vsink")?;
@@ -449,24 +440,12 @@ impl DisplayOutput {
             None => make_el("fakesink", "asink")?,
         };
         pipeline
-            .add_many([
-                video_src.upcast_ref(),
-                &vsink,
-                audio_src.upcast_ref(),
-                &aconv,
-                &aresample,
-                &asink,
-            ])
+            .add_many([&vsink, &aconv, &aresample, &asink])
             .context("add display output")?;
         video_src.link(&vsink).context("link display video")?;
         gst::Element::link_many([audio_src.upcast_ref(), &aconv, &aresample, &asink])
             .context("link display audio")?;
-        Ok(OutputPipeline {
-            pipeline,
-            video_src,
-            audio_src,
-            receivers: None,
-        })
+        Ok(output)
     }
 }
 
@@ -638,9 +617,13 @@ impl OutputSink for SrtOutput {
 
 impl SrtOutput {
     fn build(&self) -> Result<OutputPipeline> {
-        let pipeline = gst::Pipeline::with_name(&format!("output-srt-{}", self.url));
-        let video_src = consumer("video-src");
-        let audio_src = consumer("audio-src");
+        let mut output = OutputPipeline::new(&format!("output-srt-{}", self.url))?;
+        let ConsumerPipeline {
+            pipeline,
+            video_src,
+            audio_src,
+            ..
+        } = &output.consumer;
         let vconv = make_el("videoconvert", "vconv")?;
         let venc = self.video_encoder()?;
         let vparse = make_el("h264parse", "vparse")?;
@@ -686,16 +669,7 @@ impl SrtOutput {
 
         pipeline
             .add_many([
-                video_src.upcast_ref(),
-                audio_src.upcast_ref(),
-                &vconv,
-                &venc,
-                &vparse,
-                &aconv,
-                &aresample,
-                &aenc,
-                &mux,
-                &sink,
+                &vconv, &venc, &vparse, &aconv, &aresample, &aenc, &mux, &sink,
             ])
             .context("add SRT output")?;
         gst::Element::link_many([video_src.upcast_ref(), &vconv, &venc, &vparse, &mux])
@@ -704,12 +678,8 @@ impl SrtOutput {
             .context("link SRT audio")?;
         mux.link(&sink).context("link SRT mux → sink")?;
         start_together(&vparse, &aenc)?;
-        Ok(OutputPipeline {
-            pipeline,
-            video_src,
-            audio_src,
-            receivers,
-        })
+        output.receivers = receivers;
+        Ok(output)
     }
 }
 

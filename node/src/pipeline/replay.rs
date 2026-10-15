@@ -22,15 +22,13 @@ use std::sync::{Arc, Mutex, Weak};
 
 use anyhow::{anyhow, Context, Result};
 use gstreamer::{self as gst, prelude::*};
-use gstreamer_app as gst_app;
-use gstreamer_utils::ConsumptionLink;
 use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
 use super::recording::set_property;
 use super::{
-    audio_hold_queue, capsfilter, consumer, make_el, mark_prores_keyframes, pcm_audiorate,
-    share_clock, start_or_reason, FirstError,
+    audio_hold_queue, capsfilter, make_el, mark_prores_keyframes, pcm_audiorate, share_clock,
+    start_or_reason, ConsumerPipeline,
 };
 use crate::api::types::ReplayCodec;
 
@@ -339,13 +337,9 @@ fn remove(path: &Path) {
 
 /// A replay buffer recording from a monitor.
 pub struct ReplayLeg {
-    pipeline: gst::Pipeline,
-    /// Connections to the monitor's producers; dropping one stops the feed.
-    links: Vec<ConsumptionLink>,
+    /// Dropping it loses the segment being written (it has no index yet).
+    consumer: ConsumerPipeline,
     encoder: &'static str,
-    error: FirstError,
-    video_src: gst_app::AppSrc,
-    audio_src: gst_app::AppSrc,
 }
 
 impl ReplayLeg {
@@ -374,8 +368,7 @@ impl ReplayLeg {
         for &encoder in codec.encoders() {
             match Self::build(codec, encoder, index, name, &clock, base) {
                 Ok(mut leg) => {
-                    leg.links.push(monitor.video.add_consumer(&leg.video_src)?);
-                    leg.links.push(monitor.audio.add_consumer(&leg.audio_src)?);
+                    leg.consumer.connect(monitor)?;
                     info!(name, encoder, "replay buffer recording");
                     return Ok(leg);
                 }
@@ -396,11 +389,14 @@ impl ReplayLeg {
         clock: &gst::Clock,
         base: gst::ClockTime,
     ) -> Result<Self> {
-        let pipeline = gst::Pipeline::with_name(&format!("replay-{name}"));
-        let error = FirstError::default();
-
-        let video_src = consumer("video-src");
-        let audio_src = consumer("audio-src");
+        let consumer = ConsumerPipeline::new(&format!("replay-{name}"));
+        let ConsumerPipeline {
+            pipeline,
+            video_src,
+            audio_src,
+            error,
+            ..
+        } = &consumer;
 
         let mut video = vec![
             video_src.clone().upcast::<gst::Element>(),
@@ -544,43 +540,24 @@ impl ReplayLeg {
                 .with_context(|| format!("link {encoder} into .mov"))?;
         }
 
-        share_clock(&pipeline, clock, base);
-        start_or_reason(&pipeline, &error, "replay buffer failed to start")
+        share_clock(pipeline, clock, base);
+        start_or_reason(pipeline, error, "replay buffer failed to start")
             .map_err(|reason| anyhow!("{encoder}: {reason}"))?;
-        Ok(Self {
-            pipeline,
-            links: Vec::new(),
-            encoder,
-            error,
-            video_src,
-            audio_src,
-        })
+        Ok(Self { consumer, encoder })
     }
 
     pub fn encoder(&self) -> &'static str {
         self.encoder
     }
 
-    /// Video frames dropped so far because the encoder couldn't keep up (its
-    /// input queue overflowed), as [`RecordingLeg::dropped_frames`] counts
-    /// them.
-    ///
-    /// [`RecordingLeg::dropped_frames`]: super::recording::RecordingLeg::dropped_frames
+    /// See [`ConsumerPipeline::dropped_frames`].
     pub fn dropped_frames(&self) -> u64 {
-        self.video_src.property::<u64>("dropped")
+        self.consumer.dropped_frames()
     }
 
     /// Why it stopped recording, if it has.
     pub fn error(&self) -> Option<String> {
-        self.error.get()
-    }
-}
-
-impl Drop for ReplayLeg {
-    /// The segment being written is lost (it has no index yet).
-    fn drop(&mut self) {
-        self.links.clear();
-        let _ = self.pipeline.set_state(gst::State::Null);
+        self.consumer.error.get()
     }
 }
 
@@ -805,6 +782,7 @@ mod tests {
         AudioTestSignal, MonitorSettingsDto, TestSourceConfig, VideoTestPattern,
     };
     use crate::sources::test::TestSource;
+    use gstreamer_app as gst_app;
     use gstreamer_video as gst_video;
     use std::time::Duration;
 

@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app as gst_app;
-use gstreamer_utils::StreamProducer;
+use gstreamer_utils::{ConsumptionLink, StreamProducer};
+
+use monitor::MonitorPipeline;
 
 use crate::api::types::ChannelLevelDto;
 
@@ -177,6 +179,64 @@ pub(crate) fn consumer(name: &str) -> gst_app::AppSrc {
     let src = gst_app::AppSrc::builder().name(name).build();
     StreamProducer::configure_consumer(&src);
     src
+}
+
+/// A pipeline the monitor feeds at two appsrcs (see [`consumer`]): an
+/// output's, a recording leg's or a replay buffer's. Dropping it stops the
+/// feed, then the pipeline.
+pub(crate) struct ConsumerPipeline {
+    pub pipeline: gst::Pipeline,
+    pub video_src: gst_app::AppSrc,
+    pub audio_src: gst_app::AppSrc,
+    /// The first error the pipeline hit, as its bus handler keeps it.
+    pub error: FirstError,
+    /// Connections to the monitor's producers; dropping one stops the feed.
+    links: Vec<ConsumptionLink>,
+}
+
+impl ConsumerPipeline {
+    /// A pipeline called `name` and its appsrcs, not yet added to it.
+    pub fn new(name: &str) -> Self {
+        Self {
+            pipeline: gst::Pipeline::with_name(name),
+            video_src: consumer("video-src"),
+            audio_src: consumer("audio-src"),
+            error: FirstError::default(),
+            links: Vec::new(),
+        }
+    }
+
+    /// Start taking `monitor`'s streams.
+    pub fn connect(&mut self, monitor: &MonitorPipeline) -> Result<()> {
+        self.links = monitor.feed(&self.video_src, &self.audio_src)?;
+        Ok(())
+    }
+
+    /// Stop taking the monitor's streams.
+    pub fn disconnect(&mut self) {
+        self.links.clear();
+    }
+
+    /// Stop the feed, then the pipeline.
+    pub fn stop(&mut self) {
+        self.disconnect();
+        let _ = set_state(&self.pipeline, gst::State::Null);
+    }
+
+    /// Video frames dropped so far because the pipeline couldn't keep up:
+    /// its appsrc's 500 ms queue overflowed (see
+    /// `StreamProducer::configure_consumer`). Read from the appsrc rather
+    /// than the `ConsumptionLink`: the link's count includes these same
+    /// drops, plus keyframe waits that raw video never has.
+    pub fn dropped_frames(&self) -> u64 {
+        self.video_src.property::<u64>("dropped")
+    }
+}
+
+impl Drop for ConsumerPipeline {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 /// Run `pipeline` on the monitor's `clock` and `base_time`, so forwarded

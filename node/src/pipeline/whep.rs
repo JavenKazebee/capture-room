@@ -15,10 +15,10 @@ use std::sync::{Arc, LazyLock, Mutex};
 use anyhow::{Context, Result};
 use gstreamer::{self as gst, glib, prelude::*};
 
-use super::consumer;
 use super::make_el;
 use super::monitor::MonitorPipeline;
 use super::output::{OutputPipeline, OutputSink, PipelineOutput, RunningOutput};
+use super::ConsumerPipeline;
 
 /// Elements a WHEP output needs (the libnice plugin for ICE, an Opus
 /// encoder for audio).
@@ -81,9 +81,13 @@ impl OutputSink for WhepOutput {
 
 impl WhepOutput {
     fn build(&self, port: u16) -> Result<OutputPipeline> {
-        let pipeline = gst::Pipeline::with_name(&format!("output-whep-{}", self.path));
-        let video_src = consumer("video-src");
-        let audio_src = consumer("audio-src");
+        let mut output = OutputPipeline::new(&format!("output-whep-{}", self.path))?;
+        let ConsumerPipeline {
+            pipeline,
+            video_src,
+            audio_src,
+            ..
+        } = &output.consumer;
         let vconv = make_el("videoconvert", "vconv")?;
         let aconv = make_el("audioconvert", "aconv")?;
         let aresample = make_el("audioresample", "aresample")?;
@@ -125,15 +129,7 @@ impl WhepOutput {
         });
 
         pipeline
-            .add_many([
-                video_src.upcast_ref(),
-                audio_src.upcast_ref(),
-                &vconv,
-                &aconv,
-                &aresample,
-                &stereo,
-                &sink,
-            ])
+            .add_many([&vconv, &aconv, &aresample, &stereo, &sink])
             .context("add WHEP output")?;
         let video_pad = sink
             .request_pad_simple("video_%u")
@@ -154,12 +150,8 @@ impl WhepOutput {
             .context("stereo src pad")?
             .link(&audio_pad)
             .context("link WHEP audio → sink")?;
-        Ok(OutputPipeline {
-            pipeline,
-            video_src,
-            audio_src,
-            receivers: Some(receivers),
-        })
+        output.receivers = Some(receivers);
+        Ok(output)
     }
 }
 
