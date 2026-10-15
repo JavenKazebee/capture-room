@@ -78,6 +78,24 @@ pub struct OutputPipeline {
     pub receivers: Option<Arc<AtomicU32>>,
 }
 
+/// Count the receivers `sink` signals with `added` and `removed`.
+pub(super) fn count_receivers(sink: &gst::Element, added: &str, removed: &str) -> Arc<AtomicU32> {
+    let n = Arc::new(AtomicU32::new(0));
+    let up = n.clone();
+    sink.connect(added, false, move |_| {
+        up.fetch_add(1, Ordering::Relaxed);
+        None
+    });
+    let down = n.clone();
+    sink.connect(removed, false, move |_| {
+        let _ = down.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            Some(n.saturating_sub(1))
+        });
+        None
+    });
+    n
+}
+
 impl OutputPipeline {
     /// A pipeline called `name` with its appsrcs added.
     pub fn new(name: &str) -> Result<Self> {
@@ -650,22 +668,9 @@ impl SrtOutput {
         // holding up the program.
         sink.set_property("wait-for-connection", false);
 
-        let receivers = self.listens().then(|| {
-            let n = Arc::new(AtomicU32::new(0));
-            let added = n.clone();
-            sink.connect("caller-added", false, move |_| {
-                added.fetch_add(1, Ordering::Relaxed);
-                None
-            });
-            let removed = n.clone();
-            sink.connect("caller-removed", false, move |_| {
-                let _ = removed.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                    Some(n.saturating_sub(1))
-                });
-                None
-            });
-            n
-        });
+        let receivers = self
+            .listens()
+            .then(|| count_receivers(&sink, "caller-added", "caller-removed"));
 
         pipeline
             .add_many([

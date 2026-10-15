@@ -9,7 +9,6 @@
 //! between the node and each viewer, encoded for each one.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use anyhow::{Context, Result};
@@ -17,7 +16,7 @@ use gstreamer::{self as gst, glib, prelude::*};
 
 use super::make_el;
 use super::monitor::MonitorPipeline;
-use super::output::{OutputPipeline, OutputSink, PipelineOutput, RunningOutput};
+use super::output::{count_receivers, OutputPipeline, OutputSink, PipelineOutput, RunningOutput};
 use super::ConsumerPipeline;
 
 /// Elements a WHEP output needs (the libnice plugin for ICE, an Opus
@@ -114,19 +113,7 @@ impl WhepOutput {
         signaller.set_property("host-addr", format!("http://127.0.0.1:{port}"));
         signaller.set_property("stun-server", None::<String>);
 
-        let receivers = Arc::new(AtomicU32::new(0));
-        let added = receivers.clone();
-        sink.connect("consumer-added", false, move |_| {
-            added.fetch_add(1, Ordering::Relaxed);
-            None
-        });
-        let removed = receivers.clone();
-        sink.connect("consumer-removed", false, move |_| {
-            let _ = removed.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                Some(n.saturating_sub(1))
-            });
-            None
-        });
+        let receivers = count_receivers(&sink, "consumer-added", "consumer-removed");
 
         pipeline
             .add_many([&vconv, &aconv, &aresample, &stereo, &sink])
@@ -183,6 +170,7 @@ impl Drop for WhepMount {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
 
     use super::*;
