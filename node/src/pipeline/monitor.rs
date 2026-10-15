@@ -174,22 +174,12 @@ impl MonitorPipeline {
 
     /// Video frames the source has delivered so far.
     pub fn video_frames(&self) -> u64 {
-        self.video_frames.frames.load(Ordering::Relaxed)
+        self.video_frames.frames()
     }
 
     /// How far the source's video has got; see [`VideoProgress`].
     pub fn video_progress(&self) -> VideoProgress {
-        // A frame can land between these reads, leaving the count one ahead
-        // of the timestamp: readers allow a frame of slack.
-        let count = &self.video_frames;
-        let skipped = count.skipped_ns.load(Ordering::Acquire);
-        let pts = count.last_pts.load(Ordering::Acquire);
-        let frames = count.frames.load(Ordering::Acquire);
-        VideoProgress {
-            frames,
-            last_pts: (pts != u64::MAX).then(|| gst::ClockTime::from_nseconds(pts)),
-            skipped: gst::ClockTime::from_nseconds(skipped),
-        }
+        self.video_frames.progress()
     }
 
     pub fn stop(&self) -> Result<()> {
@@ -373,21 +363,66 @@ fn add_producer_branch(
     Ok(StreamProducer::from(&appsink))
 }
 
-/// Buffers that have reached a producer; see [`VideoProgress`].
-struct FrameCount {
+/// Video frames counted as they go by, from a streaming thread, for
+/// [`VideoProgress`]: a monitor's reaching its producer, or a channel clip's
+/// reaching the program.
+pub struct FrameCount {
     frames: AtomicU64,
-    /// Nanoseconds; `u64::MAX` until a timestamped buffer arrives.
+    /// Nanoseconds; `u64::MAX` until a timestamped frame arrives.
     last_pts: AtomicU64,
     skipped_ns: AtomicU64,
 }
 
+impl Default for FrameCount {
+    fn default() -> Self {
+        Self {
+            frames: AtomicU64::new(0),
+            last_pts: AtomicU64::new(u64::MAX),
+            skipped_ns: AtomicU64::new(0),
+        }
+    }
+}
+
+impl FrameCount {
+    /// Count a frame stamped `pts` (if it has a timestamp) that follows a
+    /// `gap` the source marked: see [`VideoProgress::skipped`].
+    pub fn record(&self, pts: Option<gst::ClockTime>, gap: gst::ClockTime) {
+        if gap > gst::ClockTime::ZERO {
+            self.skipped_ns.fetch_add(gap.nseconds(), Ordering::AcqRel);
+        }
+        if let Some(pts) = pts {
+            self.last_pts.store(pts.nseconds(), Ordering::Release);
+        }
+        self.frames.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn frames(&self) -> u64 {
+        self.frames.load(Ordering::Relaxed)
+    }
+
+    /// The last frame's timestamp.
+    fn last_pts(&self) -> Option<gst::ClockTime> {
+        let pts = self.last_pts.load(Ordering::Acquire);
+        (pts != u64::MAX).then(|| gst::ClockTime::from_nseconds(pts))
+    }
+
+    pub fn progress(&self) -> VideoProgress {
+        // A frame can land between these reads, leaving the count one ahead
+        // of the timestamp: readers allow a frame of slack.
+        let skipped = self.skipped_ns.load(Ordering::Acquire);
+        let last_pts = self.last_pts();
+        let frames = self.frames.load(Ordering::Acquire);
+        VideoProgress {
+            frames,
+            last_pts,
+            skipped: gst::ClockTime::from_nseconds(skipped),
+        }
+    }
+}
+
 /// Count the buffers reaching `producer`'s appsink.
 fn count_buffers(producer: &StreamProducer) -> Result<Arc<FrameCount>> {
-    let count = Arc::new(FrameCount {
-        frames: AtomicU64::new(0),
-        last_pts: AtomicU64::new(u64::MAX),
-        skipped_ns: AtomicU64::new(0),
-    });
+    let count = Arc::new(FrameCount::default());
     let counter = Arc::clone(&count);
     producer
         .appsink()
@@ -397,16 +432,16 @@ fn count_buffers(producer: &StreamProducer) -> Result<Arc<FrameCount>> {
             let Some(buffer) = info.buffer() else {
                 return gst::PadProbeReturn::Ok;
             };
-            if let Some(pts) = buffer.pts() {
-                let prev = counter.last_pts.swap(pts.nseconds(), Ordering::AcqRel);
-                if buffer.flags().contains(gst::BufferFlags::DISCONT) && prev != u64::MAX {
+            let pts = buffer.pts();
+            let gap = match (pts, counter.last_pts()) {
+                (Some(pts), Some(prev)) if buffer.flags().contains(gst::BufferFlags::DISCONT) => {
                     // The gap, less the frame interval that would be there anyway.
-                    let interval = buffer.duration().map_or(0, |d| d.nseconds());
-                    let gap = pts.nseconds().saturating_sub(prev).saturating_sub(interval);
-                    counter.skipped_ns.fetch_add(gap, Ordering::AcqRel);
+                    let interval = buffer.duration().unwrap_or(gst::ClockTime::ZERO);
+                    pts.saturating_sub(prev).saturating_sub(interval)
                 }
-            }
-            counter.frames.fetch_add(1, Ordering::Release);
+                _ => gst::ClockTime::ZERO,
+            };
+            counter.record(pts, gap);
             gst::PadProbeReturn::Ok
         });
     Ok(count)

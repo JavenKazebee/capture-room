@@ -9,7 +9,7 @@ use gstreamer_app as gst_app;
 use tracing::warn;
 
 use super::LEAD;
-use crate::pipeline::monitor::VideoProgress;
+use crate::pipeline::monitor::{FrameCount, VideoProgress};
 use crate::sources::live::{Chain, Inputs};
 use crate::sources::player::{self, Kind, QueueLimit};
 
@@ -25,11 +25,9 @@ pub struct Lanes {
 /// How a playing clip's video has reached the program, for the benchmark.
 #[derive(Default)]
 struct Played {
-    frames: AtomicU64,
-    /// Program time of the last frame, in nanoseconds; `u64::MAX` before one.
-    last_pts: AtomicU64,
-    /// Total length of the gaps the lane marked (a seek, a loop's restart).
-    skipped_ns: AtomicU64,
+    /// In program time, with the gaps the lane marked (a seek, a loop's
+    /// restart).
+    frames: FrameCount,
     /// Frames that reached the lane after their slot: the compositor drops
     /// them.
     late: AtomicU64,
@@ -82,10 +80,7 @@ impl Lanes {
         Self {
             id: id.to_string(),
             inner: Mutex::default(),
-            played: Played {
-                last_pts: AtomicU64::new(u64::MAX),
-                ..Default::default()
-            },
+            played: Played::default(),
         }
     }
 
@@ -298,26 +293,16 @@ impl Lanes {
             played.late.fetch_add(1, Ordering::Relaxed);
         }
         // A gap the lane marks DISCONT (see `push`).
-        if let Some(end) = end.filter(|&end| pts > end + gst::ClockTime::from_mseconds(20)) {
-            played
-                .skipped_ns
-                .fetch_add((pts - end).nseconds(), Ordering::AcqRel);
-        }
-        played.last_pts.store(pts.nseconds(), Ordering::Release);
-        played.frames.fetch_add(1, Ordering::Release);
+        let gap = end
+            .filter(|&end| pts > end + gst::ClockTime::from_mseconds(20))
+            .map_or(gst::ClockTime::ZERO, |end| pts - end);
+        played.frames.record(Some(pts), gap);
     }
 
     pub(super) fn played(&self) -> PlayedProgress {
         let played = &self.played;
-        let skipped = played.skipped_ns.load(Ordering::Acquire);
-        let pts = played.last_pts.load(Ordering::Acquire);
-        let frames = played.frames.load(Ordering::Acquire);
         PlayedProgress {
-            progress: VideoProgress {
-                frames,
-                last_pts: (pts != u64::MAX).then(|| gst::ClockTime::from_nseconds(pts)),
-                skipped: gst::ClockTime::from_nseconds(skipped),
-            },
+            progress: played.frames.progress(),
             late: played.late.load(Ordering::Relaxed),
         }
     }
