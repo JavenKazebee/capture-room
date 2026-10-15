@@ -176,8 +176,4 @@ impl InputSource for NdiSource {
     fn build_bin(&self) -> Result<gst::Element> {
         Ok(build_bin(&self.id, &self.ndi_name, &self.url_address)?.upcast())
     }
-
-    fn timecode(&self) -> Option<String> {
-        None
-    }
 }

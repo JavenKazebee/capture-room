@@ -99,10 +99,6 @@ impl InputSource for StreamSource {
         Ok(bin.upcast())
     }
 
-    fn timecode(&self) -> Option<String> {
-        None
-    }
-
     fn link(&self) -> Option<LinkState> {
         Some(self.tracker.state(listen_port(&self.config).is_some()))
     }

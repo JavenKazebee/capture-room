@@ -96,10 +96,6 @@ impl InputSource for FileSource {
     fn build_bin(&self) -> Result<gst::Element> {
         Ok(build_bin(&self.id, &self.config.path, self.media()?)?.upcast())
     }
-
-    fn timecode(&self) -> Option<String> {
-        None
-    }
 }
 
 // ── Probe ─────────────────────────────────────────────────────────────────────

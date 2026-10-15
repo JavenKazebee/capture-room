@@ -47,7 +47,9 @@ pub trait InputSource: Send + Sync {
     fn build_bin(&self) -> Result<gst::Element>;
 
     /// Current timecode as `HH:MM:SS:FF`, if the source has one.
-    fn timecode(&self) -> Option<String>;
+    fn timecode(&self) -> Option<String> {
+        None
+    }
 
     /// Whether a live source is delivering frames (`None` for other
     /// sources). Only meaningful while its monitor runs.

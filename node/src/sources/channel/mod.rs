@@ -113,10 +113,6 @@ impl InputSource for ChannelSource {
         Ok(bin.upcast())
     }
 
-    fn timecode(&self) -> Option<String> {
-        None
-    }
-
     fn playout(&self) -> Option<&Arc<Playout>> {
         Some(&self.playout)
     }

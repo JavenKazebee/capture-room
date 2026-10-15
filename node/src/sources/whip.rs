@@ -80,10 +80,6 @@ impl InputSource for WhipSource {
         Ok(bin.upcast())
     }
 
-    fn timecode(&self) -> Option<String> {
-        None
-    }
-
     fn link(&self) -> Option<LinkState> {
         Some(self.tracker.state(true))
     }
