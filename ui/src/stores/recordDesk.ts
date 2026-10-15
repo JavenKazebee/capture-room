@@ -3,11 +3,11 @@ import { computed, ref } from 'vue'
 import { useStorage } from '@vueuse/core'
 import { toast } from 'vue-sonner'
 import { api } from '@/composables/useApi'
-import { formatTimeLeft } from '@/lib/format'
+import { formatTimeLeft, plural } from '@/lib/format'
 import { notifyError, notifyWarn } from '@/lib/notify'
 import { LOW_TIME_SECS, capacityWarningText, useCapacityStore } from '@/stores/capacity'
 import { useNodesStore } from '@/stores/nodes'
-import { blankLeg, usePresetsStore } from '@/stores/presets'
+import { blankLeg, DEFAULT_PRESET, usePresetsStore } from '@/stores/presets'
 import { useRecordingsStore } from '@/stores/recordings'
 import { useSourcesStore, type Source } from '@/stores/sources'
 import type { ClockTimeDto } from '@/types/generated/ClockTimeDto'
@@ -114,9 +114,9 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
   const presetFor = useStorage<Record<string, string>>('cr.record.presets', {})
 
   function presetIdOf(key: string) {
-    const id = presetFor.value[key] ?? 'default'
+    const id = presetFor.value[key] ?? DEFAULT_PRESET.id
     // A deleted preset falls back to the default visibly.
-    return id === 'default' || presets.presets.some((p) => p.id === id) ? id : 'default'
+    return id === DEFAULT_PRESET.id || presets.presets.some((p) => p.id === id) ? id : DEFAULT_PRESET.id
   }
 
   function setPreset(key: string, id: string) {
@@ -152,10 +152,7 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     if (id !== MIXED) setPresetMany(scope.value.map((s) => s.key), id)
   }
 
-  const presetOptions = computed(() => [
-    { value: 'default', label: 'H.264 (default)' },
-    ...presets.presets.map((p) => ({ value: p.id, label: p.name })),
-  ])
+  const presetOptions = computed(() => presets.options)
 
   // ── Start / stop ───────────────────────────────────────────────────────────
 
@@ -288,7 +285,7 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
       }
     })
     const ok = targets.length - failed
-    if (ok) toast.success(`${action === 'start' ? 'Recording' : 'Stopped'} ${ok} feed${ok > 1 ? 's' : ''}`)
+    if (ok) toast.success(`${action === 'start' ? 'Recording' : 'Stopped'} ${plural(ok, 'feed')}`)
     if (ok) showWarnings(warnings)
     if (startAt) warnUnaligned(targets, results)
   }

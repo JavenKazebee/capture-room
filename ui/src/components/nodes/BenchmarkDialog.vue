@@ -5,7 +5,7 @@ import { Film, FolderOpen, Loader2 } from '@lucide/vue'
 import { errorMessage } from '@/composables/useApi'
 import { useCapacityStore } from '@/stores/capacity'
 import { useNodesStore } from '@/stores/nodes'
-import { blankLeg, usePresetsStore } from '@/stores/presets'
+import { blankLeg, DEFAULT_PRESET, usePresetsStore } from '@/stores/presets'
 import { CODECS, useReplayStore } from '@/stores/replay'
 import { useSourcesStore } from '@/stores/sources'
 import type { ConfiguredSourceDto } from '@/types/generated/ConfiguredSourceDto'
@@ -76,11 +76,7 @@ const codecOptions = computed(() =>
   replay.codecsOf(props.nodeId).map((c) => ({ value: c, label: CODECS[c].label })),
 )
 
-const presetId = ref('default')
-const presetOptions = computed(() => [
-  { value: 'default', label: 'H.264 (default)' },
-  ...presets.presets.map((p) => ({ value: p.id, label: p.name })),
-])
+const presetId = ref<string>(DEFAULT_PRESET.id)
 
 const mediaPath = ref('')
 const browsing = ref(false)
@@ -165,7 +161,7 @@ async function start() {
           <OptionSelect v-model="measure" :options="measureOptions" />
         </FormField>
         <FormField v-if="measure === 'record'" label="Preset" class="col-span-2">
-          <OptionSelect v-model="presetId" :options="presetOptions" />
+          <OptionSelect v-model="presetId" :options="presets.options" />
         </FormField>
         <template v-else-if="measure === 'channel'">
           <FormField label="Outputs">

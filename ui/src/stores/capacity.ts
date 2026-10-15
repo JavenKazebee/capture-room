@@ -9,6 +9,7 @@ import type { NodeCapacityDto } from '@/types/generated/NodeCapacityDto'
 import type { OutputConfig } from '@/types/generated/OutputConfig'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import type { ReplayCodec } from '@/types/generated/ReplayCodec'
+import { DEFAULT_PRESET } from '@/stores/presets'
 import { CODECS } from '@/stores/replay'
 import { onReconnect } from '@/lib/reconnect'
 import type { CapacityCheckRequest } from '@/types/generated/CapacityCheckRequest'
@@ -36,7 +37,7 @@ export function channelOutputsLabel(outputs: OutputConfig[]) {
 export function setupLabel(s: { preset_name: string | null; replay: ReplayCodec | null; channel: OutputConfig[] | null }) {
   if (s.channel) return `Channel · ${channelOutputsLabel(s.channel)}`
   if (s.replay) return `Replay buffer · ${CODECS[s.replay].label}`
-  return s.preset_name ?? 'H.264 (default)'
+  return s.preset_name ?? DEFAULT_PRESET.name
 }
 
 /**

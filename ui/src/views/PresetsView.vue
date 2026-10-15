@@ -4,7 +4,7 @@ import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useEventListener } from '@vueuse/core'
 import { toast } from 'vue-sonner'
 import { Copy, Loader2, Lock, Plus, RotateCcw, Search, Trash2 } from '@lucide/vue'
-import { usePresetsStore, blankLeg } from '@/stores/presets'
+import { usePresetsStore, blankLeg, DEFAULT_PRESET } from '@/stores/presets'
 import { dateTime, plural } from '@/lib/format'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
@@ -62,7 +62,7 @@ const saving = ref(false)
 const serverError = ref<string | null>(null)
 
 const selected = computed(() => store.presets.find((p) => p.id === selectedId.value) ?? null)
-const isBuiltIn = computed(() => selectedId.value === 'default')
+const isBuiltIn = computed(() => selectedId.value === DEFAULT_PRESET.id)
 const snapshot = () => JSON.stringify({ name: draftName.value, legs: draftLegs.value })
 const dirty = computed(() => !isBuiltIn.value && selectedId.value !== null && snapshot() !== original.value)
 
@@ -102,7 +102,7 @@ function discardAndSwitch() {
 function select(id: string) {
   if (id === selectedId.value) return
   guarded(() => {
-    if (id === 'default') load('default', 'H.264 (default)', [blankLeg()])
+    if (id === DEFAULT_PRESET.id) load(DEFAULT_PRESET.id, DEFAULT_PRESET.name, [blankLeg()])
     else {
       const p = store.presets.find((p) => p.id === id)
       if (p) loadPreset(p)
@@ -203,7 +203,7 @@ async function save() {
     const feeds = feedKeys.length
     loadPreset(p)
     if (feeds) desk.setPresetMany(feedKeys, p.id)
-    toast.success(feeds ? `Saved ${p.name} · applied to ${feeds} feed${feeds > 1 ? 's' : ''}` : `Saved ${p.name}`)
+    toast.success(feeds ? `Saved ${p.name} · applied to ${plural(feeds, 'feed')}` : `Saved ${p.name}`)
   } catch (e) {
     serverError.value = errorMessage(e, 'Save failed.')
   } finally {
@@ -235,7 +235,7 @@ async function destroy() {
 function pickInitial() {
   const first = listed.value[0]
   if (first) loadPreset(first)
-  else load('default', 'H.264 (default)', [blankLeg()])
+  else load(DEFAULT_PRESET.id, DEFAULT_PRESET.name, [blankLeg()])
 }
 
 onMounted(async () => {
@@ -272,10 +272,10 @@ watch(selected, (p) => p && !dirty.value && p.id === selectedId.value && loadPre
         <nav class="flex-1 overflow-y-auto p-1.5 space-y-0.5">
           <button
             class="preset-item"
-            :data-active="selectedId === 'default' || undefined"
-            @click="select('default')"
+            :data-active="selectedId === DEFAULT_PRESET.id || undefined"
+            @click="select(DEFAULT_PRESET.id)"
           >
-            <span class="flex items-center gap-1.5 text-sm font-medium"><Lock class="size-3 text-muted-foreground" /> H.264 (default)</span>
+            <span class="flex items-center gap-1.5 text-sm font-medium"><Lock class="size-3 text-muted-foreground" /> {{ DEFAULT_PRESET.name }}</span>
             <span class="text-[11px] text-muted-foreground">Built in · 1 output · H.264</span>
           </button>
           <button

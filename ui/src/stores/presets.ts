@@ -1,11 +1,14 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { api } from '@/composables/useApi'
 import { defaultAdvanced } from '@/lib/advanced'
 import type { PresetCreateRequest } from '@/types/generated/PresetCreateRequest'
 import type { PresetDto } from '@/types/generated/PresetDto'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import { onReconnect } from '@/lib/reconnect'
+
+/** The built-in preset: one H.264 leg ([`blankLeg`]). Not stored; every node has it. */
+export const DEFAULT_PRESET = { id: 'default', name: 'H.264 (default)' } as const
 
 export function blankLeg(): PresetOutputInput {
   return {
@@ -55,5 +58,11 @@ export const usePresetsStore = defineStore('presets', () => {
     presets.value = presets.value.filter((p) => p.id !== id)
   }
 
-  return { presets, upsert, load, create, update, remove }
+  /** Every preset as select options, the built-in one first. */
+  const options = computed(() => [
+    { value: DEFAULT_PRESET.id, label: DEFAULT_PRESET.name },
+    ...presets.value.map((p) => ({ value: p.id, label: p.name })),
+  ])
+
+  return { presets, options, upsert, load, create, update, remove }
 })

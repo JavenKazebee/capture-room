@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nodeApi, sourceKey } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
-import { blankLeg, usePresetsStore } from '@/stores/presets'
+import { blankLeg, DEFAULT_PRESET, usePresetsStore } from '@/stores/presets'
 import { useSourcesStore } from '@/stores/sources'
 import type { ClockTimeDto } from '@/types/generated/ClockTimeDto'
 import type { PresetDto } from '@/types/generated/PresetDto'
@@ -223,7 +223,7 @@ export const useRecordingsStore = defineStore('recordings', () => {
 
   function presetNameOf(s: RecordingSession) {
     if (s.preset_name) return s.preset_name
-    if (s.preset_id === 'default' || !s.preset_id) return 'H.264 (default)'
+    if (s.preset_id === DEFAULT_PRESET.id || !s.preset_id) return DEFAULT_PRESET.name
     return presets.presets.find((p) => p.id === s.preset_id)?.name ?? 'Unknown preset'
   }
 

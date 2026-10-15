@@ -7,6 +7,7 @@ import { useEventsStore } from '@/stores/events'
 import { useCapacityStore } from '@/stores/capacity'
 import { usePlayoutStore } from '@/stores/playout'
 import { useReplayStore } from '@/stores/replay'
+import { DEFAULT_PRESET } from '@/stores/presets'
 import { runReconnectReloads } from '@/lib/reconnect'
 import { plural } from '@/lib/format'
 import type { WsEvent } from '@/types/generated/WsEvent'
@@ -246,7 +247,7 @@ function logEvent(event: NodeEvent) {
     case 'benchmark.updated': {
       // Only the start and the end; steps in between update the node card.
       const run = event.run
-      const name = run.preset_name ?? 'H.264 (default)'
+      const name = run.preset_name ?? DEFAULT_PRESET.name
       if (run.status === 'running') {
         if (run.feeds_running === 0) log('info', `Benchmark started: ${name}`, { node_id })
       } else if (run.status === 'completed') {
