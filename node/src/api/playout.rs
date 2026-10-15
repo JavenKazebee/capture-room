@@ -414,7 +414,7 @@ async fn put_replay(
         return Err(ApiError::bad(format!(
             "this node can't record {:?} for replay (missing {})",
             req.codec,
-            missing_elements(req.codec).join(", ")
+            req.codec.missing().join(", ")
         )));
     }
     if state
@@ -461,16 +461,6 @@ async fn delete_replay(
         .await
         .set_replay(&source_id, None);
     Ok(StatusCode::NO_CONTENT)
-}
-
-fn missing_elements(codec: crate::api::types::ReplayCodec) -> Vec<&'static str> {
-    let missing = |e: &&str| gst::ElementFactory::find(e).is_none();
-    let mut list: Vec<&'static str> = codec.decoder().iter().copied().filter(missing).collect();
-    let encoders = codec.encoders();
-    if encoders.iter().all(missing) {
-        list.extend(encoders);
-    }
-    list
 }
 
 /// Play (or cue) part of a source's replay buffer on a channel.

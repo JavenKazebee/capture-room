@@ -67,6 +67,11 @@ pub fn has(name: &str) -> bool {
     gst::ElementFactory::find(name).is_some()
 }
 
+/// The elements of `names` this node doesn't have.
+pub fn missing<'a>(names: &[&'a str]) -> Vec<&'a str> {
+    names.iter().copied().filter(|e| !has(e)).collect()
+}
+
 /// Source types that need more than the required plugins, and whether this
 /// node can run them. A type missing an element is unavailable rather than
 /// stopping the node. `can_display`: the node has a window system, so
@@ -180,12 +185,7 @@ pub fn locate_ndi_runtime() -> Option<&'static str> {
 pub fn check_required_plugins() -> Result<()> {
     let mut msg = String::new();
     for package in REQUIRED {
-        let missing: Vec<&str> = package
-            .elements
-            .iter()
-            .copied()
-            .filter(|e| gst::ElementFactory::find(e).is_none())
-            .collect();
+        let missing = missing(package.elements);
         if missing.is_empty() {
             continue;
         }

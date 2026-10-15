@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, Local};
-use gstreamer as gst;
 
 use crate::api::types::{
     AudioChannels, AudioCodecChoice, ChromaSubsampling, Container, Deinterlace, EncoderChoice,
@@ -347,7 +346,7 @@ pub fn available_encoders() -> Vec<String> {
     [VtH264, VtH265, VtProRes, X264, X265, Vp9, ProResKs]
         .into_iter()
         .map(VideoEncoder::element)
-        .filter(|name| gst::ElementFactory::find(name).is_some())
+        .filter(|name| crate::plugins::has(name))
         .map(String::from)
         .collect()
 }

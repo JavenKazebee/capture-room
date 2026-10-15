@@ -61,8 +61,18 @@ impl ReplayCodec {
 
     /// Whether this node can record it and play it back.
     pub fn available(self) -> bool {
-        let has = |e: &&str| gst::ElementFactory::find(e).is_some();
-        self.encoders().iter().any(has) && self.decoder().iter().all(has)
+        self.missing().is_empty()
+    }
+
+    /// The elements this node lacks to record it and play it back: any
+    /// decoder element, and every encoder when it has none of them.
+    pub fn missing(self) -> Vec<&'static str> {
+        let mut list = crate::plugins::missing(self.decoder());
+        let encoders = crate::plugins::missing(self.encoders());
+        if encoders.len() == self.encoders().len() {
+            list.extend(encoders);
+        }
+        list
     }
 
     /// The codecs this node can use for replay, the default first: ProRes

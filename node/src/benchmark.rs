@@ -294,13 +294,12 @@ fn check_channel_benchmark(req: &BenchmarkRequest, outputs: &[OutputConfig]) -> 
             "a channel benchmark takes no recording outputs or replay codec",
         ));
     }
-    let installed = |name: &str| gst::ElementFactory::find(name).is_some();
     for o in outputs {
         match o {
-            OutputConfig::Ndi { .. } if !installed("ndisink") => {
+            OutputConfig::Ndi { .. } if !crate::plugins::has("ndisink") => {
                 return Err(ApiError::bad("this node can't send NDI (no NDI plugin)"));
             }
-            OutputConfig::Srt { .. } if !installed("srtsink") => {
+            OutputConfig::Srt { .. } if !crate::plugins::has("srtsink") => {
                 return Err(ApiError::bad("this node can't send SRT (no SRT plugin)"));
             }
             OutputConfig::Ndi { .. } | OutputConfig::Srt { .. } => {}
@@ -309,7 +308,10 @@ fn check_channel_benchmark(req: &BenchmarkRequest, outputs: &[OutputConfig]) -> 
             }
         }
     }
-    if !["compositor", "audiomixer"].into_iter().all(installed) {
+    if !["compositor", "audiomixer"]
+        .into_iter()
+        .all(crate::plugins::has)
+    {
         return Err(ApiError::bad("this node can't run playout channels"));
     }
     Ok(())
