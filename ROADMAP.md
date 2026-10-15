@@ -126,7 +126,6 @@ A full playout system — capture in reverse. Design in ARCHITECTURE.md (Playbac
 - **Output types, in order:** NDI (`ndisink`, no hardware needed) → SRT / RTSP → local
   display / HDMI out → WHEP (all shipped) → Decklink / AJA.
 - Reuses file decoding from the looping media file source (#6).
-- Playout channels count against capacity: extend the benchmark to cover them.
 - **Playback workspace** in the UI.
 - ✅ One NDI channel playing a single file (milestone 1, 2026-10-06).
 - ✅ **Gapless playlists (2026-10-07)** — a stored playlist per channel; each item
@@ -172,6 +171,15 @@ A full playout system — capture in reverse. Design in ARCHITECTURE.md (Playbac
   or VP8, Opus stereo) with the bitrate adapted to each link; viewers counted. Watch in
   Playback plays it in the browser. Needs the libnice GStreamer plugin
   (`libnice-gstreamer` on macOS), like WHIP.
+- ✅ **Channels in capacity and the benchmark (2026-10-14)** — a benchmark can measure
+  playout channels: each feed is a real channel at the footage's format playing it on
+  loop, with NDI (numbered names) and SRT (listening on a free local port) outputs, or
+  the program alone. RTSP and WHEP (encoded only per viewer) and display outputs are
+  left out of the measurement and of a channel's key. Running channels, idle or playing,
+  add to a node's load beside recordings and replay buffers. Clip frames that reach the
+  program too late to show count as dropped. On the 8 GB dev Mac (1080p30, NDI + SRT)
+  3 channels kept up with nothing dropped, and memory stopped the run at 4. Next: check
+  capacity when a channel is created or its outputs change, as Record does.
 
 ## 10. Clock sync across nodes
 
@@ -270,7 +278,7 @@ Builds on playback (#9) and clock sync (#10). Design in ARCHITECTURE.md (Instant
 - **Next:** compare intra H.264's picture with ProRes Proxy's before recommending it
   for its size. Then a replay node subscribing to the same NDI sources as the capture
   nodes. Not yet: clips from several angles grouped as one, downloading an export from
-  the browser, MOV timecode on exports, playout channels in capacity and the benchmark.
+  the browser, MOV timecode on exports.
 
 ## 13. Follow-on
 

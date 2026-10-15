@@ -901,14 +901,19 @@ async fn delete_benchmark(
 async fn get_capacity(State(state): State<Arc<AppState>>) -> ApiResult<Json<NodeCapacityDto>> {
     let runs = db::benchmarks_list(&state.db).await?;
     let capacity = Capacity::from_runs(&runs);
-    let (feeds, buffers) = {
+    let (feeds, buffers, channels) = {
         let mgr = state.source_manager.read().await;
-        (mgr.active_feeds(), mgr.active_buffers())
+        (
+            mgr.active_feeds(),
+            mgr.active_buffers(),
+            mgr.active_channels(),
+        )
     };
     let load = capacity.load(
         feeds
             .iter()
             .chain(&buffers)
+            .chain(&channels)
             .map(|(key, format)| (key.as_str(), *format)),
     );
     let running =
@@ -917,6 +922,7 @@ async fn get_capacity(State(state): State<Arc<AppState>>) -> ApiResult<Json<Node
         profiles: capacity.profiles(),
         active_feeds: feeds.len() as u32,
         active_buffers: buffers.len() as u32,
+        active_channels: channels.len() as u32,
         load: load.load,
         unknown_feeds: load.unknown,
         running,
@@ -924,7 +930,8 @@ async fn get_capacity(State(state): State<Arc<AppState>>) -> ApiResult<Json<Node
 }
 
 /// Would recording these sources with these outputs (or giving them replay
-/// buffers) fit on this node — its benchmarked capacity, and the space on the
+/// buffers) fit on this node — its benchmarked capacity, on top of the
+/// recordings, buffers and playout channels running, and the space on the
 /// volumes they'd write to?
 async fn post_capacity_check(
     State(state): State<Arc<AppState>>,
@@ -946,6 +953,7 @@ async fn post_capacity_check(
             .collect();
         let mut active = mgr.active_feeds();
         active.extend(buffers);
+        active.extend(mgr.active_channels());
         (active, formats, mgr.active_leg_files())
     };
     let active_iter = || active.iter().map(|(k, f)| (k.as_str(), *f));

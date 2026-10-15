@@ -16,13 +16,18 @@ active_feeds: number,
  */
 active_buffers: number, 
 /**
- * Share of the benchmarked capacity the active recordings and replay
- * buffers use (1 = full), counting only those with a matching benchmark.
+ * Playout channels running.
+ */
+active_channels: number, 
+/**
+ * Share of the benchmarked capacity the active recordings, replay
+ * buffers and playout channels use (1 = full), counting only those with
+ * a matching benchmark.
  */
 load: number, 
 /**
- * Active recordings and replay buffers with no benchmark to judge them
- * by.
+ * Active recordings, replay buffers and channels with no benchmark to
+ * judge them by.
  */
 unknown_feeds: number, 
 /**

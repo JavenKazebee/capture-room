@@ -61,7 +61,12 @@ const details = computed(() => {
   const r = selected.value
   if (!r) return []
   return [
-    ...(r.replay
+    ...(r.channel
+      ? [
+          { label: 'Measured', value: setupLabel(r) },
+          { label: 'Outputs', value: r.encoders.join(', ') || 'none (the program alone)' },
+        ]
+      : r.replay
       ? [
           { label: 'Measured', value: setupLabel(r) },
           { label: 'Encoder', value: r.encoders[0] ?? '—' },

@@ -13,8 +13,8 @@ import BenchmarkDialog from './BenchmarkDialog.vue'
 
 /**
  * A node card's Capacity section: how many feeds each benchmarked setup
- * sustains, how much of that the node's recordings and replay buffers use,
- * and the benchmark running now.
+ * sustains, how much of that the node's recordings, replay buffers and
+ * playout channels use, and the benchmark running now.
  */
 const props = defineProps<{ node: NodeDto; recording: number }>()
 
@@ -48,7 +48,9 @@ function feedsLabel(p: ProfileCapacityDto) {
 }
 
 function profileTitle(p: ProfileCapacityDto) {
-  const lines = p.replay
+  const lines = p.channel
+    ? [`Playout channels: the program${p.encoders.length ? ` and ${p.encoders.join(', ')}` : ' alone'}`]
+    : p.replay
     ? [`Replay buffers${p.encoders[0] ? ` via ${p.encoders[0]}` : ''}`]
     : p.outputs.map((o, i) => `${o.name}: ${o.codec}/${o.container}${p.encoders[i] ? ` via ${p.encoders[i]}` : ''}`)
   if (p.at_limit) lines.push('Every step kept up: run again with a higher feed limit to find the maximum.')
@@ -57,8 +59,23 @@ function profileTitle(p: ProfileCapacityDto) {
 
 // ── Running ─────────────────────────────────────────────────────────────────
 
-/** Recordings and replay buffers counted in the load. */
-const active = computed(() => (cap.value ? cap.value.active_feeds + cap.value.active_buffers : 0))
+/** Recordings, replay buffers and channels counted in the load. */
+const active = computed(() =>
+  cap.value ? cap.value.active_feeds + cap.value.active_buffers + cap.value.active_channels : 0,
+)
+
+/** `2 recording · 1 replay buffer · 1 channel` */
+const activeLabel = computed(() => {
+  const c = cap.value
+  if (!c) return ''
+  return [
+    c.active_feeds ? `${c.active_feeds} recording` : '',
+    c.active_buffers ? plural(c.active_buffers, 'replay buffer') : '',
+    c.active_channels ? plural(c.active_channels, 'channel') : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+})
 
 function plural(n: number, word: string) {
   return `${n} ${word}${n === 1 ? '' : 's'}`
@@ -157,7 +174,7 @@ const startBlocked = computed(() => {
         </p>
       </div>
 
-      <!-- Load from active recordings and replay buffers -->
+      <!-- Load from active recordings, replay buffers and channels -->
       <div v-if="active" class="text-xs">
         <div class="flex justify-between gap-2 mb-1">
           <span>
@@ -167,9 +184,7 @@ const startBlocked = computed(() => {
             <template v-else>No benchmark matches what's running</template>
           </span>
           <span class="text-muted-foreground shrink-0 num">
-            <template v-if="cap.active_feeds">{{ cap.active_feeds }} recording</template>
-            <template v-if="cap.active_feeds && cap.active_buffers"> · </template>
-            <template v-if="cap.active_buffers">{{ plural(cap.active_buffers, 'replay buffer') }}</template>
+            {{ activeLabel }}
             <template v-if="cap.unknown_feeds && cap.unknown_feeds < active"> · {{ cap.unknown_feeds }} not benchmarked</template>
           </span>
         </div>
@@ -198,7 +213,7 @@ const startBlocked = computed(() => {
             <span class="flex gap-2 text-muted-foreground">
               <span class="num truncate">{{ p.encoders.join(', ') }}</span>
               <span class="flex-1" />
-              <span class="num shrink-0">{{ formatRate(p.bytes_per_sec_per_feed) }} per feed</span>
+              <span v-if="!p.channel" class="num shrink-0">{{ formatRate(p.bytes_per_sec_per_feed) }} per feed</span>
             </span>
           </button>
         </li>
@@ -209,8 +224,8 @@ const startBlocked = computed(() => {
         </li>
       </ul>
       <p v-else-if="!running" class="text-xs text-muted-foreground">
-        Not benchmarked yet. A benchmark finds how many feeds this node can record with a preset, or keep replay
-        buffers of.
+        Not benchmarked yet. A benchmark finds how many feeds this node can record with a preset, keep replay
+        buffers of, or play out on channels.
       </p>
     </template>
   </section>

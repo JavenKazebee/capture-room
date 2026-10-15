@@ -1,17 +1,21 @@
 //! The benchmark runner: how many feeds this node can record with a set of
-//! outputs, or keep replay buffers of in a codec.
+//! outputs, keep replay buffers of in a codec, or run as playout channels.
 //!
 //! Each feed is a looping media file (real footage: test patterns compress
 //! unrealistically) with its own monitor and recording legs (or replay
 //! buffer), built the same way as a real recording but kept out of the
-//! [`SourceManager`], so they never show up as sources. Each step runs some
-//! number of feeds and, after a warm-up, measures:
+//! [`SourceManager`], so they never show up as sources. A channel feed is a
+//! playout channel's program instead (the compositor and mixer at the
+//! footage's format) playing the footage on loop through its player, with
+//! its NDI and SRT outputs. Each step runs some number of feeds and, after a
+//! warm-up, measures:
 //!
 //! - **Source shortfall:** frames the feeds didn't deliver, from the
 //!   monitors' frame counts against the footage's frame rate. Decoding (or
-//!   the monitors) fell behind.
-//! - **Output drops:** frames the legs' (or buffers') input queues dropped
-//!   because an encoder couldn't keep up.
+//!   the monitors) fell behind. For a channel, also the clip frames that
+//!   reached its program too late to be shown.
+//! - **Output drops:** frames the legs' (or buffers' or channel outputs')
+//!   input queues dropped because an encoder couldn't keep up.
 //! - CPU, memory, and what the legs wrote per second.
 //!
 //! The feed count is searched for (see [`Search`]): doubled with quick checks
@@ -41,15 +45,19 @@ use tracing::{error, info, warn};
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
-    BenchmarkRequest, BenchmarkRunDto, BenchmarkStatus, BenchmarkStepDto, FileSourceConfig,
-    MediaInfo, PresetOutputInput, WsEvent,
+    BenchmarkRequest, BenchmarkRunDto, BenchmarkStatus, BenchmarkStepDto, ChannelConfig, ClipEnd,
+    FileSourceConfig, LiveVideoFormat, MediaInfo, OutputConfig, PresetOutputInput, WsEvent,
 };
+use crate::capacity;
 use crate::db;
 use crate::pipeline::monitor::{MonitorPipeline, VideoProgress};
+use crate::pipeline::output::{self, OutputContext, OutputLeg, Program};
 use crate::pipeline::profile::{plan_legs, PathVars, RecordingProfile};
 use crate::pipeline::recording::{self, OnLegError, OnLegFile, RecordingLeg};
 use crate::pipeline::replay::{Index, ReplayIndex, ReplayLeg};
+use crate::sources::channel::{ChannelSource, ClipRequest, PlayedProgress, Playout};
 use crate::sources::file::{probe, FileSource};
+use crate::sources::InputSource;
 use crate::state::AppState;
 
 const DEFAULT_MAX_FEEDS: u32 = 64;
@@ -109,6 +117,9 @@ pub struct Running {
 /// keeping replay buffers (the result would be skewed, and the benchmark
 /// would compete with them) or while another benchmark runs.
 pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<BenchmarkRunDto> {
+    if let Some(outputs) = &req.channel {
+        check_channel(&req, outputs)?;
+    }
     match req.replay {
         Some(_) if !req.outputs.is_empty() => {
             return Err(ApiError::BadRequest(
@@ -121,6 +132,7 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
             ));
         }
         Some(_) => {}
+        None if req.channel.is_some() => {}
         None if req.outputs.is_empty() => {
             return Err(ApiError::BadRequest(
                 "at least one output is required".into(),
@@ -175,6 +187,9 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
         state.benchmark.lock().unwrap().take();
         return Err(ApiError::Conflict(why));
     }
+    // Channels always run, so they aren't stopped for a benchmark; the
+    // result says they ran.
+    let channels_running = state.source_manager.read().await.active_channels().len();
     let memory = MemoryWatch::new();
     if memory.budget.short(memory.budget.baseline) {
         state.benchmark.lock().unwrap().take();
@@ -185,6 +200,8 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
 
     let setup = async {
         let scratch = match req.replay {
+            // A channel writes nothing.
+            _ if req.channel.is_some() => Vec::new(),
             Some(_) => {
                 let root = state
                     .source_manager
@@ -205,6 +222,9 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
             preset_name: req.preset_name.clone(),
             outputs: req.outputs.clone(),
             replay: req.replay,
+            // What's measured, so the run is keyed like the channels it
+            // stands for.
+            channel: req.channel.as_deref().map(capacity::channel_outputs),
             media_path: path.clone(),
             media: media.clone(),
             max_feeds: req
@@ -249,9 +269,48 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
         reason,
         failure: Default::default(),
         memory: Mutex::new(memory),
+        channels_running,
     };
     tokio::spawn(run.run(done_tx));
     Ok(dto)
+}
+
+/// Refuse a channel benchmark that can't run: one that also asks for
+/// recording outputs or a replay codec, or for outputs it doesn't measure
+/// (see [`capacity::channel_outputs`]) or this node can't send.
+fn check_channel(req: &BenchmarkRequest, outputs: &[OutputConfig]) -> ApiResult<()> {
+    if !req.outputs.is_empty() || req.replay.is_some() {
+        return Err(ApiError::BadRequest(
+            "a channel benchmark takes no recording outputs or replay codec".into(),
+        ));
+    }
+    let installed = |name: &str| gst::ElementFactory::find(name).is_some();
+    for o in outputs {
+        match o {
+            OutputConfig::Ndi { .. } if !installed("ndisink") => {
+                return Err(ApiError::BadRequest(
+                    "this node can't send NDI (no NDI plugin)".into(),
+                ));
+            }
+            OutputConfig::Srt { .. } if !installed("srtsink") => {
+                return Err(ApiError::BadRequest(
+                    "this node can't send SRT (no SRT plugin)".into(),
+                ));
+            }
+            OutputConfig::Ndi { .. } | OutputConfig::Srt { .. } => {}
+            _ => {
+                return Err(ApiError::BadRequest(
+                    "a channel benchmark measures NDI and SRT outputs only: RTSP and WHEP encode only for viewers, and a display needs a screen".into(),
+                ));
+            }
+        }
+    }
+    if !["compositor", "audiomixer"].into_iter().all(installed) {
+        return Err(ApiError::BadRequest(
+            "this node can't run playout channels".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Cancel the running benchmark (only if it's `id`, when given) and wait for
@@ -309,9 +368,10 @@ pub async fn recover(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
 
 // ── Run ───────────────────────────────────────────────────────────────────────
 
-/// One feed: a looping file with its monitor, and what it feeds.
+/// One feed: a looping file (or a channel's program) with its monitor, and
+/// what it feeds.
 struct Feed {
-    monitor: MonitorPipeline,
+    monitor: Arc<MonitorPipeline>,
     work: Work,
 }
 
@@ -320,6 +380,9 @@ enum Work {
     Record(Vec<RecordingLeg>),
     /// A replay buffer. The leg is dropped before the index it writes into.
     Replay(ReplayLeg, ReplayIndex),
+    /// A playout channel playing the footage, and its outputs. Its clip is
+    /// stopped before it's dropped (see [`discard_feeds`]).
+    Channel(Arc<Playout>, Vec<OutputLeg>),
 }
 
 impl Feed {
@@ -327,14 +390,17 @@ impl Feed {
         match &self.work {
             Work::Record(legs) => legs.iter().map(RecordingLeg::dropped_frames).sum(),
             Work::Replay(leg, _) => leg.dropped_frames(),
+            Work::Channel(_, outputs) => outputs.iter().filter_map(OutputLeg::dropped_frames).sum(),
         }
     }
 
-    /// The encoder elements it uses, one per output.
+    /// The encoder elements it uses, one per output (a channel's outputs,
+    /// by name).
     fn encoders(&self) -> Vec<String> {
         match &self.work {
             Work::Record(legs) => legs.iter().map(|l| l.encoder().to_string()).collect(),
             Work::Replay(leg, _) => vec![leg.encoder().to_string()],
+            Work::Channel(_, outputs) => outputs.iter().map(|o| o.label().to_string()).collect(),
         }
     }
 
@@ -343,7 +409,24 @@ impl Feed {
         self.monitor.error().or_else(|| match &self.work {
             Work::Record(_) => None,
             Work::Replay(leg, _) => leg.error().map(|e| format!("replay buffer: {e}")),
+            Work::Channel(playout, outputs) => playout
+                .status()
+                .error
+                .map(|e| format!("playing the footage: {e}"))
+                .or_else(|| {
+                    outputs
+                        .iter()
+                        .find_map(|o| Some(format!("{}: {}", o.label(), o.error()?)))
+                }),
         })
+    }
+
+    /// How a channel's clip has reached its program.
+    fn played(&self) -> Option<PlayedProgress> {
+        match &self.work {
+            Work::Channel(playout, _) => Some(playout.played()),
+            _ => None,
+        }
     }
 }
 
@@ -371,6 +454,8 @@ struct Run {
     /// The first leg error, reported from a streaming thread.
     failure: Arc<Mutex<Option<String>>>,
     memory: Mutex<MemoryWatch>,
+    /// Playout channels running on the node when the run started.
+    channels_running: usize,
 }
 
 impl Run {
@@ -430,7 +515,15 @@ impl Run {
             let (n, full) = match search.next() {
                 Next::Done(n) => {
                     self.dto.sustainable_feeds = n;
-                    return Ok(self.closing_message(n, &search, capped.as_deref()));
+                    let mut message = self.closing_message(n, &search, capped.as_deref());
+                    if self.channels_running > 0 {
+                        let c = self.channels_running as u32;
+                        message.push_str(&format!(
+                            " {c} playout channel{} ran on the node meanwhile, taking some of it.",
+                            plural(c)
+                        ));
+                    }
+                    return Ok(message);
                 }
                 Next::Measure { feeds, full } => (feeds, full),
             };
@@ -566,6 +659,11 @@ impl Run {
     ) -> Result<BenchmarkStepDto, Stop> {
         let fps = self.dto.media.fps_num as f64 / self.dto.media.fps_den as f64;
         let replay = self.dto.replay.is_some();
+        let outputs = match (&self.dto.channel, replay) {
+            (Some(channel), _) => channel.len(),
+            (None, true) => 1,
+            (None, false) => self.dto.outputs.len(),
+        };
         let before = Snapshot::take(feeds, replay).await?;
         system.refresh_cpu_usage();
         let mut cpu = Vec::new();
@@ -579,14 +677,7 @@ impl Run {
         let memory_pct = system.used_memory() as f64 / system.total_memory().max(1) as f64 * 100.0;
         let threshold = self.dto.drop_threshold_pct;
         Ok(measure(
-            n,
-            fps,
-            if replay { 1 } else { self.dto.outputs.len() },
-            &before,
-            &after,
-            &cpu,
-            memory_pct,
-            threshold,
+            n, fps, outputs, &before, &after, &cpu, memory_pct, threshold,
         ))
     }
 
@@ -647,6 +738,9 @@ impl Run {
 
     /// Start feed `n` and its legs, once its monitor is delivering video.
     async fn add_feed(&self, n: u32) -> Result<Feed, Stop> {
+        if let Some(outputs) = &self.dto.channel {
+            return self.add_channel(n, outputs).await;
+        }
         let source = FileSource::new(
             format!("benchmark-{n}"),
             format!("Benchmark feed {n}"),
@@ -655,25 +749,7 @@ impl Run {
                 media: Some(self.dto.media.clone()),
             },
         );
-        let config = *self.state.source_manager.read().await.monitor_config();
-        let monitor = MonitorPipeline::new(&source, &config, &self.state.clock.clock())
-            .with_context(|| format!("start feed {n}"))?;
-
-        let deadline = Instant::now() + FIRST_FRAME_TIMEOUT;
-        while monitor.video_frames() == 0 {
-            if let Some(e) = monitor.error() {
-                return Err(Stop::Failed(anyhow!("feed {n}: {e}")));
-            }
-            if Instant::now() > deadline {
-                return Err(Stop::Failed(anyhow!(
-                    "feed {n} delivered no video within {FIRST_FRAME_TIMEOUT:?}"
-                )));
-            }
-            tokio::select! {
-                _ = self.cancel.cancelled() => return Err(Stop::Cancelled),
-                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
-            }
-        }
+        let monitor = self.start_monitor(n, &source).await?;
 
         if let Some(codec) = self.dto.replay {
             let index = Index::create(&self.scratch[0].join(format!("feed{n:02}")), REPLAY_KEEP);
@@ -707,6 +783,98 @@ impl Run {
         Ok(Feed {
             monitor,
             work: Work::Record(legs),
+        })
+    }
+
+    /// Run `source` for feed `n`, once its monitor is delivering video.
+    async fn start_monitor(
+        &self,
+        n: u32,
+        source: &dyn InputSource,
+    ) -> Result<Arc<MonitorPipeline>, Stop> {
+        let config = *self.state.source_manager.read().await.monitor_config();
+        let monitor = MonitorPipeline::new(source, &config, &self.state.clock.clock())
+            .with_context(|| format!("start feed {n}"))?;
+
+        let deadline = Instant::now() + FIRST_FRAME_TIMEOUT;
+        while monitor.video_frames() == 0 {
+            if let Some(e) = monitor.error() {
+                return Err(Stop::Failed(anyhow!("feed {n}: {e}")));
+            }
+            if Instant::now() > deadline {
+                return Err(Stop::Failed(anyhow!(
+                    "feed {n} delivered no video within {FIRST_FRAME_TIMEOUT:?}"
+                )));
+            }
+            tokio::select! {
+                _ = self.cancel.cancelled() => return Err(Stop::Cancelled),
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            }
+        }
+        Ok(Arc::new(monitor))
+    }
+
+    /// Start feed `n` as a playout channel at the footage's format, with
+    /// `outputs` (each its own: a numbered NDI name, an SRT listener on a
+    /// free local port), playing the footage on loop.
+    async fn add_channel(&self, n: u32, outputs: &[OutputConfig]) -> Result<Feed, Stop> {
+        let m = &self.dto.media;
+        let channel = ChannelSource::new(
+            format!("benchmark-{n}"),
+            format!("Benchmark channel {n}"),
+            ChannelConfig {
+                format: LiveVideoFormat {
+                    width: m.width,
+                    height: m.height,
+                    fps_num: m.fps_num,
+                    fps_den: m.fps_den,
+                },
+                audio_channels: if m.audio_channels == 0 {
+                    2
+                } else {
+                    m.audio_channels.min(8)
+                },
+                outputs: Vec::new(),
+            },
+        );
+        let monitor = self.start_monitor(n, &channel).await?;
+        let program = Program::from(&channel.capabilities().context("channel format")?);
+        let (displays, devices) = self.state.source_manager.read().await.output_parts();
+        let context = OutputContext {
+            displays: &displays,
+            devices: &devices,
+        };
+        let legs = outputs
+            .iter()
+            .map(|o| {
+                let config = feed_output(o, n)?;
+                let sink = output::sink(&config, channel.display_name(), program, &context);
+                OutputLeg::start(&monitor, sink.as_ref())
+                    .with_context(|| format!("start feed {n}'s {}", sink.label()))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        let playout = channel
+            .playout()
+            .context("a channel has a transport")?
+            .clone();
+        let clip = ClipRequest {
+            media_id: "benchmark".into(),
+            name: "Benchmark footage".into(),
+            path: self.dto.media_path.clone(),
+            in_point: gst::ClockTime::ZERO,
+            out_point: None,
+            end: ClipEnd::Loop,
+            rate: 1.0,
+            replay: None,
+        };
+        if let Err(e) = playout.load(clip, true).await {
+            playout.stop().await;
+            return Err(Stop::Failed(e.context(format!("play feed {n}'s footage"))));
+        }
+        Ok(Feed {
+            monitor,
+            work: Work::Channel(playout, legs),
         })
     }
 
@@ -797,6 +965,12 @@ impl Run {
 /// Tear feeds down. Legs are discarded rather than finished: their files are
 /// thrown away, so there's nothing to finalize.
 async fn discard_feeds(feeds: Vec<Feed>) {
+    // A channel's clip first: its player's bus task holds the transport.
+    for feed in &feeds {
+        if let Work::Channel(playout, _) = &feed.work {
+            playout.stop().await;
+        }
+    }
     let teardown = tokio::task::spawn_blocking(move || {
         for feed in feeds {
             match feed.work {
@@ -804,6 +978,10 @@ async fn discard_feeds(feeds: Vec<Feed>) {
                 Work::Replay(leg, index) => {
                     drop(leg);
                     drop(index);
+                }
+                Work::Channel(playout, outputs) => {
+                    drop(outputs);
+                    drop(playout);
                 }
             }
             drop(feed.monitor);
@@ -1013,6 +1191,10 @@ struct Snapshot {
     at: Instant,
     /// Per feed.
     frames: Vec<VideoProgress>,
+    /// Per channel feed, how its clip has reached its program.
+    played: Vec<VideoProgress>,
+    /// Clip frames that reached a program too late to show, across feeds.
+    late: u64,
     dropped: u64,
     /// Per output: bytes written so far, across every feed.
     bytes: Vec<u64>,
@@ -1023,18 +1205,23 @@ impl Snapshot {
     /// counted by what the buffers have written, since old segments go.
     async fn take(feeds: &[Feed], replay: bool) -> anyhow::Result<Self> {
         let frames = feeds.iter().map(|f| f.monitor.video_progress()).collect();
+        let played: Vec<PlayedProgress> = feeds.iter().filter_map(Feed::played).collect();
+        let late = played.iter().map(|p| p.late).sum();
+        let played = played.into_iter().map(|p| p.progress).collect();
         let dropped = feeds.iter().map(Feed::dropped_frames).sum();
         if replay {
             let written = feeds
                 .iter()
                 .map(|f| match &f.work {
                     Work::Replay(_, index) => index.lock().unwrap().written(),
-                    Work::Record(_) => 0,
+                    Work::Record(_) | Work::Channel(..) => 0,
                 })
                 .sum();
             return Ok(Self {
                 at: Instant::now(),
                 frames,
+                played,
+                late,
                 dropped,
                 bytes: vec![written],
             });
@@ -1065,6 +1252,8 @@ impl Snapshot {
         Ok(Self {
             at,
             frames,
+            played,
+            late,
             dropped,
             bytes,
         })
@@ -1083,26 +1272,17 @@ fn measure(
     threshold_pct: f64,
 ) -> BenchmarkStepDto {
     let secs = (after.at - before.at).as_secs_f64();
-    // Per feed: the frames delivered against the time their timestamps span,
-    // less the gaps where the footage looped (see `VideoProgress`). A frame
-    // of slack covers one landing between the count and the timestamp reads.
-    let (mut produced, mut expected, mut source_shortfall) = (0, 0, 0);
-    for (p0, p1) in before.frames.iter().zip(&after.frames) {
-        let delivered = p1.frames.saturating_sub(p0.frames);
-        let span = match (p0.last_pts, p1.last_pts) {
-            (Some(t0), Some(t1)) => {
-                let skipped = p1.skipped.saturating_sub(p0.skipped);
-                t1.saturating_sub(t0).saturating_sub(skipped).nseconds() as f64 / 1e9
-            }
-            _ => secs,
-        };
-        let should = (span * fps).round() as u64;
-        produced += delivered;
-        expected += should;
-        source_shortfall += should.saturating_sub(delivered + 1);
-    }
+    let (produced, program_expected, program_shortfall) =
+        shortfall(&before.frames, &after.frames, fps, secs);
+    // A channel's clip: frames that didn't arrive, or came too late to show.
+    let (_, clip_expected, clip_shortfall) = shortfall(&before.played, &after.played, fps, secs);
+    let clip_shortfall = clip_shortfall + after.late.saturating_sub(before.late);
+    let expected = program_expected + clip_expected;
+    let source_shortfall = program_shortfall + clip_shortfall;
     let output_dropped = after.dropped.saturating_sub(before.dropped);
-    let source_pct = source_shortfall as f64 / expected.max(1) as f64 * 100.0;
+    let pct = |n: u64, of: u64| n as f64 / of.max(1) as f64 * 100.0;
+    let source_pct =
+        pct(program_shortfall, program_expected).max(pct(clip_shortfall, clip_expected));
     let output_pct = output_dropped as f64 / (produced * outputs as u64).max(1) as f64 * 100.0;
     let drop_pct = source_pct.max(output_pct);
     let per_sec = |bytes: u64| (bytes as f64 / secs.max(0.001)) as u64;
@@ -1130,6 +1310,34 @@ fn measure(
         passed: drop_pct <= threshold_pct,
         quick: false,
     }
+}
+
+/// Per feed: the frames delivered against the time their timestamps span,
+/// less the gaps where the footage looped (see `VideoProgress`). A frame of
+/// slack covers one landing between the count and the timestamp reads.
+/// Returns the frames delivered, those due, and those missing.
+fn shortfall(
+    before: &[VideoProgress],
+    after: &[VideoProgress],
+    fps: f64,
+    secs: f64,
+) -> (u64, u64, u64) {
+    let (mut produced, mut expected, mut missing) = (0, 0, 0);
+    for (p0, p1) in before.iter().zip(after) {
+        let delivered = p1.frames.saturating_sub(p0.frames);
+        let span = match (p0.last_pts, p1.last_pts) {
+            (Some(t0), Some(t1)) => {
+                let skipped = p1.skipped.saturating_sub(p0.skipped);
+                t1.saturating_sub(t0).saturating_sub(skipped).nseconds() as f64 / 1e9
+            }
+            _ => secs,
+        };
+        let should = (span * fps).round() as u64;
+        produced += delivered;
+        expected += should;
+        missing += should.saturating_sub(delivered + 1);
+    }
+    (produced, expected, missing)
 }
 
 // ── Scratch folders ───────────────────────────────────────────────────────────
@@ -1191,6 +1399,30 @@ fn dedup(dirs: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
+/// Channel feed `n`'s own copy of a measured output: NDI under a numbered
+/// name (each feed's shows on the network while the run lasts), SRT
+/// listening on a free local port, so N of them can run at once.
+fn feed_output(config: &OutputConfig, n: u32) -> anyhow::Result<OutputConfig> {
+    Ok(match config {
+        OutputConfig::Ndi { .. } => OutputConfig::Ndi {
+            ndi_name: Some(format!("Benchmark {n}")),
+        },
+        OutputConfig::Srt { bitrate_kbps, .. } => {
+            let port = std::net::UdpSocket::bind(("127.0.0.1", 0))
+                .and_then(|s| s.local_addr())
+                .context("find a free port for SRT")?
+                .port();
+            OutputConfig::Srt {
+                url: format!("srt://127.0.0.1:{port}?mode=listener"),
+                latency_ms: 120,
+                bitrate_kbps: *bitrate_kbps,
+                passphrase: None,
+            }
+        }
+        other => anyhow::bail!("a channel benchmark doesn't measure {other:?}"),
+    })
+}
+
 /// Path template values for benchmark feed `n`, with the footage's format.
 fn path_vars(media: &MediaInfo, node: &str, n: u32) -> PathVars {
     let channels = if media.audio_channels > 0 {
@@ -1246,6 +1478,8 @@ mod tests {
         Snapshot {
             at,
             frames,
+            played: Vec::new(),
+            late: 0,
             dropped,
             bytes,
         }
@@ -1317,6 +1551,25 @@ mod tests {
         let step = measure(4, 30.0, 1, &before, &after, &[], 0.0, 0.5);
         assert_eq!(step.source_shortfall, 49);
         assert!(!step.passed);
+    }
+
+    #[test]
+    fn late_clip_frames_fail_a_channel_step() {
+        let t = Instant::now();
+        let mut before = snapshot(t, vec![ts(0, 0.0)], 0, vec![]);
+        before.played = vec![ts(0, 0.1)];
+        // The program kept up, and the clip delivered every frame, but 30 of
+        // its 300 came too late to show.
+        let mut after = snapshot(t + Duration::from_secs(10), vec![ts(300, 10.0)], 0, vec![]);
+        after.played = vec![ts(300, 10.1)];
+        after.late = 30;
+        let step = measure(1, 30.0, 0, &before, &after, &[], 0.0, 0.5);
+        assert_eq!(step.expected_frames, 600);
+        assert_eq!(step.source_shortfall, 30);
+        // Against the clip's frames, not diluted by the program's.
+        assert!((step.drop_pct - 10.0).abs() < 1e-9);
+        assert!(!step.passed);
+        assert!(step.output_bytes_per_sec.is_empty());
     }
 
     /// Run a search against a node that sustains `capacity` feeds, where

@@ -34,6 +34,7 @@ use crate::api::types::{
     ChannelConfig, ClipEnd, LiveVideoFormat, OutputConfig, SourceCapabilitiesDto, SourceType,
     TransportState,
 };
+use crate::pipeline::monitor::VideoProgress;
 use crate::pipeline::replay::ReplaySpan;
 use crate::pipeline::{make_el, output, rtsp, whep};
 
@@ -409,6 +410,29 @@ fn program_caps(format: &LiveVideoFormat) -> gst::Caps {
 pub struct Lanes {
     id: String,
     inner: Mutex<LanesInner>,
+    played: Played,
+}
+
+/// How a playing clip's video has reached the program, for the benchmark.
+#[derive(Default)]
+struct Played {
+    frames: AtomicU64,
+    /// Program time of the last frame, in nanoseconds; `u64::MAX` before one.
+    last_pts: AtomicU64,
+    /// Total length of the gaps the lane marked (a seek, a loop's restart).
+    skipped_ns: AtomicU64,
+    /// Frames that reached the lane after their slot: the compositor drops
+    /// them.
+    late: AtomicU64,
+}
+
+/// How far a channel's playing clip has got; see [`Playout::played`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PlayedProgress {
+    /// Like a monitor's, in program time.
+    pub progress: VideoProgress,
+    /// Frames that came too late to be shown.
+    pub late: u64,
 }
 
 #[derive(Default)]
@@ -455,6 +479,10 @@ impl Lanes {
         Self {
             id: id.to_string(),
             inner: Mutex::default(),
+            played: Played {
+                last_pts: AtomicU64::new(u64::MAX),
+                ..Default::default()
+            },
         }
     }
 
@@ -643,6 +671,9 @@ impl Lanes {
                 return;
             }
             lane.last = Some((pts, pts + duration.unwrap_or(gst::ClockTime::ZERO)));
+            if kind == Kind::Video && player_base.is_some() {
+                self.count_played(&src, pts, end);
+            }
             #[cfg(test)]
             if let Some(clip) = sample.buffer().and_then(|b| b.pts()).and_then(|pts| {
                 sample
@@ -660,6 +691,46 @@ impl Lanes {
         }
         // Fails only while the program is stopping.
         let _ = src.push_buffer(buffer);
+    }
+}
+
+impl Lanes {
+    /// Count a played video frame stamped `pts`, following one that ended
+    /// at `end`. Late if the program is already past it (`pts` includes
+    /// [`LEAD`], so a frame on time is ahead of it).
+    fn count_played(
+        &self,
+        src: &gst_app::AppSrc,
+        pts: gst::ClockTime,
+        end: Option<gst::ClockTime>,
+    ) {
+        let played = &self.played;
+        if src.current_running_time().is_some_and(|now| now > pts) {
+            played.late.fetch_add(1, Ordering::Relaxed);
+        }
+        // A gap the lane marks DISCONT (see `push`).
+        if let Some(end) = end.filter(|&end| pts > end + gst::ClockTime::from_mseconds(20)) {
+            played
+                .skipped_ns
+                .fetch_add((pts - end).nseconds(), Ordering::AcqRel);
+        }
+        played.last_pts.store(pts.nseconds(), Ordering::Release);
+        played.frames.fetch_add(1, Ordering::Release);
+    }
+
+    fn played(&self) -> PlayedProgress {
+        let played = &self.played;
+        let skipped = played.skipped_ns.load(Ordering::Acquire);
+        let pts = played.last_pts.load(Ordering::Acquire);
+        let frames = played.frames.load(Ordering::Acquire);
+        PlayedProgress {
+            progress: VideoProgress {
+                frames,
+                last_pts: (pts != u64::MAX).then(|| gst::ClockTime::from_nseconds(pts)),
+                skipped: gst::ClockTime::from_nseconds(skipped),
+            },
+            late: played.late.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -859,6 +930,12 @@ impl Playout {
             playlist: Mutex::default(),
             serials: AtomicU64::new(0),
         }
+    }
+
+    /// How the clips played so far have reached the program: frames that
+    /// arrived, and those too late to show. For the benchmark.
+    pub fn played(&self) -> PlayedProgress {
+        self.lanes.played()
     }
 
     pub fn status(&self) -> PlayoutStatus {

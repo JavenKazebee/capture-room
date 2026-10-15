@@ -893,6 +893,28 @@ impl SourceManager {
             .collect()
     }
 
+    /// Every playout channel whose program runs: its key and format, to add
+    /// up against the node's benchmarked capacity. Idle or playing alike: a
+    /// channel's program and outputs run either way, and it can start
+    /// playing at any moment.
+    pub fn active_channels(&self) -> Vec<(String, SourceFormat)> {
+        self.sources
+            .iter()
+            .filter(|s| s.playout().is_some() && self.monitors.contains_key(s.id()))
+            .map(|s| {
+                (
+                    crate::capacity::channel_key(s.outputs()),
+                    self.source_format(s.id()),
+                )
+            })
+            .collect()
+    }
+
+    /// What outputs need from the node, for the benchmark's channels.
+    pub fn output_parts(&self) -> (Displays, Arc<LocalDevices>) {
+        (self.displays.clone(), self.devices.clone())
+    }
+
     /// Take a session out of the active set and hand back the detach work.
     ///
     /// The caller must run the returned job — and the persist/notify that

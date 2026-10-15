@@ -6,6 +6,7 @@ import type { BenchmarkRunDto } from '@/types/generated/BenchmarkRunDto'
 import type { CapacityCheckDto } from '@/types/generated/CapacityCheckDto'
 import type { MediaInfo } from '@/types/generated/MediaInfo'
 import type { NodeCapacityDto } from '@/types/generated/NodeCapacityDto'
+import type { OutputConfig } from '@/types/generated/OutputConfig'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import type { ReplayCodec } from '@/types/generated/ReplayCodec'
 import { fpsLabel } from '@/lib/sourceFormat'
@@ -22,8 +23,17 @@ export function formatLabel(m: Pick<MediaInfo, 'width' | 'height' | 'fps_num' | 
   return standard ? `${m.height}p${rate}` : `${m.width}×${m.height} ${rate}`
 }
 
-/** What a benchmark run or profile measured: a preset's outputs, or replay buffers. */
-export function setupLabel(s: { preset_name: string | null; replay: ReplayCodec | null }) {
+/** A channel benchmark's outputs: `NDI + SRT 8 Mb/s`, or `program only`. */
+export function channelOutputsLabel(outputs: OutputConfig[]) {
+  const parts = outputs.map((o) =>
+    o.type === 'srt' ? `SRT ${+(o.bitrate_kbps / 1000).toFixed(1)} Mb/s` : o.type === 'ndi' ? 'NDI' : o.type,
+  )
+  return parts.length ? parts.join(' + ') : 'program only'
+}
+
+/** What a benchmark run or profile measured: a preset's outputs, replay buffers, or playout channels. */
+export function setupLabel(s: { preset_name: string | null; replay: ReplayCodec | null; channel: OutputConfig[] | null }) {
+  if (s.channel) return `Channel · ${channelOutputsLabel(s.channel)}`
   if (s.replay) return `Replay buffer · ${CODECS[s.replay].label}`
   return s.preset_name ?? 'H.264 (default)'
 }

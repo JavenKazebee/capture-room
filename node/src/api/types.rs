@@ -1437,6 +1437,11 @@ pub struct BenchmarkRequest {
     /// buffer rather than recording, and `outputs` is empty.
     #[serde(default)]
     pub replay: Option<ReplayCodec>,
+    /// Benchmark playout channels with these outputs instead (NDI and SRT
+    /// only; none measures the program alone): each feed is a channel at
+    /// the footage's format playing it on loop, and `outputs` is empty.
+    #[serde(default)]
+    pub channel: Option<Vec<OutputConfig>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
@@ -1502,6 +1507,9 @@ pub struct BenchmarkRunDto {
     /// What a replay buffer run's feeds keep their buffers in.
     #[serde(default)]
     pub replay: Option<ReplayCodec>,
+    /// A playout channel run's outputs (see [`crate::capacity::channel_key`]).
+    #[serde(default)]
+    pub channel: Option<Vec<OutputConfig>>,
     pub media_path: String,
     pub media: MediaInfo,
     pub max_feeds: u32,
@@ -1515,7 +1523,8 @@ pub struct BenchmarkRunDto {
     /// even one feed couldn't.
     pub sustainable_feeds: u32,
     /// The encoder element each output used, ordered like `outputs` (for a
-    /// replay buffer run, the buffer's).
+    /// replay buffer run, the buffer's; for a channel run, its outputs'
+    /// labels).
     pub encoders: Vec<String>,
     /// Why the run ended: the failed step, the feed limit, a cancel, or an
     /// error.
@@ -1538,6 +1547,8 @@ pub struct ProfileCapacityDto {
     pub outputs: Vec<PresetOutputInput>,
     /// Set for replay buffers in this codec.
     pub replay: Option<ReplayCodec>,
+    /// Set for playout channels with these outputs (NDI and SRT only).
+    pub channel: Option<Vec<OutputConfig>>,
     pub media: MediaInfo,
     pub sustainable_feeds: u32,
     /// Every step passed, so the node may sustain more than
@@ -1558,18 +1569,22 @@ pub struct NodeCapacityDto {
     pub active_feeds: u32,
     /// Replay buffers recording.
     pub active_buffers: u32,
-    /// Share of the benchmarked capacity the active recordings and replay
-    /// buffers use (1 = full), counting only those with a matching benchmark.
+    /// Playout channels running.
+    pub active_channels: u32,
+    /// Share of the benchmarked capacity the active recordings, replay
+    /// buffers and playout channels use (1 = full), counting only those with
+    /// a matching benchmark.
     pub load: f64,
-    /// Active recordings and replay buffers with no benchmark to judge them
-    /// by.
+    /// Active recordings, replay buffers and channels with no benchmark to
+    /// judge them by.
     pub unknown_feeds: u32,
     /// The benchmark running now, if any.
     pub running: Option<BenchmarkRunDto>,
 }
 
 /// Would recording `source_ids` with `outputs` (or giving them replay
-/// buffers in `replay`) fit, on top of what's recording already?
+/// buffers in `replay`) fit, on top of what's recording already (and the
+/// buffers and playout channels running)?
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct CapacityCheckRequest {

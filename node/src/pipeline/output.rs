@@ -65,6 +65,12 @@ pub trait RunningOutput: Send + Sync {
     /// Whether the channel has something loaded (a display output can hide
     /// while it doesn't). Called often; only changes matter.
     fn set_on_air(&self, _on_air: bool) {}
+
+    /// Video frames dropped so far because it couldn't keep up, for outputs
+    /// that take the program at a leaky queue (as a recording leg does).
+    fn dropped_frames(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// An output's own pipeline, taking the program at two appsrcs.
@@ -214,6 +220,11 @@ impl OutputLeg {
         self.running.set_on_air(on_air);
     }
 
+    /// See [`RunningOutput::dropped_frames`].
+    pub fn dropped_frames(&self) -> Option<u64> {
+        self.running.dropped_frames()
+    }
+
     /// Tells running legs apart: a restarted one has a new key.
     #[cfg(test)]
     pub fn key(&self) -> usize {
@@ -236,6 +247,7 @@ pub struct PipelineOutput {
     /// The first error the pipeline hit; it stops sending after one.
     error: Arc<Mutex<Option<String>>>,
     receivers: Option<Arc<AtomicU32>>,
+    video_src: gst_app::AppSrc,
 }
 
 impl PipelineOutput {
@@ -289,6 +301,7 @@ impl PipelineOutput {
             links,
             error,
             receivers,
+            video_src,
         })
     }
 }
@@ -300,6 +313,12 @@ impl RunningOutput for PipelineOutput {
 
     fn receivers(&self) -> Option<u32> {
         self.receivers.as_ref().map(|n| n.load(Ordering::Relaxed))
+    }
+
+    /// The video appsrc's: like a recording leg's, a 500 ms queue that drops
+    /// the oldest frames (see `StreamProducer::configure_consumer`).
+    fn dropped_frames(&self) -> Option<u64> {
+        Some(self.video_src.property::<u64>("dropped"))
     }
 }
 

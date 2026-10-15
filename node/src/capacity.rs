@@ -1,17 +1,19 @@
 //! Capacity estimates from benchmark results: how many feeds a recording
-//! setup (or replay buffers of a codec) sustains on this node, and how much
-//! of that the active recordings and replay buffers use.
+//! setup (or replay buffers of a codec, or playout channels with a set of
+//! outputs) sustains on this node, and how much of that the active
+//! recordings, replay buffers and channels use.
 //!
-//! A benchmark measures one setup — a set of outputs or a replay codec, fed
-//! footage of one format — so results are looked up by both. Each feed of a
-//! setup that sustains N feeds uses 1/N of the node, and the shares of the
-//! active recordings and buffers add up to the node's load (1 = full). That holds across setups only
+//! A benchmark measures one setup — a set of outputs, a replay codec or a
+//! channel's outputs, fed footage of one format — so results are looked up
+//! by both. Each feed of a setup that sustains N feeds uses 1/N of the node,
+//! and the shares of the active recordings, buffers and channels add up to
+//! the node's load (1 = full). That holds across setups only
 //! roughly (an encoder bound by the GPU and one bound by the CPU share less
 //! than this assumes), so it's a guide, not a guarantee.
 
 use crate::api::types::{
-    BenchmarkRunDto, BenchmarkStatus, CapacityVerdict, OutputAdvanced, PresetOutputInput,
-    ProfileCapacityDto, ReplayCodec,
+    BenchmarkRunDto, BenchmarkStatus, CapacityVerdict, OutputAdvanced, OutputConfig,
+    PresetOutputInput, ProfileCapacityDto, ReplayCodec,
 };
 use crate::pipeline::monitor::SourceFormat;
 
@@ -48,10 +50,48 @@ pub fn replay_key(codec: ReplayCodec) -> String {
     )
 }
 
+/// The outputs of a playout channel's that a benchmark measures: NDI and
+/// SRT, which encode the program all the time, without what doesn't change
+/// the work (names, URLs, latency, passphrase), in a fixed order. RTSP and
+/// WHEP encode only for viewers, and a display only draws, so they're left
+/// out: a channel is judged by its program and the outputs that always run.
+pub fn channel_outputs(outputs: &[OutputConfig]) -> Vec<OutputConfig> {
+    let mut measured: Vec<OutputConfig> = outputs
+        .iter()
+        .filter_map(|o| match o {
+            OutputConfig::Ndi { .. } => Some(OutputConfig::Ndi { ndi_name: None }),
+            OutputConfig::Srt { bitrate_kbps, .. } => Some(OutputConfig::Srt {
+                url: String::new(),
+                latency_ms: 0,
+                bitrate_kbps: *bitrate_kbps,
+                passphrase: None,
+            }),
+            OutputConfig::Rtsp { .. }
+            | OutputConfig::Whep { .. }
+            | OutputConfig::Display { .. } => None,
+        })
+        .collect();
+    measured.sort_by_cached_key(|o| serde_json::to_string(o).unwrap_or_default());
+    measured
+}
+
+/// Identifies playout channels with `outputs` (see [`channel_outputs`]),
+/// alongside [`outputs_key`]'s recording setups. A channel's format is its
+/// source format, looked up like a recording's.
+pub fn channel_key(outputs: &[OutputConfig]) -> String {
+    format!(
+        "channel:{}",
+        serde_json::to_string(&channel_outputs(outputs)).unwrap_or_default()
+    )
+}
+
 /// What a run measured.
 fn run_key(run: &BenchmarkRunDto) -> String {
-    run.replay
-        .map_or_else(|| outputs_key(&run.outputs), replay_key)
+    match (&run.channel, run.replay) {
+        (Some(outputs), _) => channel_key(outputs),
+        (None, Some(codec)) => replay_key(codec),
+        (None, None) => outputs_key(&run.outputs),
+    }
 }
 
 struct Profile {
@@ -163,6 +203,7 @@ impl Capacity {
                     preset_name: run.preset_name.clone(),
                     outputs: run.outputs.clone(),
                     replay: run.replay,
+                    channel: run.channel.clone(),
                     media: run.media.clone(),
                     sustainable_feeds: run.sustainable_feeds,
                     at_limit,
@@ -259,6 +300,7 @@ mod tests {
             preset_name: None,
             outputs: vec![output("Main", "~/a/{source}.{ext}")],
             replay: None,
+            channel: None,
             media_path: "/f.mov".into(),
             media: MediaInfo {
                 width: w,
@@ -369,6 +411,62 @@ mod tests {
             (prores.as_str(), hd),
         ]);
         assert!((load.load - 2.0 / 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn channel_key_keeps_only_what_encodes() {
+        let srt = |url: &str, bitrate_kbps| OutputConfig::Srt {
+            url: url.into(),
+            latency_ms: 120,
+            bitrate_kbps,
+            passphrase: None,
+        };
+        let ndi = |name: &str| OutputConfig::Ndi {
+            ndi_name: Some(name.into()),
+        };
+        let a = [
+            srt("srt://:9000", 8000),
+            OutputConfig::Rtsp {
+                path: None,
+                bitrate_kbps: 4000,
+            },
+            ndi("A"),
+        ];
+        // Names, URLs and order don't matter, nor viewer-only outputs.
+        let b = [ndi("Studio B"), srt("srt://10.0.0.2:9001", 8000)];
+        assert_eq!(channel_key(&a), channel_key(&b));
+        assert_eq!(
+            channel_key(&b),
+            r#"channel:[{"type":"ndi","ndi_name":null},{"type":"srt","url":"","latency_ms":0,"bitrate_kbps":8000,"passphrase":null}]"#
+        );
+        // The bitrate does.
+        assert_ne!(channel_key(&a), channel_key(&[ndi("A"), srt("x", 4000)]));
+        // A channel with no NDI or SRT is its program alone.
+        let whep = OutputConfig::Whep {
+            path: None,
+            bitrate_kbps: 4000,
+        };
+        assert_eq!(channel_key(&[whep]), channel_key(&[]));
+        assert_eq!(channel_key(&[]), "channel:[]");
+    }
+
+    #[test]
+    fn channel_runs_are_their_own_setup() {
+        let mut channel = run("chan", (1920, 1080, 30, 1), 2, &[true, true, false]);
+        channel.outputs.clear();
+        channel.channel = Some(vec![OutputConfig::Ndi {
+            ndi_name: Some("bench".into()),
+        }]);
+        let cap = Capacity::from_runs(&[channel, run("rec", (1920, 1080, 30, 1), 4, &[true; 5])]);
+        assert_eq!(cap.profiles().len(), 2);
+        let hd = format(1920, 1080, 30, 1);
+        let key = channel_key(&[OutputConfig::Ndi { ndi_name: None }]);
+        assert_eq!(cap.lookup(&key, hd).unwrap().feeds, 2.0);
+        assert!(cap.lookup(&channel_key(&[]), hd).is_none());
+        // A channel and a recording: 1/2 + 1/4.
+        let rec = outputs_key(&[output("x", "y")]);
+        let load = cap.load([(key.as_str(), hd), (rec.as_str(), hd)]);
+        assert!((load.load - 0.75).abs() < 1e-9);
     }
 
     #[test]

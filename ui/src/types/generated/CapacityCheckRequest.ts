@@ -4,7 +4,8 @@ import type { ReplayCodec } from "./ReplayCodec";
 
 /**
  * Would recording `source_ids` with `outputs` (or giving them replay
- * buffers in `replay`) fit, on top of what's recording already?
+ * buffers in `replay`) fit, on top of what's recording already (and the
+ * buffers and playout channels running)?
  */
 export type CapacityCheckRequest = { 
 /**

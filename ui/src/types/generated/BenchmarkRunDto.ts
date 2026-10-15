@@ -2,6 +2,7 @@
 import type { BenchmarkStatus } from "./BenchmarkStatus";
 import type { BenchmarkStepDto } from "./BenchmarkStepDto";
 import type { MediaInfo } from "./MediaInfo";
+import type { OutputConfig } from "./OutputConfig";
 import type { PresetOutputInput } from "./PresetOutputInput";
 import type { ReplayCodec } from "./ReplayCodec";
 
@@ -16,7 +17,11 @@ outputs: Array<PresetOutputInput>,
 /**
  * What a replay buffer run's feeds keep their buffers in.
  */
-replay: ReplayCodec | null, media_path: string, media: MediaInfo, max_feeds: number, step_secs: number, drop_threshold_pct: number, 
+replay: ReplayCodec | null, 
+/**
+ * A playout channel run's outputs (see [`crate::capacity::channel_key`]).
+ */
+channel: Array<OutputConfig> | null, media_path: string, media: MediaInfo, max_feeds: number, step_secs: number, drop_threshold_pct: number, 
 /**
  * Feeds currently running (0 once finished). Goes down as well as up:
  * the search narrows in on the answer.
@@ -29,7 +34,8 @@ feeds_running: number, steps: Array<BenchmarkStepDto>,
 sustainable_feeds: number, 
 /**
  * The encoder element each output used, ordered like `outputs` (for a
- * replay buffer run, the buffer's).
+ * replay buffer run, the buffer's; for a channel run, its outputs'
+ * labels).
  */
 encoders: Array<string>, 
 /**

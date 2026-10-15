@@ -388,8 +388,9 @@ the same capture times as one timeline across nodes.
 
 ## Benchmark Runner
 
-Finds how many feeds a node can record with a set of outputs, or keep replay buffers of
-in a codec (`benchmark.rs`), and estimates capacity from the results (`capacity.rs`).
+Finds how many feeds a node can record with a set of outputs, keep replay buffers of in
+a codec, or run as playout channels (`benchmark.rs`), and estimates capacity from the
+results (`capacity.rs`).
 
 **A run** records more and more feeds of real footage (a file on the node played in a
 loop: test patterns compress unrealistically) with a preset's outputs, sent inline like
@@ -443,6 +444,20 @@ or when cancelled.
   instead of recording, in a scratch folder beside the node's buffers, keeping 30 s so
   old segments are deleted as they would be. Output drops are the buffer's input-queue
   drops; what it writes is counted from the segments it finished, deleted ones included.
+- **Channel runs:** each feed is a playout channel (`ChannelSource`, the real one) at the
+  footage's size and rate, playing the footage on loop through its player, with its
+  monitor (the program: compositor and mixer) and its outputs. Only outputs that run all
+  the time and can run N times on one machine are measured: NDI (each feed's sender
+  named `Benchmark N`, seen on the network while the run lasts) and SRT (each listening
+  on a free localhost port, so it encodes with nobody connected). RTSP and WHEP encode
+  only per viewer, so an unwatched one costs nothing, and a display needs a screen of
+  its own; they're left out, and a run with neither NDI nor SRT measures the program
+  alone. Source shortfall counts the program's frames, and also the clip's: frames its
+  player didn't deliver, or that reached the program after their slot (the compositor
+  drops those), counted at the lane (`Playout::played`); its percentage is taken against
+  the clip's frames alone. Output drops are the outputs' input-queue drops, as a
+  recording leg's. Nothing is written, so no scratch folder. Channels already running
+  stay on (they always run); the run's message says how many did.
 
 - **Where it writes:** each output writes into a scratch folder,
   `.capture-room-benchmark-{id}`, in the nearest existing folder of where the output
@@ -458,14 +473,23 @@ or when cancelled.
 
 **Capacity estimate.** A result is looked up by what the outputs encode
 (`outputs_key`: the outputs without their names, paths and split settings; replay buffers
-by codec, `replay_key`) and the footage format; a setup's latest completed run counts. A source of the same format gets
+by codec, `replay_key`; channels by `channel_key`, below) and the footage format; a
+setup's latest completed run counts. A source of the same format gets
 that result as is; another format scales the nearest result by pixels per second, and a
 source whose format isn't known yet takes the newest (both flagged `estimated`). A feed
 of a setup that sustains N feeds uses 1/N of the node, and the shares of the active
-recordings and the replay buffers recording add up to its **load** (1 = full; one that couldn't sustain a single feed
-counts double). Shares only roughly add across different setups (a GPU-bound encoder and
+recordings, the replay buffers recording and the channels running add up to its
+**load** (1 = full; one that couldn't sustain a single feed counts double). Shares only roughly add across different setups (a GPU-bound encoder and
 a CPU-bound one share less than this assumes), so the estimate is a guide. Verdicts:
 fits (≤ 80%), tight (≤ 100%), over, or unknown when something has no benchmark.
+
+A running channel's key (`channel_key`) is its NDI and SRT outputs (`channel_outputs`):
+without names, URLs, latency and passphrase, which don't change the work, with SRT's
+bitrate, in a fixed order; RTSP, WHEP and display outputs are left out as in the
+benchmark. Its format is its program's (the channel's size and rate), looked up like a
+recording's, so a channel of another format scales from the nearest run. A channel counts
+whenever its program runs, idle or playing: its program and outputs run either way, and
+it can start playing at any moment. Viewers of RTSP and WHEP outputs aren't counted.
 
 **Storage headroom.** `/storage` reports, per volume, what active recordings write
 (each leg's bytes since its session started, once it has run 5 s) and the recording time
@@ -478,9 +502,9 @@ The Record workspace checks before starting (`POST /capacity/check`, per node an
 preset) and warns, never blocks, when a node would pass 80% of its capacity or a volume
 would fill within the hour. Replay › Buffers checks the same way when a buffer is turned
 on or changes codec (the check leaves out the source's own buffer, so it isn't counted
-twice); a buffer keeps a fixed length, so it has no volume check. Playout channels don't
-count yet: benchmarking one means outputs that bind ports, publish NDI names or need a
-screen.
+twice); a buffer keeps a fixed length, so it has no volume check. Running playout
+channels count in the load these checks start from; creating or changing a channel
+doesn't check yet.
 
 ---
 
@@ -625,8 +649,10 @@ MonitorPipeline producers ─┬─► recording legs (unchanged)
 - A channel no longer needs NDI to run: the Channel type needs the compositor, mixer
   and decoder, and reports the output types the node can send (`protocols`: `ndi`,
   `srt`, `rtsp`, `whep`, `display`).
+- **Capacity:** running channels count against the node's benchmarked capacity, and the
+  benchmark measures channels (see Benchmark Runner).
 - **Still to come:** Decklink / AJA outputs (SDI cards are the clock master, which
-  changes the clock design); slates; channels in the benchmark.
+  changes the clock design); slates.
 
 ### Media library
 
@@ -812,10 +838,10 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 | GET / DELETE | `/recordings/{id}` | session details / remove a finished session from history; `?files` deletes its files from disk first, and if any can't be deleted the session stays, listing those still on disk (409 while recording) |
 | GET / HEAD / DELETE | `/recordings/{id}/outputs/{i}/files/{j}` | a finished session's file, with range requests; `?download` adds `Content-Disposition` / delete it from disk and the session's list (`?path=` must match, so a stale index is refused; the session stays in history). 409 while recording |
 | POST | `/recordings/{id}/stop` | stop (waits for EOS drain) |
-| GET / POST | `/benchmarks` | runs, newest first / start one: `{ outputs, media_path, max_feeds?, step_secs?, drop_threshold_pct?, preset_id?, preset_name?, replay? }` (`replay`: a codec, with `outputs` empty, to benchmark replay buffers; 409 while recording, keeping replay buffers, benchmarking, or short of memory) |
+| GET / POST | `/benchmarks` | runs, newest first / start one: `{ outputs, media_path, max_feeds?, step_secs?, drop_threshold_pct?, preset_id?, preset_name?, replay?, channel? }` (`replay`: a codec, with `outputs` empty, to benchmark replay buffers; `channel`: NDI and SRT `OutputConfig`s, possibly none, with `outputs` empty, to benchmark playout channels; 409 while recording, keeping replay buffers, benchmarking, or short of memory) |
 | GET / DELETE | `/benchmarks/{id}` | a run / delete it (not while running) |
 | POST | `/benchmarks/{id}/cancel` | cancel; answers once it has torn down |
-| GET | `/capacity` | each benchmarked setup's result, the load of active recordings, the running benchmark |
+| GET | `/capacity` | each benchmarked setup's result, the load of active recordings, replay buffers and channels, the running benchmark |
 | POST | `/capacity/check` | `{ outputs, source_ids, replay? }` → verdict, load before/after, time left on the volumes they'd write to (with `replay`, giving them buffers in that codec instead: no volumes) |
 | GET | `/thumbnails/{source_id}` | latest JPEG |
 | WS | `/ws` | this node's events only |
@@ -932,7 +958,7 @@ join when the backend supports them — not before.
 | **Recordings** | Session history across nodes, filtered by text, status and node and paged per node ("load older"); detail pane with a browser preview, each output's files (play, download, copy path) and remove from history |
 | **Setup › Sources** | Sources grouped by node, capabilities, test and file source authoring (with a browser for the node's files) |
 | **Setup › Presets** | Create and edit recording presets (outputs, path preview) |
-| **Setup › Nodes** | A card per node: health, sources, storage (with time left while recording), capacity (benchmarked setups and replay codecs, load from recordings and replay buffers, running benchmark, history); controller toggle, add/remove nodes |
+| **Setup › Nodes** | A card per node: health, sources, storage (with time left while recording), capacity (benchmarked setups, replay codecs and channels, load from recordings, replay buffers and channels, running benchmark, history); controller toggle, add/remove nodes |
 | **Setup › Checks** | Per node: permissions, software, storage, clock and network checks, problems first in the counts, with how to fix each; Nodes cards badge their problems |
 | **Setup › Settings** | Appearance; monitoring settings (thumbnail/meter rate, applied to all nodes); About |
 | **Playback** | Playout channels, playlists, transport, channel settings |

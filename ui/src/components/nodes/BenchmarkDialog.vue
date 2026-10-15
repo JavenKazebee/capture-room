@@ -9,6 +9,7 @@ import { blankLeg, presetLegs, usePresetsStore } from '@/stores/presets'
 import { CODECS, useReplayStore } from '@/stores/replay'
 import { useSourcesStore } from '@/stores/sources'
 import type { ConfiguredSourceDto } from '@/types/generated/ConfiguredSourceDto'
+import type { OutputConfig } from '@/types/generated/OutputConfig'
 import type { ReplayCodec } from '@/types/generated/ReplayCodec'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -34,12 +35,40 @@ const presets = usePresetsStore()
 const sources = useSourcesStore()
 const replay = useReplayStore()
 
-/** What each feed does: record with a preset, or keep a replay buffer. */
-const measure = ref<'record' | 'replay'>('record')
+/** What each feed does: record with a preset, keep a replay buffer, or run as a playout channel. */
+const measure = ref<'record' | 'replay' | 'channel'>('record')
 const measureOptions = [
   { value: 'record' as const, label: 'Recording' },
   { value: 'replay' as const, label: 'Replay buffers' },
+  { value: 'channel' as const, label: 'Playout channels' },
 ]
+
+/**
+ * A channel's outputs that encode all the time. RTSP and WHEP encode only for
+ * viewers and a display only draws, so a channel is measured without them.
+ */
+const channelOutputs = ref<'none' | 'ndi' | 'srt' | 'ndi_srt'>('ndi')
+const channelOutputOptions = [
+  { value: 'ndi' as const, label: 'NDI' },
+  { value: 'srt' as const, label: 'SRT' },
+  { value: 'ndi_srt' as const, label: 'NDI + SRT' },
+  { value: 'none' as const, label: 'None (program only)' },
+]
+const srtBitrate = ref(8000)
+
+function channelConfigs(): OutputConfig[] {
+  const ndi: OutputConfig = { type: 'ndi', ndi_name: null }
+  const srt: OutputConfig = { type: 'srt', url: '', latency_ms: 120, bitrate_kbps: srtBitrate.value, passphrase: null }
+  return { none: [], ndi: [ndi], srt: [srt], ndi_srt: [ndi, srt] }[channelOutputs.value]
+}
+
+/** Measure like the node's first channel, if it has one. */
+function likeChannel(outputs: OutputConfig[]) {
+  const ndi = outputs.some((o) => o.type === 'ndi')
+  const srt = outputs.find((o) => o.type === 'srt')
+  if (srt?.type === 'srt') srtBitrate.value = srt.bitrate_kbps
+  channelOutputs.value = ndi && srt ? 'ndi_srt' : ndi ? 'ndi' : srt ? 'srt' : 'none'
+}
 
 /** The node's default codec once its list is in. */
 const codec = ref<ReplayCodec>('prores_proxy')
@@ -73,6 +102,8 @@ onMounted(async () => {
     })
     .catch(() => {})
   const configs = await sources.configs(props.nodeId).catch(() => [])
+  const channel = configs.find((c) => c.config.type === 'channel')
+  if (channel?.config.type === 'channel') likeChannel(channel.config.outputs)
   fileSources.value = configs.flatMap((c) => (c.config.type === 'file' ? [{ ...c, path: c.config.path }] : []))
   if (!mediaPath.value && fileSources.value[0]) mediaPath.value = fileSources.value[0].path
 })
@@ -95,18 +126,20 @@ async function start() {
     return
   }
   const forReplay = measure.value === 'replay'
+  const forChannel = measure.value === 'channel'
   if (forReplay && !codecOptions.value.length) {
     error.value = "This node can't keep replay buffers: it has none of the codecs installed."
     return
   }
-  const preset = forReplay ? null : (presets.presets.find((p) => p.id === presetId.value) ?? null)
+  const preset = forReplay || forChannel ? null : (presets.presets.find((p) => p.id === presetId.value) ?? null)
   saving.value = true
   try {
     await capacity.start(props.nodeId, {
       preset_id: preset?.id ?? null,
       preset_name: preset?.name ?? null,
-      outputs: forReplay ? [] : preset ? presetLegs(preset) : [blankLeg()],
+      outputs: forReplay || forChannel ? [] : preset ? presetLegs(preset) : [blankLeg()],
       replay: forReplay ? codec.value : null,
+      channel: forChannel ? channelConfigs() : null,
       media_path: mediaPath.value.trim(),
       max_feeds: maxFeeds.value,
       step_secs: stepSecs.value,
@@ -129,7 +162,7 @@ async function start() {
         <DialogTitle>Benchmark {{ nodes.nameOf(nodeId) }}</DialogTitle>
         <DialogDescription>
           Records more and more copies of the footage until frames drop, to find how many feeds this node can record
-          with a preset, or keep replay buffers of.
+          with a preset, keep replay buffers of, or play out on channels.
         </DialogDescription>
       </DialogHeader>
 
@@ -140,6 +173,14 @@ async function start() {
         <FormField v-if="measure === 'record'" label="Preset" class="col-span-2">
           <OptionSelect v-model="presetId" :options="presetOptions" />
         </FormField>
+        <template v-else-if="measure === 'channel'">
+          <FormField label="Outputs">
+            <OptionSelect v-model="channelOutputs" :options="channelOutputOptions" />
+          </FormField>
+          <FormField v-if="channelOutputs === 'srt' || channelOutputs === 'ndi_srt'" label="SRT bitrate (kb/s)">
+            <Input v-model.number="srtBitrate" type="number" min="500" max="100000" step="500" class="num" />
+          </FormField>
+        </template>
         <FormField v-else label="Codec" class="col-span-2">
           <OptionSelect v-if="codecOptions.length" v-model="codec" :options="codecOptions" />
           <p v-else class="text-xs text-muted-foreground h-8 flex items-center">This node has no replay codecs.</p>
@@ -169,8 +210,14 @@ async function start() {
           </Button>
         </div>
         <p class="col-span-3 text-xs text-muted-foreground">
-          Use real footage at the format your sources send: test patterns compress unrealistically, and results only
-          count for recordings in the same format.
+          <template v-if="measure === 'channel'">
+            Use real footage at your channels' format: each channel runs at the footage's size and rate, and results
+            only count exactly for channels of that format.
+          </template>
+          <template v-else>
+            Use real footage at the format your sources send: test patterns compress unrealistically, and results only
+            count for recordings in the same format.
+          </template>
         </p>
 
         <FormField label="Feed limit">
@@ -193,6 +240,12 @@ async function start() {
           <p v-if="measure === 'record'">
             Files are written beside where the preset records, so the same disks are measured, and deleted afterwards.
             Starting a recording or a replay buffer on this node cancels the benchmark.
+          </p>
+          <p v-else-if="measure === 'channel'">
+            Each feed is a playout channel playing the footage on loop, with its own outputs: NDI as “Benchmark 1”, “Benchmark
+            2”… (seen on the network while it runs), SRT listening on a free local port. RTSP, WHEP and display outputs
+            are left out: they encode only for viewers, or need a screen. Channels already running stay on, and take
+            some of the node.
           </p>
           <p v-else>
             Each feed keeps a replay buffer beside the node's real ones, so the same disk is measured; old segments are
