@@ -181,15 +181,14 @@ pub fn validate(
             }
         }
     }
-    let mine = screens(cfg);
-    for (i, d) in mine.iter().enumerate() {
-        if mine[..i].contains(d) {
-            return Err(format!("two outputs both show on {d}"));
-        }
-        if let Some((other, _)) = others.iter().find(|(_, ocfg)| screens(ocfg).contains(d)) {
-            return Err(format!("{d} already shows {other}"));
-        }
-    }
+    unique(
+        cfg,
+        name,
+        others,
+        |cfg, _| screens(cfg),
+        |d| format!("two outputs both show on {d}"),
+        |d, other| format!("{d} already shows {other}"),
+    )?;
     let ports = listen_ports(cfg);
     for (i, port) in ports.iter().enumerate() {
         if ports[..i].contains(port) {
@@ -212,40 +211,54 @@ pub fn validate(
             })
             .collect()
     };
-    let mine = mount_paths(cfg, name);
-    for (i, p) in mine.iter().enumerate() {
-        if mine[..i].contains(p) {
-            return Err(format!("two outputs are both served at {p}"));
+    unique(
+        cfg,
+        name,
+        others,
+        mount_paths,
+        |p| format!("two outputs are both served at {p}"),
+        |p, other| format!("RTSP path {p} is already used by {other}"),
+    )?;
+    unique(
+        cfg,
+        name,
+        others,
+        whep_paths,
+        |p| format!("two WHEP outputs are both served at {p}"),
+        |p, other| format!("WHEP path {p} is already used by {other}"),
+    )?;
+    unique(
+        cfg,
+        name,
+        others,
+        ndi_names,
+        |n| format!("two outputs are both called {n}"),
+        |n, other| format!("NDI name {n} is already used by {other}"),
+    )?;
+    Ok(())
+}
+
+/// Check that none of the `keys` of the channel `name` (screens, paths,
+/// names) appears twice in it, or in one of the `others`: `twice` and
+/// `taken` say which went wrong.
+fn unique(
+    cfg: &ChannelConfig,
+    name: &str,
+    others: &[(&str, &ChannelConfig)],
+    keys: impl Fn(&ChannelConfig, &str) -> Vec<String>,
+    twice: impl Fn(&str) -> String,
+    taken: impl Fn(&str, &str) -> String,
+) -> Result<(), String> {
+    let mine = keys(cfg, name);
+    for (i, key) in mine.iter().enumerate() {
+        if mine[..i].contains(key) {
+            return Err(twice(key));
         }
         if let Some((other, _)) = others
             .iter()
-            .find(|(other, ocfg)| mount_paths(ocfg, other).contains(p))
+            .find(|(other, ocfg)| keys(ocfg, other).contains(key))
         {
-            return Err(format!("RTSP path {p} is already used by {other}"));
-        }
-    }
-    let mine = whep_paths(cfg, name);
-    for (i, p) in mine.iter().enumerate() {
-        if mine[..i].contains(p) {
-            return Err(format!("two WHEP outputs are both served at {p}"));
-        }
-        if let Some((other, _)) = others
-            .iter()
-            .find(|(other, ocfg)| whep_paths(ocfg, other).contains(p))
-        {
-            return Err(format!("WHEP path {p} is already used by {other}"));
-        }
-    }
-    let mine = ndi_names(cfg, name);
-    for (i, n) in mine.iter().enumerate() {
-        if mine[..i].contains(n) {
-            return Err(format!("two outputs are both called {n}"));
-        }
-        if let Some((other, _)) = others
-            .iter()
-            .find(|(other, ocfg)| ndi_names(ocfg, other).contains(n))
-        {
-            return Err(format!("NDI name {n} is already used by {other}"));
+            return Err(taken(key, other));
         }
     }
     Ok(())
