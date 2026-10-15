@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Context, Result};
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app as gst_app;
-use gstreamer_utils::{ConsumptionLink, StreamProducer};
+use gstreamer_utils::ConsumptionLink;
 use gstreamer_video::{self as gst_video, prelude::*};
 use tracing::{info, warn};
 
@@ -29,7 +29,7 @@ use super::monitor::MonitorPipeline;
 use super::recording::set_property;
 use super::rtsp::{self, RtspOutput};
 use super::whep::WhepOutput;
-use super::{make_el, set_state};
+use super::{consumer, make_el, set_state, share_clock};
 use crate::api::types::{DisplayIdle, OutputConfig, SourceCapabilitiesDto};
 use crate::display::{DisplayWindow, Displays, WantedFormat};
 use crate::sources::device::LocalDevices;
@@ -275,12 +275,8 @@ impl PipelineOutput {
                 gst::BusSyncReply::Drop
             });
 
-        // Same clock and base time as the monitor, so the program's
-        // timestamps mean the same here.
         if let (Some(clock), Some(base_time)) = monitor.timing() {
-            pipeline.use_clock(Some(&clock));
-            pipeline.set_base_time(base_time);
-            pipeline.set_start_time(gst::ClockTime::NONE);
+            share_clock(&pipeline, &clock, base_time);
         }
         // Off the runtime: the WebRTC elements block on their own.
         if set_state(&pipeline, gst::State::Playing).is_err() {
@@ -327,12 +323,6 @@ impl Drop for PipelineOutput {
         self.links.clear();
         let _ = set_state(&self.pipeline, gst::State::Null);
     }
-}
-
-pub(crate) fn consumer(name: &str) -> gst_app::AppSrc {
-    let src = gst_app::AppSrc::builder().name(name).build();
-    StreamProducer::configure_consumer(&src);
-    src
 }
 
 // ── NDI ───────────────────────────────────────────────────────────────────────

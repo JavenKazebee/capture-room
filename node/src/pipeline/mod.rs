@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use gstreamer::{self as gst, prelude::*};
+use gstreamer_app as gst_app;
+use gstreamer_utils::StreamProducer;
 
 use crate::api::types::ChannelLevelDto;
 
@@ -104,6 +106,64 @@ pub(super) fn link_tee(tee: &gst::Element, sink: &gst::Element) -> Result<()> {
         )
         .with_context(|| format!("link {} → {}", tee.name(), sink.name()))?;
     Ok(())
+}
+
+/// An appsrc to take a monitor's stream: live, time format, and a 500 ms
+/// queue that drops the oldest buffers if downstream can't keep up — so a
+/// slow encoder only drops frames here. `add_consumer` applies this too, but
+/// by then the pipeline is playing and a base source only adopts its format
+/// before it starts.
+pub(crate) fn consumer(name: &str) -> gst_app::AppSrc {
+    let src = gst_app::AppSrc::builder().name(name).build();
+    StreamProducer::configure_consumer(&src);
+    src
+}
+
+/// Run `pipeline` on the monitor's `clock` and `base_time`, so forwarded
+/// timestamps mean the same running time on both sides.
+pub(super) fn share_clock(pipeline: &gst::Pipeline, clock: &gst::Clock, base_time: gst::ClockTime) {
+    pipeline.use_clock(Some(clock));
+    pipeline.set_base_time(base_time);
+    pipeline.set_start_time(gst::ClockTime::NONE);
+}
+
+/// Clear the delta-unit flag on everything `vtenc_prores` puts out. Every
+/// ProRes frame is a keyframe, but it marks them deltas: left as is, the
+/// muxer's keyframe table lists almost none of them and splitmuxsink never
+/// finds a frame to split at.
+pub(super) fn mark_prores_keyframes(venc: &gst::Element) -> Result<()> {
+    venc.static_pad("src")
+        .context("encoder src pad")?
+        .add_probe(gst::PadProbeType::BUFFER, |_, info| {
+            if let Some(gst::PadProbeData::Buffer(buffer)) = info.data.as_mut() {
+                buffer.make_mut().unset_flags(gst::BufferFlags::DELTA_UNIT);
+            }
+            gst::PadProbeReturn::Ok
+        });
+    Ok(())
+}
+
+/// A 10 s audio queue, so the muxer can hold audio while the video encoder
+/// produces its first frames without the appsrc's 500 ms limit dropping it.
+pub(super) fn audio_hold_queue() -> Result<gst::Element> {
+    gst::ElementFactory::make("queue")
+        .name("aq")
+        .property("max-size-time", gst::ClockTime::from_seconds(10).nseconds())
+        .property("max-size-bytes", 0u32)
+        .property("max-size-buffers", 0u32)
+        .build()
+        .context("create audio queue")
+}
+
+/// qtmux fails on PCM that jumps ("timestamps are drifting"): a file
+/// source's loop, a dropout. This fills gaps with silence and trims
+/// overlaps, from the first sample on.
+pub(super) fn pcm_audiorate() -> Result<gst::Element> {
+    gst::ElementFactory::make("audiorate")
+        .name("arate")
+        .property("skip-to-first", true)
+        .build()
+        .context("create audiorate")
 }
 
 // ── Audio level message parsing ───────────────────────────────────────────────

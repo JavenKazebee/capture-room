@@ -177,9 +177,7 @@ fn connect_media(media: &rtsp::RTSPMedia, monitor: &Weak<MonitorPipeline>) -> Re
             .parent()
             .and_then(|p| p.downcast::<gst::Pipeline>().ok())
         {
-            pipeline.use_clock(Some(&clock));
-            pipeline.set_base_time(base_time);
-            pipeline.set_start_time(gst::ClockTime::NONE);
+            super::share_clock(&pipeline, &clock, base_time);
         }
     }
     let appsrc = |name: &str| -> Result<gst_app::AppSrc> {

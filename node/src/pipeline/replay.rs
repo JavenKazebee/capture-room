@@ -23,12 +23,15 @@ use std::sync::{Arc, Mutex, Weak};
 use anyhow::{anyhow, Context, Result};
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app as gst_app;
-use gstreamer_utils::{ConsumptionLink, StreamProducer};
+use gstreamer_utils::ConsumptionLink;
 use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
 use super::recording::set_property;
-use super::{capsfilter, make_el};
+use super::{
+    audio_hold_queue, capsfilter, consumer, make_el, mark_prores_keyframes, pcm_audiorate,
+    share_clock,
+};
 use crate::api::types::ReplayCodec;
 
 /// How long each segment runs. Replay reaches to within this of live: the
@@ -396,10 +399,8 @@ impl ReplayLeg {
         let pipeline = gst::Pipeline::with_name(&format!("replay-{name}"));
         let error = Arc::new(Mutex::new(None));
 
-        let video_src = gst_app::AppSrc::builder().name("video-src").build();
-        let audio_src = gst_app::AppSrc::builder().name("audio-src").build();
-        StreamProducer::configure_consumer(&video_src);
-        StreamProducer::configure_consumer(&audio_src);
+        let video_src = consumer("video-src");
+        let audio_src = consumer("audio-src");
 
         let mut video = vec![
             video_src.upcast::<gst::Element>(),
@@ -408,18 +409,7 @@ impl ReplayLeg {
         let venc = make_el(encoder, "venc")?;
         let set = |k: &str, v: &str| set_property(&venc, k, v);
         match encoder {
-            "vtenc_prores" => {
-                // Every ProRes frame is a keyframe, but vtenc_prores marks
-                // them deltas: splitmuxsink would never split.
-                venc.static_pad("src")
-                    .context("encoder src pad")?
-                    .add_probe(gst::PadProbeType::BUFFER, |_, info| {
-                        if let Some(gst::PadProbeData::Buffer(buffer)) = info.data.as_mut() {
-                            buffer.make_mut().unset_flags(gst::BufferFlags::DELTA_UNIT);
-                        }
-                        gst::PadProbeReturn::Ok
-                    });
-            }
+            "vtenc_prores" => mark_prores_keyframes(&venc)?,
             "vtenc_h264" => {
                 set("realtime", "true")?;
                 set("allow-frame-reordering", "false")?;
@@ -465,16 +455,9 @@ impl ReplayLeg {
             ReplayCodec::Mjpeg => {}
         }
 
-        let aq = gst::ElementFactory::make("queue")
-            .name("aq")
-            .property("max-size-time", gst::ClockTime::from_seconds(10).nseconds())
-            .property("max-size-bytes", 0u32)
-            .property("max-size-buffers", 0u32)
-            .build()
-            .context("create audio queue")?;
         let audio = vec![
             audio_src.upcast::<gst::Element>(),
-            aq,
+            audio_hold_queue()?,
             make_el("audioconvert", "aconv")?,
             make_el("audioresample", "aresample")?,
             capsfilter(
@@ -483,14 +466,7 @@ impl ReplayLeg {
                     .field("format", "S24LE")
                     .build(),
             )?,
-            // qtmux fails on PCM that jumps ("timestamps are drifting"): a
-            // file source's loop, a dropout. Fill gaps with silence and trim
-            // overlaps, from the first sample on.
-            gst::ElementFactory::make("audiorate")
-                .name("arate")
-                .property("skip-to-first", true)
-                .build()
-                .context("create audiorate")?,
+            pcm_audiorate()?,
         ];
 
         let muxer = make_el("qtmux", "mux")?;
@@ -571,11 +547,7 @@ impl ReplayLeg {
                 .with_context(|| format!("link {encoder} into .mov"))?;
         }
 
-        // The monitor's clock and base time: forwarded timestamps mean the
-        // same running time on both sides.
-        pipeline.use_clock(Some(clock));
-        pipeline.set_base_time(base);
-        pipeline.set_start_time(gst::ClockTime::NONE);
+        share_clock(&pipeline, clock, base);
         if pipeline.set_state(gst::State::Playing).is_err() {
             let reason = error
                 .lock()

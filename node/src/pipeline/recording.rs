@@ -20,13 +20,16 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use gstreamer::{self as gst, glib, prelude::*};
 use gstreamer_app as gst_app;
-use gstreamer_utils::{ConsumptionLink, StreamProducer};
+use gstreamer_utils::ConsumptionLink;
 use gstreamer_video as gst_video;
 use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
 use super::profile::{segment_number, AudioFormat, RecordingProfile, VideoEncoder, PCM_MAX_FILE};
-use super::{capsfilter, make_el, set_mix_matrix};
+use super::{
+    audio_hold_queue, capsfilter, consumer, make_el, mark_prores_keyframes, pcm_audiorate,
+    set_mix_matrix, share_clock,
+};
 use crate::api::types::{Container, RateControl};
 
 /// Crash safety for .mov/.mp4 (see where the muxer is configured in
@@ -214,14 +217,8 @@ impl RecordingLeg {
                 _ => gst::BusSyncReply::Drop,
             });
 
-        // Live, time format, and a 500 ms queue that drops the oldest buffers
-        // if the encoder can't keep up — so a slow encoder only drops frames
-        // here. `add_consumer` applies this too, but by then the pipeline is
-        // playing and a base source only adopts its format before it starts.
-        let video_src = gst_app::AppSrc::builder().name("video-src").build();
-        let audio_src = gst_app::AppSrc::builder().name("audio-src").build();
-        StreamProducer::configure_consumer(&video_src);
-        StreamProducer::configure_consumer(&audio_src);
+        let video_src = consumer("video-src");
+        let audio_src = consumer("audio-src");
 
         let mut video = vec![video_src.clone().upcast::<gst::Element>()];
         // Interlaced sources are deinterlaced before scaling (`mode=auto`
@@ -274,18 +271,7 @@ impl RecordingLeg {
             .then(|| venc.static_pad("src"))
             .flatten();
         if encoder == VideoEncoder::VtProRes {
-            // vtenc_prores marks every frame a delta unit, but ProRes frames
-            // are all keyframes: left as is, the muxer's keyframe table lists
-            // almost none of them and splitmuxsink never finds a frame to
-            // split at.
-            venc.static_pad("src")
-                .context("encoder src pad")?
-                .add_probe(gst::PadProbeType::BUFFER, |_, info| {
-                    if let Some(gst::PadProbeData::Buffer(buffer)) = info.data.as_mut() {
-                        buffer.make_mut().unset_flags(gst::BufferFlags::DELTA_UNIT);
-                    }
-                    gst::PadProbeReturn::Ok
-                });
+            mark_prores_keyframes(&venc)?;
         }
         video.push(venc);
         if let (VideoEncoder::VtProRes, Some(variant)) = (encoder, profile.prores_profile()) {
@@ -301,16 +287,7 @@ impl RecordingLeg {
             video.push(make_el(parser, "vparse")?);
         }
 
-        // Large audio queue so the muxer can hold audio while the video encoder
-        // produces its first frames, without the appsrc's 500 ms limit
-        // dropping it.
-        let aq = gst::ElementFactory::make("queue")
-            .name("aq")
-            .property("max-size-time", gst::ClockTime::from_seconds(10).nseconds())
-            .property("max-size-bytes", 0u32)
-            .property("max-size-buffers", 0u32)
-            .build()
-            .context("create audio queue")?;
+        let aq = audio_hold_queue()?;
         // A channel mix (stereo, picked channels) is audioconvert's matrix,
         // which has to be set before it negotiates.
         let aconv = make_el("audioconvert", "aconv")?;
@@ -358,17 +335,9 @@ impl RecordingLeg {
             );
         }
         match profile.audio_format() {
-            // qtmux fails on PCM that jumps ("timestamps are drifting"): a
-            // file source's loop, a dropout. Fill gaps with silence and trim
-            // overlaps, from the first sample on. AAC and Opus keep a gap in
-            // their timestamps, so they don't need it.
-            AudioFormat::Pcm24 => audio.push(
-                gst::ElementFactory::make("audiorate")
-                    .name("arate")
-                    .property("skip-to-first", true)
-                    .build()
-                    .context("create audiorate")?,
-            ),
+            // AAC and Opus keep a gap in their timestamps, so they don't
+            // need it.
+            AudioFormat::Pcm24 => audio.push(pcm_audiorate()?),
             AudioFormat::Aac { bitrate } => {
                 let aenc = make_el("avenc_aac", "aenc")?;
                 set_property(&aenc, "bitrate", &bitrate.to_string())?;
@@ -509,12 +478,8 @@ impl RecordingLeg {
         start_at: Option<gst::ClockTime>,
         utc_offset_us: Option<i64>,
     ) -> Result<()> {
-        // Share the monitor's clock and base time, so the forwarded timestamps
-        // mean the same running time on both sides.
         if let (Some(clock), Some(base_time)) = monitor.timing() {
-            self.pipeline.use_clock(Some(&clock));
-            self.pipeline.set_base_time(base_time);
-            self.pipeline.set_start_time(gst::ClockTime::NONE);
+            share_clock(&self.pipeline, &clock, base_time);
             self.base_time = Some(base_time);
         }
         let start_rt = start_at

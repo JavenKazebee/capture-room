@@ -15,9 +15,10 @@ use std::sync::{Arc, LazyLock, Mutex};
 use anyhow::{Context, Result};
 use gstreamer::{self as gst, glib, prelude::*};
 
+use super::consumer;
 use super::make_el;
 use super::monitor::MonitorPipeline;
-use super::output::{consumer, OutputPipeline, OutputSink, PipelineOutput, RunningOutput};
+use super::output::{OutputPipeline, OutputSink, PipelineOutput, RunningOutput};
 
 /// Elements a WHEP output needs (the libnice plugin for ICE, an Opus
 /// encoder for audio).
