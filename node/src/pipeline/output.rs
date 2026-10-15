@@ -837,6 +837,7 @@ mod tests {
     #[ignore = "needs the NDI Runtime; real-time (~10 s)"]
     async fn ndi_output_is_received() {
         gst::init().unwrap();
+        crate::plugins::locate_ndi_runtime();
         gstndi::plugin_register_static().unwrap();
         let name = format!("cr-test-{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let mon = channel_monitor();
@@ -845,12 +846,9 @@ mod tests {
         };
         let leg = OutputLeg::start(&mon, test_sink(&config).as_ref()).unwrap();
 
-        let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
-            .unwrap()
-            .trim()
-            .to_uppercase();
+        let sender = find_ndi_source(&format!("({name})"));
         let (recv, video, audio) = receiver(&format!(
-            "ndisrc ndi-name=\"{host} ({name})\" ! ndisrcdemux name=d \
+            "ndisrc ndi-name=\"{sender}\" ! ndisrcdemux name=d \
              d.video ! queue ! videoconvert ! appsink name=v sync=false \
              d.audio ! queue ! audioconvert ! appsink name=a sync=false"
         ));
@@ -867,6 +865,25 @@ mod tests {
         assert_eq!(size, (640, 360));
         drop(leg);
         mon.stop().unwrap();
+    }
+
+    /// The full NDI name of the source whose name ends with `suffix`. NDI
+    /// puts the machine's name first, as it sees it, so ask discovery.
+    fn find_ndi_source(suffix: &str) -> String {
+        let monitor = gst::DeviceMonitor::new();
+        monitor.add_filter(Some("Source/Audio/Video/Network"), None);
+        monitor.start().unwrap();
+        let found = (0..20).find_map(|_| {
+            std::thread::sleep(Duration::from_millis(500));
+            monitor.devices().iter().find_map(|d| {
+                d.properties()?
+                    .get::<String>("ndi-name")
+                    .ok()
+                    .filter(|n| n.ends_with(suffix))
+            })
+        });
+        monitor.stop();
+        found.unwrap_or_else(|| panic!("no NDI source named \"… {suffix}\""))
     }
 
     /// An SRT listener output runs with nobody connected, and a receiver
