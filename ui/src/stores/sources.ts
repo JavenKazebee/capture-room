@@ -1,5 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref, shallowReactive } from 'vue'
+import { toast } from 'vue-sonner'
+import { plural } from '@/lib/format'
+import { notifyError } from '@/lib/notify'
 import { nodeApi, sourceKey } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
 import type { ChannelLevelDto } from '@/types/generated/ChannelLevelDto'
@@ -97,6 +100,23 @@ export const useSourcesStore = defineStore('sources', () => {
     await Promise.all(nodes.reachable.map((n) => scan(n.id)))
   }
 
+  /** Scan every reachable node, toasting how it went. */
+  async function scanWithToast() {
+    const before = new Set(sources.value.map((s) => s.key))
+    const id = toast.loading('Scanning for sources…', { id: 'scan' })
+    try {
+      await scanAll()
+      const added = sources.value.filter((s) => !before.has(s.key)).length
+      toast.success(`Scan complete — ${plural(sources.value.length, 'source')}`, {
+        id,
+        description: added ? `${added} new` : 'No new sources found',
+      })
+    } catch (e) {
+      toast.dismiss(id)
+      notifyError('Scan failed', e)
+    }
+  }
+
   async function configs(nodeId: string) {
     return nodeApi(nodeId)<ConfiguredSourceDto[]>('/configured-sources')
   }
@@ -155,6 +175,7 @@ export const useSourcesStore = defineStore('sources', () => {
     refreshNode,
     scan,
     scanAll,
+    scanWithToast,
     configs,
     getConfig,
     createSource,

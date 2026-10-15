@@ -5,7 +5,7 @@ import { toast } from 'vue-sonner'
 import { AlertTriangle, RotateCcw } from '@lucide/vue'
 import { api, nodeApi } from '@/composables/useApi'
 import { usePreferences } from '@/composables/usePreferences'
-import { formatUptime } from '@/lib/format'
+import { formatUptime, plural } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
 import type { ClockMode } from '@/types/generated/ClockMode'
@@ -193,7 +193,7 @@ const about = computed(() => [
     value: !nodes.self
       ? null
       : nodes.isController
-        ? `On · ${peerCount.value} other node${peerCount.value === 1 ? '' : 's'}`
+        ? `On · ${plural(peerCount.value, 'other node')}`
         : 'Off',
   },
   { label: 'Uptime', value: selfNode.value ? formatUptime(selfNode.value.uptime_secs) : null, mono: true },

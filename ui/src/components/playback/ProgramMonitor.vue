@@ -4,6 +4,7 @@ import { Eye } from '@lucide/vue'
 import { audioLevels, type Source } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { fpsLabel } from '@/lib/sourceFormat'
+import { plural } from '@/lib/format'
 import type { ChannelStatusDto } from '@/types/generated/ChannelStatusDto'
 import AudioMeter from '@/components/AudioMeter.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
@@ -94,7 +95,7 @@ const format = computed(() => {
       >
         <StatusDot :status="o.error ? 'error' : 'ok'" />
         {{ o.label }}<template v-if="o.error">: {{ o.error }}</template
-        ><template v-else-if="o.receivers !== null"> · {{ o.receivers }} receiver{{ o.receivers === 1 ? '' : 's' }}</template
+        ><template v-else-if="o.receivers !== null"> · {{ plural(o.receivers, 'receiver') }}</template
         ><template v-else-if="o.detail"> · {{ o.detail }}</template>
         <button
           v-if="!o.error && whepEndpoint(o.label)"

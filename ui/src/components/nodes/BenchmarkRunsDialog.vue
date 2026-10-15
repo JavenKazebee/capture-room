@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { Trash2 } from '@lucide/vue'
 import { errorMessage } from '@/composables/useApi'
-import { formatRate } from '@/lib/format'
+import { formatRate, plural } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
 import { setupLabel, useCapacityStore } from '@/stores/capacity'
 import { formatLabel } from '@/lib/sourceFormat'
@@ -52,10 +52,10 @@ function when(iso: string) {
 }
 
 function result(run: BenchmarkRunDto) {
-  if (run.status === 'running') return `${run.feeds_running} feed${run.feeds_running === 1 ? '' : 's'} running`
+  if (run.status === 'running') return `${plural(run.feeds_running, 'feed')} running`
   if (run.status !== 'completed') return '—'
   const atLimit = run.sustainable_feeds >= run.max_feeds
-  return `${atLimit ? '≥ ' : ''}${run.sustainable_feeds} feed${run.sustainable_feeds === 1 ? '' : 's'}`
+  return `${atLimit ? '≥ ' : ''}${plural(run.sustainable_feeds, 'feed')}`
 }
 
 const details = computed(() => {

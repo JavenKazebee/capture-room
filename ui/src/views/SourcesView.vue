@@ -118,16 +118,8 @@ async function destroy(src: Source) {
 
 async function scan() {
   scanning.value = true
-  const before = new Set(store.sources.map((s) => s.key))
   try {
-    await store.scanAll()
-    const added = store.sources.filter((s) => !before.has(s.key)).length
-    toast.success(`Scan complete — ${store.sources.length} sources`, {
-      id: 'scan',
-      description: added ? `${added} new` : 'No new sources found',
-    })
-  } catch (e) {
-    notifyError('Scan failed', e)
+    await store.scanWithToast()
   } finally {
     scanning.value = false
   }

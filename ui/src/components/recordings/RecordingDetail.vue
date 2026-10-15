@@ -5,7 +5,7 @@ import { toast } from 'vue-sonner'
 import { ChevronRight, Download, ListPlus, Play, Share2, Trash2, X } from '@lucide/vue'
 import { useRouter } from 'vue-router'
 import { recordingFileUrl } from '@/composables/useApi'
-import { clockTimeFine, dateTime, formatDuration, formatTimeRange } from '@/lib/format'
+import { clockTimeFine, dateTime, formatDuration, formatTimeRange, plural } from '@/lib/format'
 import { CODECS, CONTAINERS } from '@/lib/codecs'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
@@ -222,7 +222,7 @@ const confirmRemove = ref(false)
 const confirmDeleteAll = ref(false)
 
 const fileCount = computed(() => outputs.value.reduce((n, o) => n + o.files.length, 0))
-const filesLabel = (n: number) => `${n} file${n === 1 ? '' : 's'}`
+const filesLabel = (n: number) => plural(n, 'file')
 
 async function remove() {
   try {

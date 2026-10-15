@@ -8,6 +8,7 @@ import { useCapacityStore } from '@/stores/capacity'
 import { usePlayoutStore } from '@/stores/playout'
 import { useReplayStore } from '@/stores/replay'
 import { runReconnectReloads } from '@/lib/reconnect'
+import { plural } from '@/lib/format'
 import type { WsEvent } from '@/types/generated/WsEvent'
 
 export type WsStatus = 'connecting' | 'connected' | 'disconnected'
@@ -251,7 +252,7 @@ function logEvent(event: NodeEvent) {
       } else if (run.status === 'completed') {
         const n = run.sustainable_feeds
         const atLimit = n >= run.max_feeds
-        log('info', `Benchmark finished: ${name} sustains ${atLimit ? 'at least ' : ''}${n} feed${n === 1 ? '' : 's'}`, {
+        log('info', `Benchmark finished: ${name} sustains ${atLimit ? 'at least ' : ''}${plural(n, 'feed')}`, {
           node_id,
           detail: run.message ?? undefined,
         })

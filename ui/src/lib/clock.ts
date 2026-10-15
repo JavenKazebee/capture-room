@@ -1,3 +1,4 @@
+import { plural } from '@/lib/format'
 import type { ClockSourceDto } from '@/types/generated/ClockSourceDto'
 import type { ClockStatusDto } from '@/types/generated/ClockStatusDto'
 
@@ -34,7 +35,7 @@ export function clockSummary(clock: ClockStatusDto | null): ClockSummary {
   }
   const label = clockSourceLabel(clock.source)
   const stale = clock.stale_sources
-    ? ` ${clock.stale_sources} source${clock.stale_sources === 1 ? '' : 's'} still on the previous clock until idle.`
+    ? ` ${plural(clock.stale_sources, 'source')} still on the previous clock until idle.`
     : ''
   if (clock.error) {
     return { status: 'error', label, detail: 'error', title: clock.error }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { Gauge, Loader2 } from '@lucide/vue'
-import { formatRate } from '@/lib/format'
+import { formatRate, plural } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
 import { setupLabel, useCapacityStore } from '@/stores/capacity'
 import { formatLabel } from '@/lib/sourceFormat'
@@ -45,7 +45,7 @@ const profiles = computed(() => cap.value?.profiles ?? [])
 
 function feedsLabel(p: ProfileCapacityDto) {
   const n = p.sustainable_feeds
-  return `${p.at_limit ? '≥ ' : ''}${n} feed${n === 1 ? '' : 's'}`
+  return `${p.at_limit ? '≥ ' : ''}${plural(n, 'feed')}`
 }
 
 function profileTitle(p: ProfileCapacityDto) {
@@ -77,10 +77,6 @@ const activeLabel = computed(() => {
     .filter(Boolean)
     .join(' · ')
 })
-
-function plural(n: number, word: string) {
-  return `${n} ${word}${n === 1 ? '' : 's'}`
-}
 
 const lastStep = computed(() => running.value?.steps.at(-1) ?? null)
 const cancelling = ref(false)

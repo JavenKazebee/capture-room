@@ -3,7 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { useNow, useStorage } from '@vueuse/core'
 import { useViewKeys } from '@/composables/useViewKeys'
 import { Play } from '@lucide/vue'
-import { clockTime, dayKey, dayLabel, formatDuration } from '@/lib/format'
+import { clockTime, dayKey, dayLabel, formatDuration, plural } from '@/lib/format'
 import { CODECS } from '@/lib/codecs'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
@@ -113,7 +113,7 @@ function durationMs(s: RecordingSession) {
 
 /** The codecs a session recorded, e.g. "ProRes 422 HQ + H.264". */
 function formats(s: RecordingSession) {
-  if (!s.outputs.length) return `${s.output_paths.length} output${s.output_paths.length === 1 ? '' : 's'}`
+  if (!s.outputs.length) return plural(s.output_paths.length, 'output')
   return s.outputs.map((o) => CODECS[o.codec]).join(' + ')
 }
 

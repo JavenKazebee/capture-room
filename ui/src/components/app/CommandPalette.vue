@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import { useEventListener } from '@vueuse/core'
 import { useRouter } from 'vue-router'
-import { toast } from 'vue-sonner'
 import { Circle, MoonStar, Radar, Rows3, Square, Sun } from '@lucide/vue'
-import { notifyError } from '@/lib/notify'
 import { usePreferences, type Density } from '@/composables/usePreferences'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordingsStore } from '@/stores/recordings'
@@ -52,15 +50,8 @@ function toggleRecording(s: Source) {
   return desk.toggle(s)
 }
 
-async function scan() {
-  const id = toast.loading('Scanning for sources…', { id: 'scan' })
-  try {
-    await sources.scanAll()
-    toast.success(`Scan complete — ${sources.sources.length} sources`, { id })
-  } catch (e) {
-    toast.dismiss(id)
-    notifyError('Scan failed', e)
-  }
+function scan() {
+  return sources.scanWithToast()
 }
 
 const DENSITIES: Density[] = ['compact', 'default', 'comfortable']

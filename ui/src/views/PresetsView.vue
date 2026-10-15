@@ -5,7 +5,7 @@ import { useEventListener } from '@vueuse/core'
 import { toast } from 'vue-sonner'
 import { Copy, Loader2, Lock, Plus, RotateCcw, Search, Trash2 } from '@lucide/vue'
 import { usePresetsStore, blankLeg } from '@/stores/presets'
-import { dateTime } from '@/lib/format'
+import { dateTime, plural } from '@/lib/format'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordDeskStore } from '@/stores/recordDesk'
@@ -298,8 +298,8 @@ watch(selected, (p) => p && !dirty.value && p.id === selectedId.value && loadPre
               <span v-if="selectedId === p.id && dirty" class="text-primary" title="Unsaved changes">•</span>
             </span>
             <span class="text-[11px] text-muted-foreground truncate w-full">
-              {{ p.outputs.length }} output{{ p.outputs.length === 1 ? '' : 's' }} · {{ codecsOf(p.outputs) }}
-              <template v-if="usedBy(p.id)"> · on {{ usedBy(p.id) }} feed{{ usedBy(p.id) === 1 ? '' : 's' }}</template>
+              {{ plural(p.outputs.length, 'output') }} · {{ codecsOf(p.outputs) }}
+              <template v-if="usedBy(p.id)"> · on {{ plural(usedBy(p.id), 'feed') }}</template>
             </span>
           </button>
           <p v-if="!listed.length && query" class="px-2 py-3 text-xs text-muted-foreground">No presets match.</p>
