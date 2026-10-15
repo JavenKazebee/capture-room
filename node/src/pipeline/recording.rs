@@ -4,7 +4,7 @@
 //! ```text
 //! appsrc(video) → [videorate → caps] → [videoscale → caps] → videoconvert → [caps] → venc → [parse] ─┐
 //!                                                                                                mux → filesink
-//! appsrc(audio) → queue → audioconvert → audioresample → aenc ───────────────────────────────────┘
+//! appsrc(audio) → queue → audioconvert → audioresample → [caps] → aenc | audiorate (PCM) ────────┘
 //! ```
 //!
 //! Whatever goes wrong in a leg — a codec the container rejects at runtime, a
@@ -358,7 +358,17 @@ impl RecordingLeg {
             );
         }
         match profile.audio_format() {
-            AudioFormat::Pcm24 => {}
+            // qtmux fails on PCM that jumps ("timestamps are drifting"): a
+            // file source's loop, a dropout. Fill gaps with silence and trim
+            // overlaps, from the first sample on. AAC and Opus keep a gap in
+            // their timestamps, so they don't need it.
+            AudioFormat::Pcm24 => audio.push(
+                gst::ElementFactory::make("audiorate")
+                    .name("arate")
+                    .property("skip-to-first", true)
+                    .build()
+                    .context("create audiorate")?,
+            ),
             AudioFormat::Aac { bitrate } => {
                 let aenc = make_el("avenc_aac", "aenc")?;
                 set_property(&aenc, "bitrate", &bitrate.to_string())?;

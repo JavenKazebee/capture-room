@@ -197,7 +197,10 @@ now fails alone while the session's other legs keep recording.
   A keyframe every 2 s. x264/x265 at `speed-preset=veryfast`, no `tune` (x265's GStreamer
   default `ssim` is cleared); VP9 realtime (`deadline=1`, `cpu-used=8`, `row-mt`).
 - **Audio:** 24-bit PCM beside ProRes and uncompressed video; AAC 256 kbps in MOV/MP4;
-  Opus 160 kbps in MKV.
+  Opus 160 kbps in MKV. PCM goes through `audiorate` (from the first sample), as replay's
+  does: qtmux fails a PCM stream that jumps ("timestamps are drifting"), so a looping
+  file source stopped every PCM leg at its first loop. AAC and Opus keep the gap in their
+  timestamps (an AAC MOV past three loops stayed in sync), so they go without.
 - **Crash safety:** a crash or power cut leaves every file playable, without a recovery
   step. MOV/MP4 with compressed audio are written as 2 s fragments
   (`fragment-mode=first-moov-then-finalise`) and rewritten as an ordinary file when the
