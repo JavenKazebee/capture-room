@@ -27,9 +27,9 @@ use crate::pipeline::{capsfilter, make_el, set_mix_matrix};
 pub const AUDIO_RATE: i32 = 48_000;
 /// Rate used when the source doesn't say (or reports a variable rate).
 const DEFAULT_FPS: (i32, i32) = (30, 1);
-/// How long the source may stall before the fallback takes over.
-/// Kept under the 500 ms a recording's input queue holds: the frames
-/// `videorate` fills the gap with arrive in a burst when it ends.
+/// How long the source may stall before the fallback (black) takes over.
+/// Meanwhile the compositor repeats the last frame on the clock, so a
+/// recording sees no gap or catch-up burst either way (see `build_bin`).
 const SWITCH_TIMEOUT: Duration = Duration::from_millis(2000);
 /// How long a stalled source runs before it's restarted.
 const RESTART_TIMEOUT: Duration = Duration::from_secs(5);
