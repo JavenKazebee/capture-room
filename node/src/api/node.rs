@@ -369,8 +369,6 @@ async fn delete_configured_source(
     if !db::configured_source_delete(&state.db, &id).await? {
         return Err(ApiError::NotFound("source not found"));
     }
-    db::playlist_delete(&state.db, &id).await?;
-    db::replay_buffer_delete(&state.db, &id).await?;
     state.source_manager.write().await.set_replay(&id, None);
     rescan_after(&state, "delete").await;
     Ok(StatusCode::NO_CONTENT)

@@ -416,12 +416,26 @@ pub async fn configured_source_update(
     Ok(res.rows_affected() > 0)
 }
 
+/// Delete a source with its playlist and replay buffer, atomically: false
+/// (and nothing deleted) if there's no such source.
 pub async fn configured_source_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
+    let mut tx = pool.begin().await?;
     let res = sqlx::query("DELETE FROM configured_sources WHERE id = ?")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
-    Ok(res.rows_affected() > 0)
+    if res.rows_affected() == 0 {
+        return Ok(false);
+    }
+    for sql in [
+        "DELETE FROM playlist_items WHERE channel_id = ?",
+        "DELETE FROM playlists WHERE channel_id = ?",
+        "DELETE FROM replay_buffers WHERE source_id = ?",
+    ] {
+        sqlx::query(sql).bind(id).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(true)
 }
 
 // ── media ─────────────────────────────────────────────────────────────────────
@@ -658,18 +672,6 @@ pub async fn playlist_set(
 }
 
 /// Remove a channel's playlist (the channel was deleted).
-pub async fn playlist_delete(pool: &SqlitePool, channel_id: &str) -> Result<()> {
-    sqlx::query("DELETE FROM playlist_items WHERE channel_id = ?")
-        .bind(channel_id)
-        .execute(pool)
-        .await?;
-    sqlx::query("DELETE FROM playlists WHERE channel_id = ?")
-        .bind(channel_id)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 /// Channels whose playlists use `media_id`.
 pub async fn playlists_using(pool: &SqlitePool, media_id: &str) -> Result<Vec<String>> {
     let rows = sqlx::query_scalar::<_, String>(
@@ -735,4 +737,42 @@ pub async fn benchmarks_running(pool: &SqlitePool) -> Result<Vec<BenchmarkRunDto
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(|r| r.0).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn count(pool: &SqlitePool, table: &str, column: &str) -> i64 {
+        sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM {table} WHERE {column} = 'c'"
+        ))
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn source_delete_takes_its_playlist_and_buffer() {
+        let path = std::env::temp_dir().join(format!("capture-room-db-{}.db", std::process::id()));
+        let pool = init(&format!("sqlite://{}", path.display())).await.unwrap();
+        for sql in [
+            "INSERT INTO configured_sources (id, name, config, created_at) VALUES ('c', 'c', '{}', '')",
+            "INSERT INTO playlists (channel_id, loop_playlist) VALUES ('c', 0)",
+            "INSERT INTO replay_buffers (source_id, codec, minutes) VALUES ('c', 'mjpeg', 5)",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+        assert!(configured_source_delete(&pool, "c").await.unwrap());
+        assert!(!configured_source_delete(&pool, "c").await.unwrap());
+        for (table, column) in [
+            ("configured_sources", "id"),
+            ("playlists", "channel_id"),
+            ("replay_buffers", "source_id"),
+        ] {
+            assert_eq!(count(&pool, table, column).await, 0, "{table} left behind");
+        }
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
 }
