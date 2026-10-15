@@ -275,6 +275,8 @@ fn add_thumbnail_branch(
         .max_buffers(1)
         .drop(true)
         .sync(false)
+        // Not waited on to start (see `add_producer_branch`).
+        .async_(false)
         .build();
     appsink.set_callbacks(
         gst_app::AppSinkCallbacks::builder()
@@ -323,6 +325,8 @@ fn add_level_branch(
     level.set_property("post-messages", true);
     let fakesink = make_el("fakesink", "level-sink")?;
     fakesink.set_property("sync", false);
+    // Not waited on to start (see `add_producer_branch`).
+    fakesink.set_property("async", false);
 
     let chain = [
         make_el("queue", "lq")?,
@@ -350,6 +354,12 @@ fn add_producer_branch(
         .name(format!("{kind}-producer"))
         // Forward as soon as buffers arrive; recordings don't render.
         .sync(false)
+        // Nor wait to start. An async sink holds its first buffer until
+        // every sink has one and the pipeline goes to PLAYING; meanwhile its
+        // queue can't drain, so an allocation query the compositor sends
+        // through the tee waits forever, the thumbnail sink never gets its
+        // first frame (videorate needs two), and the monitor never starts.
+        .async_(false)
         .build();
     pipeline
         .add_many([&queue, appsink.upcast_ref()])
