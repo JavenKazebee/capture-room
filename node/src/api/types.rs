@@ -1321,6 +1321,10 @@ pub enum WsEvent {
     /// A benchmark started, began a step, finished a step, or ended.
     #[serde(rename = "benchmark.updated")]
     BenchmarkUpdated { run: Box<BenchmarkRunDto> },
+    /// A configured source was added, changed or removed: the node's
+    /// source list is different.
+    #[serde(rename = "sources.changed")]
+    SourcesChanged,
     /// This node's name or monitor settings changed.
     #[serde(rename = "node.updated")]
     NodeUpdated,

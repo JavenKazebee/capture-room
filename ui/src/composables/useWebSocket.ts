@@ -115,6 +115,10 @@ function handleEvent(event: NodeEvent) {
       useNodesStore().load()
       break
 
+    case 'sources.changed':
+      sources.refreshNode(nodeId).catch(() => {})
+      break
+
     case 'recording.started':
       // Usually already in the store via the POST response; reload in case it
       // came from another client or a schedule.

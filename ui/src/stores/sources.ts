@@ -152,6 +152,7 @@ export const useSourcesStore = defineStore('sources', () => {
     listDisplays,
     updateStatus,
     loadSources,
+    refreshNode,
     scan,
     scanAll,
     configs,

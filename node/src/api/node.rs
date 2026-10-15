@@ -1083,12 +1083,14 @@ fn source_to_dto(mgr: &SourceManager, s: &dyn InputSource) -> SourceDto {
     }
 }
 
-/// After a test-source change: the change itself is saved, so a failed
-/// rescan is logged rather than failing the request.
+/// After a configured-source change: the change itself is saved, so a
+/// failed rescan is logged rather than failing the request. Open UIs hear
+/// about it either way.
 async fn rescan_after(state: &Arc<AppState>, change: &str) {
     if let Err(e) = session::rebuild_sources(state).await {
         error!(error = %e, "rebuild sources after {change}");
     }
+    state.emit(&WsEvent::SourcesChanged);
 }
 
 /// Build `(resolved_path, RecordingProfile)` for every requested output leg.
