@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useClipboard, useNow, useStorage } from '@vueuse/core'
+import { useClipboard, useStorage } from '@vueuse/core'
+import { useSecondClock } from '@/composables/useSecondClock'
 import { toast } from 'vue-sonner'
 import { ChevronRight, Download, ListPlus, Play, Share2, Trash2, X } from '@lucide/vue'
 import { useRouter } from 'vue-router'
 import { recordingFileUrl } from '@/composables/useApi'
-import { clockTimeFine, dateTime, formatDuration, formatTimeRange, plural } from '@/lib/format'
+import { clockTimeFine, dateTime, elapsedMs, formatDuration, formatTimeRange, plural } from '@/lib/format'
 import { CODECS, CONTAINERS } from '@/lib/codecs'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
@@ -25,7 +26,7 @@ defineEmits<{ close: [] }>()
 
 const recordings = useRecordingsStore()
 const nodes = useNodesStore()
-const now = useNow({ interval: 1000 })
+const now = useSecondClock()
 const clipboard = useClipboard({ legacy: true })
 
 const s = computed(() => props.session)
@@ -151,10 +152,7 @@ function when(iso: string | null) {
   return iso ? dateTime(iso, { year: true }) : null
 }
 
-const duration = computed(() => {
-  const end = s.value.stopped_at ? new Date(s.value.stopped_at).getTime() : now.value.getTime()
-  return formatDuration(end - new Date(s.value.started_at).getTime())
-})
+const duration = computed(() => formatDuration(elapsedMs(s.value.started_at, s.value.stopped_at, now.value)))
 
 const STATUS = {
   active: { label: 'Recording', dot: 'tally' },

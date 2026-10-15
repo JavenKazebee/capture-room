@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useNow } from '@vueuse/core'
+import { useSecondClock } from '@/composables/useSecondClock'
 import { useRecordDeskStore } from '@/stores/recordDesk'
 import { outputFiles, useRecordingsStore, type RecordingSession } from '@/stores/recordings'
 import { usePresetsStore, blankLeg } from '@/stores/presets'
 import { useNodesStore } from '@/stores/nodes'
 import type { Source } from '@/stores/sources'
-import { dateTime, formatDuration } from '@/lib/format'
+import { dateTime, elapsedMs, formatDuration } from '@/lib/format'
 import { CODECS, CONTAINERS, chromaLabel, framerateLabel, hasBitrate, hasChroma } from '@/lib/codecs'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import { fpsLabel, resolutionLabel } from '@/lib/sourceFormat'
@@ -22,7 +22,7 @@ const desk = useRecordDeskStore()
 const recordings = useRecordingsStore()
 const presets = usePresetsStore()
 const nodes = useNodesStore()
-const now = useNow({ interval: 1000 })
+const now = useSecondClock()
 
 const session = computed(() => recordings.activeForSource(props.source.node_id, props.source.id))
 
@@ -63,8 +63,7 @@ const history = computed(() =>
 )
 
 function elapsed(r: RecordingSession) {
-  const end = r.stopped_at ? new Date(r.stopped_at).getTime() : now.value.getTime()
-  return formatDuration(end - new Date(r.started_at).getTime())
+  return formatDuration(elapsedMs(r.started_at, r.stopped_at, now.value))
 }
 
 function startedAt(r: RecordingSession) {

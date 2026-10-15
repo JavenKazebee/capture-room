@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
-import { useNow } from '@vueuse/core'
+import { useSecondClock } from '@/composables/useSecondClock'
 import { HardDrive, Search } from '@lucide/vue'
 import { wsStatus } from '@/composables/useWebSocket'
 import { formatBytes, formatRate, formatTimeLeft } from '@/lib/format'
@@ -22,7 +22,7 @@ const nodes = useNodesStore()
 const recordings = useRecordingsStore()
 const storage = useStorageStore()
 
-const now = useNow({ interval: 1000 })
+const now = useSecondClock()
 const clock = computed(() => now.value.toLocaleTimeString([], { hour12: false }))
 
 const healthy = computed(() => nodes.nodes.filter((n) => n.healthy).length)

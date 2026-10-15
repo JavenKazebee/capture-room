@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, toRef, watch } from 'vue'
-import { useNow } from '@vueuse/core'
+import { useSecondClock } from '@/composables/useSecondClock'
 import { Check, Info } from '@lucide/vue'
 import { audioLevels, type Source } from '@/stores/sources'
 import { totalDropped, useRecordingsStore } from '@/stores/recordings'
@@ -8,7 +8,7 @@ import { useRecordDeskStore } from '@/stores/recordDesk'
 import { useNodesStore } from '@/stores/nodes'
 import { useEventsStore } from '@/stores/events'
 import { usePreferences } from '@/composables/usePreferences'
-import { formatDuration } from '@/lib/format'
+import { elapsedMs, formatDuration } from '@/lib/format'
 import { formatLabel } from '@/lib/sourceFormat'
 import { LINK } from '@/lib/linkState'
 import { Button } from '@/components/ui/button'
@@ -45,9 +45,9 @@ const preset = computed({
   set: (id: string) => desk.setPreset(props.source.key, id),
 })
 
-const now = useNow({ interval: 1000 })
+const now = useSecondClock()
 const duration = computed(() =>
-  session.value ? formatDuration(now.value.getTime() - new Date(session.value.started_at).getTime()) : '',
+  session.value ? formatDuration(elapsedMs(session.value.started_at, null, now.value)) : '',
 )
 
 /** A live source that isn't delivering frames (it plays black and silence). */

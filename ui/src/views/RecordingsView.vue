@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { useNow, useStorage } from '@vueuse/core'
+import { useStorage } from '@vueuse/core'
+import { useSecondClock } from '@/composables/useSecondClock'
 import { useViewKeys } from '@/composables/useViewKeys'
 import { Play } from '@lucide/vue'
-import { clockTime, dayKey, dayLabel, formatDuration, plural } from '@/lib/format'
+import { clockTime, dayKey, dayLabel, elapsedMs, formatDuration, plural } from '@/lib/format'
 import { CODECS } from '@/lib/codecs'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
@@ -23,7 +24,7 @@ import RecordingDetail from '@/components/recordings/RecordingDetail.vue'
 
 const recordings = useRecordingsStore()
 const nodes = useNodesStore()
-const now = useNow({ interval: 1000 })
+const now = useSecondClock()
 
 const filter = ref('')
 type StatusFilter = 'all' | RecordingStatus
@@ -106,8 +107,7 @@ const STATUS = {
 } as const
 
 function durationMs(s: RecordingSession) {
-  const end = s.stopped_at ? new Date(s.stopped_at).getTime() : now.value.getTime()
-  return end - new Date(s.started_at).getTime()
+  return elapsedMs(s.started_at, s.stopped_at, now.value)
 }
 
 

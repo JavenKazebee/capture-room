@@ -70,6 +70,11 @@ export function dateTime(d: Date | string, opts: { year?: boolean } = {}) {
   })
 }
 
+/** How long something ran from `start` to `end`, or to `now` while it's still going. */
+export function elapsedMs(start: string, end: string | null, now: Date): number {
+  return (end ? new Date(end) : now).getTime() - new Date(start).getTime()
+}
+
 /**
  * When something ran, as `13:10:22 → 13:55:24 · 45:02`, or `14:02:10 → now · 12:34`
  * while it's still going. `withDate` prefixes the start's date (`Oct 5 13:10:22 → …`).
@@ -78,7 +83,7 @@ export function formatTimeRange(start: string, end: string | null, now: Date, op
   const from = new Date(start)
   const to = end ? new Date(end) : null
   const date = opts.withDate ? `${from.toLocaleDateString([], { month: 'short', day: 'numeric' })} ` : ''
-  const duration = formatDuration((to ?? now).getTime() - from.getTime())
+  const duration = formatDuration(elapsedMs(start, end, now))
   return `${date}${clockTime(from)} → ${to ? clockTime(to) : 'now'} · ${duration}`
 }
 

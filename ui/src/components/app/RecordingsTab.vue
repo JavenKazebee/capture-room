@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useNow } from '@vueuse/core'
-import { dateTime, formatDuration } from '@/lib/format'
+import { useSecondClock } from '@/composables/useSecondClock'
+import { dateTime, elapsedMs, formatDuration } from '@/lib/format'
 import { useNodesStore } from '@/stores/nodes'
 import { outputFiles, useRecordingsStore, type RecordingSession } from '@/stores/recordings'
 import StatusDot from '@/components/common/StatusDot.vue'
@@ -9,7 +9,7 @@ import CopyButton from '@/components/common/CopyButton.vue'
 
 const recordings = useRecordingsStore()
 const nodes = useNodesStore()
-const now = useNow({ interval: 1000 })
+const now = useSecondClock()
 
 /** Live sessions first, then the rest newest first. */
 const rows = computed(() =>
@@ -20,8 +20,7 @@ const rows = computed(() =>
 )
 
 function duration(s: RecordingSession) {
-  const end = s.stopped_at ? new Date(s.stopped_at).getTime() : now.value.getTime()
-  return formatDuration(end - new Date(s.started_at).getTime())
+  return formatDuration(elapsedMs(s.started_at, s.stopped_at, now.value))
 }
 
 function started(s: RecordingSession) {
