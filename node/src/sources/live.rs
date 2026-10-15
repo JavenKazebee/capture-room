@@ -603,6 +603,17 @@ pub(crate) fn add_background(bin: &gst::Bin, id: &str, compositor: &gst::Element
     Ok(())
 }
 
+/// Check a live source's configured format before it's saved: a zero rate
+/// or size would fail (or panic) when the caps are built.
+pub fn validate_format(format: Option<&LiveVideoFormat>) -> Result<(), String> {
+    match format {
+        Some(f) if f.width == 0 || f.height == 0 || f.fps_num == 0 || f.fps_den == 0 => {
+            Err("the format needs a size and frame rate".into())
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Caps before the source's format is known: the configured format, or
 /// any size at the default rate (the fallback's black frames, until it
 /// locks). The rate has to be set: the compositor would otherwise take the

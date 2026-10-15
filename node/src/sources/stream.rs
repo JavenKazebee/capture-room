@@ -223,11 +223,7 @@ pub fn validate(cfg: &StreamSourceConfig, available: impl Fn(&str) -> bool) -> R
     if listen_port(cfg).is_none() && matches!(scheme.as_str(), "udp" | "srt") && port.is_none() {
         return Err("the URL needs a port".into());
     }
-    if let Some(f) = &cfg.format {
-        if f.width == 0 || f.height == 0 || f.fps_num == 0 || f.fps_den == 0 {
-            return Err("the format needs a size and frame rate".into());
-        }
-    }
+    live::validate_format(cfg.format.as_ref())?;
     match &cfg.audio {
         AudioPlan::Source { channels } | AudioPlan::Silence { channels }
             if !(1..=64).contains(channels) =>

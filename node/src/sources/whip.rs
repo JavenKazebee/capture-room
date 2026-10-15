@@ -94,7 +94,7 @@ pub fn validate(cfg: &WhipSourceConfig) -> Result<(), String> {
     if cfg.port < 1024 {
         return Err("use a port from 1024 up".into());
     }
-    Ok(())
+    live::validate_format(cfg.format.as_ref())
 }
 
 #[cfg(test)]
@@ -104,6 +104,22 @@ mod tests {
     use super::*;
     use crate::api::types::{AudioPlan, MonitorSettingsDto};
     use crate::pipeline::monitor::MonitorPipeline;
+
+    #[test]
+    fn validate_rejects_zero_rate() {
+        let cfg = |fps_den| WhipSourceConfig {
+            port: 8443,
+            audio: AudioPlan::default(),
+            format: Some(crate::api::types::LiveVideoFormat {
+                width: 1920,
+                height: 1080,
+                fps_num: 30,
+                fps_den,
+            }),
+        };
+        assert!(validate(&cfg(1)).is_ok());
+        assert!(validate(&cfg(0)).is_err());
+    }
 
     /// `whipclientsink` blocks on its own runtime while changing state.
     fn off_runtime(p: &gst::Element, state: gst::State) {

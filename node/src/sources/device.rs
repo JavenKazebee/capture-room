@@ -506,11 +506,7 @@ pub fn validate(cfg: &mut DeviceSourceConfig, devices: &LocalDevices) -> Result<
         return Err(format!("{} isn't a video device", device.name));
     }
     cfg.video_device_name = device.name;
-    if let Some(f) = &cfg.format {
-        if f.width == 0 || f.height == 0 || f.fps_num == 0 || f.fps_den == 0 {
-            return Err("the format needs a size and frame rate".into());
-        }
-    }
+    live::validate_format(cfg.format.as_ref())?;
     validate_audio(&cfg.audio, devices)
 }
 
