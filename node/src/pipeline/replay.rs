@@ -566,9 +566,15 @@ impl ReplayLeg {
         pipeline.use_clock(Some(clock));
         pipeline.set_base_time(base);
         pipeline.set_start_time(gst::ClockTime::NONE);
-        pipeline
-            .set_state(gst::State::Playing)
-            .map_err(|_| anyhow!("{encoder}: replay buffer failed to start"))?;
+        if pipeline.set_state(gst::State::Playing).is_err() {
+            let reason = error
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| "replay buffer failed to start".into());
+            let _ = pipeline.set_state(gst::State::Null);
+            return Err(anyhow!("{encoder}: {reason}"));
+        }
         Ok(Self {
             pipeline,
             links: Vec::new(),
