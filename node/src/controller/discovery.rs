@@ -228,7 +228,9 @@ pub fn start_health_poller(ctx: Ctx) {
                             info!(id = %id, "node pruned after {failures} failed checks");
                             // Already reported offline on its first failure; this just
                             // tells the UI to drop it.
-                            ctx.state.emit_controller(&WsEvent::NodeUpdated);
+                            ctx.state.emit_controller(&WsEvent::NodeRemoved {
+                                peer_id: id.clone(),
+                            });
                         } else if failures == 1 {
                             warn!(id = %id, "node health check failed");
                             ctx.state.emit_controller(&WsEvent::NodeOffline {

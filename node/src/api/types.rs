@@ -1332,6 +1332,10 @@ pub enum WsEvent {
     NodeOnline { peer_id: String },
     #[serde(rename = "node.offline")]
     NodeOffline { peer_id: String },
+    /// A peer left the controller's list: removed by hand, or pruned after
+    /// staying unreachable.
+    #[serde(rename = "node.removed")]
+    NodeRemoved { peer_id: String },
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────

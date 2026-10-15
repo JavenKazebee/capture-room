@@ -17,6 +17,7 @@ use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     AddNodeRequest, CheckDto, ClockMode, ControllerClockDto, ControllerToggleRequest,
     NodeChecksDto, NodeDto, PresetCreateRequest, PresetDto, PresetOutputDto, PresetOutputInput,
+    WsEvent,
 };
 use crate::db;
 use crate::pipeline::profile::{plan_legs, unknown_token};
@@ -100,7 +101,7 @@ async fn put_controller_clock(
     let json = serde_json::to_string(&mode).map_err(anyhow::Error::from)?;
     db::config_set(&state.db, CLOCK_MODE_KEY, &json).await?;
     state.clock.set_own_mode(Some(mode));
-    state.emit(&crate::api::types::WsEvent::NodeUpdated);
+    state.emit(&WsEvent::NodeUpdated);
     Ok(Json(controller_clock(&state).await?))
 }
 
@@ -200,8 +201,11 @@ async fn delete_node(
 ) -> ApiResult<StatusCode> {
     let registry = with_controller(&state, |c| Arc::clone(&c.registry)).await?;
     // Removing the entry also stops its WS relay.
-    registry.write().await.remove(&id);
+    let removed = registry.write().await.remove(&id).is_some();
     db::node_delete(&state.db, &id).await?;
+    if removed {
+        state.emit_controller(&WsEvent::NodeRemoved { peer_id: id });
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

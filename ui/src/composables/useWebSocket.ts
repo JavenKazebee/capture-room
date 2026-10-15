@@ -108,6 +108,7 @@ function handleEvent(event: NodeEvent) {
   switch (event.type) {
     case 'node.online':
     case 'node.offline':
+    case 'node.removed':
       reloadAll()
       break
 
@@ -210,6 +211,9 @@ function logEvent(event: NodeEvent) {
       break
     case 'node.offline':
       log('warn', `Node offline: ${nodes.nameOf(event.peer_id)}`, { node_id: event.peer_id })
+      break
+    case 'node.removed':
+      log('info', `Node removed: ${nodes.nameOf(event.peer_id)}`, { node_id: event.peer_id })
       break
     case 'recording.started':
       log('rec', `Recording started: ${source(event.source_id)}`, { node_id, detail: event.session_id })
