@@ -270,9 +270,10 @@ function openCreate() {
 function pickKind(k: Kind) {
   kind.value = k
   formError.value = null
+  const node = formNodeId.value
   if (k === 'device' || k === 'stream' || k === 'whip') nodeDevices.refresh().then(() => {
-    // Preselect the first camera for a new device source.
-    if (k === 'device' && !device.value.video_device) {
+    // Preselect the first camera for a new device source (on the node still picked).
+    if (k === 'device' && !device.value.video_device && formNodeId.value === node) {
       const first = nodeDevices.devices.value.find((d) => d.kind === 'video' || d.kind === 'screen')
       if (first) {
         device.value = {

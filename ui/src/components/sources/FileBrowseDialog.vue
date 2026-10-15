@@ -31,16 +31,22 @@ const selected = ref<string | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 
+/** Counts `open` calls: only the latest one's listing is shown. */
+let opens = 0
+
 async function open(path?: string) {
+  const mine = ++opens
   loading.value = true
   error.value = null
   try {
-    listing.value = await store.listFiles(props.nodeId, path)
+    const next = await store.listFiles(props.nodeId, path)
+    if (mine !== opens) return
+    listing.value = next
     selected.value = null
   } catch (e) {
-    error.value = errorMessage(e, 'Could not read the folder.')
+    if (mine === opens) error.value = errorMessage(e, 'Could not read the folder.')
   } finally {
-    loading.value = false
+    if (mine === opens) loading.value = false
   }
 }
 

@@ -100,7 +100,21 @@ const angle = computed(
 
 // ── Time ──────────────────────────────────────────────────────────────────────
 
-useIntervalFn(() => replay.loadAll(), 1000, { immediateCallback: true })
+// One poll at a time: a slow node mustn't pile requests up.
+let polling = false
+useIntervalFn(
+  async () => {
+    if (polling) return
+    polling = true
+    try {
+      await replay.loadAll()
+    } finally {
+      polling = false
+    }
+  },
+  1000,
+  { immediateCallback: true },
+)
 const tick = ref(performance.now())
 useRafFn(() => (tick.value = performance.now()))
 const nowUs = computed(() => (angle.value ? replay.nowUs(angle.value.buffer, tick.value) : 0))

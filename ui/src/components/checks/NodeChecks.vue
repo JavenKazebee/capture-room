@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onScopeDispose, ref } from 'vue'
 import { ExternalLink, Settings2, ShieldQuestion } from '@lucide/vue'
 import { notifyError } from '@/lib/notify'
 import { browserIsOn, isProblem, useChecksStore } from '@/stores/checks'
@@ -54,14 +54,18 @@ function status(c: CheckDto): { dot: 'ok' | 'warn' | 'error' | 'off' | 'info'; l
 // ── Asking macOS ──────────────────────────────────────────────────────────────
 
 const asking = ref<string | null>(null)
+let disposed = false
+onScopeDispose(() => (disposed = true))
 
 /** Show the prompt on the node, then re-check until it's answered (or a minute passes). */
 async function ask(c: CheckDto) {
   asking.value = c.id
   try {
     await store.request(props.node.id, c.id)
-    for (let i = 0; i < 30; i++) {
+    // Stops when the page is left, too.
+    for (let i = 0; i < 30 && !disposed; i++) {
       await new Promise((r) => setTimeout(r, 2000))
+      if (disposed) break
       await store.loadForNode(props.node.id)
       const now = store.byNode.get(props.node.id)?.checks.find((x) => x.id === c.id)
       if (!now || now.status !== c.status) break
