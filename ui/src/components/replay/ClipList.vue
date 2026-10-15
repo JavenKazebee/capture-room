@@ -4,7 +4,7 @@ import { toast } from 'vue-sonner'
 import { Download, FileWarning, Loader2, Pencil, Play, Trash2 } from '@lucide/vue'
 import { useReplayStore, type ReplayClip } from '@/stores/replay'
 import { notifyError } from '@/lib/notify'
-import { formatBytes, formatClock } from '@/lib/format'
+import { clockTime, formatBytes, formatClock } from '@/lib/format'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -26,8 +26,7 @@ const replay = useReplayStore()
 
 /** Its capture time of day, else when it was saved. */
 function timeOfDay(c: ReplayClip) {
-  const d = c.start_utc_us != null ? new Date(c.start_utc_us / 1000) : new Date(c.created_at)
-  return d.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return clockTime(c.start_utc_us != null ? new Date(c.start_utc_us / 1000) : c.created_at)
 }
 const length = (c: ReplayClip) => formatClock((c.to_us - c.from_us) / 1000)
 

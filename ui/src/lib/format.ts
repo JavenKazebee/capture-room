@@ -45,6 +45,26 @@ export function formatTimeLeft(secs: number): string {
 /** A wall-clock time as `13:10:22`. */
 export const clockTime = (d: Date | string) => new Date(d).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
+/** A wall-clock time with fractions of a second: `13:10:22.43` (2 digits) or `13:10:22.431` (3). */
+export function clockTimeFine(d: Date | string, digits: 2 | 3) {
+  const t = new Date(d)
+  const frac = digits === 3 ? t.getMilliseconds() : Math.floor(t.getMilliseconds() / 10)
+  return `${clockTime(t)}.${String(frac).padStart(digits, '0')}`
+}
+
+/** A date and wall-clock time: `Oct 5, 13:10:22`, or `Oct 5, 2026, 13:10:22` with `year`. */
+export function dateTime(d: Date | string, opts: { year?: boolean } = {}) {
+  return new Date(d).toLocaleString([], {
+    hour12: false,
+    ...(opts.year && { year: 'numeric' }),
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
 /**
  * When something ran, as `13:10:22 → 13:55:24 · 45:02`, or `14:02:10 → now · 12:34`
  * while it's still going. `withDate` prefixes the start's date (`Oct 5 13:10:22 → …`).

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useNow } from '@vueuse/core'
-import { formatDuration } from '@/lib/format'
+import { dateTime, formatDuration } from '@/lib/format'
 import { useNodesStore } from '@/stores/nodes'
 import { outputFiles, useRecordingsStore, type RecordingSession } from '@/stores/recordings'
 import StatusDot from '@/components/common/StatusDot.vue'
@@ -25,7 +25,7 @@ function duration(s: RecordingSession) {
 }
 
 function started(s: RecordingSession) {
-  return new Date(s.started_at).toLocaleString([], { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return dateTime(s.started_at)
 }
 
 const statusDot = { active: 'tally', stopped: 'off', error: 'error' } as const

@@ -18,7 +18,7 @@ import { useNodesStore } from '@/stores/nodes'
 import { usePlayoutStore } from '@/stores/playout'
 import { useReplayStore, type ReplayBuffer, type ReplayClip } from '@/stores/replay'
 import { notifyError } from '@/lib/notify'
-import { formatClock } from '@/lib/format'
+import { clockTimeFine, formatClock } from '@/lib/format'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -136,9 +136,7 @@ const playing = computed(() => status.value?.state === 'playing')
 function timeOfDay(us: number | null) {
   const offset = angle.value?.buffer.utc_offset_us
   if (us === null || offset == null) return '–'
-  const d = new Date((us + offset) / 1000)
-  const t = d.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
-  return `${t}.${String(Math.floor(d.getMilliseconds() / 10)).padStart(2, '0')}`
+  return clockTimeFine(new Date((us + offset) / 1000), 2)
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────

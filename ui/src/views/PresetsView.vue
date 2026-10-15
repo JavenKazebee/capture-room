@@ -5,6 +5,7 @@ import { useEventListener } from '@vueuse/core'
 import { toast } from 'vue-sonner'
 import { Copy, Loader2, Lock, Plus, RotateCcw, Search, Trash2 } from '@lucide/vue'
 import { usePresetsStore, blankLeg, presetLegs } from '@/stores/presets'
+import { dateTime } from '@/lib/format'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordDeskStore } from '@/stores/recordDesk'
@@ -317,7 +318,7 @@ watch(selected, (p) => p && !dirty.value && p.id === selectedId.value && loadPre
             :aria-invalid="!isBuiltIn && !draftName.trim()"
           />
           <span v-if="selected" class="text-[11px] text-muted-foreground">
-            v{{ selected.version }} · updated {{ new Date(selected.updated_at).toLocaleString([], { hour12: false }) }}
+            v{{ selected.version }} · updated {{ dateTime(selected.updated_at, { year: true }) }}
           </span>
           <div class="flex-1" />
           <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" @click="duplicate">

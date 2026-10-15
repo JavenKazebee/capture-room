@@ -5,7 +5,7 @@ import { toast } from 'vue-sonner'
 import { ChevronRight, Download, ListPlus, Play, Share2, Trash2, X } from '@lucide/vue'
 import { useRouter } from 'vue-router'
 import { recordingFileUrl } from '@/composables/useApi'
-import { formatDuration, formatTimeRange } from '@/lib/format'
+import { clockTimeFine, dateTime, formatDuration, formatTimeRange } from '@/lib/format'
 import { CODECS, CONTAINERS } from '@/lib/codecs'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
@@ -148,9 +148,7 @@ const noPreview = computed(() => {
 // ── Details ───────────────────────────────────────────────────────────────────
 
 function when(iso: string | null) {
-  return iso
-    ? new Date(iso).toLocaleString([], { hour12: false, year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    : null
+  return iso ? dateTime(iso, { year: true }) : null
 }
 
 const duration = computed(() => {
@@ -187,10 +185,7 @@ const details = computed(() => [
 
 /** When the first frame was captured, to the millisecond: what lines recordings up. */
 function firstFrame(iso: string | null) {
-  if (!iso) return null
-  const d = new Date(iso)
-  const ms = String(d.getMilliseconds()).padStart(3, '0')
-  return `${d.toLocaleTimeString([], { hour12: false })}.${ms}`
+  return iso ? clockTimeFine(iso, 3) : null
 }
 
 function clockLabel(domain: string, synchronized: boolean) {

@@ -6,7 +6,7 @@ import { outputFiles, useRecordingsStore, type RecordingSession } from '@/stores
 import { usePresetsStore, blankLeg, presetLegs } from '@/stores/presets'
 import { useNodesStore } from '@/stores/nodes'
 import type { Source } from '@/stores/sources'
-import { formatDuration } from '@/lib/format'
+import { dateTime, formatDuration } from '@/lib/format'
 import { CODECS, CONTAINERS, chromaLabel, framerateLabel, hasBitrate, hasChroma } from '@/lib/codecs'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import { fpsLabel, resolutionLabel } from '@/lib/sourceFormat'
@@ -68,7 +68,7 @@ function elapsed(r: RecordingSession) {
 }
 
 function startedAt(r: RecordingSession) {
-  return new Date(r.started_at).toLocaleString([], { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return dateTime(r.started_at)
 }
 </script>
 

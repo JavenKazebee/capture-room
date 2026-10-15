@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { useStorage } from '@vueuse/core'
 import { ArrowDownToLine, Trash2 } from '@lucide/vue'
 import { useEventsStore, type LogEntry, type LogLevel } from '@/stores/events'
+import { clockTimeFine } from '@/lib/format'
 import { useNodesStore } from '@/stores/nodes'
 import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -38,8 +39,7 @@ const levelClass: Record<LogLevel, string> = {
 }
 
 function time(e: LogEntry) {
-  const t = e.at
-  return `${t.toLocaleTimeString([], { hour12: false })}.${String(t.getMilliseconds()).padStart(3, '0')}`
+  return clockTimeFine(e.at, 3)
 }
 
 // ── Follow tail ───────────────────────────────────────────────────────────────
