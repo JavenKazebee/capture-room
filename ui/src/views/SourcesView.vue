@@ -176,6 +176,9 @@ onMounted(() => store.ensureLoaded())
       </template>
       <template #cell-name="{ row }">
         <div class="font-medium text-sm">{{ row.display_name }}</div>
+        <div v-if="store.alsoOn(row).length" class="text-xs text-muted-foreground">
+          Also on {{ store.alsoOn(row).map(nodesStore.nameOf).join(', ') }}
+        </div>
         <div v-if="row.error" class="text-destructive break-words">{{ row.error }}</div>
       </template>
       <template #cell-type="{ row }">

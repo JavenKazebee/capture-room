@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { capacityWarningText, useCapacityStore } from '@/stores/capacity'
 import { useSourcesStore, type Source } from '@/stores/sources'
+import { sourceKey } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
 import { CODECS, useReplayStore } from '@/stores/replay'
 import { notifyError, notifyWarn } from '@/lib/notify'
@@ -37,6 +38,11 @@ const DEFAULT_MINUTES = 30
 /** Every source but playout channels, grouped by node when there are several. */
 const candidates = computed(() => sources.sources.filter((s) => s.source_type !== 'channel'))
 const busy = ref<string | null>(null)
+
+/** Other nodes keeping a buffer of the same NDI sender. */
+function bufferedElsewhere(s: Source) {
+  return sources.alsoOn(s).filter((n) => replay.buffers.has(sourceKey(n, s.id)))
+}
 
 function codecOptions(nodeId: string) {
   return replay.codecsOf(nodeId).map((c) => ({ value: c, label: CODECS[c].label }))
@@ -132,6 +138,10 @@ function setMinutes(s: Source, text: string | number) {
               {{ stateOf(s).label }}
             </span>
           </div>
+          <p v-if="bufferedElsewhere(s).length" class="text-xs text-warning">
+            {{ bufferedElsewhere(s).map(nodes.nameOf).join(', ') }} keeps a buffer of this sender too. Replays
+            play on their own node's channels, so one node usually keeps them all.
+          </p>
           <template v-if="replay.buffers.get(s.key)">
             <div class="grid grid-cols-[1fr_7rem] gap-3">
               <label class="flex flex-col gap-1">

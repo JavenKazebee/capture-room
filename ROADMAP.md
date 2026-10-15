@@ -292,10 +292,14 @@ Builds on playback (#9) and clock sync (#10). Design in ARCHITECTURE.md (Instant
   buffer uses stays connected. No node connects to its own NDI outputs any more, and
   each receives as `capture-room (<node name>)`. Setup › Checks suggests it on a node
   connected to more than 4 senders. Tried with two nodes on one Mac.
-- **Next:** check angles line up between a replay node's buffers and the capture
-  nodes' recordings (MOV timecode) for the same moment; if not, try `ndisrc`'s
-  `timestamp-mode`. Show the same NDI camera on several nodes as one in the UI. Not
-  yet: clips from several angles grouped as one, downloading an export from the
+- ✅ **NDI timing across nodes (2026-10-15)** — two receivers of one sender agree
+  on each frame's time to within 2 ms once settled (2 s after connecting), on
+  `ndisrc`'s default `auto` mode, so nothing changed
+  (`node/examples/ndi_timing.rs`; ARCHITECTURE.md, Instant Replay › What the NDI
+  timing showed). Measured on one machine: re-run across two when a second Mac runs a
+  node. Sources marks a sender several nodes have ("Also on"), and Replay › Buffers
+  warns when another node already buffers it.
+- **Next:** clips from several angles grouped as one, downloading an export from the
   browser, MOV timecode on exports.
 
 ## 13. Follow-on

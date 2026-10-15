@@ -149,6 +149,15 @@ export const useSourcesStore = defineStore('sources', () => {
     await refreshNode(nodeId)
   }
 
+  /**
+   * The other nodes connected to the same NDI sender as `s`: an NDI source's
+   * id comes from the sender's name, so it's the same on every node.
+   */
+  function alsoOn(s: Source): string[] {
+    if (s.source_type !== 'ndi') return []
+    return sources.value.filter((o) => o.id === s.id && o.node_id !== s.node_id).map((o) => o.node_id)
+  }
+
   /** A directory on the node (its home directory if `path` is omitted). */
   async function listFiles(nodeId: string, path?: string) {
     return nodeApi(nodeId)<DirListingDto>('/files', { query: path ? { path } : {} })
@@ -182,5 +191,6 @@ export const useSourcesStore = defineStore('sources', () => {
     updateSource,
     deleteSource,
     listFiles,
+    alsoOn,
   }
 })

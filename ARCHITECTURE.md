@@ -741,7 +741,10 @@ plays from it at variable speed.
 - **Where it runs:** a replay node subscribes to the same NDI sources and keeps its own
   buffers, so a replay never reads another node's disk and nodes still don't know about
   each other. Set to connect to chosen NDI senders, it takes in only the angles it
-  buffers (see Input Plugin System › `NdiSource`). Sources that only exist on another machine (SDI) can't be replayed from a
+  buffers (see Input Plugin System › `NdiSource`). Its buffers line up with the
+  capture nodes' recordings of the same camera to within a couple of milliseconds
+  (see What the NDI timing showed). The UI marks a sender several nodes have ("Also
+  on"), and the Buffers sheet warns when another node already buffers it. Sources that only exist on another machine (SDI) can't be replayed from a
   different node; that's acceptable to start.
 - **Operation:** the Replay workspace (see Web UI › Views): pick an angle and a moment,
   mark in/out, save clips, play out at variable speed or frame by frame through a
@@ -845,7 +848,29 @@ BT.709). Rates scaled to 1080p59.94:
 - **Decoding keeps up.** In software, all of them decode 1080p at over 200 fps, more
   than three times 59.94 (ProRes 390–580, H.264 310–530, JPEG about 230).
 
----
+### What the NDI timing showed
+
+A capture node and a replay node receiving the same NDI camera each stamp its frames
+themselves, so the same frame could get different times on the two.
+`node/examples/ndi_timing.rs` (2026-10-15, M3, one machine, 720p30) sends a test
+pattern over NDI, receives it twice, the second receiver joining 5 s after the first,
+and matches frames by the sender's NDI timestamp (a `ReferenceTimestampMeta` from
+`ndisrcdemux`), comparing each frame's running time plus base time as a node maps it.
+
+- **`auto` (what nodes use) is fine.** It smooths receive time against the sender's
+  timecode. A receiver that just connected starts up to a frame off, and is within
+  2 ms of one that was already connected after 2 s (1–3 ms on average over 20 s).
+  Nodes connect to a sender when they find it, long before anything records or
+  buffers it, so recordings and buffers start after it settles.
+- **`timestamp` was tightest here, but not across machines.** It maps the sender's
+  timestamp through the receiving machine's wall clock, so between machines it's off
+  by their NTP offset (milliseconds or worse), not the node clock's tens of µs.
+  `receive-time` is unsmoothed: within 1 ms on average, with single frames up to
+  25 ms off.
+- **Not measured:** two machines. There the LAN adds its delay difference
+  (sub-millisecond) and the shared clock its error (tens of µs), both far below a
+  frame.
+- **Mapping is unchanged:** `ndisrc` stays on `auto`.
 
 ## Node API — `/api/v1/node/…`
 
