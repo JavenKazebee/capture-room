@@ -2,7 +2,7 @@
 //! of the node API (`/api/v1/node/…`). Channels themselves are configured
 //! sources, created and edited through `/configured-sources`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -675,8 +675,9 @@ async fn delete_clip(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `name.mov` in `dir`, or `name_2.mov`, … : never an existing file.
-fn free_path(dir: &Path, name: &str) -> std::path::PathBuf {
+/// `name.mov` in `dir`, or `name_2.mov`, … : never an existing file, nor
+/// one the library still lists (a deleted export shows there as missing).
+fn free_path(dir: &Path, name: &str, listed: &HashSet<String>) -> std::path::PathBuf {
     let stem: String = name
         .chars()
         .map(|c| {
@@ -691,7 +692,7 @@ fn free_path(dir: &Path, name: &str) -> std::path::PathBuf {
     let stem = if stem.is_empty() { "Replay clip" } else { stem };
     let mut path = dir.join(format!("{stem}.mov"));
     let mut n = 2;
-    while path.exists() {
+    while path.exists() || listed.contains(&*path.to_string_lossy()) {
         path = dir.join(format!("{stem}_{n}.mov"));
         n += 1;
     }
@@ -709,9 +710,14 @@ async fn post_clip_export(
     let dir = export_dir();
     let name = row.name.clone();
     let files = row.files.0.clone();
+    let listed: HashSet<String> = db::media_list(&state.db)
+        .await?
+        .into_iter()
+        .map(|m| m.path)
+        .collect();
     let path = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
         std::fs::create_dir_all(&dir)?;
-        let out = free_path(&dir, &name);
+        let out = free_path(&dir, &name, &listed);
         replay::export(&files, from, to, &out)?;
         Ok(out.to_string_lossy().into_owned())
     })
@@ -731,7 +737,9 @@ async fn post_clip_export(
         added_at: chrono::Utc::now().to_rfc3339(),
         missing: false,
     };
-    db::media_insert(&state.db, &item).await?;
+    if !db::media_insert(&state.db, &item).await? {
+        return Err(ApiError::Conflict("that file is already in the library"));
+    }
     state.emit(&WsEvent::MediaUpdated);
     Ok((StatusCode::CREATED, Json(item)))
 }
@@ -784,4 +792,17 @@ async fn post_replay_clip(
     let reply = reply(&state, &id, &playout).await;
     result.map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
     Ok(reply)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn free_path_skips_listed_paths() {
+        let dir = std::env::temp_dir().join(format!("capture-room-free-{}", std::process::id()));
+        let listed = HashSet::from([dir.join("Goal.mov").to_string_lossy().into_owned()]);
+        assert_eq!(free_path(&dir, "Goal", &listed), dir.join("Goal_2.mov"));
+        assert_eq!(free_path(&dir, "Save", &listed), dir.join("Save.mov"));
+    }
 }
