@@ -1163,7 +1163,7 @@ impl Playout {
         if let Err(e) = cued {
             deck.current = None;
             self.lanes.close();
-            self.set(TransportState::Idle, None, None, Some(e.to_string()));
+            self.set(TransportState::Idle, None, None, Some(format!("{e:#}")));
             self.refresh_next(&mut deck);
             return Err(e);
         }
@@ -1528,21 +1528,10 @@ impl Playout {
             return;
         };
         warn!(path = %clip.request.path, error = %error, "clip player error");
+        let message = format!("{}: {error}", clip.request.name);
         drop(clip);
         self.lanes.close();
-        let name = self
-            .shared
-            .lock()
-            .unwrap()
-            .clip
-            .as_ref()
-            .map(|c| c.name.clone());
-        self.set(
-            TransportState::Idle,
-            None,
-            None,
-            Some(format!("{}: {error}", name.unwrap_or_default())),
-        );
+        self.set(TransportState::Idle, None, None, Some(message));
         self.refresh_next(&mut deck);
     }
 
