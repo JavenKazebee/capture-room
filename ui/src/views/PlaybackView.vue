@@ -69,7 +69,7 @@ watch(
     if (typeof key === 'string') {
       channelKey.value = key
       if (edit !== undefined) {
-        if (!playout.channels.length) await sources.loadSources()
+        await sources.ensureLoaded()
         editChannel(key)
       }
     } else if (add === 'channel') {
@@ -241,12 +241,7 @@ useEventListener('keydown', (e: KeyboardEvent) => {
   }
 })
 
-onMounted(async () => {
-  if (!sources.sources.length) {
-    await nodes.load()
-    await sources.loadSources()
-  }
-})
+onMounted(() => sources.ensureLoaded())
 </script>
 
 <template>

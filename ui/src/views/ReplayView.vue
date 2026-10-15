@@ -393,12 +393,7 @@ useEventListener('keydown', (e: KeyboardEvent) => {
   else if (key === 'escape') stop()
 })
 
-onMounted(async () => {
-  if (!sources.sources.length) {
-    await nodes.load()
-    await sources.loadSources()
-  }
-})
+onMounted(() => sources.ensureLoaded())
 
 // ── Angle tiles ───────────────────────────────────────────────────────────────
 

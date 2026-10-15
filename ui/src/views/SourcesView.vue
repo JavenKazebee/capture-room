@@ -54,7 +54,6 @@ const desk = useRecordDeskStore()
 const router = useRouter()
 const nodes = computed(() => nodesStore.reachable)
 
-const loading = ref(false)
 const scanning = ref(false)
 const filter = ref('')
 const groupByNode = useStorage('cr.sources.groupByNode', true)
@@ -427,16 +426,7 @@ async function scan() {
   }
 }
 
-onMounted(async () => {
-  if (store.sources.length) return
-  loading.value = true
-  try {
-    await nodesStore.load()
-    await store.loadSources()
-  } finally {
-    loading.value = false
-  }
-})
+onMounted(() => store.ensureLoaded())
 </script>
 
 <template>
@@ -537,7 +527,7 @@ onMounted(async () => {
         </div>
       </template>
       <template #empty>
-        <template v-if="loading">Loading sources…</template>
+        <template v-if="!store.loaded">Loading sources…</template>
         <template v-else-if="filter">No sources match the filter.</template>
         <template v-else>
           No sources yet. <button class="text-primary hover:underline" @click="scan">Scan for NDI sources</button>

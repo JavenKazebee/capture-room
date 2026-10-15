@@ -2,9 +2,11 @@
 import { onMounted, ref } from 'vue'
 import { RouterView } from 'vue-router'
 import { useIntervalFn } from '@vueuse/core'
-import { reloadAll, startWebSocket } from '@/composables/useWebSocket'
+import { startWebSocket } from '@/composables/useWebSocket'
 import { usePreferences } from '@/composables/usePreferences'
 import { usePresetsStore } from '@/stores/presets'
+import { useRecordingsStore } from '@/stores/recordings'
+import { useSourcesStore } from '@/stores/sources'
 import { useStorageStore } from '@/stores/storage'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -19,7 +21,9 @@ const commandOpen = ref(false)
 onMounted(async () => {
   startWebSocket()
   usePresetsStore().load()
-  await reloadAll()
+  // Shared with a page that asked first (its onMounted runs before this).
+  await useSourcesStore().ensureLoaded()
+  useRecordingsStore().load()
   storage.load()
 })
 

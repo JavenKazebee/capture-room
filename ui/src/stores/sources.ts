@@ -59,14 +59,30 @@ export const useSourcesStore = defineStore('sources', () => {
     sources.value = [...sources.value.filter((s) => s.node_id !== nodeId), ...tag(nodeId, list)]
   }
 
-  async function loadSources() {
-    if (nodes.nodes.length === 0) await nodes.load()
-    const results = await Promise.all(
-      nodes.reachable.map(async (n) =>
-        tag(n.id, await nodeApi(n.id)<SourceDto[]>('/sources').catch(() => [])),
-      ),
-    )
-    sources.value = results.flat()
+  /** Whether every reachable node's sources have been fetched once. */
+  const loaded = ref(false)
+  let pending: Promise<void> | null = null
+
+  function loadSources() {
+    const load = (async () => {
+      if (nodes.nodes.length === 0) await nodes.load()
+      const results = await Promise.all(
+        nodes.reachable.map(async (n) =>
+          tag(n.id, await nodeApi(n.id)<SourceDto[]>('/sources').catch(() => [])),
+        ),
+      )
+      sources.value = results.flat()
+      loaded.value = true
+    })()
+    pending = load
+    load.finally(() => pending === load && (pending = null)).catch(() => {})
+    return load
+  }
+
+  /** Load the sources unless they're loaded or loading (App loads them at start). */
+  function ensureLoaded() {
+    if (loaded.value) return Promise.resolve()
+    return pending ?? loadSources()
   }
 
   async function refreshNode(nodeId: string) {
@@ -125,6 +141,8 @@ export const useSourcesStore = defineStore('sources', () => {
 
   return {
     sources,
+    loaded,
+    ensureLoaded,
     listDevices,
     listDisplays,
     updateStatus,
