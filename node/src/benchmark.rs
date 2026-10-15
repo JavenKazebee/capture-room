@@ -121,31 +121,25 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
     match setup {
         Setup::Channel(outputs) => check_channel_benchmark(&req, outputs)?,
         Setup::Replay(_) if !req.outputs.is_empty() => {
-            return Err(ApiError::BadRequest(
-                "a replay buffer benchmark takes no outputs".into(),
-            ));
+            return Err(ApiError::bad("a replay buffer benchmark takes no outputs"));
         }
         Setup::Replay(codec) if !codec.available() => {
-            return Err(ApiError::BadRequest(
-                "this node can't keep replay buffers in that codec".into(),
+            return Err(ApiError::bad(
+                "this node can't keep replay buffers in that codec",
             ));
         }
         Setup::Replay(_) => {}
         Setup::Record([]) => {
-            return Err(ApiError::BadRequest(
-                "at least one output is required".into(),
-            ));
+            return Err(ApiError::bad("at least one output is required"));
         }
         Setup::Record(outputs) => {
-            plan_legs(outputs, None).map_err(|e| ApiError::BadRequest(e.into()))?;
+            plan_legs(outputs, None).map_err(ApiError::bad)?;
         }
     }
     let path = req.media_path.trim().to_string();
     let media = crate::api::probe(path.clone()).await?;
     if media.fps_num == 0 {
-        return Err(ApiError::BadRequest(
-            "the footage has no fixed frame rate, so dropped frames can't be counted; pick another file".into(),
-        ));
+        return Err(ApiError::bad("the footage has no fixed frame rate, so dropped frames can't be counted; pick another file"));
     }
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -296,35 +290,27 @@ impl Drop for SlotGuard<'_> {
 /// (see [`capacity::channel_outputs`]) or this node can't send.
 fn check_channel_benchmark(req: &BenchmarkRequest, outputs: &[OutputConfig]) -> ApiResult<()> {
     if !req.outputs.is_empty() || req.replay.is_some() {
-        return Err(ApiError::BadRequest(
-            "a channel benchmark takes no recording outputs or replay codec".into(),
+        return Err(ApiError::bad(
+            "a channel benchmark takes no recording outputs or replay codec",
         ));
     }
     let installed = |name: &str| gst::ElementFactory::find(name).is_some();
     for o in outputs {
         match o {
             OutputConfig::Ndi { .. } if !installed("ndisink") => {
-                return Err(ApiError::BadRequest(
-                    "this node can't send NDI (no NDI plugin)".into(),
-                ));
+                return Err(ApiError::bad("this node can't send NDI (no NDI plugin)"));
             }
             OutputConfig::Srt { .. } if !installed("srtsink") => {
-                return Err(ApiError::BadRequest(
-                    "this node can't send SRT (no SRT plugin)".into(),
-                ));
+                return Err(ApiError::bad("this node can't send SRT (no SRT plugin)"));
             }
             OutputConfig::Ndi { .. } | OutputConfig::Srt { .. } => {}
             _ => {
-                return Err(ApiError::BadRequest(
-                    "a channel benchmark measures NDI and SRT outputs only: RTSP and WHEP encode only for viewers, and a display needs a screen".into(),
-                ));
+                return Err(ApiError::bad("a channel benchmark measures NDI and SRT outputs only: RTSP and WHEP encode only for viewers, and a display needs a screen"));
             }
         }
     }
     if !["compositor", "audiomixer"].into_iter().all(installed) {
-        return Err(ApiError::BadRequest(
-            "this node can't run playout channels".into(),
-        ));
+        return Err(ApiError::bad("this node can't run playout channels"));
     }
     Ok(())
 }

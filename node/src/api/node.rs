@@ -236,22 +236,21 @@ async fn validated(
 ) -> ApiResult<ConfiguredSourceRequest> {
     req.name = req.name.trim().to_string();
     if req.name.is_empty() {
-        return Err(ApiError::BadRequest("name is required".into()));
+        return Err(ApiError::bad("name is required"));
     }
     let devices = state.source_manager.read().await.devices().clone();
-    let bad = |e: String| ApiError::BadRequest(e.into());
     match &mut req.config {
         SourceConfig::Stream(cfg) => {
             cfg.url = cfg.url.trim().to_string();
-            crate::sources::stream::validate(cfg, crate::plugins::has).map_err(bad)?;
-            crate::sources::device::validate_audio(&cfg.audio, &devices).map_err(bad)?;
+            crate::sources::stream::validate(cfg, crate::plugins::has).map_err(ApiError::bad)?;
+            crate::sources::device::validate_audio(&cfg.audio, &devices).map_err(ApiError::bad)?;
         }
         SourceConfig::Device(cfg) => {
-            crate::sources::device::validate(cfg, &devices).map_err(bad)?;
+            crate::sources::device::validate(cfg, &devices).map_err(ApiError::bad)?;
         }
         SourceConfig::Whip(cfg) => {
-            crate::sources::whip::validate(cfg).map_err(bad)?;
-            crate::sources::device::validate_audio(&cfg.audio, &devices).map_err(bad)?;
+            crate::sources::whip::validate(cfg).map_err(ApiError::bad)?;
+            crate::sources::device::validate_audio(&cfg.audio, &devices).map_err(ApiError::bad)?;
         }
         SourceConfig::Channel(cfg) => {
             let others = db::configured_sources_list(&state.db).await?;
@@ -264,7 +263,7 @@ async fn validated(
                 })
                 .collect();
             crate::sources::channel::validate(cfg, &req.name, &others, crate::plugins::has)
-                .map_err(bad)?;
+                .map_err(ApiError::bad)?;
             for o in &cfg.outputs {
                 if let OutputConfig::Display {
                     audio_device: Some(key),
@@ -272,7 +271,7 @@ async fn validated(
                 } = o
                 {
                     if !key.is_empty() && !devices.has_output(key) {
-                        return Err(bad(format!("audio output {key} isn't connected")));
+                        return Err(ApiError::bad(format!("audio output {key} isn't connected")));
                     }
                 }
             }
@@ -289,22 +288,19 @@ async fn validated(
         // The RTSP server's port, while any channel serves RTSP.
         const RTSP: u16 = crate::pipeline::rtsp::RTSP_PORT;
         if ports.contains(&RTSP) && others.iter().any(|o| serves_rtsp(&o.config)) {
-            return Err(ApiError::BadRequest(
-                format!("port {RTSP} is the node's RTSP server, used by RTSP outputs").into(),
-            ));
+            return Err(ApiError::bad(format!(
+                "port {RTSP} is the node's RTSP server, used by RTSP outputs"
+            )));
         }
         if serves_rtsp(&req.config) {
             if let Some(other) = others
                 .iter()
                 .find(|o| listen_ports(&o.config).contains(&RTSP))
             {
-                return Err(ApiError::BadRequest(
-                    format!(
-                        "RTSP outputs are served on port {RTSP}, which {} listens on",
-                        other.name
-                    )
-                    .into(),
-                ));
+                return Err(ApiError::bad(format!(
+                    "RTSP outputs are served on port {RTSP}, which {} listens on",
+                    other.name
+                )));
             }
         }
         for port in ports {
@@ -312,9 +308,10 @@ async fn validated(
                 .iter()
                 .find(|o| listen_ports(&o.config).contains(&port))
             {
-                return Err(ApiError::BadRequest(
-                    format!("port {port} is already used by {}", other.name).into(),
-                ));
+                return Err(ApiError::bad(format!(
+                    "port {port} is already used by {}",
+                    other.name
+                )));
             }
         }
     }
@@ -424,11 +421,11 @@ async fn get_checks(State(state): State<Arc<AppState>>) -> ApiResult<Json<NodeCh
 /// has been asked (the prompt may still be open).
 async fn post_check_request(Json(req): Json<CheckRequest>) -> ApiResult<StatusCode> {
     use crate::sources::privacy::Permission;
-    let permission = crate::checks::permission_of(&req.id)
-        .ok_or(ApiError::BadRequest("not a permission".into()))?;
+    let permission =
+        crate::checks::permission_of(&req.id).ok_or_else(|| ApiError::bad("not a permission"))?;
     if permission == Permission::ScreenRecording {
-        return Err(ApiError::BadRequest(
-            "macOS only asks about screen recording once: allow it in System Settings".into(),
+        return Err(ApiError::bad(
+            "macOS only asks about screen recording once: allow it in System Settings",
         ));
     }
     tokio::task::spawn_blocking(move || crate::sources::privacy::request(permission)).await?;
@@ -724,9 +721,7 @@ async fn post_recording(
     Json(req): Json<StartRecordingRequest>,
 ) -> ApiResult<(StatusCode, Json<RecordingSessionDto>)> {
     if req.outputs.is_empty() {
-        return Err(ApiError::BadRequest(
-            "at least one output is required".into(),
-        ));
+        return Err(ApiError::bad("at least one output is required"));
     }
     let legs = build_legs(&state, &req).await?;
     check_free_space(&legs).await?;
@@ -780,13 +775,10 @@ async fn check_free_space(legs: &[(PathBuf, RecordingProfile)]) -> ApiResult<()>
     })
     .await?;
     match full {
-        Some((mount, free)) => Err(ApiError::BadRequest(
-            format!(
-                "{mount} is nearly full ({:.1} GB free); free up space or record somewhere else",
-                free as f64 / 1e9
-            )
-            .into(),
-        )),
+        Some((mount, free)) => Err(ApiError::bad(format!(
+            "{mount} is nearly full ({:.1} GB free); free up space or record somewhere else",
+            free as f64 / 1e9
+        ))),
         None => Ok(()),
     }
 }
@@ -1131,8 +1123,7 @@ async fn build_legs(
     // Each step changes the path that exists (its take, or every file's
     // suffix), so this ends once it runs past the files on disk.
     loop {
-        let legs =
-            plan_legs(&req.outputs, Some(&vars)).map_err(|e| ApiError::BadRequest(e.into()))?;
+        let legs = plan_legs(&req.outputs, Some(&vars)).map_err(ApiError::bad)?;
         let Some(i) = legs.iter().position(|(path, _)| path.exists()) else {
             return Ok(legs);
         };
@@ -1141,9 +1132,9 @@ async fn build_legs(
         } else {
             &mut vars.suffix
         };
-        *counter = counter.checked_add(1).ok_or_else(|| {
-            ApiError::BadRequest(format!("{} already exists", legs[i].0.display()).into())
-        })?;
+        *counter = counter
+            .checked_add(1)
+            .ok_or_else(|| ApiError::bad(format!("{} already exists", legs[i].0.display())))?;
     }
 }
 

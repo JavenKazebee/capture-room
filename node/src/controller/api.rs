@@ -176,7 +176,7 @@ async fn post_node(
     let status = discovery::add_node(&ctx, url.clone(), true)
         .await
         .map_err(|e| ApiError::BadGateway(e.to_string()))?
-        .ok_or(ApiError::BadRequest("that address is this node".into()))?;
+        .ok_or_else(|| ApiError::bad("that address is this node"))?;
     let row = db::NodeRow {
         id: status.id,
         name: status.name,
@@ -266,12 +266,12 @@ fn validate_outputs(mut outputs: Vec<PresetOutputInput>) -> ApiResult<Vec<Preset
         output.resolution = blank_to_none(output.resolution.take());
         output.framerate = blank_to_none(output.framerate.take());
         if let Some(token) = unknown_token(&output.path_template) {
-            return Err(ApiError::BadRequest(
-                format!("{token} isn't a path template token").into(),
-            ));
+            return Err(ApiError::bad(format!(
+                "{token} isn't a path template token"
+            )));
         }
     }
-    let legs = plan_legs(&outputs, None).map_err(|e| ApiError::BadRequest(e.into()))?;
+    let legs = plan_legs(&outputs, None).map_err(ApiError::bad)?;
     recording::check_legs(&legs).map_err(ApiError::bad)?;
     Ok(outputs)
 }

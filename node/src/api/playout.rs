@@ -82,9 +82,7 @@ async fn post_media(
             .flatten()
             .any(|f| *f == path)
         {
-            return Err(ApiError::BadRequest(
-                "the file isn't one of the session's".into(),
-            ));
+            return Err(ApiError::bad("the file isn't one of the session's"));
         }
     }
     let info = super::probe(path.clone()).await?;
@@ -295,18 +293,18 @@ async fn put_playlist(
     let mut rows = Vec::with_capacity(req.items.len());
     for (n, item) in req.items.into_iter().enumerate() {
         let n = n + 1;
-        let m = media.get(&item.media_id).ok_or_else(|| {
-            ApiError::BadRequest(format!("item {n}: not in the media library").into())
-        })?;
+        let m = media
+            .get(&item.media_id)
+            .ok_or_else(|| ApiError::bad(format!("item {n}: not in the media library")))?;
         if let Some(duration) = m.info.duration_ms.filter(|&d| item.in_ms >= d) {
-            return Err(ApiError::BadRequest(
-                format!("item {n}: the in point is past the end ({duration} ms)").into(),
-            ));
+            return Err(ApiError::bad(format!(
+                "item {n}: the in point is past the end ({duration} ms)"
+            )));
         }
         if item.out_ms.is_some_and(|out| out <= item.in_ms) {
-            return Err(ApiError::BadRequest(
-                format!("item {n}: the out point must be after the in point").into(),
-            ));
+            return Err(ApiError::bad(format!(
+                "item {n}: the out point must be after the in point"
+            )));
         }
         let id = item
             .id
@@ -364,14 +362,12 @@ async fn post_transport(
         TransportAction::Seek => {
             let position = req
                 .position_ms
-                .ok_or(ApiError::BadRequest("position_ms is required".into()))?;
+                .ok_or_else(|| ApiError::bad("position_ms is required"))?;
             playout.seek(gst::ClockTime::from_mseconds(position)).await
         }
         TransportAction::Next => playout.next().await,
         TransportAction::Speed => {
-            let rate = req
-                .rate
-                .ok_or(ApiError::BadRequest("rate is required".into()))?;
+            let rate = req.rate.ok_or_else(|| ApiError::bad("rate is required"))?;
             playout.set_rate(rate).await
         }
         TransportAction::Step => playout.step(req.frames.unwrap_or(1)).await,
@@ -397,19 +393,16 @@ async fn put_replay(
     Json(req): Json<ReplayConfigInput>,
 ) -> ApiResult<Json<ReplayBufferDto>> {
     if !(1..=MAX_REPLAY_MINUTES).contains(&req.minutes) {
-        return Err(ApiError::BadRequest(
-            format!("a replay buffer keeps 1 to {MAX_REPLAY_MINUTES} minutes").into(),
-        ));
+        return Err(ApiError::bad(format!(
+            "a replay buffer keeps 1 to {MAX_REPLAY_MINUTES} minutes"
+        )));
     }
     if !req.codec.available() {
-        return Err(ApiError::BadRequest(
-            format!(
-                "this node can't record {:?} for replay (missing {})",
-                req.codec,
-                missing_elements(req.codec).join(", ")
-            )
-            .into(),
-        ));
+        return Err(ApiError::bad(format!(
+            "this node can't record {:?} for replay (missing {})",
+            req.codec,
+            missing_elements(req.codec).join(", ")
+        )));
     }
     if state
         .source_manager
@@ -579,9 +572,7 @@ async fn post_clip(
     Json(req): Json<SaveReplayClipRequest>,
 ) -> ApiResult<(StatusCode, Json<ReplayClipDto>)> {
     if req.to_us <= req.from_us {
-        return Err(ApiError::BadRequest(
-            "the out point must be after the in point".into(),
-        ));
+        return Err(ApiError::bad("the out point must be after the in point"));
     }
     let id = uuid::Uuid::new_v4().to_string();
     let utc_offset_us = state.clock.utc_offset_us();
@@ -645,7 +636,7 @@ async fn patch_clip(
 ) -> ApiResult<Json<ReplayClipDto>> {
     let name = req.name.trim();
     if name.is_empty() {
-        return Err(ApiError::BadRequest("a clip needs a name".into()));
+        return Err(ApiError::bad("a clip needs a name"));
     }
     if !db::replay_clip_rename(&state.db, &id, name).await? {
         return Err(CLIP_NOT_FOUND);
