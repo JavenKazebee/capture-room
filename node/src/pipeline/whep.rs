@@ -177,6 +177,10 @@ impl RunningOutput for WhepMount {
     fn receivers(&self) -> Option<u32> {
         self.output.receivers()
     }
+
+    fn dropped_frames(&self) -> Option<u64> {
+        self.output.dropped_frames()
+    }
 }
 
 impl Drop for WhepMount {

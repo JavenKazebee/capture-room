@@ -508,6 +508,10 @@ impl RunningOutput for DisplayRunning {
             self.window.set_visible(visible);
         }
     }
+
+    fn dropped_frames(&self) -> Option<u64> {
+        self.pipeline.dropped_frames()
+    }
 }
 
 // ── SRT ───────────────────────────────────────────────────────────────────────
