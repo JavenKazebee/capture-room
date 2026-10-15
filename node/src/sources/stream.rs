@@ -297,6 +297,16 @@ mod monitor_tests {
     use crate::api::types::MonitorSettingsDto;
     use crate::pipeline::monitor::MonitorPipeline;
 
+    /// A sending pipeline, stopped when dropped: disposing one that's still
+    /// playing (as a failed assertion would) crashes its streaming threads.
+    struct Sender(gst::Element);
+
+    impl Drop for Sender {
+        fn drop(&mut self) {
+            let _ = self.0.set_state(gst::State::Null);
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "real-time (~30 s); run with --ignored"]
     async fn producers_never_stall_across_a_dropout() {
@@ -350,7 +360,7 @@ mod monitor_tests {
             ))
             .unwrap();
             p.set_state(gst::State::Playing).unwrap();
-            p
+            Sender(p)
         };
         let sleep = |s| tokio::time::sleep(Duration::from_secs(s));
 
@@ -358,14 +368,13 @@ mod monitor_tests {
         let s = send();
         sleep(5).await;
         assert_eq!(src.link(), Some(LinkState::Live));
-        s.set_state(gst::State::Null).unwrap();
         drop(s);
         // Long enough for fallbacksrc to restart the source a few times.
         sleep(15).await;
         let s = send();
         sleep(6).await;
         assert_eq!(src.link(), Some(LinkState::Live));
-        s.set_state(gst::State::Null).unwrap();
+        drop(s);
         mon.stop().unwrap();
         assert_eq!(*stalls.lock().unwrap(), Vec::<String>::new());
     }
