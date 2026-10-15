@@ -18,6 +18,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import OptionSelect from '@/components/OptionSelect.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import KeyValueList from '@/components/common/KeyValueList.vue'
+import type { UpdateNodeSettingsRequest } from '@/types/generated/UpdateNodeSettingsRequest'
 
 const { colorMode, density } = usePreferences()
 const nodes = useNodesStore()
@@ -81,7 +82,7 @@ async function apply() {
   const targets = nodes.reachable
   try {
     const results = await Promise.allSettled(
-      targets.map((n) => nodeApi(n.id)<NodeSettingsDto>('/settings', { method: 'PUT', body: { monitor } })),
+      targets.map((n) => nodeApi(n.id)<NodeSettingsDto>('/settings', { method: 'PUT', body: { name: null, monitor } satisfies UpdateNodeSettingsRequest })),
     )
     results.forEach((r, i) => {
       if (r.status === 'fulfilled') nodeMonitors.set(targets[i]!.id, r.value.monitor)

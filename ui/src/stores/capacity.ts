@@ -11,6 +11,7 @@ import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import type { ReplayCodec } from '@/types/generated/ReplayCodec'
 import { CODECS } from '@/stores/replay'
 import { onReconnect } from '@/lib/reconnect'
+import type { CapacityCheckRequest } from '@/types/generated/CapacityCheckRequest'
 
 /** Recording time left on a volume below which the UI warns. */
 export const LOW_TIME_SECS = 3600
@@ -95,7 +96,7 @@ export const useCapacityStore = defineStore('capacity', () => {
   function check(nodeId: string, outputs: PresetOutputInput[], sourceIds: string[]) {
     return nodeApi(nodeId)<CapacityCheckDto>('/capacity/check', {
       method: 'POST',
-      body: { outputs, source_ids: sourceIds, replay: null, channel: null },
+      body: { outputs, source_ids: sourceIds, replay: null, channel: null } satisfies CapacityCheckRequest,
     })
   }
 
@@ -103,7 +104,7 @@ export const useCapacityStore = defineStore('capacity', () => {
   function checkReplay(nodeId: string, codec: ReplayCodec, sourceIds: string[]) {
     return nodeApi(nodeId)<CapacityCheckDto>('/capacity/check', {
       method: 'POST',
-      body: { outputs: [], source_ids: sourceIds, replay: codec, channel: null },
+      body: { outputs: [], source_ids: sourceIds, replay: codec, channel: null } satisfies CapacityCheckRequest,
     })
   }
 
@@ -114,7 +115,7 @@ export const useCapacityStore = defineStore('capacity', () => {
   function checkChannel(nodeId: string, channel: ChannelConfig, editing?: string) {
     return nodeApi(nodeId)<CapacityCheckDto>('/capacity/check', {
       method: 'POST',
-      body: { outputs: [], source_ids: editing ? [editing] : [], replay: null, channel },
+      body: { outputs: [], source_ids: editing ? [editing] : [], replay: null, channel } satisfies CapacityCheckRequest,
     })
   }
 

@@ -6,6 +6,7 @@ import { onReconnect } from '@/lib/reconnect'
 import type { CheckDto } from '@/types/generated/CheckDto'
 import type { NodeChecksDto } from '@/types/generated/NodeChecksDto'
 import type { NodeDto } from '@/types/generated/NodeDto'
+import type { CheckRequest } from '@/types/generated/CheckRequest'
 
 /** Missing, and something on the node needs it now. */
 export function isProblem(check: CheckDto) {
@@ -77,7 +78,7 @@ export const useChecksStore = defineStore('checks', () => {
 
   /** Ask the node's OS to show its prompt for a permission. */
   async function request(nodeId: string, id: string) {
-    await nodeApi(nodeId)('/checks/request', { method: 'POST', body: { id } })
+    await nodeApi(nodeId)('/checks/request', { method: 'POST', body: { id } satisfies CheckRequest })
   }
 
   return { byNode, reachability, load, loadForNode, all, problems, request }

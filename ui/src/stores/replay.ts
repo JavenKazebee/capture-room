@@ -11,6 +11,8 @@ import type { ReplayConfigInput } from '@/types/generated/ReplayConfigInput'
 import type { ReplayClipDto } from '@/types/generated/ReplayClipDto'
 import type { SaveReplayClipRequest } from '@/types/generated/SaveReplayClipRequest'
 import type { MediaItemDto } from '@/types/generated/MediaItemDto'
+import type { PlayReplayClipRequest } from '@/types/generated/PlayReplayClipRequest'
+import type { UpdateReplayClipRequest } from '@/types/generated/UpdateReplayClipRequest'
 
 export type ReplayBuffer = ReplayBufferDto & {
   node_id: string
@@ -112,7 +114,7 @@ export const useReplayStore = defineStore('replay', () => {
   }
 
   async function renameClip(clip: ReplayClip, name: string) {
-    await nodeApi(clip.node_id)(`/replay/clips/${clip.id}`, { method: 'PATCH', body: { name } })
+    await nodeApi(clip.node_id)(`/replay/clips/${clip.id}`, { method: 'PATCH', body: { name } satisfies UpdateReplayClipRequest })
     await loadClips(clip.node_id)
   }
 
@@ -130,7 +132,7 @@ export const useReplayStore = defineStore('replay', () => {
   async function playClip(channelId: string, clip: ReplayClip, rate: number, play: boolean) {
     const s = await nodeApi(clip.node_id)<ChannelStatusDto>(`/channels/${channelId}/replay-clip`, {
       method: 'POST',
-      body: { clip_id: clip.id, rate, play },
+      body: { clip_id: clip.id, rate, play } satisfies PlayReplayClipRequest,
     })
     playout.setStatus(clip.node_id, channelId, s)
     return s

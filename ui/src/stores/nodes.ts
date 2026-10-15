@@ -3,6 +3,9 @@ import { computed, ref } from 'vue'
 import { api, nodeApi } from '@/composables/useApi'
 import type { NodeDto } from '@/types/generated/NodeDto'
 import type { NodeSettingsDto } from '@/types/generated/NodeSettingsDto'
+import type { AddNodeRequest } from '@/types/generated/AddNodeRequest'
+import type { ControllerToggleRequest } from '@/types/generated/ControllerToggleRequest'
+import type { UpdateNodeSettingsRequest } from '@/types/generated/UpdateNodeSettingsRequest'
 
 export const useNodesStore = defineStore('nodes', () => {
   const nodes = ref<NodeDto[]>([])
@@ -31,12 +34,12 @@ export const useNodesStore = defineStore('nodes', () => {
   }
 
   async function setController(enabled: boolean) {
-    await api('/controller', { method: 'PUT', body: { enabled } })
+    await api('/controller', { method: 'PUT', body: { enabled } satisfies ControllerToggleRequest })
     await load()
   }
 
   async function add(url: string) {
-    await api('/nodes', { method: 'POST', body: { url } })
+    await api('/nodes', { method: 'POST', body: { url } satisfies AddNodeRequest })
     await load()
   }
 
@@ -53,7 +56,7 @@ export const useNodesStore = defineStore('nodes', () => {
   async function rename(id: string, name: string) {
     const settings = await nodeApi(id)<NodeSettingsDto>('/settings', {
       method: 'PUT',
-      body: { name, monitor: null },
+      body: { name, monitor: null } satisfies UpdateNodeSettingsRequest,
     })
     renamed.set(id, { name: settings.node_name, until: Date.now() + 15_000 })
     const node = nodes.value.find((n) => n.id === id)

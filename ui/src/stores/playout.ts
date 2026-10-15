@@ -9,6 +9,9 @@ import type { PlaylistDto } from '@/types/generated/PlaylistDto'
 import type { PlaylistItemInput } from '@/types/generated/PlaylistItemInput'
 import type { TransportAction } from '@/types/generated/TransportAction'
 import type { TransportRequest } from '@/types/generated/TransportRequest'
+import type { AddMediaRequest } from '@/types/generated/AddMediaRequest'
+import type { CueRequest } from '@/types/generated/CueRequest'
+import type { PlaylistInput } from '@/types/generated/PlaylistInput'
 
 /**
  * Playout: each channel's transport (from `channel.state` events and the
@@ -42,7 +45,7 @@ export const usePlayoutStore = defineStore('playout', () => {
   async function savePlaylist(nodeId: string, sourceId: string, items: PlaylistItemInput[], loopPlaylist: boolean) {
     const p = await nodeApi(nodeId)<PlaylistDto>(`/channels/${sourceId}/playlist`, {
       method: 'PUT',
-      body: { items, loop_playlist: loopPlaylist },
+      body: { items, loop_playlist: loopPlaylist } satisfies PlaylistInput,
     })
     playlists.set(sourceKey(nodeId, sourceId), p)
     return p
@@ -59,7 +62,7 @@ export const usePlayoutStore = defineStore('playout', () => {
   async function addMedia(nodeId: string, path: string, sessionId?: string) {
     const item = await nodeApi(nodeId)<MediaItemDto>('/media', {
       method: 'POST',
-      body: { path, session_id: sessionId ?? null },
+      body: { path, name: null, session_id: sessionId ?? null } satisfies AddMediaRequest,
     })
     await loadMedia(nodeId)
     return item
@@ -74,7 +77,7 @@ export const usePlayoutStore = defineStore('playout', () => {
   async function playItem(nodeId: string, sourceId: string, itemId: string) {
     const s = await nodeApi(nodeId)<ChannelStatusDto>(`/channels/${sourceId}/play`, {
       method: 'POST',
-      body: { item_id: itemId },
+      body: { item_id: itemId } satisfies CueRequest,
     })
     setStatus(nodeId, sourceId, s)
   }
@@ -83,7 +86,7 @@ export const usePlayoutStore = defineStore('playout', () => {
   async function cue(nodeId: string, sourceId: string, itemId: string) {
     const s = await nodeApi(nodeId)<ChannelStatusDto>(`/channels/${sourceId}/cue`, {
       method: 'POST',
-      body: { item_id: itemId },
+      body: { item_id: itemId } satisfies CueRequest,
     })
     setStatus(nodeId, sourceId, s)
   }
