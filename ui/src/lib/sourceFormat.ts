@@ -12,7 +12,7 @@ export function fpsLabel([n, d]: [number, number], short = false) {
 /** `1080p30`, `2160p59.94`; other sizes as `1440×1080 30`. */
 export function formatLabel(m: Pick<MediaInfo, 'width' | 'height' | 'fps_num' | 'fps_den'>) {
   const rate = fpsLabel([m.fps_num, m.fps_den], true)
-  const standard = [480, 576, 720, 1080, 1440, 2160, 4320].includes(m.height) && m.width >= m.height
+  const standard = [360, 480, 576, 720, 1080, 1440, 2160, 4320].includes(m.height) && m.width >= m.height
   return standard ? `${m.height}p${rate}` : `${m.width}×${m.height} ${rate}`
 }
 
