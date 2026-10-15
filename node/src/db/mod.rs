@@ -29,6 +29,12 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
     Ok(pool)
 }
 
+/// Run a `DELETE ... WHERE <key> = ?` for `id`: whether it removed a row.
+async fn delete_one(pool: &SqlitePool, sql: &str, id: &str) -> Result<bool> {
+    let res = sqlx::query(sql).bind(id).execute(pool).await?;
+    Ok(res.rows_affected() > 0)
+}
+
 // ── node_config ───────────────────────────────────────────────────────────────
 
 pub async fn config_get(pool: &SqlitePool, key: &str) -> Result<Option<String>> {
@@ -187,11 +193,7 @@ pub async fn sessions_list(
 /// Remove a session from history. Its files are left alone; the API deletes
 /// them first when asked to.
 pub async fn session_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
-    let res = sqlx::query("DELETE FROM recording_sessions WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(res.rows_affected() > 0)
+    delete_one(pool, "DELETE FROM recording_sessions WHERE id = ?", id).await
 }
 
 pub async fn session_get(pool: &SqlitePool, id: &str) -> Result<Option<RecordingSessionDto>> {
@@ -275,11 +277,7 @@ pub async fn preset_update(
 
 /// Delete a preset; its outputs go with it (`ON DELETE CASCADE`).
 pub async fn preset_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
-    let res = sqlx::query("DELETE FROM presets WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(res.rows_affected() > 0)
+    delete_one(pool, "DELETE FROM presets WHERE id = ?", id).await
 }
 
 /// Replace all output legs for a preset, inside the caller's transaction.
@@ -356,10 +354,7 @@ pub async fn node_upsert(pool: &SqlitePool, row: &NodeRow) -> Result<()> {
 }
 
 pub async fn node_delete(pool: &SqlitePool, id: &str) -> Result<()> {
-    sqlx::query("DELETE FROM nodes WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    delete_one(pool, "DELETE FROM nodes WHERE id = ?", id).await?;
     Ok(())
 }
 
@@ -468,11 +463,7 @@ pub async fn media_insert(pool: &SqlitePool, item: &MediaItemDto) -> Result<bool
 }
 
 pub async fn media_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
-    let res = sqlx::query("DELETE FROM media WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(res.rows_affected() > 0)
+    delete_one(pool, "DELETE FROM media WHERE id = ?", id).await
 }
 
 // ── replay buffers ────────────────────────────────────────────────────────────
@@ -511,11 +502,12 @@ pub async fn replay_buffer_set(
 }
 
 pub async fn replay_buffer_delete(pool: &SqlitePool, source_id: &str) -> Result<bool> {
-    let res = sqlx::query("DELETE FROM replay_buffers WHERE source_id = ?")
-        .bind(source_id)
-        .execute(pool)
-        .await?;
-    Ok(res.rows_affected() > 0)
+    delete_one(
+        pool,
+        "DELETE FROM replay_buffers WHERE source_id = ?",
+        source_id,
+    )
+    .await
 }
 
 // ── replay clips ──────────────────────────────────────────────────────────────
@@ -592,11 +584,7 @@ pub async fn replay_clip_rename(pool: &SqlitePool, id: &str, name: &str) -> Resu
 }
 
 pub async fn replay_clip_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
-    let res = sqlx::query("DELETE FROM replay_clips WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(res.rows_affected() > 0)
+    delete_one(pool, "DELETE FROM replay_clips WHERE id = ?", id).await
 }
 
 // ── playlists ─────────────────────────────────────────────────────────────────
@@ -721,11 +709,7 @@ pub async fn benchmark_get(pool: &SqlitePool, id: &str) -> Result<Option<Benchma
 }
 
 pub async fn benchmark_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
-    let res = sqlx::query("DELETE FROM benchmark_results WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    Ok(res.rows_affected() > 0)
+    delete_one(pool, "DELETE FROM benchmark_results WHERE id = ?", id).await
 }
 
 /// Runs still marked running: on startup, ones a crash or restart cut short.
