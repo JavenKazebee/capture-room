@@ -96,17 +96,30 @@ async fn post_media(
                 .map(|n| n.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| path.clone());
+    let origin = if req.session_id.is_some() {
+        MediaOrigin::Recording
+    } else {
+        MediaOrigin::Import
+    };
+    add_media(&state, path, name, info, origin, req.session_id).await
+}
+
+/// Add `path` to the media library as `name`, unless it's there already.
+async fn add_media(
+    state: &AppState,
+    path: String,
+    name: String,
+    info: super::MediaInfo,
+    origin: MediaOrigin,
+    session_id: Option<String>,
+) -> ApiResult<(StatusCode, Json<MediaItemDto>)> {
     let item = MediaItemDto {
         id: uuid::Uuid::new_v4().to_string(),
         path,
         name,
         info,
-        origin: if req.session_id.is_some() {
-            MediaOrigin::Recording
-        } else {
-            MediaOrigin::Import
-        },
-        session_id: req.session_id,
+        origin,
+        session_id,
         added_at: chrono::Utc::now().to_rfc3339(),
         missing: false,
     };
@@ -719,21 +732,7 @@ async fn post_clip_export(
     let info = tokio::task::spawn_blocking(move || crate::sources::file::probe(&probe_path))
         .await?
         .map_err(|e| ApiError::Internal(e.context("the export can't be read")))?;
-    let item = MediaItemDto {
-        id: uuid::Uuid::new_v4().to_string(),
-        path,
-        name: row.name,
-        info,
-        origin: MediaOrigin::Replay,
-        session_id: None,
-        added_at: chrono::Utc::now().to_rfc3339(),
-        missing: false,
-    };
-    if !db::media_insert(&state.db, &item).await? {
-        return Err(ApiError::Conflict("that file is already in the library"));
-    }
-    state.emit(&WsEvent::MediaUpdated);
-    Ok((StatusCode::CREATED, Json(item)))
+    add_media(&state, path, row.name, info, MediaOrigin::Replay, None).await
 }
 
 /// Play (or cue) a saved replay clip on a channel.

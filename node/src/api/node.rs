@@ -684,12 +684,10 @@ pub(super) fn session_files(session: &RecordingSessionDto) -> Vec<Vec<String>> {
 
 /// The path of a session's `file`th file from output `output` (see [`session_files`]).
 fn session_file(session: &RecordingSessionDto, output: usize, file: usize) -> Option<PathBuf> {
-    let path = if session.files.is_empty() {
-        session.output_paths.get(output).filter(|_| file == 0)?
-    } else {
-        session.files.get(output)?.get(file)?
-    };
-    Some(PathBuf::from(path))
+    session_files(session)
+        .get(output)?
+        .get(file)
+        .map(PathBuf::from)
 }
 
 /// `attachment` with the file's name, percent-encoded (RFC 6266/5987) so any
@@ -766,18 +764,14 @@ async fn post_recording(
 async fn check_free_space(legs: &[(PathBuf, RecordingProfile)]) -> ApiResult<()> {
     let paths: Vec<PathBuf> = legs.iter().map(|(p, _)| p.clone()).collect();
     let full = tokio::task::spawn_blocking(move || {
-        let volumes = storage::list_volumes();
-        paths.iter().find_map(|p| {
-            let v = &volumes[storage::volume_of(p, &volumes)?];
-            (v.available_bytes < storage::MIN_FREE_TO_RECORD)
-                .then(|| (v.mount_point.clone(), v.available_bytes))
-        })
+        storage::short_volume(&paths, storage::MIN_FREE_TO_RECORD)
     })
     .await?;
     match full {
-        Some((mount, free)) => Err(ApiError::bad(format!(
-            "{mount} is nearly full ({:.1} GB free); free up space or record somewhere else",
-            free as f64 / 1e9
+        Some(v) => Err(ApiError::bad(format!(
+            "{} is nearly full ({} free); free up space or record somewhere else",
+            v.mount_point,
+            storage::format_bytes(v.available_bytes)
         ))),
         None => Ok(()),
     }

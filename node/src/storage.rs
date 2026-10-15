@@ -119,6 +119,27 @@ pub fn volume_of(path: &Path, volumes: &[StorageVolumeDto]) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+/// The first volume of `paths` with under `min` bytes free, if any.
+/// Blocking.
+pub fn short_volume(paths: &[PathBuf], min: u64) -> Option<StorageVolumeDto> {
+    let volumes = list_volumes();
+    paths.iter().find_map(|p| {
+        let v = &volumes[volume_of(p, &volumes)?];
+        (v.available_bytes < min).then(|| v.clone())
+    })
+}
+
+/// `bytes` in GB, to a tenth under 10.
+pub fn format_bytes(bytes: u64) -> String {
+    const GB: f64 = 1_000_000_000.0;
+    let gb = bytes as f64 / GB;
+    if gb >= 10.0 {
+        format!("{gb:.0} GB")
+    } else {
+        format!("{gb:.1} GB")
+    }
+}
+
 /// Recording time left on a volume with `available` bytes, written at
 /// `bytes_per_sec`; `None` when nothing is written.
 pub fn seconds_left(available: u64, bytes_per_sec: u64) -> Option<u64> {

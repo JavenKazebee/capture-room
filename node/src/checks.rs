@@ -320,7 +320,7 @@ fn storage_check() -> CheckDto {
         c.summary = format!("{shown} is writable.");
         return c;
     };
-    let free = format_bytes(volume.available_bytes);
+    let free = storage::format_bytes(volume.available_bytes);
     if volume.available_bytes < storage::MIN_FREE_TO_RECORD {
         c.status = CheckStatus::Missing;
         c.summary = format!("{shown} is writable, but only {free} is free on its volume.");
@@ -328,7 +328,7 @@ fn storage_check() -> CheckDto {
             steps: format!(
                 "Free up space on {}: recordings onto a volume with under {} free are refused.",
                 volume.mount_point,
-                format_bytes(storage::MIN_FREE_TO_RECORD)
+                storage::format_bytes(storage::MIN_FREE_TO_RECORD)
             ),
             ..Default::default()
         });
@@ -343,16 +343,6 @@ fn write_test(dir: &std::path::Path) -> std::io::Result<()> {
     let file: PathBuf = dir.join(format!(".write-test-{}", std::process::id()));
     std::fs::write(&file, b"")?;
     std::fs::remove_file(&file)
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const GB: f64 = 1_000_000_000.0;
-    let gb = bytes as f64 / GB;
-    if gb >= 10.0 {
-        format!("{gb:.0} GB")
-    } else {
-        format!("{gb:.1} GB")
-    }
 }
 
 // ── Clock ─────────────────────────────────────────────────────────────────────

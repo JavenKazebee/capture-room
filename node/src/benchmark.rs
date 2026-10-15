@@ -930,16 +930,11 @@ impl Run {
     /// A scratch volume with too little space left to carry on, if any.
     async fn low_volume(&self) -> Option<String> {
         let dirs = dedup(&self.scratch);
-        tokio::task::spawn_blocking(move || {
-            let volumes = crate::storage::list_volumes();
-            dirs.iter().find_map(|dir| {
-                let v = &volumes[crate::storage::volume_of(dir, &volumes)?];
-                (v.available_bytes < MIN_FREE_BYTES).then(|| v.mount_point.clone())
-            })
-        })
-        .await
-        .ok()
-        .flatten()
+        tokio::task::spawn_blocking(move || crate::storage::short_volume(&dirs, MIN_FREE_BYTES))
+            .await
+            .ok()
+            .flatten()
+            .map(|v| v.mount_point)
     }
 
     /// Save the run's state and send it to the UI.
