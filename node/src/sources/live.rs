@@ -448,14 +448,17 @@ impl Inputs {
     pub(crate) fn remove(&self, chain: Chain) {
         let (bin, aggregator) = (self.bin.clone(), self.aggregator.clone());
         std::thread::spawn(move || {
+            // The aggregator's pad first: it flushes, releasing a source
+            // thread waiting in it to hand over a buffer (one stamped ahead
+            // waits until then), which stopping the source waits for.
+            if let Some(aggregator) = aggregator.upgrade() {
+                aggregator.release_request_pad(&chain.pad);
+            }
             for el in &chain.elements {
                 let _ = el.set_state(gst::State::Null);
                 if let Some(bin) = bin.upgrade() {
                     let _ = bin.remove(el);
                 }
-            }
-            if let Some(aggregator) = aggregator.upgrade() {
-                aggregator.release_request_pad(&chain.pad);
             }
         });
     }

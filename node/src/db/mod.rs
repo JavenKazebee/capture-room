@@ -5,7 +5,8 @@ use tracing::info;
 
 use crate::api::types::{
     BenchmarkRunDto, BenchmarkStatus, ClipEnd, ConfiguredSourceDto, MediaItemDto,
-    MonitorSettingsDto, PresetDto, PresetOutputDto, RecordingSessionDto,
+    MonitorSettingsDto, PresetDto, PresetOutputDto, RecordingSessionDto, ReplayCodec,
+    ReplayConfigInput,
 };
 
 pub async fn init(db_path: &str) -> Result<SqlitePool> {
@@ -455,6 +456,49 @@ pub async fn media_insert(pool: &SqlitePool, item: &MediaItemDto) -> Result<bool
 pub async fn media_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
     let res = sqlx::query("DELETE FROM media WHERE id = ?")
         .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+// ── replay buffers ────────────────────────────────────────────────────────────
+
+/// Each source with a replay buffer, and its config.
+pub async fn replay_buffers_list(pool: &SqlitePool) -> Result<Vec<(String, ReplayConfigInput)>> {
+    let rows = sqlx::query_as::<_, (String, ReplayCodec, i64)>(
+        "SELECT source_id, codec, minutes FROM replay_buffers",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, codec, minutes)| {
+            let minutes = minutes.clamp(1, u32::MAX as i64) as u32;
+            (id, ReplayConfigInput { codec, minutes })
+        })
+        .collect())
+}
+
+pub async fn replay_buffer_set(
+    pool: &SqlitePool,
+    source_id: &str,
+    config: &ReplayConfigInput,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO replay_buffers (source_id, codec, minutes) VALUES (?, ?, ?)
+         ON CONFLICT(source_id) DO UPDATE SET codec = excluded.codec, minutes = excluded.minutes",
+    )
+    .bind(source_id)
+    .bind(config.codec)
+    .bind(config.minutes as i64)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn replay_buffer_delete(pool: &SqlitePool, source_id: &str) -> Result<bool> {
+    let res = sqlx::query("DELETE FROM replay_buffers WHERE source_id = ?")
+        .bind(source_id)
         .execute(pool)
         .await?;
     Ok(res.rows_affected() > 0)

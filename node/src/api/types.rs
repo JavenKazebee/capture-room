@@ -26,6 +26,9 @@ pub struct NodeStatus {
     /// clock sync.
     #[serde(default)]
     pub clock: Option<ClockStatusDto>,
+    /// The codecs it can keep replay buffers in, the default first.
+    #[serde(default)]
+    pub replay_codecs: Vec<ReplayCodec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -451,6 +454,20 @@ pub struct LoadedClipDto {
     #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
     pub out_ms: Option<u64>,
     pub end: ClipEnd,
+    /// Its speed (1 for normal).
+    #[serde(default = "normal_rate")]
+    pub rate: f64,
+    /// A replay's source, and the node clock time (µs) of position 0, so a
+    /// position maps back to the moment it shows.
+    #[serde(default)]
+    pub replay_source_id: Option<String>,
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub replay_start_us: Option<u64>,
+}
+
+fn normal_rate() -> f64 {
+    1.0
 }
 
 /// A channel's playlist, as served.
@@ -532,6 +549,11 @@ pub enum TransportAction {
     /// Take the next item: it plays now if the channel is playing or has
     /// ended, else it's cued.
     Next,
+    /// Play at `rate` (1 is normal speed, 0.5 half, negative backwards).
+    /// Only a replay plays at other speeds.
+    Speed,
+    /// Paused or cued: show the frame `frames` away (1 next, -1 previous).
+    Step,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -541,6 +563,91 @@ pub struct TransportRequest {
     #[serde(default)]
     #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
     pub position_ms: Option<u64>,
+    #[serde(default)]
+    pub rate: Option<f64>,
+    #[serde(default)]
+    pub frames: Option<i32>,
+}
+
+// ── Instant replay ────────────────────────────────────────────────────────────
+
+/// What a replay buffer records with. All intra-frame, so it can be cut,
+/// played backwards and stepped on any frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(rename_all = "snake_case")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum ReplayCodec {
+    /// ProRes 422 Proxy (VideoToolbox: macOS only). About 40 GB an hour at
+    /// 1080p59.94.
+    ProresProxy,
+    /// H.264 with every frame a keyframe: a fraction of the size.
+    H264Intra,
+    /// Motion JPEG: any platform, in software. About 40 GB an hour at
+    /// 1080p59.94.
+    Mjpeg,
+}
+
+/// A source's replay buffer, as configured.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct ReplayConfigInput {
+    pub codec: ReplayCodec,
+    /// How much it keeps, in minutes.
+    pub minutes: u32,
+}
+
+/// A source's replay buffer and what it holds. Times are on the node clock
+/// (µs), with `utc_offset_us` mapping them to UTC.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct ReplayBufferDto {
+    pub source_id: String,
+    pub source_name: Option<String>,
+    pub codec: ReplayCodec,
+    pub minutes: u32,
+    /// The encoder element recording it, while it records.
+    pub encoder: Option<String>,
+    /// Why it isn't recording, if it should be.
+    pub error: Option<String>,
+    /// The span that can be replayed now: from the oldest frame kept to the
+    /// newest in a finished segment. `None` while empty.
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub start_us: Option<u64>,
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub end_us: Option<u64>,
+    /// Where the span has gaps (the source restarted), as the start of each
+    /// stretch after the first.
+    #[cfg_attr(feature = "export-types", ts(type = "number[]"))]
+    pub breaks_us: Vec<u64>,
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub utc_offset_us: Option<i64>,
+    /// The node clock's time now, to measure the span against.
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub now_us: u64,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub bytes: u64,
+}
+
+/// Play part of a replay buffer on a channel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct ReplayClipRequest {
+    pub source_id: String,
+    /// From when, on the node clock (µs). Moved into the buffer's span if
+    /// it's outside it.
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub from_us: u64,
+    /// Until when; the newest frame kept if `None`.
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub to_us: Option<u64>,
+    /// 1 if `None`. Negative plays backwards, from `to_us`.
+    #[serde(default)]
+    pub rate: Option<f64>,
+    /// Play straight away; otherwise it's cued on its first frame.
+    #[serde(default)]
+    pub play: bool,
 }
 
 // ── Media library ─────────────────────────────────────────────────────────────

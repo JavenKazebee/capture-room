@@ -6,7 +6,7 @@ import { thumbnailSeqs, type Source } from '@/stores/sources'
  * A source's live thumbnail URL. Bumped by every `thumbnail.updated` event,
  * which only monitored sources get; a failed load is retried by the next bump.
  */
-export function useThumbnail(source: Ref<Source | null>) {
+export function useThumbnail(source: Readonly<Ref<Source | null>>) {
   const seq = computed(() => (source.value ? (thumbnailSeqs.get(source.value.key) ?? 0) : 0))
   const failed = ref(false)
   watch(seq, () => (failed.value = false))

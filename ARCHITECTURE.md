@@ -650,28 +650,88 @@ response headers, so a long download isn't cut off.
 
 ---
 
-## Instant Replay (planned)
+## Instant Replay
 
 Builds on playback: replay is a rolling buffer per source plus a playout channel that
 plays from it at variable speed.
 
-- **Rolling buffer:** each replay-enabled source records continuously into short
-  segments on disk (`splitmuxsink`), oldest deleted past a configured duration. This is
-  an always-on extra leg per source and counts against capacity.
-- **Codec built for scrubbing:** all-intra (ProRes Proxy, MJPEG or intra-only H.264), so
-  slow motion, reverse and frame stepping are smooth. A 2 s GOP is fine for recording
-  but not here.
-- **Shared timeline:** segments are indexed by wall-clock capture time (see Clock sync),
-  so "the same moment" can be picked across angles.
+- **Rolling buffer** (`pipeline/replay.rs`): a replay-enabled source records
+  continuously, an extra consumer of its monitor like a recording leg, into one-second
+  segments (`splitmuxsink` → `qtmux`, PCM audio) under
+  `~/capture-room/.replay/<node id>/<source id>/`. The oldest are deleted past the
+  buffer's length (minutes, per source). An always-on leg: it counts against capacity
+  (not yet in the benchmark).
+- **Codec is the operator's choice, per buffer:** all-intra, so slow motion, reverse
+  and frame stepping are smooth and any frame can be cut. ProRes 422 Proxy (VideoToolbox,
+  the default where it exists), intra-only H.264 (VideoToolbox, else x264) at a fraction
+  of the size, or Motion JPEG on any platform. A 2 s GOP is fine for recording but not
+  here. `/status` lists the ones a node can use.
+- **Index:** each finished segment's span on the node clock, from splitmuxsink's
+  fragment messages (running time plus the monitor's base time). The index outlives the
+  leg: a source restart starts a new leg on it, leaving a gap; a new codec or clock
+  clears it. Nothing survives a node restart (the folder is cleared).
+- **Playing from it:** a clip is a span of one gap-free stretch, given to the channel as
+  the finished files that cover it. The channel's player reads them through
+  `splitmuxsrc` (its `format-location` signal) and decodes in software; a hold keeps
+  them on disk while the clip lives. Replay reaches to within a segment of live. Speed is
+  the player's seek rate, so the channel's lanes are unchanged (running time advances
+  backwards and in slow motion too); audio is only played at 1×. Steps are `Step`
+  events after a seek to the stepping direction; the position shown is the frame on
+  screen (a player's own position is off after a step).
+- **Shared timeline:** times are on the node clock, mapped to UTC by its domain's
+  offset, so "the same moment" can be picked across angles on nodes sharing a clock.
 - **Where it runs:** a replay node subscribes to the same NDI sources and keeps its own
   buffers, so a replay never reads another node's disk and nodes still don't know about
   each other. Sources that only exist on another machine (SDI) can't be replayed from a
   different node; that's acceptable to start.
-- **Operation:** mark in/out on any angle, a clip list, play out at variable speed
-  (e.g. 50%, 25%, frame-step) through a playout channel. Keyboard first; jog wheels or
-  a Stream Deck via WebHID / MIDI later.
-- **Clip export:** all-intra segments can be cut on any frame and remuxed into a file
-  without re-encoding.
+- **Operation:** the Replay workspace (see Web UI › Views): pick an angle and a moment,
+  mark in/out, play out at variable speed or frame by frame through a playout channel,
+  keyboard first. Still to build: a clip list of saved marks; jog wheels or a Stream
+  Deck via WebHID / MIDI.
+- **Clip export (to build):** all-intra segments can be cut on any frame and remuxed
+  into a file without re-encoding.
+
+### What the prototype showed
+
+`node/examples/replay_spike.rs` (2026-10-11, M3, 1080p59.94 from real footage, 1 s
+segments) records each candidate codec, then plays the segments the way a channel's
+player would (`splitmuxsrc` → decoder → appsink synced to the clock).
+
+- **GStreamer's own trick modes are enough.** 1×, 0.5×, 0.25×, −1× and −0.5× across
+  segment boundaries all play every frame in order with none late; an accurate seek takes
+  0–13 ms and always lands on the requested frame; a step (`Step` event, after a seek to
+  the stepping direction) takes 1–5 ms and moves exactly one frame either way. Running
+  time still advances in reverse and slow motion, so a channel's lanes need no change.
+- **Decode in software.** VideoToolbox (`vtdec`) loses a frame every few hundred in
+  reverse, for ProRes, H.264 and JPEG alike; `avdec_prores`, `avdec_h264` and `jpegdec`
+  lose none and keep up. So the replay player names its decoder instead of using
+  decodebin (`--reverse` in the spike compares decoder chains).
+- **Read closed segments only, by list.** `splitmuxsrc` with a glob fails on the segment
+  being written; give it the closed ones through `format-location` (from
+  `splitmuxsink-fragment-closed`). An open player doesn't see segments closed later, so a
+  clip reopens it (30–60 ms). Replay can reach to within one segment of live.
+- **Never seek through a muxer.** A flushing seek spoils `qtmux`'s file (and
+  `splitmuxsink`'s first one), so recorders aren't seeked, and export holds the muxer's
+  input back until the seek's segment arrives. Export then remuxes exactly the frames
+  asked for, all decodable (a long-GOP cut leaves 45 of 255 frames undecodable).
+- **Timestamp details.** Frame times are rounded down to the nanosecond, so cut half a
+  frame early. `splitmuxsrc`'s segments start at 1000 s plus the position: compare in
+  stream time. `vtenc_prores` marks every frame as a delta, so `splitmuxsink` never
+  splits until the flag is cleared.
+- **Codecs** (encode speed includes decoding the source):
+
+  | Codec | Data rate | Per hour | Encode |
+  |---|---|---|---|
+  | ProRes Proxy (`vtenc_prores`) | 88 Mbit/s | 40 GB | 4.3× real time |
+  | MJPEG q85 (`jpegenc`) | 87 Mbit/s | 39 GB | 2.9× |
+  | H.264 intra (`vtenc_h264`) | 16 Mbit/s | 7 GB | 3.6× |
+  | ProRes Proxy (`avenc_prores_ks`) | 83 Mbit/s | 37 GB | 0.2×: unusable |
+
+  The intra H.264 encoder stayed far under its 120 Mbit/s target, so its picture quality
+  still needs comparing before it's chosen for its size.
+
+Not covered yet: audio (typically only played at 1×), several sources at once, and
+playing through an actual channel.
 
 ---
 
@@ -681,7 +741,7 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/status` | id, name, version, uptime, `is_controller`, available encoders and source types, clock status |
+| GET | `/status` | id, name, version, uptime, `is_controller`, available encoders and source types, clock status, the replay codecs it can use (default first) |
 | GET | `/clock` | clock status: source (`local \| controller \| ptp`), domain, synced, pending, delay, lost, stale sources, error |
 | GET | `/clock/now` | `{ domain, time_us }`: the time now on this node's clock |
 | POST | `/clock/claim` | a controller claims this node's clock (see Clock sync); answers with the clock status |
@@ -701,7 +761,10 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 | GET / PUT | `/channels/{id}/playlist` | the playlist (items with in, out and end, whether it loops) / replace it |
 | POST | `/channels/{id}/play` | `{ item_id }` → plays now, straight on from what's on air |
 | POST | `/channels/{id}/cue` | `{ item_id }` → on air, paused at its in point |
-| POST | `/channels/{id}/transport` | `{ action: play \| pause \| stop \| seek \| next, position_ms? }`; play with nothing on air plays the next-up item |
+| POST | `/channels/{id}/transport` | `{ action: play \| pause \| stop \| seek \| next \| speed \| step, position_ms?, rate?, frames? }`; play with nothing on air plays the next-up item. `speed` (a replay only) plays on at `rate` from the frame shown, negative backwards; `step` pauses and moves `frames` (±) |
+| POST | `/channels/{id}/replay` | `{ source_id, from_us, to_us?, rate?, play }` → part of a source's replay buffer on air (node clock times; clamped into one stretch of the buffer, to its newest frame without `to_us`), cued on its first frame or playing |
+| GET | `/replay` | replay buffers: source, codec, length, encoder, error, the span held (`start_us`, `end_us`, gaps), the clock now and its UTC offset, bytes |
+| PUT / DELETE | `/replay/{source_id}` | `{ codec: prores_proxy \| h264_intra \| mjpeg, minutes }` → give a source a buffer or change it (a new codec starts afresh) / remove it and what it recorded |
 | GET | `/files?path=` | folders and media files in a directory (home if no path), for picking a file source. Read-only |
 | GET / POST | `/recordings` | list (`?before=&limit=`: newest first, 100 by default, at most 500, paged by `started_at`; the first page also carries active sessions) / start. Start body: `{ source_id, preset_id?, outputs: [...], start_at?: { domain, time_us } }` (see Clock sync). Refused onto a volume with under 1 GB free; cancels a running benchmark |
 | GET / DELETE | `/recordings/{id}` | session details / remove a finished session from history; `?files` deletes its files from disk first, and if any can't be deleted the session stays, listing those still on disk (409 while recording) |
@@ -816,8 +879,8 @@ organized around workspaces (operating desks) rather than pages. A top header ho
 identity, labeled workspace tabs and global status (connection, nodes, lowest free
 storage, REC count, clock). Each workspace has a toolbar row and its own panel layout. A
 tabbed bottom panel (Log / Recordings / Storage, Ctrl+J) is shared. ⌘K palette and
-toasts throughout. **Playback** and **Replay** workspaces join when the backend supports
-them — not before.
+toasts throughout. Workspaces: Record, Playback, Replay, Recordings and Setup; new ones
+join when the backend supports them — not before.
 
 ### Views
 
@@ -830,8 +893,8 @@ them — not before.
 | **Setup › Nodes** | A card per node: health, sources, storage (with time left while recording), capacity (benchmarked setups, load, running benchmark, history); controller toggle, add/remove nodes |
 | **Setup › Checks** | Per node: permissions, software, storage, clock and network checks, problems first in the counts, with how to fix each; Nodes cards badge their problems |
 | **Setup › Settings** | Appearance; monitoring settings (thumbnail/meter rate, applied to all nodes); About |
-| **Playback** _(planned)_ | Playout channels, playlists, transport |
-| **Replay** _(planned)_ | Replay buffers, marks and clips, variable-speed playout |
+| **Playback** | Playout channels, playlists, transport, channel settings |
+| **Replay** | Angles (sources with a buffer, numbered) beside the program of the channel picked to play on, the selected angle live, and its buffer on a timeline up to now (30 s, 2 min or all). Replay the last N seconds (R), switch angle at the same moment (1–9), play, pause, step a frame (← →), reverse and 25–100 % speed (J K L, ↑ ↓), mark in and out on the frame shown (I O) and play in → out (Enter). Commands queue and each decides what to do when its turn comes, so fast keying isn't lost. A Buffers sheet turns buffers on per source with their codec and length |
 | **Schedules** _(planned)_ | Create, edit, and view upcoming scheduled recordings |
 | **Logs** _(planned)_ | Aggregated log viewer with filter by node and level |
 

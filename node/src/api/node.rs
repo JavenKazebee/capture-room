@@ -103,6 +103,7 @@ async fn get_status(State(state): State<Arc<AppState>>) -> Json<NodeStatus> {
             state.source_manager.read().await.displays().available(),
         ),
         clock: Some(state.clock_status().await),
+        replay_codecs: crate::api::types::ReplayCodec::usable(),
     })
 }
 
@@ -368,6 +369,8 @@ async fn delete_configured_source(
         return Err(ApiError::NotFound("source not found"));
     }
     db::playlist_delete(&state.db, &id).await?;
+    db::replay_buffer_delete(&state.db, &id).await?;
+    state.source_manager.write().await.set_replay(&id, None);
     rescan_after(&state, "delete").await;
     Ok(StatusCode::NO_CONTENT)
 }

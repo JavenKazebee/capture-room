@@ -233,9 +233,26 @@ Setup checks).
 
 Builds on playback (#9) and clock sync (#10). Design in ARCHITECTURE.md (Instant Replay).
 
-- **Prototype first:** one source into a rolling buffer of all-intra segments, played
-  through a channel. The point is to test reverse playback, variable speed and
-  frame-stepping in GStreamer before designing the UI.
+- ✅ **Prototype (2026-10-11)** — `node/examples/replay_spike.rs`: a 1080p59.94 source
+  into 1 s all-intra segments, played back like a channel's player. GStreamer's own
+  reverse, slow motion (to 0.25×), frame steps and accurate seeks are all frame-exact
+  and fast, and clips export by remuxing on any frame. Two catches: decode in software
+  (VideoToolbox drops frames in reverse), and read only closed segments, by list.
+  Findings in ARCHITECTURE.md (Instant Replay › What the prototype showed).
+- ✅ **Replay buffers on a channel (2026-10-11)** — any source can keep a replay buffer
+  (`PUT /replay/{source}`): ProRes Proxy, intra H.264 or Motion JPEG, the operator's
+  choice, kept for N minutes. A channel plays a span of it (`POST
+  /channels/{id}/replay`) at any speed from −4× to 4×, backwards included, steps a frame
+  either way, and changes speed on the fly; sound at 1× only. API only so far. Design in
+  ARCHITECTURE.md (Instant Replay).
+- ✅ **Replay workspace (2026-10-11)** — angles beside the program, a timeline of the
+  selected angle's buffer up to now, replay the last N seconds, switch angle at the same
+  moment, speed and reverse, frame steps, in/out marks, all on the keyboard; a Buffers
+  sheet for turning buffers on. A step now waits for its frame rather than a state
+  change (it used to take 5 s).
+- **Next:** a clip list of saved marks, clip export, and replay buffers in capacity and
+  the benchmark.
+  Compare intra H.264's picture with ProRes Proxy's before recommending it for its size.
 - Then: replay buffers per source on a replay node (subscribing to the same NDI
   sources), marks and clip list, variable-speed playout, clip export without
   re-encoding, **Replay workspace**.

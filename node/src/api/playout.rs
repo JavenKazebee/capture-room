@@ -1,6 +1,6 @@
-//! Playout: the media library and channel transport. Part of the node API
-//! (`/api/v1/node/…`). Channels themselves are configured sources, created
-//! and edited through `/configured-sources`.
+//! Playout: the media library, channel transport and replay buffers. Part
+//! of the node API (`/api/v1/node/…`). Channels themselves are configured
+//! sources, created and edited through `/configured-sources`.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -16,9 +16,9 @@ use gstreamer as gst;
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
-    AddMediaRequest, ChannelStatusDto, CueRequest, LoadedClipDto, MediaItemDto, MediaOrigin,
-    OutputStatusDto, PlaylistDto, PlaylistInput, PlaylistItemDto, TransportAction,
-    TransportRequest, WsEvent,
+    AddMediaRequest, ChannelStatusDto, ClipEnd, CueRequest, LoadedClipDto, MediaItemDto,
+    MediaOrigin, OutputStatusDto, PlaylistDto, PlaylistInput, PlaylistItemDto, ReplayBufferDto,
+    ReplayClipRequest, ReplayConfigInput, TransportAction, TransportRequest, WsEvent,
 };
 use crate::db;
 use crate::sources::channel::{ClipRequest, PlaylistItem, Playout, PlayoutStatus};
@@ -36,6 +36,12 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/channels/{id}/cue", post(post_cue))
         .route("/channels/{id}/play", post(post_play))
         .route("/channels/{id}/transport", post(post_transport))
+        .route("/channels/{id}/replay", post(post_replay))
+        .route("/replay", get(get_replay))
+        .route(
+            "/replay/{source_id}",
+            axum::routing::put(put_replay).delete(delete_replay),
+        )
 }
 
 // ── /media ────────────────────────────────────────────────────────────────────
@@ -151,6 +157,8 @@ async fn reload_playlist(state: &AppState, id: &str, playout: &Arc<Playout>) -> 
                 in_point: gst::ClockTime::from_mseconds(r.in_ms as u64),
                 out_point: r.out_ms.map(|v| gst::ClockTime::from_mseconds(v as u64)),
                 end: r.end_action,
+                rate: 1.0,
+                replay: None,
             },
         })
         .collect();
@@ -201,6 +209,9 @@ pub fn status_dto(status: PlayoutStatus, outputs: Vec<OutputStatusDto>) -> Chann
             in_ms: c.in_point.mseconds(),
             out_ms: c.out_point.map(|t| t.mseconds()),
             end: c.end,
+            rate: c.rate,
+            replay_start_us: c.replay.as_ref().map(|r| r.span.base.useconds()),
+            replay_source_id: c.replay.map(|r| r.source_id),
         }),
         position_ms: status.position.map(|t| t.mseconds()),
         duration_ms: status.duration.map(|t| t.mseconds()),
@@ -334,7 +345,143 @@ async fn post_transport(
             playout.seek(gst::ClockTime::from_mseconds(position)).await
         }
         TransportAction::Next => playout.next().await,
+        TransportAction::Speed => {
+            let rate = req
+                .rate
+                .ok_or(ApiError::BadRequest("rate is required".into()))?;
+            playout.set_rate(rate).await
+        }
+        TransportAction::Step => playout.step(req.frames.unwrap_or(1)).await,
     };
+    let reply = reply(&state, &id, &playout).await;
+    result.map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
+    Ok(reply)
+}
+
+// ── /replay ───────────────────────────────────────────────────────────────────
+
+/// The longest replay buffer allowed, in minutes.
+const MAX_REPLAY_MINUTES: u32 = 24 * 60;
+
+async fn get_replay(State(state): State<Arc<AppState>>) -> Json<Vec<ReplayBufferDto>> {
+    let utc = state.clock.utc_offset_us();
+    Json(state.source_manager.read().await.replay_buffers(utc))
+}
+
+/// Give a source a replay buffer, or change its codec or length. A new
+/// codec starts it afresh.
+async fn put_replay(
+    State(state): State<Arc<AppState>>,
+    AxumPath(source_id): AxumPath<String>,
+    Json(req): Json<ReplayConfigInput>,
+) -> ApiResult<Json<ReplayBufferDto>> {
+    if !(1..=MAX_REPLAY_MINUTES).contains(&req.minutes) {
+        return Err(ApiError::BadRequest(
+            format!("a replay buffer keeps 1 to {MAX_REPLAY_MINUTES} minutes").into(),
+        ));
+    }
+    if !req.codec.available() {
+        return Err(ApiError::BadRequest(
+            format!(
+                "this node can't record {:?} for replay (missing {})",
+                req.codec,
+                missing_elements(req.codec).join(", ")
+            )
+            .into(),
+        ));
+    }
+    if state
+        .source_manager
+        .read()
+        .await
+        .get_source(&source_id)
+        .is_none()
+    {
+        return Err(ApiError::NotFound("source not found"));
+    }
+    db::replay_buffer_set(&state.db, &source_id, &req).await?;
+    let utc = state.clock.utc_offset_us();
+    let mut mgr = state.source_manager.write().await;
+    mgr.set_replay(&source_id, Some(req));
+    mgr.replay_buffers(utc)
+        .into_iter()
+        .find(|r| r.source_id == source_id)
+        .map(Json)
+        .ok_or(ApiError::NotFound("source not found"))
+}
+
+/// Remove a source's replay buffer, deleting what it recorded.
+async fn delete_replay(
+    State(state): State<Arc<AppState>>,
+    AxumPath(source_id): AxumPath<String>,
+) -> ApiResult<StatusCode> {
+    if !db::replay_buffer_delete(&state.db, &source_id).await? {
+        return Err(ApiError::NotFound("no replay buffer for that source"));
+    }
+    state
+        .source_manager
+        .write()
+        .await
+        .set_replay(&source_id, None);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn missing_elements(codec: crate::api::types::ReplayCodec) -> Vec<&'static str> {
+    let missing = |e: &&str| gst::ElementFactory::find(e).is_none();
+    let mut list: Vec<&'static str> = codec.decoder().iter().copied().filter(missing).collect();
+    let encoders = codec.encoders();
+    if encoders.iter().all(missing) {
+        list.extend(encoders);
+    }
+    list
+}
+
+/// Play (or cue) part of a source's replay buffer on a channel.
+async fn post_replay(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<ReplayClipRequest>,
+) -> ApiResult<Json<ChannelStatusDto>> {
+    let playout = playout(&state, &id).await?;
+    let rate = req.rate.unwrap_or(1.0);
+    if !rate.is_finite() || rate == 0.0 || rate.abs() > 4.0 {
+        return Err(ApiError::BadRequest(
+            "the speed must be between -4 and 4, and not 0".into(),
+        ));
+    }
+    let (replay, name) = {
+        let mgr = state.source_manager.read().await;
+        let replay = mgr
+            .replay_clip(
+                &req.source_id,
+                gst::ClockTime::from_useconds(req.from_us),
+                req.to_us.map(gst::ClockTime::from_useconds),
+            )
+            .map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
+        let name = mgr
+            .get_source(&req.source_id)
+            .map(|s| s.display_name().to_string())
+            .unwrap_or_else(|| req.source_id.clone());
+        (replay, name)
+    };
+    let path = replay
+        .span
+        .files
+        .first()
+        .and_then(|f| Path::new(f).parent())
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let request = ClipRequest {
+        media_id: format!("replay:{}", req.source_id),
+        name: format!("{name} (replay)"),
+        path,
+        in_point: replay.span.from,
+        out_point: Some(replay.span.to),
+        end: ClipEnd::Hold,
+        rate,
+        replay: Some(replay),
+    };
+    let result = playout.load(request, req.play).await;
     let reply = reply(&state, &id, &playout).await;
     result.map_err(|e| ApiError::BadRequest(format!("{e:#}").into()))?;
     Ok(reply)

@@ -34,6 +34,7 @@ use crate::api::types::{
     ChannelConfig, ClipEnd, LiveVideoFormat, OutputConfig, SourceCapabilitiesDto, SourceType,
     TransportState,
 };
+use crate::pipeline::replay::ReplaySpan;
 use crate::pipeline::{make_el, output, rtsp, whep};
 
 /// How far ahead of its slot a clip's buffer is stamped. Covers the
@@ -41,6 +42,8 @@ use crate::pipeline::{make_el, output, rtsp, whep};
 const LEAD: gst::ClockTime = gst::ClockTime::from_mseconds(100);
 /// How long a clip may take to load (open, decode and preroll).
 const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a frame step may take to show its frame.
+const STEP_TIMEOUT: Duration = Duration::from_millis(300);
 
 // ── ChannelSource ─────────────────────────────────────────────────────────────
 
@@ -597,9 +600,14 @@ impl Lanes {
             let Some(src) = lane.src.clone() else { return };
             (src, lane.last)
         };
-        let Some(pts) = program_pts(sample, &src, player_base) else {
+        let Some(mut pts) = program_pts(sample, &src, player_base) else {
             return;
         };
+        // A preroll (paused, stepped) shows after what's queued from
+        // playing, or it would be dropped as late.
+        if let (None, Some((_, end))) = (player_base, last) {
+            pts = pts.max(end);
+        }
         // Never backwards or repeated: after a seek, a preroll or a loop,
         // buffers stamped before the ones already queued are dropped.
         if last.is_some_and(|(start, end)| {
@@ -687,6 +695,27 @@ pub struct ClipRequest {
     pub in_point: gst::ClockTime,
     pub out_point: Option<gst::ClockTime>,
     pub end: ClipEnd,
+    /// Speed: 1 is normal, negative plays from the out point back to the
+    /// in point. Audio is only heard at 1.
+    pub rate: f64,
+    /// Part of a replay buffer, played instead of `path` (its folder).
+    pub replay: Option<ReplayClip>,
+}
+
+/// A replay buffer's span, as a clip's source: positions in the clip count
+/// from the start of its first file.
+#[derive(Debug, Clone)]
+pub struct ReplayClip {
+    pub source_id: String,
+    pub span: ReplaySpan,
+}
+
+impl PartialEq for ReplayClip {
+    fn eq(&self, other: &Self) -> bool {
+        self.source_id == other.source_id
+            && self.span.files == other.span.files
+            && self.span.base == other.span.base
+    }
 }
 
 /// An entry in a channel's playlist.
@@ -764,6 +793,8 @@ struct Shared {
     next_ready: bool,
     error: Option<String>,
     player: Option<glib::WeakRef<gst::Pipeline>>,
+    /// Where the player on air is showing.
+    marks: Option<Arc<Marks>>,
     /// The last position read (or sought to): a player can't answer while
     /// it flushes for a seek.
     position: Option<gst::ClockTime>,
@@ -784,11 +815,13 @@ struct Clip {
     bus_task: tokio::task::JoinHandle<()>,
     serial: u64,
     mode: Arc<AtomicU8>,
-    /// Running time of the latest video preroll: where playing starts.
-    first_rt: Arc<AtomicU64>,
+    marks: Arc<Marks>,
     request: ClipRequest,
     item: Option<String>,
     has_audio: bool,
+    /// The rate the player was last sought at: the request's, or ±1 after
+    /// stepping.
+    rate: f64,
 }
 
 impl Clip {
@@ -817,6 +850,7 @@ impl Playout {
                 next_ready: false,
                 error: None,
                 player: None,
+                marks: None,
                 position: None,
             })),
             playlist: Mutex::default(),
@@ -828,9 +862,13 @@ impl Playout {
         let rev = self.playlist.lock().unwrap().rev;
         let mut shared = self.shared.lock().unwrap();
         let player = shared.player.as_ref().and_then(|p| p.upgrade());
-        if let Some(position) = player
+        // The frame showing; a player's own position is off after a step
+        // and backwards.
+        if let Some(position) = shared
+            .marks
             .as_ref()
-            .and_then(|p| p.query_position::<gst::ClockTime>())
+            .and_then(|m| m.shown())
+            .or_else(|| player.as_ref()?.query_position::<gst::ClockTime>())
         {
             shared.position = Some(position);
         }
@@ -997,13 +1035,16 @@ impl Playout {
         self.take(&mut deck, item, true).await
     }
 
-    /// Load `request` (not from the playlist) and cue it. Replaces any clip.
-    #[cfg(test)]
-    pub async fn load(self: &Arc<Self>, request: ClipRequest) -> Result<()> {
-        self.load_clip(request, None).await
+    /// Load `request` (not from the playlist) and cue it, or play it.
+    /// Replaces any clip.
+    pub async fn load(self: &Arc<Self>, request: ClipRequest, play: bool) -> Result<()> {
+        self.load_clip(request, None).await?;
+        if play {
+            self.play().await?;
+        }
+        Ok(())
     }
 
-    #[cfg(test)]
     async fn load_clip(self: &Arc<Self>, request: ClipRequest, item: Option<String>) -> Result<()> {
         let mut deck = self.deck.lock().await;
         if deck.current.take().is_some() {
@@ -1046,8 +1087,8 @@ impl Playout {
         on_air: bool,
     ) -> Result<Clip> {
         let mode = Arc::new(AtomicU8::new(if on_air { mode::CUED } else { mode::OFF }));
-        let first_rt = Arc::new(AtomicU64::new(0));
-        let (player, streams) = build_player(request, &self.lanes, &mode, &first_rt)?;
+        let marks = Arc::new(Marks::default());
+        let (player, streams) = build_player(request, &self.lanes, &mode, &marks)?;
         let bus = player.bus().context("player has no bus")?;
         let mut messages = bus.stream();
         let mut guard = PlayerGuard(Some(player.clone()));
@@ -1069,7 +1110,9 @@ impl Playout {
         wait_async_done(&mut messages, &player, request).await?;
 
         if on_air {
-            self.shared.lock().unwrap().player = Some(player.downgrade());
+            let mut shared = self.shared.lock().unwrap();
+            shared.player = Some(player.downgrade());
+            shared.marks = Some(marks.clone());
         }
         let serial = self.serials.fetch_add(1, Ordering::SeqCst);
         let bus_task = tokio::spawn(watch_player(
@@ -1085,10 +1128,11 @@ impl Playout {
             bus_task,
             serial,
             mode,
-            first_rt,
+            marks,
             request: request.clone(),
             item,
             has_audio,
+            rate: request.rate,
         })
     }
 
@@ -1120,7 +1164,11 @@ impl Playout {
             TransportState::Cued
         };
         self.set(state, Some(clip.request.clone()), clip.item.clone(), None);
-        self.shared.lock().unwrap().player = Some(clip.player.downgrade());
+        {
+            let mut shared = self.shared.lock().unwrap();
+            shared.player = Some(clip.player.downgrade());
+            shared.marks = Some(clip.marks.clone());
+        }
         deck.current = Some(clip);
         Ok(())
     }
@@ -1128,7 +1176,7 @@ impl Playout {
     /// Play a prerolled clip from its first frame, following straight on
     /// from what the program has queued.
     fn start(&self, clip: &Clip) -> Result<()> {
-        let rt = gst::ClockTime::from_nseconds(clip.first_rt.load(Ordering::SeqCst));
+        let rt = gst::ClockTime::from_nseconds(clip.marks.first_rt.load(Ordering::SeqCst));
         clip.mode.store(mode::PLAYING, Ordering::SeqCst);
         let base = self.lanes.follow_on_base(rt);
         if let Some(base) = base {
@@ -1149,11 +1197,21 @@ impl Playout {
     /// Play the clip on air; idle, the next item.
     pub async fn play(self: &Arc<Self>) -> Result<()> {
         let mut deck = self.deck.lock().await;
-        let Some(clip) = deck.current.as_ref() else {
+        let Some(clip) = deck.current.as_mut() else {
             let item = self.following(&mut deck).context("the playlist is empty")?;
             return self.take(&mut deck, item, true).await;
         };
-        let state = self.shared.lock().unwrap().state;
+        let mut state = self.shared.lock().unwrap().state;
+        if clip.rate != clip.request.rate && state != TransportState::Ended {
+            // Stepped: back to the clip's speed, from the frame shown.
+            let at = self.position_of(clip);
+            clip.rate = clip.request.rate;
+            seek_from(&clip.player, &clip.request, at, clip.rate).await?;
+            if state == TransportState::Cued {
+                state = TransportState::Paused;
+            }
+        }
+        let clip = &*clip;
         match state {
             TransportState::Playing => return Ok(()),
             TransportState::Ended => {
@@ -1234,22 +1292,97 @@ impl Playout {
     /// Go to `position` in the file, kept within the clip's in and out
     /// points. Paused or cued, the frame there is shown.
     pub async fn seek(&self, position: gst::ClockTime) -> Result<()> {
-        let deck = self.deck.lock().await;
-        let clip = deck.current.as_ref().context("no clip loaded")?;
-        let mut request = clip.request.clone();
-        let position = position.max(request.in_point);
-        request.in_point = match request.out_point {
-            Some(out) => position.min(out),
-            None => position,
-        };
-        if self.shared.lock().unwrap().state == TransportState::Ended {
+        let mut deck = self.deck.lock().await;
+        let clip = deck.current.as_mut().context("no clip loaded")?;
+        self.reopen_if_ended(clip)?;
+        let at = seek_from(&clip.player, &clip.request, position, clip.rate).await?;
+        self.shared.lock().unwrap().position = Some(at);
+        Ok(())
+    }
+
+    /// Play the clip on air at `rate` from where it is (1 normal, 0.5 half
+    /// speed, negative backwards). Only replays change speed.
+    pub async fn set_rate(&self, rate: f64) -> Result<()> {
+        if !rate.is_finite() || rate == 0.0 || rate.abs() > 4.0 {
+            bail!("the speed must be between -4 and 4, and not 0");
+        }
+        let mut deck = self.deck.lock().await;
+        let clip = deck.current.as_mut().context("no clip loaded")?;
+        if clip.request.replay.is_none() && rate != 1.0 {
+            bail!("only a replay plays at other speeds");
+        }
+        let at = self.position_of(clip);
+        self.reopen_if_ended(clip)?;
+        clip.request.rate = rate;
+        clip.rate = rate;
+        seek_from(&clip.player, &clip.request, at, rate).await?;
+        let mut shared = self.shared.lock().unwrap();
+        if let Some(c) = shared.clip.as_mut() {
+            c.rate = rate;
+        }
+        Ok(())
+    }
+
+    /// Show the frame `frames` away (negative: earlier), pausing first.
+    pub async fn step(&self, frames: i32) -> Result<()> {
+        if frames == 0 {
+            return Ok(());
+        }
+        let mut deck = self.deck.lock().await;
+        let clip = deck.current.as_mut().context("no clip loaded")?;
+        let state = self.shared.lock().unwrap().state;
+        if state == TransportState::Playing {
+            clip.mode.store(mode::CUED, Ordering::SeqCst);
+            clip.player
+                .set_state(gst::State::Paused)
+                .map_err(|_| anyhow!("can't pause {}", clip.request.path))?;
+        }
+        self.reopen_if_ended(clip)?;
+        // A step goes the way the player plays: turn it round first.
+        let forward = frames > 0;
+        if (clip.rate > 0.0) != forward {
+            let at = self.position_of(clip);
+            clip.rate = if forward { 1.0 } else { -1.0 };
+            seek_from(&clip.player, &clip.request, at, clip.rate).await?;
+        }
+        let before = clip.marks.shown();
+        clip.player.send_event(gst::event::Step::new(
+            gst::format::Buffers::from_u64(u64::from(frames.unsigned_abs())),
+            1.0,
+            true,
+            false,
+        ));
+        // Done once the frame stepped to shows (a step leaves the player's
+        // state alone, so there's no state change to wait for). None comes
+        // at either end of the clip.
+        let until = tokio::time::Instant::now() + STEP_TIMEOUT;
+        while clip.marks.shown() == before && tokio::time::Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        let mut shared = self.shared.lock().unwrap();
+        shared.state = TransportState::Paused;
+        shared.position = None;
+        Ok(())
+    }
+
+    /// Where the clip on air is, as last known.
+    fn position_of(&self, clip: &Clip) -> gst::ClockTime {
+        clip.marks
+            .shown()
+            .or_else(|| clip.player.query_position::<gst::ClockTime>())
+            .or(self.shared.lock().unwrap().position)
+            .unwrap_or(clip.request.in_point)
+    }
+
+    /// An ended clip is shown paused again, its lanes back if it went to
+    /// black.
+    fn reopen_if_ended(&self, clip: &Clip) -> Result<()> {
+        let mut shared = self.shared.lock().unwrap();
+        if shared.state == TransportState::Ended {
             self.lanes.open(clip.has_audio)?;
             clip.mode.store(mode::CUED, Ordering::SeqCst);
-            self.shared.lock().unwrap().state = TransportState::Paused;
+            shared.state = TransportState::Paused;
         }
-        seek(&clip.player, &request, gst::SeekFlags::FLUSH)
-            .with_context(|| format!("can't seek {}", request.path))?;
-        self.shared.lock().unwrap().position = Some(request.in_point);
         Ok(())
     }
 
@@ -1335,6 +1468,7 @@ impl Playout {
         shared.position = None;
         if state == TransportState::Idle {
             shared.player = None;
+            shared.marks = None;
         }
     }
 }
@@ -1382,23 +1516,81 @@ async fn wait_async_done(
 /// A seek to the clip's in point, ending at its out point. A looping clip's
 /// seeks are segment seeks: the segment's end comes as `SEGMENT_DONE`, and
 /// the next seek continues from it without a gap.
+/// At a negative rate, it plays from the out point back to the in point.
 fn seek(player: &gst::Pipeline, clip: &ClipRequest, flags: gst::SeekFlags) -> Result<()> {
+    seek_span(
+        player,
+        clip,
+        clip.in_point,
+        clip.out_point,
+        clip.rate,
+        flags,
+    )
+}
+
+fn seek_span(
+    player: &gst::Pipeline,
+    clip: &ClipRequest,
+    start: gst::ClockTime,
+    stop: Option<gst::ClockTime>,
+    rate: f64,
+    flags: gst::SeekFlags,
+) -> Result<()> {
     let mut flags = flags | gst::SeekFlags::ACCURATE;
     if clip.end == ClipEnd::Loop {
         flags |= gst::SeekFlags::SEGMENT;
     }
-    let (stop_type, stop) = match clip.out_point {
+    let (stop_type, stop) = match stop {
         Some(out) => (gst::SeekType::Set, Some(out)),
         None => (gst::SeekType::None, gst::ClockTime::NONE),
     };
     player.seek(
-        1.0,
+        rate,
         flags,
         gst::SeekType::Set,
-        Some(clip.in_point),
+        Some(start),
         stop_type,
         stop,
     )?;
+    Ok(())
+}
+
+/// Go to `position` (kept within the clip) at `rate`, going on from there
+/// towards the out point, or the in point backwards; wait for the frame
+/// there. Returns the position.
+async fn seek_from(
+    player: &gst::Pipeline,
+    clip: &ClipRequest,
+    position: gst::ClockTime,
+    rate: f64,
+) -> Result<gst::ClockTime> {
+    let mut at = position.max(clip.in_point);
+    if let Some(out) = clip.out_point {
+        at = at.min(out);
+    }
+    let (start, stop) = if rate > 0.0 {
+        (at, clip.out_point)
+    } else {
+        // Backwards from the frame at `at`, which starts there: a stop at
+        // `at` would leave it out.
+        let stop = at + gst::ClockTime::from_nseconds(1);
+        (
+            clip.in_point,
+            Some(clip.out_point.map_or(stop, |out| stop.min(out))),
+        )
+    };
+    seek_span(player, clip, start, stop, rate, gst::SeekFlags::FLUSH)
+        .with_context(|| format!("can't seek {}", clip.path))?;
+    settle(player).await?;
+    Ok(at)
+}
+
+/// Wait for a player's state change (a seek's preroll) to finish.
+async fn settle(player: &gst::Pipeline) -> Result<()> {
+    let p = player.clone();
+    let (result, _, _) =
+        tokio::task::spawn_blocking(move || p.state(gst::ClockTime::from_seconds(5))).await?;
+    result.map_err(|_| anyhow!("the player failed"))?;
     Ok(())
 }
 
@@ -1461,19 +1653,25 @@ fn build_player(
     clip: &ClipRequest,
     lanes: &Arc<Lanes>,
     mode: &Arc<AtomicU8>,
-    first_rt: &Arc<AtomicU64>,
+    marks: &Arc<Marks>,
 ) -> Result<(gst::Pipeline, Arc<Streams>)> {
     let player = gst::Pipeline::with_name(&format!("channel-player-{}", lanes.id));
     // The program's clock: timestamps map between the two.
     player.use_clock(Some(&lanes.clock()));
-    let decode = make_el("uridecodebin", &format!("channel-decode-{}", lanes.id))?;
-    decode.set_property(
-        "uri",
-        glib::filename_to_uri(&clip.path, None)
-            .with_context(|| format!("make a URI for {}", clip.path))?
-            .to_string(),
-    );
-    player.add(&decode).context("add uridecodebin")?;
+    let decode = match &clip.replay {
+        Some(replay) => replay_source(&player, replay, &lanes.id)?,
+        None => {
+            let decode = make_el("uridecodebin", &format!("channel-decode-{}", lanes.id))?;
+            decode.set_property(
+                "uri",
+                glib::filename_to_uri(&clip.path, None)
+                    .with_context(|| format!("make a URI for {}", clip.path))?
+                    .to_string(),
+            );
+            player.add(&decode).context("add uridecodebin")?;
+            decode
+        }
+    };
 
     let video = add_branch(
         &player,
@@ -1481,7 +1679,7 @@ fn build_player(
         &["queue", "videoconvert"],
         lanes,
         mode,
-        first_rt,
+        marks,
     )?;
     let audio = add_branch(
         &player,
@@ -1489,7 +1687,7 @@ fn build_player(
         &["queue", "audioconvert", "audioresample"],
         lanes,
         mode,
-        first_rt,
+        marks,
     )?;
 
     let streams = Arc::new(Streams::default());
@@ -1499,10 +1697,16 @@ fn build_player(
     let player_weak = player.downgrade();
     decode.connect_pad_added(move |_, pad| {
         let caps = pad.current_caps().unwrap_or_else(|| pad.query_caps(None));
-        let kind = caps
-            .structure(0)
-            .map(|s| s.name().as_str())
-            .unwrap_or_default();
+        // A replay's pads are named for what they carry, and its audio's
+        // caps come later.
+        let kind = match pad.name().as_str() {
+            "video" => "video/x-raw",
+            "audio" => "audio/x-raw",
+            _ => caps
+                .structure(0)
+                .map(|s| s.name().as_str())
+                .unwrap_or_default(),
+        };
         let branch = if kind.starts_with("video/") {
             video.upgrade()
         } else if kind.starts_with("audio/") {
@@ -1569,6 +1773,110 @@ fn build_player(
     Ok((player, streams))
 }
 
+/// splitmuxsrc over a replay span's files, in a bin with the codec's
+/// decoder, exposing raw video (and the audio, which is PCM) like
+/// uridecodebin does.
+///
+/// splitmuxsrc ─┬→ decoder ─→ "video" ghost pad
+///              └→ "audio" ghost pad
+fn replay_source(player: &gst::Pipeline, replay: &ReplayClip, id: &str) -> Result<gst::Element> {
+    let bin = gst::Bin::with_name(&format!("channel-replay-{id}"));
+    let src = make_el("splitmuxsrc", &format!("channel-replay-src-{id}"))?;
+    let files = replay.span.files.clone();
+    src.connect("format-location", false, move |_| Some(files.to_value()));
+    let decoder = replay
+        .span
+        .codec
+        .decoder()
+        .iter()
+        .map(|f| make_el(f, &format!("channel-replay-{f}-{id}")))
+        .collect::<Result<Vec<_>>>()?;
+    bin.add(&src).context("add splitmuxsrc")?;
+    bin.add_many(&decoder).context("add replay decoder")?;
+    gst::Element::link_many(&decoder).context("link replay decoder")?;
+    player.add(&bin).context("add replay source")?;
+
+    let bin_weak = bin.downgrade();
+    let first = decoder[0].clone();
+    let last = decoder[decoder.len() - 1].clone();
+    src.connect_pad_added(move |_, pad| {
+        let Some(bin) = bin_weak.upgrade() else {
+            return;
+        };
+        let exposed = if pad.name().starts_with("video") {
+            let Some(sink) = first.static_pad("sink") else {
+                return;
+            };
+            if let Err(e) = pad.link(&sink) {
+                warn!(error = ?e, "replay video doesn't fit its decoder");
+                return;
+            }
+            last.static_pad("src").and_then(|p| {
+                gst::GhostPad::builder_with_target(&p)
+                    .ok()
+                    .map(|g| g.name("video").build())
+            })
+        } else if pad.name().starts_with("audio") {
+            // PCM: its caps come after the pad.
+            gst::GhostPad::builder_with_target(pad)
+                .ok()
+                .map(|g| g.name("audio").build())
+        } else {
+            None
+        };
+        if let Some(ghost) = exposed {
+            let _ = ghost.set_active(true);
+            if bin.add_pad(&ghost).is_err() {
+                warn!(pad = %pad.name(), "can't expose replay stream");
+            }
+        }
+    });
+    let bin_weak = bin.downgrade();
+    src.connect_no_more_pads(move |_| {
+        if let Some(bin) = bin_weak.upgrade() {
+            bin.no_more_pads();
+        }
+    });
+    Ok(bin.upcast())
+}
+
+/// Where a player's video is, kept by its appsink.
+struct Marks {
+    /// Running time of the latest video preroll: where playing starts.
+    first_rt: AtomicU64,
+    /// Position (stream time) of the latest frame shown; `u64::MAX` before
+    /// one. A player's own position is off after a step.
+    shown: AtomicU64,
+}
+
+impl Default for Marks {
+    fn default() -> Self {
+        Self {
+            first_rt: AtomicU64::new(0),
+            shown: AtomicU64::new(u64::MAX),
+        }
+    }
+}
+
+impl Marks {
+    fn show(&self, sample: &gst::Sample) {
+        let at = sample.buffer().and_then(|b| b.pts()).and_then(|pts| {
+            sample
+                .segment()?
+                .downcast_ref::<gst::ClockTime>()?
+                .to_stream_time(pts)
+        });
+        if let Some(at) = at {
+            self.shown.store(at.nseconds(), Ordering::SeqCst);
+        }
+    }
+
+    fn shown(&self) -> Option<gst::ClockTime> {
+        let at = self.shown.load(Ordering::SeqCst);
+        (at != u64::MAX).then(|| gst::ClockTime::from_nseconds(at))
+    }
+}
+
 /// Which of a player's branches its file feeds.
 #[derive(Default)]
 struct Streams {
@@ -1577,7 +1885,7 @@ struct Streams {
 }
 
 /// `elements` → appsink, pushing into `kind`'s lane as `mode` says. The
-/// video branch keeps its latest preroll's running time in `first_rt`.
+/// video branch keeps where it is in `marks`.
 /// Returns the first element, for the decoder to link to.
 fn add_branch(
     player: &gst::Pipeline,
@@ -1585,7 +1893,7 @@ fn add_branch(
     elements: &[&str],
     lanes: &Arc<Lanes>,
     mode: &Arc<AtomicU8>,
-    first_rt: &Arc<AtomicU64>,
+    marks: &Arc<Marks>,
 ) -> Result<gst::Element> {
     let tag = match kind {
         Kind::Video => "video",
@@ -1607,15 +1915,24 @@ fn add_branch(
     let player_weak = player.downgrade();
     let (on_sample, on_preroll) = (lanes.clone(), lanes.clone());
     let (mode_s, mode_p) = (mode.clone(), mode.clone());
-    let first_rt = first_rt.clone();
+    let (marks_s, marks_p) = (marks.clone(), marks.clone());
     sink.set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
                 let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                // Audio only at normal speed: the program plays silence
+                // meanwhile.
+                let normal = sample.segment().is_none_or(|s| s.rate() == 1.0);
+                if kind == Kind::Audio && !normal {
+                    return Ok(gst::FlowSuccess::Ok);
+                }
                 if mode_s.load(Ordering::SeqCst) == mode::PLAYING {
                     let base = player_weak.upgrade().and_then(|p| p.base_time());
                     if base.is_some() {
                         on_sample.push(kind, &sample, base);
+                        if kind == Kind::Video {
+                            marks_s.show(&sample);
+                        }
                     }
                 }
                 Ok(gst::FlowSuccess::Ok)
@@ -1624,7 +1941,8 @@ fn add_branch(
                 let sample = sink.pull_preroll().map_err(|_| gst::FlowError::Eos)?;
                 if kind == Kind::Video {
                     let rt = running_time(&sample).unwrap_or(gst::ClockTime::ZERO);
-                    first_rt.store(rt.nseconds(), Ordering::SeqCst);
+                    marks_p.first_rt.store(rt.nseconds(), Ordering::SeqCst);
+                    marks_p.show(&sample);
                     // Cued or paused: show the frame now. (While playing, a
                     // preroll is followed by the same buffer as a sample.)
                     if mode_p.load(Ordering::SeqCst) == mode::CUED {
@@ -1844,6 +2162,8 @@ mod tests {
             in_point: t(in_s),
             out_point: out_s.map(t),
             end,
+            rate: 1.0,
+            replay: None,
         }
     }
 
@@ -1906,7 +2226,7 @@ mod tests {
 
         // ── Cue: the first frame shows, and holds ────────────────────────────
         playout
-            .load(clip(&file, 0.0, None, ClipEnd::Hold))
+            .load(clip(&file, 0.0, None, ClipEnd::Hold), false)
             .await
             .unwrap();
         assert_eq!(playout.status().state, TransportState::Cued);
@@ -1945,7 +2265,7 @@ mod tests {
 
         // ── Loop 1 s..2 s: accurate and gapless ──────────────────────────────
         playout
-            .load(clip(&file, 1.0, Some(2.0), ClipEnd::Loop))
+            .load(clip(&file, 1.0, Some(2.0), ClipEnd::Loop), false)
             .await
             .unwrap();
         take_pushed(&playout);
@@ -1978,7 +2298,7 @@ mod tests {
 
         // ── End to black ─────────────────────────────────────────────────────
         playout
-            .load(clip(&file, 4.0, None, ClipEnd::Black))
+            .load(clip(&file, 4.0, None, ClipEnd::Black), false)
             .await
             .unwrap();
         playout.play().await.unwrap();
@@ -2309,5 +2629,216 @@ mod tests {
 
         mon.stop().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A replay buffer played through a running channel: forwards with
+    /// sound, at half speed and backwards without, and stepped a frame at a
+    /// time either way.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "real-time (~12 s); run with --ignored"]
+    async fn replay_plays_at_any_speed() {
+        use crate::api::types::{AudioTestSignal, ReplayCodec, TestSourceConfig, VideoTestPattern};
+        use crate::pipeline::replay::{Index, ReplayLeg};
+        use crate::sources::test::TestSource;
+
+        gst::init().unwrap();
+        let clock = gst::SystemClock::obtain();
+        let sleep = |ms| tokio::time::sleep(Duration::from_millis(ms));
+        let frame = gst::ClockTime::SECOND / 30;
+
+        // A 30 fps source into a replay buffer.
+        let camera = TestSource::new(
+            "cam".into(),
+            "cam".into(),
+            TestSourceConfig {
+                pattern: VideoTestPattern::Ball,
+                width: 640,
+                height: 360,
+                fps_num: 30,
+                fps_den: 1,
+                audio_signal: AudioTestSignal::Tone,
+                frequency: 440.0,
+                channels: 2,
+            },
+        );
+        let camera_mon =
+            MonitorPipeline::new(&camera, &MonitorSettingsDto::default(), &clock).unwrap();
+        let dir = std::env::temp_dir().join(format!("cr-replay-{}", uuid::Uuid::new_v4()));
+        let index = Index::create(&dir, gst::ClockTime::from_seconds(60));
+        while camera_mon.video_frames() == 0 {
+            sleep(20).await;
+        }
+        let leg = ReplayLeg::start(&camera_mon, ReplayCodec::Mjpeg, &index, "cam").unwrap();
+        for _ in 0..200 {
+            if index
+                .lock()
+                .unwrap()
+                .span()
+                .is_some_and(|(a, b)| b - a >= gst::ClockTime::from_seconds(4))
+            {
+                break;
+            }
+            sleep(50).await;
+        }
+        let (start, _) = index.lock().unwrap().span().expect("nothing recorded");
+
+        let src = ChannelSource::new(
+            "c".into(),
+            "c".into(),
+            ChannelConfig {
+                format: LiveVideoFormat {
+                    width: W,
+                    height: H,
+                    fps_num: 30,
+                    fps_den: 1,
+                },
+                audio_channels: 2,
+                outputs: vec![],
+            },
+        );
+        let playout = src.playout().unwrap().clone();
+        let mon = MonitorPipeline::new(&src, &MonitorSettingsDto::default(), &clock).unwrap();
+
+        let span = Index::clip(
+            &index,
+            start + gst::ClockTime::from_mseconds(500),
+            Some(start + gst::ClockTime::from_seconds(4)),
+        )
+        .unwrap();
+        let request = ClipRequest {
+            media_id: "replay:cam".into(),
+            name: "cam".into(),
+            path: dir.to_string_lossy().into(),
+            in_point: span.from,
+            out_point: Some(span.to),
+            end: ClipEnd::Hold,
+            rate: 1.0,
+            replay: Some(ReplayClip {
+                source_id: "cam".into(),
+                span: span.clone(),
+            }),
+        };
+        playout.load(request, true).await.unwrap();
+        assert_eq!(playout.status().state, TransportState::Playing);
+
+        // Played frames' positions, in the order pushed.
+        let played = |pushed: &[Pushed]| -> Vec<gst::ClockTime> {
+            pushed
+                .iter()
+                .filter(|p| p.kind == Kind::Video && !p.preroll)
+                .map(|p| p.clip)
+                .collect()
+        };
+        let steps = |v: &[gst::ClockTime]| -> Vec<i64> {
+            v.windows(2)
+                .map(|w| {
+                    ((w[1].nseconds() as f64 - w[0].nseconds() as f64) / frame.nseconds() as f64)
+                        .round() as i64
+                })
+                .collect()
+        };
+
+        sleep(300).await;
+        take_pushed(&playout);
+        sleep(1000).await;
+        let pushed = take_pushed(&playout);
+        let forward = played(&pushed);
+        assert!(
+            (25..=35).contains(&forward.len()),
+            "{} frames at 1×",
+            forward.len()
+        );
+        assert!(
+            steps(&forward).iter().all(|&s| s == 1),
+            "1×: {:?}",
+            steps(&forward)
+        );
+        assert!(
+            pushed.iter().any(|p| p.kind == Kind::Audio),
+            "no sound at 1×"
+        );
+
+        playout.set_rate(0.5).await.unwrap();
+        sleep(300).await;
+        take_pushed(&playout);
+        sleep(1000).await;
+        let pushed = take_pushed(&playout);
+        let half = played(&pushed);
+        assert!(
+            (12..=18).contains(&half.len()),
+            "{} frames at 0.5×",
+            half.len()
+        );
+        assert!(
+            steps(&half).iter().all(|&s| s == 1),
+            "0.5×: {:?}",
+            steps(&half)
+        );
+        assert!(
+            !pushed.iter().any(|p| p.kind == Kind::Audio),
+            "sound at 0.5×"
+        );
+        assert_eq!(playout.status().clip.unwrap().rate, 0.5);
+
+        playout.set_rate(-1.0).await.unwrap();
+        sleep(300).await;
+        take_pushed(&playout);
+        sleep(1000).await;
+        let back = played(&take_pushed(&playout));
+        assert!(
+            (25..=35).contains(&back.len()),
+            "{} frames at -1×",
+            back.len()
+        );
+        assert!(
+            steps(&back).iter().all(|&s| s == -1),
+            "-1×: {:?}",
+            steps(&back)
+        );
+
+        // Stepping pauses, then moves one frame each way.
+        let shown = |pushed: Vec<Pushed>| {
+            pushed
+                .iter()
+                .filter(|p| p.kind == Kind::Video && p.preroll)
+                .map(|p| p.clip)
+                .next_back()
+                .expect("no frame shown")
+        };
+        playout.step(1).await.unwrap();
+        assert_eq!(playout.status().state, TransportState::Paused);
+        sleep(100).await;
+        let a = shown(take_pushed(&playout));
+        playout.step(1).await.unwrap();
+        sleep(100).await;
+        let b = shown(take_pushed(&playout));
+        // Frame times are rounded to the ns.
+        let same =
+            |x: gst::ClockTime, y: gst::ClockTime| x.nseconds().abs_diff(y.nseconds()) < 1000;
+        assert!(same(b, a + frame), "step forward: {a} → {b}");
+        playout.step(-1).await.unwrap();
+        sleep(100).await;
+        let c = shown(take_pushed(&playout));
+        assert!(same(c, a), "step back: {b} → {c}, not {a}");
+        playout.step(-1).await.unwrap();
+        sleep(100).await;
+        let d = shown(take_pushed(&playout));
+        assert!(same(d + frame, a), "step back again: {c} → {d}");
+
+        // Play goes on at the clip's speed (-1) from there.
+        playout.play().await.unwrap();
+        sleep(500).await;
+        let back = played(&take_pushed(&playout));
+        assert!(back.first().is_some_and(|&t| t <= d), "{back:?} after {d}");
+        assert!(steps(&back).iter().all(|&s| s == -1), "{:?}", steps(&back));
+
+        playout.stop().await;
+        // The lanes go in the background; the monitor waits for them.
+        sleep(500).await;
+        drop(span);
+        drop(leg);
+        let _ = camera_mon.stop();
+        mon.stop().unwrap();
+        drop(index);
     }
 }

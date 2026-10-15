@@ -13,13 +13,15 @@ use uuid::Uuid;
 use crate::api::types::{
     ChannelLevelDto, ClockTimeDto, ConfiguredSourceDto, LinkState, MonitorSettingsDto,
     OutputConfig, OutputStatusDto, PresetOutputInput, RecordingSessionDto, RecordingStatus,
-    SessionClockDto, TransportState,
+    ReplayBufferDto, ReplayConfigInput, SessionClockDto, TransportState,
 };
 use crate::pipeline::monitor::{MonitorPipeline, SourceFormat};
 use crate::pipeline::output::{self, OutputLeg, Program};
 use crate::pipeline::profile::RecordingProfile;
 use crate::pipeline::recording::{self, OnLegError, OnLegFile, RecordingLeg};
+use crate::pipeline::replay::{Index, ReplayIndex, ReplayLeg};
 
+use super::channel::ReplayClip;
 use super::device::LocalDevices;
 use super::ndi::NdiMonitor;
 use super::{configured, InputSource};
@@ -124,6 +126,22 @@ struct ChannelOutputs {
     legs: Vec<(OutputConfig, Leg)>,
 }
 
+/// A source's replay buffer. Kept while its source comes and goes (an NDI
+/// sender restarting), so what it recorded stays playable.
+struct Replay {
+    /// Recording, from this monitor. Dropped before the index: it writes
+    /// into it.
+    leg: Option<(ReplayLeg, Arc<MonitorPipeline>)>,
+    config: ReplayConfigInput,
+    index: ReplayIndex,
+    /// Why it couldn't start recording.
+    error: Option<String>,
+}
+
+fn keep(config: &ReplayConfigInput) -> gst::ClockTime {
+    gst::ClockTime::from_seconds(u64::from(config.minutes) * 60)
+}
+
 // ── SourceManager ─────────────────────────────────────────────────────────────
 
 /// Owns the sources, their monitor pipelines, and active recording sessions.
@@ -158,6 +176,9 @@ pub struct SourceManager {
     /// Session ids whose legs opened a new file (a split), so the file list
     /// can be saved.
     leg_files: mpsc::UnboundedSender<String>,
+    /// Replay buffers, by source id, and the folder they're kept in.
+    replays: HashMap<String, Replay>,
+    replay_root: PathBuf,
 }
 
 impl SourceManager {
@@ -185,7 +206,17 @@ impl SourceManager {
             displays,
             leg_failures,
             leg_files,
+            replays: HashMap::new(),
+            replay_root: std::env::temp_dir()
+                .join("capture-room-replay")
+                .join(std::process::id().to_string()),
         }
+    }
+
+    /// Where replay buffers are kept (a temporary folder until set). Set
+    /// before any buffer is.
+    pub fn set_replay_root(&mut self, root: PathBuf) {
+        self.replay_root = root;
     }
 
     // ── Source access ─────────────────────────────────────────────────────────
@@ -249,6 +280,10 @@ impl SourceManager {
         self.sources
             .iter()
             .any(|s| !self.is_healthy(s.id()) || self.should_migrate(s.as_ref()))
+            || self
+                .replays
+                .iter()
+                .any(|(id, r)| self.monitors.contains_key(id) && !Self::recording(r))
     }
 
     // ── Clock ─────────────────────────────────────────────────────────────────
@@ -376,8 +411,152 @@ impl SourceManager {
             self.reconcile_outputs(&id, &name, configs, program);
         }
 
+        self.sync_replays();
         info!(count = self.sources.len(), "source scan complete");
         teardowns
+    }
+
+    // ── Replay buffers ────────────────────────────────────────────────────────
+
+    /// Give a source a replay buffer, change it, or with `None` remove it
+    /// (deleting what it recorded). A new codec starts it afresh.
+    pub fn set_replay(&mut self, source_id: &str, config: Option<ReplayConfigInput>) {
+        let Some(config) = config else {
+            if self.replays.remove(source_id).is_some() {
+                info!(source = source_id, "replay buffer removed");
+            }
+            return;
+        };
+        match self.replays.get_mut(source_id) {
+            Some(replay) => {
+                if replay.config.codec != config.codec {
+                    replay.leg = None;
+                }
+                replay.index.lock().unwrap().set_keep(keep(&config));
+                replay.config = config;
+            }
+            None => {
+                let index = Index::create(&self.replay_root.join(source_id), keep(&config));
+                self.replays.insert(
+                    source_id.to_string(),
+                    Replay {
+                        leg: None,
+                        config,
+                        index,
+                        error: None,
+                    },
+                );
+            }
+        }
+        self.sync_replays();
+    }
+
+    fn recording(replay: &Replay) -> bool {
+        replay
+            .leg
+            .as_ref()
+            .is_some_and(|(leg, _)| leg.error().is_none())
+    }
+
+    /// Start each replay buffer on its source's current monitor, unless it
+    /// records from it already; stop the ones whose source has none.
+    fn sync_replays(&mut self) {
+        for (id, replay) in &mut self.replays {
+            let Some(monitor) = self.monitors.get(id) else {
+                replay.leg = None;
+                continue;
+            };
+            let current = replay
+                .leg
+                .as_ref()
+                .is_some_and(|(_, m)| Arc::ptr_eq(m, monitor));
+            if current && Self::recording(replay) {
+                continue;
+            }
+            replay.leg = None;
+            match ReplayLeg::start(monitor, replay.config.codec, &replay.index, id) {
+                Ok(leg) => {
+                    replay.leg = Some((leg, Arc::clone(monitor)));
+                    replay.error = None;
+                }
+                Err(e) => {
+                    let error = format!("{e:#}");
+                    warn!(source = %id, error = %error, "replay buffer failed to start");
+                    replay.error = Some(error);
+                }
+            }
+        }
+    }
+
+    /// Every replay buffer and what it holds. `utc_offset_us` maps the node
+    /// clock to UTC.
+    pub fn replay_buffers(&self, utc_offset_us: Option<i64>) -> Vec<ReplayBufferDto> {
+        let now = self.clock.time().unwrap_or(gst::ClockTime::ZERO);
+        let mut list: Vec<ReplayBufferDto> = self
+            .replays
+            .iter()
+            .map(|(id, r)| {
+                let index = r.index.lock().unwrap();
+                // Times on a clock the node has since left mean nothing now.
+                let current = index.clock() == Some(&self.clock);
+                let span = index.span().filter(|_| current);
+                ReplayBufferDto {
+                    source_id: id.clone(),
+                    source_name: self.get_source(id).map(|s| s.display_name().to_string()),
+                    codec: r.config.codec,
+                    minutes: r.config.minutes,
+                    encoder: r
+                        .leg
+                        .as_ref()
+                        .filter(|_| Self::recording(r))
+                        .map(|(leg, _)| leg.encoder().to_string()),
+                    error: r
+                        .leg
+                        .as_ref()
+                        .and_then(|(leg, _)| leg.error())
+                        .or_else(|| r.error.clone())
+                        .or_else(|| {
+                            (!self.monitors.contains_key(id))
+                                .then(|| "the source isn't available".to_string())
+                        }),
+                    start_us: span.map(|(a, _)| a.useconds()),
+                    end_us: span.map(|(_, b)| b.useconds()),
+                    breaks_us: if current {
+                        index.breaks().iter().map(|t| t.useconds()).collect()
+                    } else {
+                        Vec::new()
+                    },
+                    utc_offset_us,
+                    now_us: now.useconds(),
+                    bytes: index.bytes(),
+                }
+            })
+            .collect();
+        list.sort_by(|a, b| a.source_name.cmp(&b.source_name));
+        list
+    }
+
+    /// Part of a source's replay buffer, from `from` to `to` (node clock),
+    /// to play on a channel.
+    pub fn replay_clip(
+        &self,
+        source_id: &str,
+        from: gst::ClockTime,
+        to: Option<gst::ClockTime>,
+    ) -> Result<ReplayClip> {
+        let replay = self
+            .replays
+            .get(source_id)
+            .ok_or_else(|| anyhow::anyhow!("that source has no replay buffer"))?;
+        if replay.index.lock().unwrap().clock() != Some(&self.clock) {
+            bail!(
+                "the replay buffer is on another clock; it starts again once its source restarts"
+            );
+        }
+        Ok(ReplayClip {
+            source_id: source_id.to_string(),
+            span: Index::clip(&replay.index, from, to)?,
+        })
     }
 
     /// Start a channel's outputs that changed or aren't running (a new
@@ -771,6 +950,9 @@ impl SourceManager {
     /// Remove the monitor (and any active recordings) for a source.
     fn disconnect(&mut self, source_id: &str) -> Option<Teardown> {
         self.outputs.remove(source_id);
+        if let Some(replay) = self.replays.get_mut(source_id) {
+            replay.leg = None;
+        }
         let pipeline = self.monitors.remove(source_id)?;
         let session_ids: Vec<String> = self
             .sessions

@@ -1,12 +1,10 @@
-import { Circle, Film, Monitor, MonitorPlay, Server, Settings, ShieldCheck, SlidersHorizontal, Wrench } from '@lucide/vue'
+import { Circle, Film, History, Monitor, MonitorPlay, Server, Settings, ShieldCheck, SlidersHorizontal, Wrench } from '@lucide/vue'
 
-/**
- * Top-level workspaces: operating desks plus Setup. Replay joins here once
- * the backend supports it — not before.
- */
+/** Top-level workspaces: operating desks plus Setup. */
 export const workspaces = [
   { to: '/record', label: 'Record', icon: Circle },
   { to: '/playback', label: 'Playback', icon: MonitorPlay },
+  { to: '/replay', label: 'Replay', icon: History },
   { to: '/recordings', label: 'Recordings', icon: Film },
   { to: '/setup', label: 'Setup', icon: Wrench },
 ]

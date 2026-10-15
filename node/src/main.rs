@@ -45,6 +45,16 @@ struct Args {
     db: String,
 }
 
+/// Where replay buffers are kept: beside the default recording folder, per
+/// node (several can run on one machine).
+fn replay_root(node_id: &str) -> std::path::PathBuf {
+    std::env::home_dir()
+        .map(|h| h.join("capture-room"))
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".replay")
+        .join(node_id)
+}
+
 fn main() -> Result<()> {
     // Before the runtime's threads start: it sets an environment variable.
     let ndi_dir = plugins::locate_ndi_runtime();
@@ -126,7 +136,11 @@ async fn run(ndi_dir: Option<&'static str>, displays: display::Displays) -> Resu
         leg_failure_tx,
         leg_file_tx,
     );
+    source_manager.set_replay_root(replay_root(&node_id));
     source_manager.scan(&configured);
+    for (source_id, config) in db::replay_buffers_list(&pool).await? {
+        source_manager.set_replay(&source_id, Some(config));
+    }
 
     for source in source_manager.sources() {
         info!(
