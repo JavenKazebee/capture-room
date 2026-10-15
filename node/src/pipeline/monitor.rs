@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
@@ -12,7 +12,8 @@ use crate::api::types::MonitorSettingsDto;
 use crate::sources::InputSource;
 
 use super::{
-    capsfilter, handle_level_message, link_tee, make_el, set_state, AudioMeter, ThumbnailStore,
+    capsfilter, handle_level_message, link_tee, make_el, set_state, AudioMeter, FirstError,
+    ThumbnailStore,
 };
 
 // ── MonitorPipeline ───────────────────────────────────────────────────────────
@@ -33,7 +34,7 @@ pub struct MonitorPipeline {
     video_frames: Arc<FrameCount>,
     /// The first error the pipeline posted. An errored pipeline has stopped
     /// producing, so this is shown on the source until its monitor restarts.
-    error: Arc<Mutex<Option<String>>>,
+    error: FirstError,
     /// Reads the bus until aborted on drop: the bus stream never ends by
     /// itself, since the stream keeps the bus alive.
     bus_task: tokio::task::JoinHandle<()>,
@@ -115,7 +116,7 @@ impl MonitorPipeline {
         // ── Bus task ──────────────────────────────────────────────────────────
         let bus = pipeline.bus().context("pipeline has no bus")?;
         let audio_meter_ref = audio_meter.clone();
-        let error = Arc::new(Mutex::new(None));
+        let error = FirstError::default();
         let error_ref = error.clone();
         let bus_task = tokio::spawn(async move {
             let mut stream = bus.stream();
@@ -128,10 +129,7 @@ impl MonitorPipeline {
                             debug = ?err.debug(),
                             "monitor pipeline error"
                         );
-                        error_ref
-                            .lock()
-                            .unwrap()
-                            .get_or_insert_with(|| err.error().to_string());
+                        error_ref.set(err);
                     }
                     gst::MessageView::Warning(w) => {
                         warn!(msg = %w.error(), "monitor pipeline warning");
@@ -169,7 +167,7 @@ impl MonitorPipeline {
     }
 
     pub fn error(&self) -> Option<String> {
-        self.error.lock().unwrap().clone()
+        self.error.get()
     }
 
     /// Video frames the source has delivered so far.

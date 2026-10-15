@@ -30,7 +30,7 @@ use super::monitor::MonitorPipeline;
 use super::recording::set_property;
 use super::{
     audio_hold_queue, capsfilter, consumer, make_el, mark_prores_keyframes, pcm_audiorate,
-    share_clock,
+    share_clock, start_or_reason, FirstError,
 };
 use crate::api::types::ReplayCodec;
 
@@ -343,7 +343,7 @@ pub struct ReplayLeg {
     /// Connections to the monitor's producers; dropping one stops the feed.
     links: Vec<ConsumptionLink>,
     encoder: &'static str,
-    error: Arc<Mutex<Option<String>>>,
+    error: FirstError,
     video_src: gst_app::AppSrc,
     audio_src: gst_app::AppSrc,
 }
@@ -397,7 +397,7 @@ impl ReplayLeg {
         base: gst::ClockTime,
     ) -> Result<Self> {
         let pipeline = gst::Pipeline::with_name(&format!("replay-{name}"));
-        let error = Arc::new(Mutex::new(None));
+        let error = FirstError::default();
 
         let video_src = consumer("video-src");
         let audio_src = consumer("audio-src");
@@ -490,7 +490,7 @@ impl ReplayLeg {
         // Each file's span, from splitmuxsink's messages (running time,
         // shared with the monitor). Errors are kept to show.
         let messages = Arc::downgrade(index);
-        let error_ref = Arc::clone(&error);
+        let error_ref = error.clone();
         let leg_name = name.to_string();
         pipeline
             .bus()
@@ -519,12 +519,9 @@ impl ReplayLeg {
                             index.closed(Path::new(&location), base + rt);
                         }
                     }
-                    gst::MessageView::Error(err) => {
-                        let mut error = error_ref.lock().unwrap();
-                        if error.is_none() {
-                            warn!(name = %leg_name, error = %err.error(), debug = ?err.debug(), "replay buffer failed");
-                            *error = Some(err.error().to_string());
-                        }
+                    // Logged once: a later error only follows from the first.
+                    gst::MessageView::Error(err) if error_ref.set(err) => {
+                        warn!(name = %leg_name, error = %err.error(), debug = ?err.debug(), "replay buffer failed");
                     }
                     _ => {}
                 }
@@ -548,15 +545,8 @@ impl ReplayLeg {
         }
 
         share_clock(&pipeline, clock, base);
-        if pipeline.set_state(gst::State::Playing).is_err() {
-            let reason = error
-                .lock()
-                .unwrap()
-                .clone()
-                .unwrap_or_else(|| "replay buffer failed to start".into());
-            let _ = pipeline.set_state(gst::State::Null);
-            return Err(anyhow!("{encoder}: {reason}"));
-        }
+        start_or_reason(&pipeline, &error, "replay buffer failed to start")
+            .map_err(|reason| anyhow!("{encoder}: {reason}"))?;
         Ok(Self {
             pipeline,
             links: Vec::new(),
@@ -582,7 +572,7 @@ impl ReplayLeg {
 
     /// Why it stopped recording, if it has.
     pub fn error(&self) -> Option<String> {
-        self.error.lock().unwrap().clone()
+        self.error.get()
     }
 }
 

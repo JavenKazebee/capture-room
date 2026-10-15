@@ -13,7 +13,7 @@
 //! leg's [`OnLegError`] callback.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -27,8 +27,8 @@ use tracing::{info, warn};
 use super::monitor::MonitorPipeline;
 use super::profile::{segment_number, AudioFormat, RecordingProfile, VideoEncoder, PCM_MAX_FILE};
 use super::{
-    audio_hold_queue, capsfilter, consumer, make_el, mark_prores_keyframes, pcm_audiorate,
-    set_mix_matrix, share_clock,
+    audio_hold_queue, capsfilter, consumer, describe_error, make_el, mark_prores_keyframes,
+    pcm_audiorate, set_mix_matrix, share_clock, start_or_reason, FirstError,
 };
 use crate::api::types::{Container, RateControl};
 
@@ -78,6 +78,8 @@ pub struct RecordingLeg {
     /// The encoder's output, stamped with timecode for containers that
     /// keep it (MOV).
     timecode_pad: Option<gst::Pad>,
+    /// Why it failed, from the bus: the reason given when it won't start.
+    error: FirstError,
 }
 
 /// Called when a splitting leg opens a new file. Runs on a GStreamer
@@ -201,14 +203,15 @@ impl RecordingLeg {
         // long recording doesn't accumulate messages nobody pops. Errors are
         // also reported straight away (once per leg) — they still pass, so
         // `stop` finds them too.
-        let reported = AtomicBool::new(false);
+        let error = FirstError::default();
+        let first_error = error.clone();
         let error_path = path.to_path_buf();
         pipeline
             .bus()
             .context("recording pipeline has no bus")?
             .set_sync_handler(move |_, msg| match msg.view() {
                 gst::MessageView::Error(err) => {
-                    if !reported.swap(true, Ordering::Relaxed) {
+                    if first_error.set(err) {
                         on_error(&error_path, leg_error(err));
                     }
                     gst::BusSyncReply::Pass
@@ -468,6 +471,7 @@ impl RecordingLeg {
             first_frame: Arc::new(AtomicU64::new(u64::MAX)),
             base_time: None,
             timecode_pad,
+            error,
         })
     }
 
@@ -497,19 +501,9 @@ impl RecordingLeg {
             stamp_timecode(pad, base, offset);
         }
 
-        if self.pipeline.set_state(gst::State::Playing).is_err() {
-            // The reason (e.g. "Could not open file … for writing") is on the bus.
-            let reason = self
-                .pipeline
-                .bus()
-                .and_then(|bus| bus.pop_filtered(&[gst::MessageType::Error]))
-                .and_then(|msg| match msg.view() {
-                    gst::MessageView::Error(err) => Some(err.error().to_string()),
-                    _ => None,
-                })
-                .unwrap_or_else(|| "pipeline failed to start".to_string());
-            return Err(anyhow!("{}: {reason}", self.location.display()));
-        }
+        // The bus handler keeps the reason (e.g. "Could not open file … for writing").
+        start_or_reason(&self.pipeline, &self.error, "pipeline failed to start")
+            .map_err(|reason| anyhow!("{}: {reason}", self.location.display()))?;
 
         self.links
             .push(monitor.video.add_consumer(&self.video_src)?);
@@ -713,25 +707,6 @@ fn remove_file(location: &Path) {
 fn leg_error(err: &gst::message::Error) -> String {
     let element = err.src().map(|s| s.name().to_string()).unwrap_or_default();
     format!("recording failed in {element}: {}", describe_error(err))
-}
-
-/// GStreamer's streaming errors are a generic "Internal data stream error"
-/// with the real reason only in the debug text ("… reason not-negotiated
-/// (-4)"); surface it.
-fn describe_error(err: &gst::message::Error) -> String {
-    let reason = err.debug().and_then(|d| {
-        d.split("reason ")
-            .nth(1)
-            .map(|r| r.split(' ').next().unwrap_or(r).to_string())
-    });
-    match reason.as_deref() {
-        Some("not-negotiated") => format!(
-            "{} (not-negotiated: the encoder's output isn't accepted by this container or format)",
-            err.error()
-        ),
-        Some(reason) => format!("{} ({reason})", err.error()),
-        None => err.error().to_string(),
-    }
 }
 
 impl Drop for RecordingLeg {

@@ -16,7 +16,7 @@
 //! Outputs run for as long as the channel's monitor does.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use gstreamer::{self as gst, prelude::*};
@@ -29,7 +29,7 @@ use super::monitor::MonitorPipeline;
 use super::recording::set_property;
 use super::rtsp::{self, RtspOutput};
 use super::whep::WhepOutput;
-use super::{consumer, make_el, set_state, share_clock};
+use super::{consumer, make_el, set_state, share_clock, start_or_reason, FirstError};
 use crate::api::types::{DisplayIdle, OutputConfig, SourceCapabilitiesDto};
 use crate::display::{DisplayWindow, Displays, WantedFormat};
 use crate::sources::device::LocalDevices;
@@ -245,7 +245,7 @@ pub struct PipelineOutput {
     /// Connections to the monitor's producers; dropping one stops the feed.
     links: Vec<ConsumptionLink>,
     /// The first error the pipeline hit; it stops sending after one.
-    error: Arc<Mutex<Option<String>>>,
+    error: FirstError,
     receivers: Option<Arc<AtomicU32>>,
     video_src: gst_app::AppSrc,
 }
@@ -258,7 +258,7 @@ impl PipelineOutput {
             audio_src,
             receivers,
         } = output;
-        let error = Arc::new(Mutex::new(None));
+        let error = FirstError::default();
         let error_ref = error.clone();
         let error_label = label.clone();
         pipeline
@@ -266,10 +266,8 @@ impl PipelineOutput {
             .context("output pipeline has no bus")?
             .set_sync_handler(move |_, msg| {
                 if let gst::MessageView::Error(err) = msg.view() {
-                    let mut error = error_ref.lock().unwrap();
-                    if error.is_none() {
+                    if error_ref.set(err) {
                         warn!(output = %error_label, error = %err.error(), debug = ?err.debug(), "output failed");
-                        *error = Some(err.error().to_string());
                     }
                 }
                 gst::BusSyncReply::Drop
@@ -279,15 +277,7 @@ impl PipelineOutput {
             share_clock(&pipeline, &clock, base_time);
         }
         // Off the runtime: the WebRTC elements block on their own.
-        if set_state(&pipeline, gst::State::Playing).is_err() {
-            let reason = error
-                .lock()
-                .unwrap()
-                .clone()
-                .unwrap_or_else(|| "output failed to start".into());
-            let _ = set_state(&pipeline, gst::State::Null);
-            return Err(anyhow!(reason));
-        }
+        start_or_reason(&pipeline, &error, "output failed to start")?;
         let links = vec![
             monitor.video.add_consumer(&video_src)?,
             monitor.audio.add_consumer(&audio_src)?,
@@ -304,7 +294,7 @@ impl PipelineOutput {
 
 impl RunningOutput for PipelineOutput {
     fn error(&self) -> Option<String> {
-        self.error.lock().unwrap().clone()
+        self.error.get()
     }
 
     fn receivers(&self) -> Option<u32> {

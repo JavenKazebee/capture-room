@@ -50,6 +50,66 @@ pub type AudioMeter = Latest<Vec<ChannelLevelDto>>;
 /// Latest thumbnail JPEG.
 pub type ThumbnailStore = Latest<Vec<u8>>;
 
+// ── First error ───────────────────────────────────────────────────────────────
+
+/// The first error a pipeline posted, kept to show: a pipeline stops after
+/// one, so later errors only follow from it. Clones share storage.
+#[derive(Debug, Clone, Default)]
+pub struct FirstError(Arc<Mutex<Option<String>>>);
+
+impl FirstError {
+    /// Keep `err` (see [`describe_error`]) unless one is already kept:
+    /// whether it was the first.
+    pub fn set(&self, err: &gst::message::Error) -> bool {
+        let mut first = self.0.lock().unwrap();
+        if first.is_some() {
+            return false;
+        }
+        *first = Some(describe_error(err));
+        true
+    }
+
+    pub fn get(&self) -> Option<String> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+/// Set `pipeline` playing. If it won't, stop it and fail with the error its
+/// bus handler kept in `first` (so the handler must be a sync one), or
+/// `fallback` when it posted none.
+pub(crate) fn start_or_reason(
+    pipeline: &gst::Pipeline,
+    first: &FirstError,
+    fallback: &str,
+) -> Result<()> {
+    if set_state(pipeline, gst::State::Playing).is_ok() {
+        return Ok(());
+    }
+    let _ = set_state(pipeline, gst::State::Null);
+    Err(anyhow::anyhow!(first
+        .get()
+        .unwrap_or_else(|| fallback.into())))
+}
+
+/// GStreamer's streaming errors are a generic "Internal data stream error"
+/// with the real reason only in the debug text ("… reason not-negotiated
+/// (-4)"); surface it.
+pub(crate) fn describe_error(err: &gst::message::Error) -> String {
+    let reason = err.debug().and_then(|d| {
+        d.split("reason ")
+            .nth(1)
+            .map(|r| r.split(' ').next().unwrap_or(r).to_string())
+    });
+    match reason.as_deref() {
+        Some("not-negotiated") => format!(
+            "{} (not-negotiated: the encoder's output isn't accepted by this container or format)",
+            err.error()
+        ),
+        Some(reason) => format!("{} ({reason})", err.error()),
+        None => err.error().to_string(),
+    }
+}
+
 // ── Element builders ──────────────────────────────────────────────────────────
 
 /// Change `pipeline`'s state on a thread outside the tokio runtime. Some
