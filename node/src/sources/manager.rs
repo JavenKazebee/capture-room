@@ -290,7 +290,6 @@ impl SourceManager {
         self.monitors.contains_key(source_id)
     }
 
-    /// Why a source's monitor stopped producing, or couldn't start.
     /// A live source's link state, while its monitor runs.
     pub fn link(&self, source: &dyn InputSource) -> Option<LinkState> {
         self.is_monitored(source.id())
@@ -298,6 +297,7 @@ impl SourceManager {
             .flatten()
     }
 
+    /// Why a source's monitor stopped producing, or couldn't start.
     pub fn monitor_error(&self, source_id: &str) -> Option<String> {
         match self.monitors.get(source_id) {
             Some(monitor) => monitor.error(),
@@ -717,8 +717,6 @@ impl SourceManager {
 
     // ── Recording ─────────────────────────────────────────────────────────────
 
-    /// Start a multi-leg recording session.
-    /// `legs` is an ordered list of `(output_path, profile)` pairs, one per output leg.
     /// Start recording `source_id` with `legs`, one per entry of `outputs`
     /// (which supplies each leg's name and preview flag for the session).
     /// With `start_at` on this node's clock domain, the legs begin at the
@@ -929,11 +927,6 @@ impl SourceManager {
             buffers,
             channels,
         }
-    }
-
-    /// What outputs need from the node, for the benchmark's channels.
-    pub fn output_parts(&self) -> (Displays, Arc<LocalDevices>) {
-        (self.displays.clone(), self.devices.clone())
     }
 
     /// Take a session out of the active set and hand back the detach work.

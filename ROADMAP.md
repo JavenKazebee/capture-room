@@ -244,7 +244,7 @@ Setup checks).
 
 Builds on playback (#9) and clock sync (#10). Design in ARCHITECTURE.md (Instant Replay).
 
-- ✅ **Prototype (2026-10-11)** — `node/examples/replay_spike.rs`: a 1080p59.94 source
+- ✅ **Prototype (2026-10-11)** — `node/examples/replay_spike.rs` (removed after 4ced203): a 1080p59.94 source
   into 1 s all-intra segments, played back like a channel's player. GStreamer's own
   reverse, slow motion (to 0.25×), frame steps and accurate seeks are all frame-exact
   and fast, and clips export by remuxing on any frame. Two catches: decode in software

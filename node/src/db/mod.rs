@@ -659,7 +659,6 @@ pub async fn playlist_set(
     Ok(())
 }
 
-/// Remove a channel's playlist (the channel was deleted).
 /// Channels whose playlists use `media_id`.
 pub async fn playlists_using(pool: &SqlitePool, media_id: &str) -> Result<Vec<String>> {
     let rows = sqlx::query_scalar::<_, String>(

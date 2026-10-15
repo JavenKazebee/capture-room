@@ -828,20 +828,22 @@ impl Run {
         );
         let monitor = self.start_monitor(n, &channel).await?;
         let program = Program::from(&channel.capabilities().context("channel format")?);
-        let (displays, devices) = self.state.source_manager.read().await.output_parts();
-        let context = OutputContext {
-            displays: &displays,
-            devices: &devices,
+        let legs = {
+            let manager = self.state.source_manager.read().await;
+            let context = OutputContext {
+                displays: manager.displays(),
+                devices: manager.devices(),
+            };
+            outputs
+                .iter()
+                .map(|o| {
+                    let config = feed_output(o, n)?;
+                    let sink = output::sink(&config, channel.display_name(), program, &context);
+                    OutputLeg::start(&monitor, sink.as_ref())
+                        .with_context(|| format!("start feed {n}'s {}", sink.label()))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?
         };
-        let legs = outputs
-            .iter()
-            .map(|o| {
-                let config = feed_output(o, n)?;
-                let sink = output::sink(&config, channel.display_name(), program, &context);
-                OutputLeg::start(&monitor, sink.as_ref())
-                    .with_context(|| format!("start feed {n}'s {}", sink.label()))
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
 
         let playout = channel
             .playout()

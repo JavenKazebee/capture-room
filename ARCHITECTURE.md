@@ -767,7 +767,7 @@ plays from it at variable speed.
 
 ### What the prototype showed
 
-`node/examples/replay_spike.rs` (2026-10-11, M3, 1080p59.94 from real footage, 1 s
+The prototype (`node/examples/replay_spike.rs`, removed after commit 4ced203; 2026-10-11, M3, 1080p59.94 from real footage, 1 s
 segments) records each candidate codec, then plays the segments the way a channel's
 player would (`splitmuxsrc` → decoder → appsink synced to the clock).
 
