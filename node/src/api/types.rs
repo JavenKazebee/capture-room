@@ -1225,18 +1225,6 @@ pub enum AudioChannels {
     Pick,
 }
 
-/// A stored output leg, as kept in `preset_outputs` and as served.
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
-pub struct PresetOutputDto {
-    pub id: String,
-    pub preset_id: String,
-    #[serde(flatten)]
-    #[sqlx(flatten)]
-    pub output: PresetOutputInput,
-    pub sort_order: u32,
-}
-
 /// A preset, as stored in `presets` (plus its outputs) and as served.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
@@ -1244,7 +1232,7 @@ pub struct PresetDto {
     pub id: String,
     pub name: String,
     #[sqlx(skip)]
-    pub outputs: Vec<PresetOutputDto>,
+    pub outputs: Vec<PresetOutputInput>,
     pub created_at: String,
     pub updated_at: String,
     pub version: u32,

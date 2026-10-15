@@ -4,7 +4,7 @@ import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useEventListener } from '@vueuse/core'
 import { toast } from 'vue-sonner'
 import { Copy, Loader2, Lock, Plus, RotateCcw, Search, Trash2 } from '@lucide/vue'
-import { usePresetsStore, blankLeg, presetLegs } from '@/stores/presets'
+import { usePresetsStore, blankLeg } from '@/stores/presets'
 import { dateTime } from '@/lib/format'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
@@ -81,7 +81,7 @@ function load(id: string, name: string, legs: PresetOutputInput[]) {
 }
 
 function loadPreset(p: PresetDto) {
-  load(p.id, p.name, presetLegs(p).length ? presetLegs(p) : [blankLeg()])
+  load(p.id, p.name, p.outputs.length ? p.outputs : [blankLeg()])
 }
 
 // Switching away from unsaved changes asks first. The dialog closes itself

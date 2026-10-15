@@ -7,7 +7,7 @@ import { formatTimeLeft } from '@/lib/format'
 import { notifyError, notifyWarn } from '@/lib/notify'
 import { LOW_TIME_SECS, capacityWarningText, useCapacityStore } from '@/stores/capacity'
 import { useNodesStore } from '@/stores/nodes'
-import { blankLeg, presetLegs, usePresetsStore } from '@/stores/presets'
+import { blankLeg, usePresetsStore } from '@/stores/presets'
 import { useRecordingsStore } from '@/stores/recordings'
 import { useSourcesStore, type Source } from '@/stores/sources'
 import type { ClockTimeDto } from '@/types/generated/ClockTimeDto'
@@ -201,7 +201,7 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     const checks = await Promise.all(
       [...groups.values()].map(async (g) => {
         const preset = presets.presets.find((p) => p.id === g.presetId)
-        const outputs = preset ? presetLegs(preset) : [blankLeg()]
+        const outputs = preset ? preset.outputs : [blankLeg()]
         return { ...g, check: await capacity.check(g.nodeId, outputs, g.sourceIds).catch(() => null) }
       }),
     )

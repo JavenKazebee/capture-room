@@ -5,7 +5,7 @@ use tracing::info;
 
 use crate::api::types::{
     BenchmarkRunDto, BenchmarkStatus, ClipEnd, ConfiguredSourceDto, MediaItemDto,
-    MonitorSettingsDto, PresetDto, PresetOutputDto, RecordingSessionDto, ReplayCodec,
+    MonitorSettingsDto, PresetDto, PresetOutputInput, RecordingSessionDto, ReplayCodec,
     ReplayConfigInput,
 };
 
@@ -213,16 +213,23 @@ pub async fn presets_list(pool: &SqlitePool) -> Result<Vec<PresetDto>> {
     )
     .fetch_all(pool)
     .await?;
-    let outputs = sqlx::query_as::<_, PresetOutputDto>(
-        "SELECT id, preset_id, name, codec, container, resolution, framerate,
-                bitrate_kbps, chroma, path_template, preview, advanced, sort_order
+    /// A row of `preset_outputs`; its id and order stay in the database.
+    #[derive(FromRow)]
+    struct Row {
+        preset_id: String,
+        #[sqlx(flatten)]
+        output: PresetOutputInput,
+    }
+    let outputs = sqlx::query_as::<_, Row>(
+        "SELECT preset_id, name, codec, container, resolution, framerate,
+                bitrate_kbps, chroma, path_template, preview, advanced
          FROM preset_outputs ORDER BY preset_id, sort_order",
     )
     .fetch_all(pool)
     .await?;
-    for output in outputs {
-        if let Some(p) = presets.iter_mut().find(|p| p.id == output.preset_id) {
-            p.outputs.push(output);
+    for row in outputs {
+        if let Some(p) = presets.iter_mut().find(|p| p.id == row.preset_id) {
+            p.outputs.push(row.output);
         }
     }
     Ok(presets)
@@ -254,7 +261,7 @@ pub async fn preset_update(
     id: &str,
     name: &str,
     updated_at: &str,
-    outputs: Vec<PresetOutputDto>,
+    outputs: Vec<PresetOutputInput>,
 ) -> Result<Option<PresetDto>> {
     let mut tx = pool.begin().await?;
     let preset = sqlx::query_as::<_, PresetDto>(
@@ -284,26 +291,20 @@ pub async fn preset_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
 async fn preset_outputs_replace(
     tx: &mut Transaction<'_, Sqlite>,
     preset_id: &str,
-    outputs: &[PresetOutputDto],
+    outputs: &[PresetOutputInput],
 ) -> Result<()> {
     sqlx::query("DELETE FROM preset_outputs WHERE preset_id = ?")
         .bind(preset_id)
         .execute(&mut **tx)
         .await?;
-    for PresetOutputDto {
-        id,
-        preset_id,
-        output: o,
-        sort_order,
-    } in outputs
-    {
+    for (o, sort_order) in outputs.iter().zip(0u32..) {
         sqlx::query(
             "INSERT INTO preset_outputs
              (id, preset_id, name, codec, container, resolution, framerate,
               bitrate_kbps, chroma, path_template, preview, advanced, sort_order)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(id)
+        .bind(uuid::Uuid::new_v4().to_string())
         .bind(preset_id)
         .bind(&o.name)
         .bind(o.codec)
@@ -755,6 +756,43 @@ mod tests {
         ] {
             assert_eq!(count(&pool, table, column).await, 0, "{table} left behind");
         }
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn preset_outputs_keep_their_order() {
+        let path =
+            std::env::temp_dir().join(format!("capture-room-presets-{}.db", std::process::id()));
+        let pool = init(&format!("sqlite://{}", path.display())).await.unwrap();
+        let leg = |name: &str| -> PresetOutputInput {
+            serde_json::from_value(serde_json::json!({
+                "name": name, "codec": "h264", "container": "mov", "resolution": null,
+                "framerate": null, "bitrate_kbps": null, "chroma": "420",
+                "path_template": "~/x.{ext}",
+            }))
+            .unwrap()
+        };
+        let names = |p: &PresetDto| p.outputs.iter().map(|o| o.name.clone()).collect::<Vec<_>>();
+        let preset = PresetDto {
+            id: "p".into(),
+            name: "P".into(),
+            outputs: vec![leg("b"), leg("a")],
+            created_at: String::new(),
+            updated_at: String::new(),
+            version: 1,
+        };
+        preset_insert(&pool, &preset).await.unwrap();
+        assert_eq!(names(&presets_list(&pool).await.unwrap()[0]), ["b", "a"]);
+        let updated = preset_update(&pool, "p", "P", "", vec![leg("c"), leg("b"), leg("a")])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(names(&updated), ["c", "b", "a"]);
+        assert_eq!(
+            names(&presets_list(&pool).await.unwrap()[0]),
+            ["c", "b", "a"]
+        );
         pool.close().await;
         let _ = std::fs::remove_file(path);
     }

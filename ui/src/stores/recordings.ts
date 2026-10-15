@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nodeApi, sourceKey } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
-import { blankLeg, presetLegs, usePresetsStore } from '@/stores/presets'
+import { blankLeg, usePresetsStore } from '@/stores/presets'
 import { useSourcesStore } from '@/stores/sources'
 import type { ClockTimeDto } from '@/types/generated/ClockTimeDto'
 import type { PresetDto } from '@/types/generated/PresetDto'
@@ -239,7 +239,7 @@ export const useRecordingsStore = defineStore('recordings', () => {
    * time on the shared clock (see `syncedStartTime`).
    */
   async function start(nodeId: string, sourceId: string, preset: PresetDto | null, startAt: ClockTimeDto | null = null) {
-    const outputs: PresetOutputInput[] = preset ? presetLegs(preset) : [blankLeg()]
+    const outputs: PresetOutputInput[] = preset ? preset.outputs : [blankLeg()]
     const body: StartRecordingRequest = {
       source_id: sourceId,
       preset_id: preset?.id ?? null,

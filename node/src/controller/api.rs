@@ -16,8 +16,7 @@ use super::{clock_mode, discovery, forward, Controller, CLOCK_MODE_KEY, CONFIG_K
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     AddNodeRequest, CheckDto, ClockMode, ControllerClockDto, ControllerToggleRequest,
-    NodeChecksDto, NodeDto, PresetCreateRequest, PresetDto, PresetOutputDto, PresetOutputInput,
-    WsEvent,
+    NodeChecksDto, NodeDto, PresetCreateRequest, PresetDto, PresetOutputInput, WsEvent,
 };
 use crate::db;
 use crate::pipeline::profile::{plan_legs, unknown_token};
@@ -220,7 +219,7 @@ async fn post_preset(
     let now = chrono::Utc::now().to_rfc3339();
     let id = uuid::Uuid::new_v4().to_string();
     let preset = PresetDto {
-        outputs: output_dtos(&id, outputs),
+        outputs,
         id,
         name: req.name,
         created_at: now.clone(),
@@ -236,7 +235,7 @@ async fn put_preset(
     Path(id): Path<String>,
     Json(req): Json<PresetCreateRequest>,
 ) -> ApiResult<Json<PresetDto>> {
-    let outputs = output_dtos(&id, validate_outputs(req.outputs)?);
+    let outputs = validate_outputs(req.outputs)?;
     let now = chrono::Utc::now().to_rfc3339();
     let preset = db::preset_update(&state.db, &id, &req.name, &now, outputs)
         .await?
@@ -274,19 +273,6 @@ fn validate_outputs(mut outputs: Vec<PresetOutputInput>) -> ApiResult<Vec<Preset
     let legs = plan_legs(&outputs, None).map_err(ApiError::bad)?;
     recording::check_legs(&legs).map_err(ApiError::bad)?;
     Ok(outputs)
-}
-
-fn output_dtos(preset_id: &str, outputs: Vec<PresetOutputInput>) -> Vec<PresetOutputDto> {
-    outputs
-        .into_iter()
-        .zip(0..)
-        .map(|(output, sort_order)| PresetOutputDto {
-            id: uuid::Uuid::new_v4().to_string(),
-            preset_id: preset_id.to_string(),
-            output,
-            sort_order,
-        })
-        .collect()
 }
 
 // ── /ws (merged: this node + relayed peers) ──────────────────────────────────

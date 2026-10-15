@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { useNow } from '@vueuse/core'
 import { useRecordDeskStore } from '@/stores/recordDesk'
 import { outputFiles, useRecordingsStore, type RecordingSession } from '@/stores/recordings'
-import { usePresetsStore, blankLeg, presetLegs } from '@/stores/presets'
+import { usePresetsStore, blankLeg } from '@/stores/presets'
 import { useNodesStore } from '@/stores/nodes'
 import type { Source } from '@/stores/sources'
 import { dateTime, formatDuration } from '@/lib/format'
@@ -29,7 +29,7 @@ const session = computed(() => recordings.activeForSource(props.source.node_id, 
 /** The outputs Record would send right now. */
 const legs = computed(() => {
   const p = presets.presets.find((p) => p.id === desk.presetIdOf(props.source.key))
-  return p ? presetLegs(p) : [blankLeg()]
+  return p ? p.outputs : [blankLeg()]
 })
 
 function legFacts(leg: PresetOutputInput) {

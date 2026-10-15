@@ -5,7 +5,7 @@ import { Film, FolderOpen, Loader2 } from '@lucide/vue'
 import { errorMessage } from '@/composables/useApi'
 import { useCapacityStore } from '@/stores/capacity'
 import { useNodesStore } from '@/stores/nodes'
-import { blankLeg, presetLegs, usePresetsStore } from '@/stores/presets'
+import { blankLeg, usePresetsStore } from '@/stores/presets'
 import { CODECS, useReplayStore } from '@/stores/replay'
 import { useSourcesStore } from '@/stores/sources'
 import type { ConfiguredSourceDto } from '@/types/generated/ConfiguredSourceDto'
@@ -131,7 +131,7 @@ async function start() {
     await capacity.start(props.nodeId, {
       preset_id: preset?.id ?? null,
       preset_name: preset?.name ?? null,
-      outputs: forReplay || forChannel ? [] : preset ? presetLegs(preset) : [blankLeg()],
+      outputs: forReplay || forChannel ? [] : preset ? preset.outputs : [blankLeg()],
       replay: forReplay ? codec.value : null,
       channel: forChannel ? channelConfigs() : null,
       media_path: mediaPath.value.trim(),
