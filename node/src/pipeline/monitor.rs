@@ -125,6 +125,7 @@ impl MonitorPipeline {
                         error!(
                             src = %err.src().map(|s| s.name().to_string()).unwrap_or_default(),
                             msg = %err.error(),
+                            debug = ?err.debug(),
                             "monitor pipeline error"
                         );
                         error_ref

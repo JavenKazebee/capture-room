@@ -266,10 +266,10 @@ impl Index {
             base,
             from: from - base,
             to: to - base,
-            hold: Arc::new(Hold {
+            hold: Some(Arc::new(Hold {
                 index: Arc::downgrade(index),
                 id,
-            }),
+            })),
         })
     }
 }
@@ -284,9 +284,10 @@ pub struct ReplaySpan {
     pub base: gst::ClockTime,
     pub from: gst::ClockTime,
     pub to: gst::ClockTime,
-    /// Never read: kept for as long as the clip lives.
+    /// Never read: kept for as long as the clip lives. `None` for a saved
+    /// clip, whose files are its own.
     #[allow(dead_code)]
-    pub hold: Arc<Hold>,
+    pub hold: Option<Arc<Hold>>,
 }
 
 /// Keeps a clip's segments on disk while it lives.
@@ -592,6 +593,220 @@ impl Drop for ReplayLeg {
     }
 }
 
+// ── Saved clips and export ─────────────────────────────────────────────────
+
+/// Keep a span's files as a saved clip's own, in `dir`: hard links, so
+/// saving takes no time or room and the buffer can still delete its names
+/// for them as it rolls on. A copy where a link can't be made (another
+/// volume). Answers with the clip's files, in order.
+pub fn save(span: &ReplaySpan, dir: &Path) -> Result<Vec<String>> {
+    let saved = (|| {
+        std::fs::create_dir_all(dir).with_context(|| format!("can't create {}", dir.display()))?;
+        let mut files = Vec::with_capacity(span.files.len());
+        for (i, file) in span.files.iter().enumerate() {
+            let to = dir.join(format!("{i:08}.mov"));
+            if std::fs::hard_link(file, &to).is_err() {
+                std::fs::copy(file, &to).with_context(|| format!("can't copy {file}"))?;
+            }
+            files.push(to.to_string_lossy().into_owned());
+        }
+        Ok(files)
+    })();
+    if saved.is_err() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    saved
+}
+
+/// Remux `from` → `to` of `files` (positions as in a [`ReplaySpan`]) into
+/// one .mov at `out`, without re-encoding: every frame is a keyframe, so
+/// the cut can fall on any of them. The same frames a channel plays between
+/// those points. Blocks until the file is written.
+///
+/// ```text
+/// splitmuxsrc ─┬→ [gate] → qtmux → filesink
+///              └→ [gate] ↗
+/// ```
+pub fn export(
+    files: &[String],
+    from: gst::ClockTime,
+    to: gst::ClockTime,
+    out: &Path,
+) -> Result<()> {
+    let pipeline = gst::Pipeline::with_name("replay-export");
+    let src = make_el("splitmuxsrc", "src")?;
+    let list = files.to_vec();
+    src.connect("format-location", false, move |_| Some(list.to_value()));
+    let mux = make_el("qtmux", "mux")?;
+    // Not prerolled: nothing reaches it until the seek has been made.
+    let sink = gst::ElementFactory::make("filesink")
+        .name("sink")
+        .property("location", out.to_string_lossy().as_ref())
+        .property("async", false)
+        .build()
+        .context("create filesink")?;
+    pipeline
+        .add_many([&src, &mux, &sink])
+        .context("add export elements")?;
+    mux.link(&sink).context("link qtmux")?;
+    let mux_weak = mux.downgrade();
+    src.connect_pad_added(move |_, pad| {
+        let Some(mux) = mux_weak.upgrade() else {
+            return;
+        };
+        let template = if pad.name().starts_with("video") {
+            "video_%u"
+        } else if pad.name().starts_with("audio") {
+            "audio_%u"
+        } else {
+            return;
+        };
+        gate(pad, from);
+        match mux.request_pad_simple(template) {
+            Some(sink) => {
+                if let Err(e) = pad.link(&sink) {
+                    warn!(pad = %pad.name(), error = ?e, "can't export replay stream");
+                }
+            }
+            None => warn!(pad = %pad.name(), "qtmux has no pad for replay stream"),
+        }
+    });
+
+    let result = (|| {
+        pipeline
+            .set_state(gst::State::Paused)
+            .map_err(|_| anyhow!("the clip's files can't be read"))?;
+        let (changed, _, _) = pipeline.state(gst::ClockTime::from_seconds(10));
+        changed.map_err(|_| anyhow!("the clip's files can't be read"))?;
+        // At the source: the muxer would handle a seek itself.
+        src.seek(
+            1.0,
+            gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
+            gst::SeekType::Set,
+            from,
+            gst::SeekType::Set,
+            to,
+        )
+        .context("can't seek to the clip's in point")?;
+        pipeline
+            .set_state(gst::State::Playing)
+            .map_err(|_| anyhow!("export failed to start"))?;
+        // Remuxing runs far faster than real time; this is only a backstop.
+        let timeout = gst::ClockTime::from_seconds(60) + (to - from) * 2;
+        let bus = pipeline.bus().context("export pipeline has no bus")?;
+        let msg = bus
+            .timed_pop_filtered(timeout, &[gst::MessageType::Eos, gst::MessageType::Error])
+            .context("export timed out")?;
+        match msg.view() {
+            gst::MessageView::Error(e) => Err(anyhow!("{}", e.error())),
+            _ => Ok(()),
+        }
+    })();
+    let _ = pipeline.set_state(gst::State::Null);
+    if result.is_err() {
+        let _ = std::fs::remove_file(out);
+    }
+    result
+}
+
+/// Hold back everything flowing through `pad` until the segment of the
+/// seek to `from`: buffers and segments before it, and flushes always. A
+/// flushing seek through a muxer spoils its file, so the muxer only ever
+/// sees what the seek asked for.
+///
+/// Sound is trimmed to start where the segment does: qtdemux hands out PCM
+/// in chunks of half a second or so, starting on the sample before the cut,
+/// and qtmux would drop a chunk that starts before it whole.
+fn gate(pad: &gst::Pad, from: gst::ClockTime) {
+    // An accurate seek's segment starts where it was asked to.
+    const NEAR: gst::ClockTime = gst::ClockTime::from_mseconds(1);
+    // The segment's start, once it's been let through.
+    let start = Mutex::new(None::<gst::ClockTime>);
+    pad.add_probe(gst::PadProbeType::DATA_DOWNSTREAM, move |pad, info| {
+        let open = *start.lock().unwrap();
+        match &mut info.data {
+            Some(gst::PadProbeData::Event(e)) => match e.view() {
+                gst::EventView::FlushStart(_) | gst::EventView::FlushStop(_) => {
+                    gst::PadProbeReturn::Drop
+                }
+                gst::EventView::Segment(seg) => {
+                    // In stream time: splitmuxsrc's segments start at 1000 s
+                    // plus the position.
+                    let segment = seg.segment().downcast_ref::<gst::ClockTime>();
+                    let at = segment.and_then(|s| s.to_stream_time(s.start()?));
+                    if at
+                        .is_some_and(|at| at.nseconds().abs_diff(from.nseconds()) < NEAR.nseconds())
+                    {
+                        *start.lock().unwrap() = segment.and_then(|s| s.start());
+                        gst::PadProbeReturn::Ok
+                    } else {
+                        gst::PadProbeReturn::Drop
+                    }
+                }
+                _ => gst::PadProbeReturn::Ok,
+            },
+            Some(gst::PadProbeData::Buffer(_)) | Some(gst::PadProbeData::BufferList(_))
+                if open.is_none() =>
+            {
+                gst::PadProbeReturn::Drop
+            }
+            Some(gst::PadProbeData::Buffer(buffer)) => {
+                let (Some(start), Some(pts)) = (open, buffer.pts()) else {
+                    return gst::PadProbeReturn::Ok;
+                };
+                if pts >= start || !pad.name().starts_with("audio") {
+                    return gst::PadProbeReturn::Ok;
+                }
+                match trim_audio(pad, buffer, start - pts) {
+                    Some(trimmed) => {
+                        *buffer = trimmed;
+                        gst::PadProbeReturn::Ok
+                    }
+                    None => gst::PadProbeReturn::Drop,
+                }
+            }
+            _ => gst::PadProbeReturn::Ok,
+        }
+    });
+}
+
+/// `buffer` (raw PCM on `pad`) without its first `cut` of sound, rounded up
+/// to a whole sample; `None` if nothing's left.
+fn trim_audio(pad: &gst::Pad, buffer: &gst::Buffer, cut: gst::ClockTime) -> Option<gst::Buffer> {
+    let caps = pad.current_caps()?;
+    let s = caps.structure(0)?;
+    let rate = u64::try_from(s.get::<i32>("rate").ok()?).ok()?;
+    let channels = usize::try_from(s.get::<i32>("channels").ok()?).ok()?;
+    let width = match s.get::<&str>("format").ok()? {
+        "S16LE" | "S16BE" => 2,
+        "S24LE" | "S24BE" => 3,
+        "S32LE" | "S32BE" | "F32LE" | "F32BE" => 4,
+        "F64LE" | "F64BE" => 8,
+        _ => return Some(buffer.clone()),
+    };
+    let samples = cut
+        .nseconds()
+        .saturating_mul(rate)
+        .div_ceil(gst::ClockTime::SECOND.nseconds());
+    let offset = usize::try_from(samples).ok()? * channels * width;
+    if offset >= buffer.size() {
+        return None;
+    }
+    let mut trimmed = buffer
+        .copy_region(
+            gst::BufferCopyFlags::MEMORY | gst::BufferCopyFlags::FLAGS,
+            offset..,
+        )
+        .ok()?;
+    let skipped = gst::ClockTime::from_nseconds(
+        samples.saturating_mul(gst::ClockTime::SECOND.nseconds()) / rate,
+    );
+    let b = trimmed.make_mut();
+    b.set_pts(buffer.pts().map(|t| t + skipped));
+    b.set_duration(buffer.duration().map(|d| d.saturating_sub(skipped)));
+    Some(trimmed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -684,5 +899,116 @@ mod tests {
         drop(span);
         drop(index);
         assert!(!dir.exists(), "the buffer's folder was left behind");
+    }
+
+    /// Video frames in a .mov, and how long its sound lasts.
+    fn count_frames(file: &Path) -> (usize, gst::ClockTime) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let p = gst::parse::launch(&format!(
+            "filesrc location=\"{}\" ! qtdemux name=d \
+             d.video_0 ! queue ! fakesink name=v sync=false \
+             d.audio_0 ! queue ! fakesink name=a sync=false",
+            file.display()
+        ))
+        .unwrap()
+        .downcast::<gst::Pipeline>()
+        .unwrap();
+        let counts: Vec<Arc<AtomicUsize>> = ["v", "a"]
+            .iter()
+            .map(|name| {
+                let n = Arc::new(AtomicUsize::new(0));
+                let counter = Arc::clone(&n);
+                // Frames counted, and the sound's length in ns.
+                let audio = *name == "a";
+                p.by_name(name)
+                    .unwrap()
+                    .static_pad("sink")
+                    .unwrap()
+                    .add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+                        let add = match info.buffer() {
+                            Some(b) if audio => b.duration().map_or(0, |d| d.nseconds() as usize),
+                            _ => 1,
+                        };
+                        counter.fetch_add(add, Ordering::SeqCst);
+                        gst::PadProbeReturn::Ok
+                    });
+                n
+            })
+            .collect();
+        p.set_state(gst::State::Playing).unwrap();
+        let msg = p
+            .bus()
+            .unwrap()
+            .timed_pop_filtered(
+                gst::ClockTime::from_seconds(10),
+                &[gst::MessageType::Eos, gst::MessageType::Error],
+            )
+            .expect("reading the export timed out");
+        assert!(matches!(msg.view(), gst::MessageView::Eos(_)), "{msg:?}");
+        p.set_state(gst::State::Null).unwrap();
+        (
+            counts[0].load(Ordering::SeqCst),
+            gst::ClockTime::from_nseconds(counts[1].load(Ordering::SeqCst) as u64),
+        )
+    }
+
+    /// A saved clip keeps its files once the buffer has let them go, and
+    /// exports to one .mov holding just its frames, with its sound.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn saved_clip_outlives_buffer_and_exports() {
+        gst::init().unwrap();
+        let source = test_source();
+        let clock = gst::SystemClock::obtain();
+        let monitor =
+            MonitorPipeline::new(&source, &MonitorSettingsDto::default(), &clock).unwrap();
+        let root = std::env::temp_dir().join(format!("cr-replay-clip-{}", uuid::Uuid::new_v4()));
+        let index = Index::create(&root.join("buffer"), gst::ClockTime::from_seconds(30));
+        while monitor.video_frames() == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let leg = ReplayLeg::start(&monitor, ReplayCodec::Mjpeg, &index, "test").unwrap();
+        for _ in 0..200 {
+            if index.lock().unwrap().segments.len() >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let (start, _) = index.lock().unwrap().span().expect("nothing recorded");
+
+        // One second from the middle of the first segment, across into the
+        // second.
+        let from = start + gst::ClockTime::from_mseconds(500);
+        let span = Index::clip(&index, from, Some(from + gst::ClockTime::SECOND)).unwrap();
+        assert_eq!(span.files.len(), 2);
+        let clip_dir = root.join("clip");
+        let files = save(&span, &clip_dir).unwrap();
+        let (from, to) = (span.from, span.to);
+        drop(span);
+        drop(leg);
+        let _ = monitor.stop();
+        drop(index);
+        assert!(!root.join("buffer").exists());
+        assert!(
+            files.iter().all(|f| Path::new(f).is_file()),
+            "a saved file went with the buffer"
+        );
+
+        let out = root.join("export.mov");
+        let saved = files.clone();
+        tokio::task::spawn_blocking(move || export(&saved, from, to, &out))
+            .await
+            .unwrap()
+            .unwrap();
+        let (video, audio) = count_frames(&root.join("export.mov"));
+        // 30 fps: a second's frames, give or take the one on the cut.
+        assert!((29..=31).contains(&video), "{video} frames exported");
+        // …and the sound that goes with them.
+        let want = to - from;
+        assert!(
+            audio.nseconds().abs_diff(want.nseconds())
+                < gst::ClockTime::from_mseconds(5).nseconds(),
+            "{audio} of sound for {want} of pictures"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

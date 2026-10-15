@@ -123,10 +123,10 @@ pub fn spawn_emitter(state: Arc<AppState>) {
                 if status.state == TransportState::Playing || tick.is_multiple_of(10) {
                     state.emit(&WsEvent::ChannelState {
                         source_id: source.id().to_string(),
-                        status: crate::api::playout::status_dto(
+                        status: Box::new(crate::api::playout::status_dto(
                             status,
                             mgr.output_status(source.id()),
-                        ),
+                        )),
                     });
                 }
             }

@@ -6,6 +6,7 @@ import { sourceKey } from '@/composables/useApi'
 import { useEventsStore } from '@/stores/events'
 import { useCapacityStore } from '@/stores/capacity'
 import { usePlayoutStore } from '@/stores/playout'
+import { useReplayStore } from '@/stores/replay'
 import { runReconnectReloads } from '@/lib/reconnect'
 import type { WsEvent } from '@/types/generated/WsEvent'
 
@@ -171,6 +172,12 @@ function handleEvent(event: NodeEvent) {
     case 'media.updated': {
       const playout = usePlayoutStore()
       if (playout.media.has(nodeId)) playout.loadMedia(nodeId)
+      break
+    }
+
+    case 'replay.clips': {
+      const replay = useReplayStore()
+      if (replay.clips.has(nodeId)) replay.loadClips(nodeId)
       break
     }
   }

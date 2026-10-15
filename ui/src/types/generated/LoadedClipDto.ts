@@ -10,4 +10,8 @@ rate: number,
  * A replay's source, and the node clock time (µs) of position 0, so a
  * position maps back to the moment it shows.
  */
-replay_source_id: string | null, replay_start_us: number | null, };
+replay_source_id: string | null, replay_start_us: number | null, 
+/**
+ * The saved replay clip it plays, if it's one.
+ */
+replay_clip_id: string | null, };

@@ -179,6 +179,8 @@ pub struct SourceManager {
     /// Replay buffers, by source id, and the folder they're kept in.
     replays: HashMap<String, Replay>,
     replay_root: PathBuf,
+    /// Where saved replay clips keep their files, a folder each.
+    clip_root: PathBuf,
 }
 
 impl SourceManager {
@@ -210,13 +212,23 @@ impl SourceManager {
             replay_root: std::env::temp_dir()
                 .join("capture-room-replay")
                 .join(std::process::id().to_string()),
+            clip_root: std::env::temp_dir()
+                .join("capture-room-replay-clips")
+                .join(std::process::id().to_string()),
         }
     }
 
-    /// Where replay buffers are kept (a temporary folder until set). Set
-    /// before any buffer is.
-    pub fn set_replay_root(&mut self, root: PathBuf) {
-        self.replay_root = root;
+    /// Where replay buffers and saved clips are kept (temporary folders
+    /// until set). Set before any buffer is. Buffers are cleared on start;
+    /// clips stay.
+    pub fn set_replay_root(&mut self, buffers: PathBuf, clips: PathBuf) {
+        self.replay_root = buffers;
+        self.clip_root = clips;
+    }
+
+    /// The folder a saved replay clip's files are in.
+    pub fn replay_clip_dir(&self, clip_id: &str) -> PathBuf {
+        self.clip_root.join(clip_id)
     }
 
     // ── Source access ─────────────────────────────────────────────────────────
@@ -555,6 +567,7 @@ impl SourceManager {
         }
         Ok(ReplayClip {
             source_id: source_id.to_string(),
+            clip_id: None,
             span: Index::clip(&replay.index, from, to)?,
         })
     }

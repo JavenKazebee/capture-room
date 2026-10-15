@@ -4,7 +4,7 @@ Active sequencing of work, decisions, and rationale. This complements
 [ARCHITECTURE.md](ARCHITECTURE.md) (the design spec) — when the two disagree on
 *order*, this file wins; ARCHITECTURE.md remains the source of truth for *design*.
 
-_Last updated: 2026-10-11_
+_Last updated: 2026-10-14_
 
 ---
 
@@ -250,12 +250,18 @@ Builds on playback (#9) and clock sync (#10). Design in ARCHITECTURE.md (Instant
   moment, speed and reverse, frame steps, in/out marks, all on the keyboard; a Buffers
   sheet for turning buffers on. A step now waits for its frame rather than a state
   change (it used to take 5 s).
-- **Next:** a clip list of saved marks, clip export, and replay buffers in capacity and
-  the benchmark.
-  Compare intra H.264's picture with ProRes Proxy's before recommending it for its size.
-- Then: replay buffers per source on a replay node (subscribing to the same NDI
-  sources), marks and clip list, variable-speed playout, clip export without
-  re-encoding, **Replay workspace**.
+- ✅ **Clip list and export (2026-10-14)** — S saves in → out as a clip (Shift+S on
+  every angle): the segments covering it become the clip's own files (hard links, so
+  instant and free), kept after the buffer rolls on and across restarts. A clip list in
+  the Replay workspace cues, plays at the chosen speed, renames and deletes them. Export
+  remuxes a clip, frame-exact with its sound, into one .mov in `~/capture-room/Replay
+  clips/` and adds it to the media library. Fixed on the way: replacing a channel's
+  lanes could fail its program (`not-linked`) when loads came quickly.
+- **Next:** replay buffers in capacity and the benchmark. Compare intra H.264's picture
+  with ProRes Proxy's before recommending it for its size. Then a replay node
+  subscribing to the same NDI sources as the capture nodes. Not yet: clips from several
+  angles grouped as one, downloading an export from the browser, MOV timecode on
+  exports.
 - Replay buffers count against capacity; extend the benchmark to cover them and
   playout channels.
 

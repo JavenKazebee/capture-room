@@ -106,6 +106,7 @@ async function remove(m: MediaItemDto) {
             <span class="num">{{ m.info.duration_ms != null ? formatClock(m.info.duration_ms) : '—' }}</span>
             <span>{{ summary(m) }}</span>
             <span v-if="m.origin === 'recording'" class="uppercase tracking-wide text-[9px]">Recording</span>
+            <span v-else-if="m.origin === 'replay'" class="uppercase tracking-wide text-[9px]">Replay</span>
           </div>
           <div v-if="m.missing" class="flex items-center gap-1 text-[11px] text-destructive">
             <FileWarning class="size-3" /> File no longer on disk

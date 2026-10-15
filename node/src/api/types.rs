@@ -464,6 +464,9 @@ pub struct LoadedClipDto {
     #[serde(default)]
     #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
     pub replay_start_us: Option<u64>,
+    /// The saved replay clip it plays, if it's one.
+    #[serde(default)]
+    pub replay_clip_id: Option<String>,
 }
 
 fn normal_rate() -> f64 {
@@ -650,6 +653,70 @@ pub struct ReplayClipRequest {
     pub play: bool,
 }
 
+/// A saved replay clip: part of a replay buffer kept as its own files, so it
+/// stays playable after the buffer has rolled past it (and across restarts).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct ReplayClipDto {
+    pub id: String,
+    pub source_id: String,
+    /// The angle's name when the clip was saved.
+    pub source_name: String,
+    pub name: String,
+    pub codec: ReplayCodec,
+    /// Its in and out on the node clock (µs) when it was saved. They only
+    /// line up with a buffer until the node restarts.
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub from_us: u64,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub to_us: u64,
+    /// When its first frame was captured (UTC, µs since the epoch), if the
+    /// node knew its clock's UTC offset.
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub start_utc_us: Option<i64>,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub bytes: u64,
+    pub created_at: String,
+    /// Some of its files are no longer on disk.
+    #[serde(default)]
+    pub missing: bool,
+}
+
+/// Save part of a source's replay buffer as a clip.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct SaveReplayClipRequest {
+    pub source_id: String,
+    /// In and out on the node clock (µs), moved into the buffer's span.
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub from_us: u64,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub to_us: u64,
+    /// The angle and the time of day it starts, if `None`.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Rename a saved replay clip.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct UpdateReplayClipRequest {
+    pub name: String,
+}
+
+/// Play (or cue) a saved replay clip on a channel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct PlayReplayClipRequest {
+    pub clip_id: String,
+    /// 1 if `None`. Negative plays backwards, from its out point.
+    #[serde(default)]
+    pub rate: Option<f64>,
+    /// Play straight away; otherwise it's cued on its first frame.
+    #[serde(default)]
+    pub play: bool,
+}
+
 // ── Media library ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
@@ -661,6 +728,8 @@ pub enum MediaOrigin {
     Import,
     /// Added from a recording session's files.
     Recording,
+    /// Exported from a saved replay clip.
+    Replay,
 }
 
 /// A file in the node's media library.
@@ -1226,11 +1295,14 @@ pub enum WsEvent {
     #[serde(rename = "channel.state")]
     ChannelState {
         source_id: String,
-        status: ChannelStatusDto,
+        status: Box<ChannelStatusDto>,
     },
     /// The media library changed.
     #[serde(rename = "media.updated")]
     MediaUpdated,
+    /// A replay clip was saved, renamed or deleted.
+    #[serde(rename = "replay.clips")]
+    ReplayClipsUpdated,
     #[serde(rename = "feed.status")]
     FeedStatus {
         source_id: String,

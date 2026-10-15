@@ -685,11 +685,27 @@ plays from it at variable speed.
   each other. Sources that only exist on another machine (SDI) can't be replayed from a
   different node; that's acceptable to start.
 - **Operation:** the Replay workspace (see Web UI › Views): pick an angle and a moment,
-  mark in/out, play out at variable speed or frame by frame through a playout channel,
-  keyboard first. Still to build: a clip list of saved marks; jog wheels or a Stream
-  Deck via WebHID / MIDI.
-- **Clip export (to build):** all-intra segments can be cut on any frame and remuxed
-  into a file without re-encoding.
+  mark in/out, save clips, play out at variable speed or frame by frame through a
+  playout channel, keyboard first. Still to build: jog wheels or a Stream Deck via
+  WebHID / MIDI.
+- **Saved clips:** saving in → out keeps the segments that cover it as the clip's own
+  files, hard links under `~/capture-room/.replay-clips/<node id>/<clip id>/` (a copy
+  if a link can't be made), so saving is instant, takes no room while the buffer still
+  has them, and the buffer rolls on regardless; nothing holds its segments. Stored in
+  `replay_clips` with positions in those files, so a clip plays and exports after the
+  buffer has moved on, and after a restart. One angle per clip; saving on every angle
+  makes one clip each for the same span. A clip on a channel reports its id in the
+  status (`replay_clip_id`) and keeps its node clock times, which line up with the
+  buffers until the clock changes.
+- **Clip export** (`replay::export`): the clip's files through `splitmuxsrc`, an
+  accurate seek on the source to its in and out, into `qtmux` → one .mov in
+  `~/capture-room/Replay clips/`, named after the clip (never overwriting), added to
+  the media library (origin `replay`) so Playback can play it. No re-encoding: every
+  frame is a keyframe, so the cut falls on any frame. A gate on each stream holds
+  everything back until the seek's segment, as in the prototype, and trims the sound to
+  start there: qtdemux hands out PCM in chunks of about half a second starting on the
+  sample before the cut, and qtmux drops a chunk that starts before it whole. Tested:
+  the export holds exactly the frames marked, and as long a stretch of sound.
 
 ### What the prototype showed
 
@@ -765,6 +781,10 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 | POST | `/channels/{id}/replay` | `{ source_id, from_us, to_us?, rate?, play }` → part of a source's replay buffer on air (node clock times; clamped into one stretch of the buffer, to its newest frame without `to_us`), cued on its first frame or playing |
 | GET | `/replay` | replay buffers: source, codec, length, encoder, error, the span held (`start_us`, `end_us`, gaps), the clock now and its UTC offset, bytes |
 | PUT / DELETE | `/replay/{source_id}` | `{ codec: prores_proxy \| h264_intra \| mjpeg, minutes }` → give a source a buffer or change it (a new codec starts afresh) / remove it and what it recorded |
+| GET / POST | `/replay/clips` | saved clips, newest first (angle, name, codec, in and out on the node clock, capture time in UTC, bytes, whether files are missing) / save one `{ source_id, from_us, to_us, name? }` (named after the angle and its time of day by default) |
+| PATCH / DELETE | `/replay/clips/{id}` | `{ name }` → rename / delete it and its files (exports stay) |
+| POST | `/replay/clips/{id}/export` | remux it into one .mov in the Replay clips folder, add it to the media library → the media entry |
+| POST | `/channels/{id}/replay-clip` | `{ clip_id, rate?, play }` → a saved clip on air, cued on its first frame or playing |
 | GET | `/files?path=` | folders and media files in a directory (home if no path), for picking a file source. Read-only |
 | GET / POST | `/recordings` | list (`?before=&limit=`: newest first, 100 by default, at most 500, paged by `started_at`; the first page also carries active sessions) / start. Start body: `{ source_id, preset_id?, outputs: [...], start_at?: { domain, time_us } }` (see Clock sync). Refused onto a volume with under 1 GB free; cancels a running benchmark |
 | GET / DELETE | `/recordings/{id}` | session details / remove a finished session from history; `?files` deletes its files from disk first, and if any can't be deleted the session stays, listing those still on disk (409 while recording) |
@@ -894,7 +914,7 @@ join when the backend supports them — not before.
 | **Setup › Checks** | Per node: permissions, software, storage, clock and network checks, problems first in the counts, with how to fix each; Nodes cards badge their problems |
 | **Setup › Settings** | Appearance; monitoring settings (thumbnail/meter rate, applied to all nodes); About |
 | **Playback** | Playout channels, playlists, transport, channel settings |
-| **Replay** | Angles (sources with a buffer, numbered) beside the program of the channel picked to play on, the selected angle live, and its buffer on a timeline up to now (30 s, 2 min or all). Replay the last N seconds (R), switch angle at the same moment (1–9), play, pause, step a frame (← →), reverse and 25–100 % speed (J K L, ↑ ↓), mark in and out on the frame shown (I O) and play in → out (Enter). Commands queue and each decides what to do when its turn comes, so fast keying isn't lost. A Buffers sheet turns buffers on per source with their codec and length |
+| **Replay** | Angles (sources with a buffer, numbered) beside the program of the channel picked to play on, the selected angle live, and its buffer on a timeline up to now (30 s, 2 min or all). Replay the last N seconds (R), switch angle at the same moment (1–9), play, pause, step a frame (← →), reverse and 25–100 % speed (J K L, ↑ ↓), mark in and out on the frame shown (I O), play in → out (Enter) and save it as a clip (S, Shift+S on every angle). The clip list under the timeline cues a clip (click), plays it at the chosen speed (double-click), exports, renames and deletes it. Commands queue and each decides what to do when its turn comes, so fast keying isn't lost. A Buffers sheet turns buffers on per source with their codec and length |
 | **Schedules** _(planned)_ | Create, edit, and view upcoming scheduled recordings |
 | **Logs** _(planned)_ | Aggregated log viewer with filter by node and level |
 

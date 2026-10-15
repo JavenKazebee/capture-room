@@ -446,6 +446,15 @@ impl Inputs {
     /// Take `chain` out of the bin. On its own thread: it runs from a
     /// source's signal, whose thread the state changes could wait on.
     pub(crate) fn remove(&self, chain: Chain) {
+        // Whatever the chain still sends goes nowhere from now on. Once its
+        // aggregator pad is gone it would come back not-linked, which fails
+        // a source pushing into it (a channel's lane), and the program with
+        // it.
+        if let Some(tail) = chain.elements.last().and_then(|e| e.static_pad("src")) {
+            tail.add_probe(gst::PadProbeType::DATA_DOWNSTREAM, |_, _| {
+                gst::PadProbeReturn::Drop
+            });
+        }
         let (bin, aggregator) = (self.bin.clone(), self.aggregator.clone());
         std::thread::spawn(move || {
             // The aggregator's pad first: it flushes, releasing a source

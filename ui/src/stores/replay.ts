@@ -9,6 +9,9 @@ import type { ReplayBufferDto } from '@/types/generated/ReplayBufferDto'
 import type { ReplayClipRequest } from '@/types/generated/ReplayClipRequest'
 import type { ReplayCodec } from '@/types/generated/ReplayCodec'
 import type { ReplayConfigInput } from '@/types/generated/ReplayConfigInput'
+import type { ReplayClipDto } from '@/types/generated/ReplayClipDto'
+import type { SaveReplayClipRequest } from '@/types/generated/SaveReplayClipRequest'
+import type { MediaItemDto } from '@/types/generated/MediaItemDto'
 
 export type ReplayBuffer = ReplayBufferDto & {
   node_id: string
@@ -16,6 +19,12 @@ export type ReplayBuffer = ReplayBufferDto & {
   key: string
   /** `performance.now()` when it was fetched, to run its clock on from `now_us`. */
   fetched_at: number
+}
+
+export type ReplayClip = ReplayClipDto & {
+  node_id: string
+  /** `node_id/id`. */
+  key: string
 }
 
 export const CODECS: Record<ReplayCodec, { label: string; note: string }> = {
@@ -36,6 +45,8 @@ export const useReplayStore = defineStore('replay', () => {
   const buffers = reactive(new Map<string, ReplayBuffer>())
   /** The codecs each node can use, default first. */
   const codecs = reactive(new Map<string, ReplayCodec[]>())
+  /** Saved clips, by node, newest first. */
+  const clips = reactive(new Map<string, ReplayClip[]>())
 
   async function load(nodeId: string) {
     const list = await nodeApi(nodeId)<ReplayBufferDto[]>('/replay')
@@ -100,5 +111,71 @@ export const useReplayStore = defineStore('replay', () => {
     playout.setStatus(nodeId, channelId, s)
   }
 
-  return { buffers, codecs, load, loadAll, loadCodecs, nowUs, setBuffer, removeBuffer, play, speed, step }
+  // ── Saved clips ─────────────────────────────────────────────────────────────
+
+  async function loadClips(nodeId: string) {
+    const list = await nodeApi(nodeId)<ReplayClipDto[]>('/replay/clips')
+    clips.set(
+      nodeId,
+      list.map((c) => ({ ...c, node_id: nodeId, key: `${nodeId}/${c.id}` })),
+    )
+  }
+
+  async function loadAllClips() {
+    if (!nodes.nodes.length) await nodes.load()
+    await Promise.all(nodes.reachable.map((n) => loadClips(n.id).catch(() => {})))
+  }
+
+  async function saveClip(nodeId: string, req: SaveReplayClipRequest) {
+    const c = await nodeApi(nodeId)<ReplayClipDto>('/replay/clips', { method: 'POST', body: req })
+    await loadClips(nodeId)
+    return c
+  }
+
+  async function renameClip(clip: ReplayClip, name: string) {
+    await nodeApi(clip.node_id)(`/replay/clips/${clip.id}`, { method: 'PATCH', body: { name } })
+    await loadClips(clip.node_id)
+  }
+
+  async function removeClip(clip: ReplayClip) {
+    await nodeApi(clip.node_id)(`/replay/clips/${clip.id}`, { method: 'DELETE' })
+    await loadClips(clip.node_id)
+  }
+
+  /** Remux a clip into a file in the node's Replay clips folder; it joins the media library. */
+  async function exportClip(clip: ReplayClip) {
+    return nodeApi(clip.node_id)<MediaItemDto>(`/replay/clips/${clip.id}/export`, { method: 'POST' })
+  }
+
+  /** Put a saved clip on a channel (same node), cued or playing. */
+  async function playClip(channelId: string, clip: ReplayClip, rate: number, play: boolean) {
+    const s = await nodeApi(clip.node_id)<ChannelStatusDto>(`/channels/${channelId}/replay-clip`, {
+      method: 'POST',
+      body: { clip_id: clip.id, rate, play },
+    })
+    playout.setStatus(clip.node_id, channelId, s)
+    return s
+  }
+
+  return {
+    buffers,
+    codecs,
+    clips,
+    load,
+    loadAll,
+    loadCodecs,
+    nowUs,
+    setBuffer,
+    removeBuffer,
+    play,
+    speed,
+    step,
+    loadClips,
+    loadAllClips,
+    saveClip,
+    renameClip,
+    removeClip,
+    exportClip,
+    playClip,
+  }
 })

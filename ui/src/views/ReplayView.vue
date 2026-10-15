@@ -8,6 +8,7 @@ import {
   Pause,
   Play,
   Rewind,
+  Save,
   Settings2,
   Square,
   X,
@@ -15,7 +16,7 @@ import {
 import { useSourcesStore, type Source } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { usePlayoutStore } from '@/stores/playout'
-import { useReplayStore, type ReplayBuffer } from '@/stores/replay'
+import { useReplayStore, type ReplayBuffer, type ReplayClip } from '@/stores/replay'
 import { notifyError } from '@/lib/notify'
 import { formatClock } from '@/lib/format'
 import { Button } from '@/components/ui/button'
@@ -27,6 +28,7 @@ import OptionSelect from '@/components/OptionSelect.vue'
 import ProgramMonitor from '@/components/playback/ProgramMonitor.vue'
 import BuffersSheet from '@/components/replay/BuffersSheet.vue'
 import ReplayTimeline from '@/components/replay/ReplayTimeline.vue'
+import ClipList from '@/components/replay/ClipList.vue'
 import { useThumbnail } from '@/components/record/useThumbnail'
 
 const sources = useSourcesStore()
@@ -43,6 +45,8 @@ const SHORTCUTS: [string[], string][] = [
   [['↑', '↓'], 'Faster / slower'],
   [['I', 'O'], 'Mark in / out at the frame shown'],
   [['Enter'], 'Play from in to out'],
+  [['S'], 'Save in → out as a clip'],
+  [['Shift', 'S'], 'Save in → out on every angle'],
   [['Esc'], 'Stop (back to black)'],
 ]
 
@@ -71,9 +75,13 @@ watch(
   channel,
   (c) => {
     if (c) playout.loadStatus(c.node_id, c.id).catch(() => {})
+    if (c) replay.loadClips(c.node_id).catch(() => {})
   },
   { immediate: true },
 )
+
+/** Saved clips on the channel's node: they play on its channels. */
+const clips = computed(() => (channel.value ? (replay.clips.get(channel.value.node_id) ?? []) : []))
 
 /** Sources with a buffer, in source order. A buffer plays on its own node's channels. */
 const angles = computed(() =>
@@ -214,6 +222,8 @@ function play() {
     if (!s || !clip || playing.value) return
     if (status.value?.state === 'ended') {
       // Again from its in point (its out point backwards).
+      const saved = clips.value.find((x) => x.id === clip.replay_clip_id)
+      if (saved) return replay.playClip(c.id, saved, rate.value, true)
       const a = angles.value.find((x) => x.source.key === s.key)
       if (!a) return
       const start = clip.replay_start_us! + clip.in_ms * 1000
@@ -286,6 +296,37 @@ function setReverse(on: boolean) {
   setRate(on ? -Math.abs(rate.value) : Math.abs(rate.value))
 }
 
+/** Save in → out as a clip of the selected angle, or of every angle on the channel's node. */
+function saveMarked(everyAngle: boolean) {
+  const c = channel.value
+  const a = angle.value
+  if (!c || !a) return
+  run('Saving the clip', async () => {
+    const from = inUs.value
+    const to = outUs.value
+    if (from === null || to === null || to <= from) throw new Error('Mark an in point and a later out point first.')
+    const targets = everyAngle ? angles.value.filter((x) => usable(x.buffer)) : [a]
+    for (const t of targets) {
+      await replay.saveClip(c.node_id, {
+        source_id: t.source.id,
+        from_us: Math.round(from),
+        to_us: Math.round(to),
+        name: null,
+      })
+    }
+  })
+}
+
+function cueClip(clip: ReplayClip) {
+  const c = channel.value
+  if (c) run(`Cueing ${clip.name}`, () => replay.playClip(c.id, clip, rate.value, false))
+}
+
+function playClip(clip: ReplayClip) {
+  const c = channel.value
+  if (c) run(`Playing ${clip.name}`, () => replay.playClip(c.id, clip, rate.value, true))
+}
+
 /** Mark the frame shown, once the commands before have shown it. */
 function mark(which: 'in' | 'out') {
   run('Marking', async () => {
@@ -335,7 +376,8 @@ useEventListener('keydown', (e: KeyboardEvent) => {
   else if (key === 'enter') {
     handled()
     playMarked()
-  } else if (key === 'escape') stop()
+  } else if (key === 's') saveMarked(e.shiftKey)
+  else if (key === 'escape') stop()
 })
 
 onMounted(async () => {
@@ -552,6 +594,16 @@ const angleThumb = useThumbnail(angleSource)
                 <Play class="size-3 fill-current" /> Play in → out
               </Button>
               <Button
+                size="sm"
+                variant="outline"
+                class="h-7 text-xs gap-1.5"
+                :disabled="inUs === null || outUs === null || outUs <= inUs"
+                title="Save in → out as a clip (S; Shift+S on every angle)"
+                @click="saveMarked(false)"
+              >
+                <Save class="size-3" /> Save clip
+              </Button>
+              <Button
                 v-if="inUs !== null || outUs !== null"
                 size="icon"
                 variant="ghost"
@@ -571,6 +623,13 @@ const angleThumb = useThumbnail(angleSource)
               </ToggleGroup>
             </div>
           </section>
+
+          <ClipList
+            :clips="clips"
+            :on-air-id="status?.clip?.replay_clip_id ?? null"
+            @cue="cueClip"
+            @play="playClip"
+          />
         </div>
       </main>
     </div>

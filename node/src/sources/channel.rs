@@ -707,12 +707,15 @@ pub struct ClipRequest {
 #[derive(Debug, Clone)]
 pub struct ReplayClip {
     pub source_id: String,
+    /// The saved clip it is, if it isn't straight from the buffer.
+    pub clip_id: Option<String>,
     pub span: ReplaySpan,
 }
 
 impl PartialEq for ReplayClip {
     fn eq(&self, other: &Self) -> bool {
         self.source_id == other.source_id
+            && self.clip_id == other.clip_id
             && self.span.files == other.span.files
             && self.span.base == other.span.base
     }
@@ -2715,6 +2718,7 @@ mod tests {
             rate: 1.0,
             replay: Some(ReplayClip {
                 source_id: "cam".into(),
+                clip_id: None,
                 span: span.clone(),
             }),
         };

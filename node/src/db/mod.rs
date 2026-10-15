@@ -504,6 +504,87 @@ pub async fn replay_buffer_delete(pool: &SqlitePool, source_id: &str) -> Result<
     Ok(res.rows_affected() > 0)
 }
 
+// ── replay clips ──────────────────────────────────────────────────────────────
+
+/// A saved replay clip as stored. Positions (µs) count from its first
+/// file's start, which was at `base_us` on the node clock.
+#[derive(Debug, Clone, FromRow)]
+pub struct ReplayClipRow {
+    pub id: String,
+    pub source_id: String,
+    pub source_name: String,
+    pub name: String,
+    pub codec: ReplayCodec,
+    pub files: Json<Vec<String>>,
+    pub base_us: i64,
+    pub from_us: i64,
+    pub to_us: i64,
+    pub utc_offset_us: Option<i64>,
+    pub bytes: i64,
+    pub created_at: String,
+}
+
+const REPLAY_CLIP_SELECT: &str = "SELECT id, source_id, source_name, name, codec, files, base_us,
+    from_us, to_us, utc_offset_us, bytes, created_at FROM replay_clips";
+
+/// Newest first.
+pub async fn replay_clips_list(pool: &SqlitePool) -> Result<Vec<ReplayClipRow>> {
+    Ok(sqlx::query_as::<_, ReplayClipRow>(&format!(
+        "{REPLAY_CLIP_SELECT} ORDER BY created_at DESC"
+    ))
+    .fetch_all(pool)
+    .await?)
+}
+
+pub async fn replay_clip_get(pool: &SqlitePool, id: &str) -> Result<Option<ReplayClipRow>> {
+    Ok(
+        sqlx::query_as::<_, ReplayClipRow>(&format!("{REPLAY_CLIP_SELECT} WHERE id = ?"))
+            .bind(id)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+pub async fn replay_clip_insert(pool: &SqlitePool, clip: &ReplayClipRow) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO replay_clips (id, source_id, source_name, name, codec, files, base_us,
+         from_us, to_us, utc_offset_us, bytes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&clip.id)
+    .bind(&clip.source_id)
+    .bind(&clip.source_name)
+    .bind(&clip.name)
+    .bind(clip.codec)
+    .bind(&clip.files)
+    .bind(clip.base_us)
+    .bind(clip.from_us)
+    .bind(clip.to_us)
+    .bind(clip.utc_offset_us)
+    .bind(clip.bytes)
+    .bind(&clip.created_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn replay_clip_rename(pool: &SqlitePool, id: &str, name: &str) -> Result<bool> {
+    let res = sqlx::query("UPDATE replay_clips SET name = ? WHERE id = ?")
+        .bind(name)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+pub async fn replay_clip_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
+    let res = sqlx::query("DELETE FROM replay_clips WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
 // ── playlists ─────────────────────────────────────────────────────────────────
 
 /// A playlist item with its media entry.
