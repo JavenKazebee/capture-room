@@ -344,6 +344,8 @@ pub struct ReplayLeg {
     links: Vec<ConsumptionLink>,
     encoder: &'static str,
     error: Arc<Mutex<Option<String>>>,
+    video_src: gst_app::AppSrc,
+    audio_src: gst_app::AppSrc,
 }
 
 impl ReplayLeg {
@@ -372,10 +374,8 @@ impl ReplayLeg {
         for &encoder in codec.encoders() {
             match Self::build(codec, encoder, index, name, &clock, base) {
                 Ok(mut leg) => {
-                    leg.links
-                        .push(monitor.video.add_consumer(&leg.video_src()?)?);
-                    leg.links
-                        .push(monitor.audio.add_consumer(&leg.audio_src()?)?);
+                    leg.links.push(monitor.video.add_consumer(&leg.video_src)?);
+                    leg.links.push(monitor.audio.add_consumer(&leg.audio_src)?);
                     info!(name, encoder, "replay buffer recording");
                     return Ok(leg);
                 }
@@ -403,7 +403,7 @@ impl ReplayLeg {
         let audio_src = consumer("audio-src");
 
         let mut video = vec![
-            video_src.upcast::<gst::Element>(),
+            video_src.clone().upcast::<gst::Element>(),
             make_el("videoconvert", "vconv")?,
         ];
         let venc = make_el(encoder, "venc")?;
@@ -456,7 +456,7 @@ impl ReplayLeg {
         }
 
         let audio = vec![
-            audio_src.upcast::<gst::Element>(),
+            audio_src.clone().upcast::<gst::Element>(),
             audio_hold_queue()?,
             make_el("audioconvert", "aconv")?,
             make_el("audioresample", "aresample")?,
@@ -562,22 +562,9 @@ impl ReplayLeg {
             links: Vec::new(),
             encoder,
             error,
+            video_src,
+            audio_src,
         })
-    }
-
-    fn video_src(&self) -> Result<gst_app::AppSrc> {
-        self.appsrc("video-src")
-    }
-
-    fn audio_src(&self) -> Result<gst_app::AppSrc> {
-        self.appsrc("audio-src")
-    }
-
-    fn appsrc(&self, name: &str) -> Result<gst_app::AppSrc> {
-        self.pipeline
-            .by_name(name)
-            .and_then(|e| e.downcast::<gst_app::AppSrc>().ok())
-            .with_context(|| format!("no {name}"))
     }
 
     pub fn encoder(&self) -> &'static str {
@@ -590,8 +577,7 @@ impl ReplayLeg {
     ///
     /// [`RecordingLeg::dropped_frames`]: super::recording::RecordingLeg::dropped_frames
     pub fn dropped_frames(&self) -> u64 {
-        self.video_src()
-            .map_or(0, |src| src.property::<u64>("dropped"))
+        self.video_src.property::<u64>("dropped")
     }
 
     /// Why it stopped recording, if it has.
