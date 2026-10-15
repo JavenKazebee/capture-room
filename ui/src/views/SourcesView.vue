@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { MonitorPlay, Pencil, Plus, Radio, RefreshCw, Trash2 } from '@lucide/vue'
+import { MonitorPlay, Pencil, Plus, Radio, RadioTower, RefreshCw, Trash2 } from '@lucide/vue'
 import { CONFIGURED_TYPES, useSourcesStore, type Source } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordingsStore } from '@/stores/recordings'
@@ -23,6 +23,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import SourceFormSheet from '@/components/sources/SourceFormSheet.vue'
+import NdiSendersSheet from '@/components/sources/NdiSendersSheet.vue'
 import { LINK } from '@/lib/linkState'
 import { useStorage } from '@vueuse/core'
 
@@ -33,6 +34,7 @@ const desk = useRecordDeskStore()
 const router = useRouter()
 
 const scanning = ref(false)
+const ndiOpen = ref(false)
 const filter = ref('')
 const groupByNode = useStorage('cr.sources.groupByNode', true)
 
@@ -134,6 +136,9 @@ onMounted(() => store.ensureLoaded())
       <Button size="sm" class="h-7 gap-1.5 text-xs" @click="openCreate"><Plus class="size-3.5" /> Add source</Button>
       <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" :disabled="scanning" @click="scan">
         <RefreshCw class="size-3.5" :class="scanning && 'animate-spin'" /> Scan
+      </Button>
+      <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" @click="ndiOpen = true">
+        <RadioTower class="size-3.5" /> NDI senders
       </Button>
     </template>
 
@@ -245,6 +250,7 @@ onMounted(() => store.ensureLoaded())
   />
 
   <SourceFormSheet v-if="formOpen" :source="editing" @close="formOpen = false" />
+  <NdiSendersSheet v-if="ndiOpen" @close="ndiOpen = false" />
 </template>
 
 <style scoped>

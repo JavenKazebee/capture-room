@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use crate::api::types::{
     AudioPlan, CheckDto, CheckFix, CheckGroup, CheckLink, CheckStatus, ClockSourceDto,
-    ClockStatusDto, ConfiguredSourceDto, DeviceDto, DeviceKind, NodeChecksDto, NodePortDto,
-    OutputConfig, PortProtocol, SourceConfig,
+    ClockStatusDto, ConfiguredSourceDto, DeviceDto, DeviceKind, NdiConnect, NdiSubscriptionsDto,
+    NodeChecksDto, NodePortDto, OutputConfig, PortProtocol, SourceConfig,
 };
 use crate::sources::privacy::{self, Access, Permission};
 use crate::state::AppState;
@@ -17,9 +17,13 @@ use crate::storage;
 
 pub async fn run(state: &AppState) -> anyhow::Result<NodeChecksDto> {
     let configured = crate::db::configured_sources_list(&state.db).await?;
-    let (devices, ndi_loaded) = {
+    let (devices, ndi_loaded, ndi) = {
         let manager = state.source_manager.read().await;
-        (manager.devices().list(), manager.ndi_runtime_loaded())
+        (
+            manager.devices().list(),
+            manager.ndi_runtime_loaded(),
+            manager.ndi_subscriptions(),
+        )
     };
     let clock = state.clock_status().await;
 
@@ -41,6 +45,9 @@ pub async fn run(state: &AppState) -> anyhow::Result<NodeChecksDto> {
         }
     }
     checks.push(ndi_check(ndi_loaded, &configured));
+    if ndi_loaded {
+        checks.push(ndi_intake_check(&ndi));
+    }
     checks.push(tokio::task::spawn_blocking(storage_check).await?);
     checks.extend(clock_check(&clock));
 
@@ -278,6 +285,43 @@ fn ndi_check(loaded: bool, configured: &[ConfiguredSourceDto]) -> CheckDto {
                 url: "https://ndi.video/tools/".into(),
                 label: "Download NDI Tools".into(),
             }),
+            ..Default::default()
+        });
+    }
+    c
+}
+
+/// More NDI senders than this, all connected, is worth a look: each
+/// 1080p60 feed is about 130 Mbit/s at full bandwidth.
+const NDI_INTAKE_WARN: usize = 4;
+
+/// A node connecting to every NDI sender on a busy network takes them all in,
+/// whether it uses them or not.
+fn ndi_intake_check(ndi: &NdiSubscriptionsDto) -> CheckDto {
+    let mut c = check(
+        "ndi_intake",
+        CheckGroup::Network,
+        "NDI intake",
+        "Keeping a node from pulling NDI feeds it doesn't use",
+    );
+    c.required = false;
+    let connected = ndi.senders.iter().filter(|s| s.connected).count();
+    let senders = |n: usize| format!("{n} NDI sender{}", if n == 1 { "" } else { "s" });
+    c.summary = match ndi.connect {
+        NdiConnect::Chosen => format!("Connects to chosen senders: {}.", senders(connected)),
+        NdiConnect::All => format!("Connects to every sender it finds: {}.", senders(connected)),
+    };
+    if ndi.connect == NdiConnect::All && connected > NDI_INTAKE_WARN {
+        c.status = CheckStatus::Missing;
+        c.summary = format!(
+            "Connected to every sender it finds: {}, about {} Mbit/s at 1080p60.",
+            senders(connected),
+            connected * 130
+        );
+        c.fix = Some(CheckFix {
+            steps: "If this node only needs some of them (a replay node, say), set it to connect \
+                    only to those in Setup › Sources › NDI senders."
+                .into(),
             ..Default::default()
         });
     }
@@ -622,5 +666,34 @@ mod tests {
         assert_eq!(checks[1].id, format!("port:tcp:{closed_port}"));
         let command = checks[1].fix.as_ref().unwrap().command.as_deref().unwrap();
         assert!(command.contains(&format!("-Protocol TCP -LocalPort {closed_port}")));
+    }
+
+    #[test]
+    fn ndi_intake_flags_many_senders_when_connecting_to_all() {
+        use crate::api::types::NdiSenderDto;
+        let ndi = |connect, n: usize| NdiSubscriptionsDto {
+            connect,
+            chosen: Vec::new(),
+            senders: (0..n)
+                .map(|i| NdiSenderDto {
+                    ndi_name: format!("CAM (Camera {i})"),
+                    source_id: format!("ndi-cam-{i}"),
+                    connected: true,
+                    in_use: false,
+                    own: false,
+                })
+                .collect(),
+        };
+        let status = |connect, n| ndi_intake_check(&ndi(connect, n)).status;
+        assert_eq!(status(NdiConnect::All, NDI_INTAKE_WARN), CheckStatus::Ok);
+        assert_eq!(
+            status(NdiConnect::All, NDI_INTAKE_WARN + 1),
+            CheckStatus::Missing
+        );
+        assert_eq!(
+            status(NdiConnect::Chosen, NDI_INTAKE_WARN + 1),
+            CheckStatus::Ok
+        );
+        assert!(!ndi_intake_check(&ndi(NdiConnect::All, 9)).required);
     }
 }

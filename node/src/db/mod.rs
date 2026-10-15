@@ -5,8 +5,8 @@ use tracing::info;
 
 use crate::api::types::{
     BenchmarkRunDto, BenchmarkStatus, ClipEnd, ConfiguredSourceDto, MediaItemDto,
-    MonitorSettingsDto, PresetDto, PresetOutputInput, RecordingSessionDto, ReplayCodec,
-    ReplayConfigInput,
+    MonitorSettingsDto, NdiConnect, NdiSubscriptionsInput, PresetDto, PresetOutputInput,
+    RecordingSessionDto, ReplayCodec, ReplayConfigInput,
 };
 
 pub async fn init(db_path: &str) -> Result<SqlitePool> {
@@ -467,6 +467,50 @@ pub async fn media_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
     delete_one(pool, "DELETE FROM media WHERE id = ?", id).await
 }
 
+// ── NDI subscriptions ─────────────────────────────────────────────────────────
+
+const NDI_CONNECT: &str = "ndi_connect";
+
+pub async fn ndi_subscriptions_get(pool: &SqlitePool) -> Result<NdiSubscriptionsInput> {
+    let connect = match config_get(pool, NDI_CONNECT).await?.as_deref() {
+        Some("chosen") => NdiConnect::Chosen,
+        _ => NdiConnect::All,
+    };
+    let chosen =
+        sqlx::query_scalar::<_, String>("SELECT ndi_name FROM ndi_subscriptions ORDER BY ndi_name")
+            .fetch_all(pool)
+            .await?;
+    Ok(NdiSubscriptionsInput { connect, chosen })
+}
+
+/// Replace the subscriptions, atomically.
+pub async fn ndi_subscriptions_set(pool: &SqlitePool, subs: &NdiSubscriptionsInput) -> Result<()> {
+    let connect = match subs.connect {
+        NdiConnect::All => "all",
+        NdiConnect::Chosen => "chosen",
+    };
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO node_config (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(NDI_CONNECT)
+    .bind(connect)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM ndi_subscriptions")
+        .execute(&mut *tx)
+        .await?;
+    for name in &subs.chosen {
+        sqlx::query("INSERT OR IGNORE INTO ndi_subscriptions (ndi_name) VALUES (?)")
+            .bind(name)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 // ── replay buffers ────────────────────────────────────────────────────────────
 
 /// Each source with a replay buffer, and its config.
@@ -793,6 +837,29 @@ mod tests {
             names(&presets_list(&pool).await.unwrap()[0]),
             ["c", "b", "a"]
         );
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn ndi_subscriptions_round_trip() {
+        let path = std::env::temp_dir().join(format!("capture-room-ndi-{}.db", std::process::id()));
+        let pool = init(&format!("sqlite://{}", path.display())).await.unwrap();
+        assert_eq!(
+            ndi_subscriptions_get(&pool).await.unwrap(),
+            NdiSubscriptionsInput::default()
+        );
+        let subs = |connect, chosen: &[&str]| NdiSubscriptionsInput {
+            connect,
+            chosen: chosen.iter().map(|n| n.to_string()).collect(),
+        };
+        for set in [
+            subs(NdiConnect::Chosen, &["A (1)", "B (2)"]),
+            subs(NdiConnect::All, &["B (2)"]),
+        ] {
+            ndi_subscriptions_set(&pool, &set).await.unwrap();
+            assert_eq!(ndi_subscriptions_get(&pool).await.unwrap(), set);
+        }
         pool.close().await;
         let _ = std::fs::remove_file(path);
     }

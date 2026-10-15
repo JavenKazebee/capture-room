@@ -609,6 +609,52 @@ pub enum ReplayCodec {
     Mjpeg,
 }
 
+/// Which NDI senders a node connects to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum NdiConnect {
+    /// Every sender on the network, as it's found.
+    #[default]
+    All,
+    /// Only the chosen ones, and any a recording or replay buffer uses.
+    Chosen,
+}
+
+/// Which NDI senders a node connects to, as configured. A node never
+/// connects to its own outputs.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct NdiSubscriptionsInput {
+    pub connect: NdiConnect,
+    /// NDI names (`HOST (name)`), used when `connect` is `chosen`.
+    pub chosen: Vec<String>,
+}
+
+/// An NDI sender on the network, as a node sees it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct NdiSenderDto {
+    pub ndi_name: String,
+    /// The source it is, or would be, on this node.
+    pub source_id: String,
+    /// It's a source on this node.
+    pub connected: bool,
+    /// A recording or replay buffer uses it, so it stays connected.
+    pub in_use: bool,
+    /// One of this node's own outputs, never connected.
+    pub own: bool,
+}
+
+/// A node's NDI subscriptions and the senders it can see.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct NdiSubscriptionsDto {
+    pub connect: NdiConnect,
+    pub chosen: Vec<String>,
+    pub senders: Vec<NdiSenderDto>,
+}
+
 /// A source's replay buffer, as configured.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]

@@ -25,10 +25,10 @@ use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     BenchmarkRequest, BenchmarkRunDto, CapacityCheckDto, CapacityCheckRequest, ChannelConfig,
     CheckRequest, ClockClaim, ClockStatusDto, ClockTimeDto, ConfiguredSourceDto,
-    ConfiguredSourceRequest, DeviceDto, DirListingDto, DisplayDto, NodeCapacityDto, NodeChecksDto,
-    NodeSettingsDto, NodeStatus, OutputConfig, RecordingSessionDto, RecordingStatus,
-    RecordingsQuery, SourceConfig, SourceDto, StartRecordingRequest, StorageVolumeDto,
-    UpdateNodeSettingsRequest, VolumeCheckDto, WsEvent,
+    ConfiguredSourceRequest, DeviceDto, DirListingDto, DisplayDto, NdiSubscriptionsDto,
+    NdiSubscriptionsInput, NodeCapacityDto, NodeChecksDto, NodeSettingsDto, NodeStatus,
+    OutputConfig, RecordingSessionDto, RecordingStatus, RecordingsQuery, SourceConfig, SourceDto,
+    StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
 use crate::capacity::{Capacity, Load, Setup};
@@ -58,6 +58,7 @@ pub fn router() -> Router<Arc<AppState>> {
         // Sources — static paths before dynamic {id}
         .route("/sources", get(get_sources))
         .route("/sources/scan", post(post_scan))
+        .route("/ndi", get(get_ndi).put(put_ndi))
         .route("/sources/{id}", get(get_source))
         .route(
             "/configured-sources",
@@ -218,6 +219,33 @@ async fn get_source(
 async fn post_scan(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<SourceDto>>> {
     session::rebuild_sources(&state).await?;
     Ok(Json(sources_list(&*state.source_manager.read().await)))
+}
+
+// ── /ndi ──────────────────────────────────────────────────────────────────────
+
+async fn get_ndi(State(state): State<Arc<AppState>>) -> Json<NdiSubscriptionsDto> {
+    Json(state.source_manager.read().await.ndi_subscriptions())
+}
+
+async fn put_ndi(
+    State(state): State<Arc<AppState>>,
+    Json(mut req): Json<NdiSubscriptionsInput>,
+) -> ApiResult<Json<NdiSubscriptionsDto>> {
+    let chosen: std::collections::BTreeSet<String> = req
+        .chosen
+        .iter()
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .collect();
+    req.chosen = chosen.into_iter().collect();
+    db::ndi_subscriptions_set(&state.db, &req).await?;
+    state
+        .source_manager
+        .write()
+        .await
+        .set_ndi_subscriptions(req);
+    rescan_after(&state, "NDI subscriptions change").await;
+    Ok(Json(state.source_manager.read().await.ndi_subscriptions()))
 }
 
 // ── /configured-sources ───────────────────────────────────────────────────────

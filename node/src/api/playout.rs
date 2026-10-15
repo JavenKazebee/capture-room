@@ -460,6 +460,10 @@ async fn delete_replay(
         .write()
         .await
         .set_replay(&source_id, None);
+    // An NDI sender kept only for its buffer goes (see NDI subscriptions).
+    if let Err(e) = crate::session::rebuild_sources(&state).await {
+        tracing::error!(error = %e, "rebuild sources after removing a replay buffer");
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

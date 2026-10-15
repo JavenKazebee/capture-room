@@ -11,9 +11,10 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::api::types::{
-    ChannelLevelDto, ConfiguredSourceDto, LinkState, MonitorSettingsDto, OutputConfig,
-    OutputStatusDto, RecordingSessionDto, RecordingStatus, ReplayBufferDto, ReplayConfigInput,
-    SessionClockDto, StartRecordingRequest, TransportState,
+    ChannelLevelDto, ConfiguredSourceDto, LinkState, MonitorSettingsDto, NdiConnect, NdiSenderDto,
+    NdiSubscriptionsDto, NdiSubscriptionsInput, OutputConfig, OutputStatusDto, RecordingSessionDto,
+    RecordingStatus, ReplayBufferDto, ReplayConfigInput, SessionClockDto, StartRecordingRequest,
+    TransportState,
 };
 use crate::pipeline::monitor::{MonitorPipeline, SourceFormat};
 use crate::pipeline::output::{self, OutputLeg, Program};
@@ -23,7 +24,7 @@ use crate::pipeline::replay::{Index, ReplayIndex, ReplayLeg};
 
 use super::channel::ReplayClip;
 use super::device::LocalDevices;
-use super::ndi::NdiMonitor;
+use super::ndi::{NdiMonitor, NdiSource, OwnSenders};
 use super::{configured, InputSource};
 use crate::display::Displays;
 
@@ -191,6 +192,8 @@ pub struct SourceManager {
     /// stop join the in-flight result instead of reporting "already stopped".
     stopping: HashMap<String, StopResult>,
     ndi_monitor: NdiMonitor,
+    /// Which NDI senders to connect to.
+    ndi: NdiSubscriptionsInput,
     devices: Arc<LocalDevices>,
     /// The node's screens, for display outputs.
     displays: Displays,
@@ -226,6 +229,7 @@ impl SourceManager {
             outputs: HashMap::new(),
             stopping: HashMap::new(),
             ndi_monitor,
+            ndi: NdiSubscriptionsInput::default(),
             devices,
             displays,
             leg_failures,
@@ -355,7 +359,7 @@ impl SourceManager {
             .monitors
             .get(id)
             .is_some_and(|m| m.clock() != &self.clock);
-        let recording = self.sessions.values().any(|s| s.dto.source_id == id);
+        let recording = self.is_recording(id);
         let playing = source
             .playout()
             .is_some_and(|p| p.status().state != TransportState::Idle);
@@ -376,10 +380,12 @@ impl SourceManager {
             .iter()
             .map(|c| configured(c, &self.devices))
             .collect();
+        let own = self.own_senders();
         candidates.extend(
             self.ndi_monitor
                 .current_sources()
                 .into_iter()
+                .filter(|s| self.wants_ndi(s, &own))
                 .map(|s| Box::new(s) as Box<dyn InputSource>),
         );
 
@@ -458,6 +464,73 @@ impl SourceManager {
         self.sync_replays();
         info!(count = self.sources.len(), "source scan complete");
         teardowns
+    }
+
+    // ── NDI subscriptions ─────────────────────────────────────────────────────
+
+    /// Connect to these NDI senders from the next scan.
+    pub fn set_ndi_subscriptions(&mut self, subs: NdiSubscriptionsInput) {
+        self.ndi = subs;
+    }
+
+    pub fn ndi_subscriptions(&self) -> NdiSubscriptionsDto {
+        let own = self.own_senders();
+        let mut senders: Vec<NdiSenderDto> = self
+            .ndi_monitor
+            .current_sources()
+            .into_iter()
+            .map(|s| NdiSenderDto {
+                ndi_name: s.ndi_name().to_string(),
+                source_id: s.id().to_string(),
+                connected: self.get_source(s.id()).is_some(),
+                in_use: self.in_use(s.id()),
+                own: own.contains(s.ndi_name()),
+            })
+            .collect();
+        senders.sort_by(|a, b| a.ndi_name.cmp(&b.ndi_name));
+        NdiSubscriptionsDto {
+            connect: self.ndi.connect,
+            chosen: self.ndi.chosen.clone(),
+            senders,
+        }
+    }
+
+    /// This node's NDI outputs, as senders on the network.
+    fn own_senders(&self) -> OwnSenders {
+        OwnSenders {
+            host: crate::controller::discovery::local_hostname().unwrap_or_default(),
+            names: self
+                .outputs
+                .values()
+                .flat_map(|o| &o.legs)
+                .filter_map(|(config, _)| match config {
+                    OutputConfig::Ndi { ndi_name } => ndi_name.clone(),
+                    _ => None,
+                })
+                .collect(),
+        }
+    }
+
+    /// Whether to connect to `sender`: never one of this node's own outputs;
+    /// otherwise every sender, or the chosen ones and those in use.
+    fn wants_ndi(&self, sender: &NdiSource, own: &OwnSenders) -> bool {
+        !own.contains(sender.ndi_name())
+            && match self.ndi.connect {
+                NdiConnect::All => true,
+                NdiConnect::Chosen => {
+                    self.ndi.chosen.iter().any(|n| n == sender.ndi_name())
+                        || self.in_use(sender.id())
+                }
+            }
+    }
+
+    /// A recording or replay buffer uses the source.
+    fn in_use(&self, id: &str) -> bool {
+        self.is_recording(id) || self.replays.contains_key(id)
+    }
+
+    fn is_recording(&self, id: &str) -> bool {
+        self.sessions.values().any(|s| s.dto.source_id == id)
     }
 
     // ── Replay buffers ────────────────────────────────────────────────────────
@@ -736,7 +809,7 @@ impl SourceManager {
     ) -> Result<RecordingSessionDto> {
         let source_id = req.source_id.as_str();
         let outputs = &req.outputs;
-        if self.sessions.values().any(|s| s.dto.source_id == source_id) {
+        if self.is_recording(source_id) {
             bail!("source {source_id} already has an active recording");
         }
         let monitor = self
@@ -1050,8 +1123,9 @@ impl SourceManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::types::{ChannelConfig, LiveVideoFormat, SourceConfig};
+    use crate::api::types::{ChannelConfig, LiveVideoFormat, ReplayCodec, SourceConfig};
     use crate::pipeline::rtsp;
+    use std::collections::HashSet;
 
     fn manager() -> SourceManager {
         gst::init().unwrap();
@@ -1132,5 +1206,37 @@ mod tests {
         );
 
         let _ = monitor.stop();
+    }
+
+    #[test]
+    fn ndi_senders_connected_by_subscription() {
+        let mut mgr = manager();
+        let own = OwnSenders {
+            host: "studio".into(),
+            names: HashSet::from(["Program".to_string()]),
+        };
+        let cam1 = NdiSource::named("CAM-1 (Camera 1)");
+        let cam2 = NdiSource::named("CAM-2 (Camera 2)");
+
+        assert!(mgr.wants_ndi(&cam1, &own));
+        assert!(mgr.wants_ndi(&cam2, &own));
+        assert!(!mgr.wants_ndi(&NdiSource::named("STUDIO (Program)"), &own));
+
+        mgr.set_ndi_subscriptions(NdiSubscriptionsInput {
+            connect: NdiConnect::Chosen,
+            chosen: vec!["CAM-1 (Camera 1)".into()],
+        });
+        assert!(mgr.wants_ndi(&cam1, &own));
+        assert!(!mgr.wants_ndi(&cam2, &own));
+
+        // A replay buffer keeps its sender connected.
+        let buffer = ReplayConfigInput {
+            codec: ReplayCodec::Mjpeg,
+            minutes: 1,
+        };
+        mgr.set_replay(cam2.id(), Some(buffer));
+        assert!(mgr.wants_ndi(&cam2, &own));
+        mgr.set_replay(cam2.id(), None);
+        assert!(!mgr.wants_ndi(&cam2, &own));
     }
 }

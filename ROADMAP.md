@@ -4,7 +4,7 @@ Active sequencing of work, decisions, and rationale. This complements
 [ARCHITECTURE.md](ARCHITECTURE.md) (the design spec) — when the two disagree on
 *order*, this file wins; ARCHITECTURE.md remains the source of truth for *design*.
 
-_Last updated: 2026-10-14_
+_Last updated: 2026-10-15_
 
 ---
 
@@ -286,8 +286,17 @@ Builds on playback (#9) and clock sync (#10). Design in ARCHITECTURE.md (Instant
   lifted blacks and grey whites (stored as the wrong range). Results in ARCHITECTURE.md
   (Instant Replay › What the comparison showed). Benchmark results for intra H.264 and
   MJPEG buffers predate the change: re-run them.
-- **Next:** a replay node subscribing to the same NDI sources as the capture nodes. Not yet: clips from several angles grouped as one, downloading an export from
-  the browser, MOV timecode on exports.
+- ✅ **NDI subscriptions (2026-10-15)** — so a replay node takes in only the angles it
+  buffers: each node connects to every NDI sender it finds (as before) or, set per node
+  in Setup › Sources › NDI senders, only to chosen ones; a sender a recording or replay
+  buffer uses stays connected. No node connects to its own NDI outputs any more, and
+  each receives as `capture-room (<node name>)`. Setup › Checks suggests it on a node
+  connected to more than 4 senders. Tried with two nodes on one Mac.
+- **Next:** check angles line up between a replay node's buffers and the capture
+  nodes' recordings (MOV timecode) for the same moment; if not, try `ndisrc`'s
+  `timestamp-mode`. Show the same NDI camera on several nodes as one in the UI. Not
+  yet: clips from several angles grouped as one, downloading an export from the
+  browser, MOV timecode on exports.
 
 ## 13. Follow-on
 

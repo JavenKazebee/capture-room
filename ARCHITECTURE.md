@@ -98,7 +98,7 @@ pub trait InputSource: Send + Sync {
 
 Initial implementations:
 - `TestSource` — ✅ implemented — `videotestsrc` + `audiotestsrc`, the reference pattern for all sources (`gst::Bin` with `"video"` / `"audio"` ghost pads)
-- `NdiSource` — ✅ implemented — built on the `gst-plugin-ndi` GStreamer elements (`ndisrc` + `ndisrcdemux`), not the raw NDI SDK FFI. Discovery via a persistent `GstDeviceMonitor`. Follows the same bin/ghost-pad contract as `TestSource`.
+- `NdiSource` — ✅ implemented — built on the `gst-plugin-ndi` GStreamer elements (`ndisrc` + `ndisrcdemux`), not the raw NDI SDK FFI. Discovery via a persistent `GstDeviceMonitor`. Follows the same bin/ghost-pad contract as `TestSource`. A node connects to every sender it finds, or, set to `chosen` (`PUT /ndi`; Setup › Sources › NDI senders), only to the chosen ones by NDI name (`ndi_subscriptions`) plus any a recording or replay buffer uses, so a node that only needs some feeds doesn't pull them all. It never connects to its own NDI outputs (`HOST (name)`, matched to the machine's host name and its channels' NDI names). It receives as `capture-room (<node name>)`, so senders and NDI Access Manager can tell nodes apart.
 - `FileSource` — ✅ implemented — a media file on the node played in a loop as a live feed (real footage for the benchmark, demos without hardware). The file plays in its own *player* pipeline (`uridecodebin` → appsinks, synced to the clock) that loops with segment seeks, so loops are gapless unless the file's streams differ in length (the first frame after such a gap is marked `DISCONT`, so frame counters can tell a loop from a feed falling behind). Its appsinks push into live `appsrc`s in the source bin, which restamp every buffer with the monitor's running time, so the monitor sees one continuous live feed. The player starts when the monitor first wants data and stops when the bin is disposed; its errors are posted on the monitor. A file without audio plays stereo silence; one without video is refused. The file is probed (`Discoverer`) when the source is saved, which rejects anything undecodable and gives the source its capabilities up front.
 
 - `StreamSource` — ✅ implemented — one type for every network stream, chosen by URL scheme: RTSP, SRT (caller, or listener for OBS-style pushes), RTMP pull, HLS/HTTP and UDP MPEG-TS. `uridecodebin3` builds the protocol element and decodes; the source sets that element's properties (jitter buffer `latency_ms`, RTSP transport). Saving checks the scheme is available on the node and that no other configured source binds the same listening port.
@@ -740,7 +740,8 @@ plays from it at variable speed.
   offset, so "the same moment" can be picked across angles on nodes sharing a clock.
 - **Where it runs:** a replay node subscribes to the same NDI sources and keeps its own
   buffers, so a replay never reads another node's disk and nodes still don't know about
-  each other. Sources that only exist on another machine (SDI) can't be replayed from a
+  each other. Set to connect to chosen NDI senders, it takes in only the angles it
+  buffers (see Input Plugin System › `NdiSource`). Sources that only exist on another machine (SDI) can't be replayed from a
   different node; that's acceptable to start.
 - **Operation:** the Replay workspace (see Web UI › Views): pick an angle and a moment,
   mark in/out, save clips, play out at variable speed or frame by frame through a
@@ -1143,6 +1144,7 @@ cards badge their problem count. Checks are a list each feature adds to:
 | Screen Recording, Camera, Microphone | macOS | `CGPreflightScreenCaptureAccess`, `AVCaptureDevice authorizationStatusForMediaType:` (screen recording can't tell denied from not asked) |
 | NDI Runtime | all | the NDI device provider started (it fails without `libndi`; the plugin tries once per process, so installing needs a restart) |
 | Recording folder | all | `~/capture-room` can be created and written, with at least the 1 GB a start needs on its volume |
+| NDI intake | all | connecting to every NDI sender, with more than 4 of them connected (about 130 Mbit/s each at 1080p60): never required, it suggests connecting to chosen ones |
 | Controller's clock / PTP | all | from the clock status, when following one |
 | API (also WHEP outputs), WHIP and RTSP ports | all | TCP connect from the controller (`/reachability/{id}`); UDP listeners (SRT, UDP streams) listed as unknown; WebRTC media ports are picked per session and can't be listed |
 

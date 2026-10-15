@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -166,6 +167,43 @@ fn ndi_source_id(ndi_name: &str) -> String {
     format!("ndi-{slug}")
 }
 
+impl NdiSource {
+    /// The sender's NDI name, `HOST (name)`.
+    pub fn ndi_name(&self) -> &str {
+        &self.ndi_name
+    }
+
+    /// A sender as the monitor would find it, for tests.
+    #[cfg(test)]
+    pub fn named(ndi_name: &str) -> Self {
+        Self {
+            id: ndi_source_id(ndi_name),
+            ndi_name: ndi_name.into(),
+            url_address: String::new(),
+            name: ndi_name.into(),
+            receiver: receiver_name("test"),
+        }
+    }
+}
+
+/// A node's own NDI outputs, as senders on the network: NDI names each one
+/// `HOST (name)`, after the machine, in its own case.
+pub struct OwnSenders {
+    pub host: String,
+    pub names: HashSet<String>,
+}
+
+impl OwnSenders {
+    pub fn contains(&self, ndi_name: &str) -> bool {
+        ndi_name
+            .split_once(" (")
+            .and_then(|(host, rest)| Some((host, rest.strip_suffix(')')?)))
+            .is_some_and(|(host, name)| {
+                host.eq_ignore_ascii_case(&self.host) && self.names.contains(name)
+            })
+    }
+}
+
 // ── InputSource impl ──────────────────────────────────────────────────────────
 
 impl InputSource for NdiSource {
@@ -192,5 +230,22 @@ impl InputSource for NdiSource {
 
     fn build_bin(&self) -> Result<gst::Element> {
         Ok(build_bin(&self.id, &self.ndi_name, &self.url_address, &self.receiver)?.upcast())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn own_senders_match_host_and_name() {
+        let own = OwnSenders {
+            host: "studio-mac".into(),
+            names: HashSet::from(["Program".to_string()]),
+        };
+        assert!(own.contains("STUDIO-MAC (Program)"));
+        assert!(!own.contains("STUDIO-MAC (Camera 1)"));
+        assert!(!own.contains("OTHER-MAC (Program)"));
+        assert!(!own.contains("Program"));
     }
 }
