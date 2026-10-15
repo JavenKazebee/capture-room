@@ -56,7 +56,7 @@ use crate::pipeline::profile::{plan_legs, PathVars, RecordingProfile};
 use crate::pipeline::recording::{self, OnLegError, OnLegFile, RecordingLeg};
 use crate::pipeline::replay::{Index, ReplayIndex, ReplayLeg};
 use crate::sources::channel::{ChannelSource, ClipRequest, PlayedProgress, Playout};
-use crate::sources::file::{probe, FileSource};
+use crate::sources::file::FileSource;
 use crate::sources::InputSource;
 use crate::state::AppState;
 
@@ -143,10 +143,7 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
         }
     }
     let path = req.media_path.trim().to_string();
-    let probe_path = path.clone();
-    let media = tokio::task::spawn_blocking(move || probe(&probe_path))
-        .await?
-        .map_err(ApiError::bad)?;
+    let media = crate::api::probe(path.clone()).await?;
     if media.fps_num == 0 {
         return Err(ApiError::BadRequest(
             "the footage has no fixed frame rate, so dropped frames can't be counted; pick another file".into(),

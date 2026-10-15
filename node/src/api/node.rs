@@ -315,11 +315,7 @@ async fn validated(
     }
     if let SourceConfig::File(cfg) = &mut req.config {
         cfg.path = cfg.path.trim().to_string();
-        let path = cfg.path.clone();
-        let media = tokio::task::spawn_blocking(move || crate::sources::file::probe(&path))
-            .await?
-            .map_err(ApiError::bad)?;
-        cfg.media = Some(media);
+        cfg.media = Some(super::probe(cfg.path.clone()).await?);
     }
     Ok(req)
 }

@@ -81,10 +81,7 @@ async fn post_media(
             ));
         }
     }
-    let probe_path = path.clone();
-    let info = tokio::task::spawn_blocking(move || crate::sources::file::probe(&probe_path))
-        .await?
-        .map_err(ApiError::bad)?;
+    let info = super::probe(path.clone()).await?;
     let name = req
         .name
         .map(|n| n.trim().to_string())

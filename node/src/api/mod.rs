@@ -14,6 +14,8 @@ use axum::{
 };
 use rust_embed::RustEmbed;
 
+use crate::api::error::{ApiError, ApiResult};
+use crate::api::types::MediaInfo;
 use crate::state::AppState;
 
 /// The node API as a standalone router (paths relative to `/api/v1/node`).
@@ -33,6 +35,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(whep::router())
         .fallback(serve_ui)
         .with_state(state)
+}
+
+/// Probe the media file at `path` off the runtime: a 400 if it can't be
+/// read.
+pub(crate) async fn probe(path: String) -> ApiResult<MediaInfo> {
+    tokio::task::spawn_blocking(move || crate::sources::file::probe(&path))
+        .await?
+        .map_err(ApiError::bad)
 }
 
 // ── Embedded UI ───────────────────────────────────────────────────────────────
