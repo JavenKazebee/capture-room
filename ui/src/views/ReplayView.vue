@@ -248,7 +248,7 @@ function play() {
         play: true,
       })
     }
-    if (s.rate !== rate.value) await replay.speed(c.node_id, c.id, rate.value)
+    if (s.rate !== rate.value) await playout.transport(c.node_id, c.id, 'speed', { rate: rate.value })
     await playout.transport(c.node_id, c.id, 'play')
   })
 }
@@ -284,7 +284,7 @@ function step(frames: number) {
   const c = channel.value
   if (!c) return
   run('Stepping', async () => {
-    if (showing.value) await replay.step(c.node_id, c.id, frames)
+    if (showing.value) await playout.transport(c.node_id, c.id, 'step', { frames })
   })
 }
 
@@ -293,7 +293,7 @@ function setRate(r: number) {
   const c = channel.value
   if (!c) return
   run('Changing speed', async () => {
-    if (showing.value && playing.value && showing.value.rate !== r) await replay.speed(c.node_id, c.id, r)
+    if (showing.value && playing.value && showing.value.rate !== r) await playout.transport(c.node_id, c.id, 'speed', { rate: r })
   })
 }
 

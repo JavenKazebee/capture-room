@@ -8,6 +8,7 @@ import type { MediaItemDto } from '@/types/generated/MediaItemDto'
 import type { PlaylistDto } from '@/types/generated/PlaylistDto'
 import type { PlaylistItemInput } from '@/types/generated/PlaylistItemInput'
 import type { TransportAction } from '@/types/generated/TransportAction'
+import type { TransportRequest } from '@/types/generated/TransportRequest'
 
 /**
  * Playout: each channel's transport (from `channel.state` events and the
@@ -87,11 +88,15 @@ export const usePlayoutStore = defineStore('playout', () => {
     setStatus(nodeId, sourceId, s)
   }
 
-  async function transport(nodeId: string, sourceId: string, action: TransportAction, positionMs?: number) {
-    const s = await nodeApi(nodeId)<ChannelStatusDto>(`/channels/${sourceId}/transport`, {
-      method: 'POST',
-      body: { action, position_ms: positionMs ?? null },
-    })
+  /** Pause, play, seek (`position_ms`), change speed (`rate`) or step (`frames`). */
+  async function transport(
+    nodeId: string,
+    sourceId: string,
+    action: TransportAction,
+    args: Partial<Omit<TransportRequest, 'action'>> = {},
+  ) {
+    const body: TransportRequest = { action, position_ms: null, rate: null, frames: null, ...args }
+    const s = await nodeApi(nodeId)<ChannelStatusDto>(`/channels/${sourceId}/transport`, { method: 'POST', body })
     setStatus(nodeId, sourceId, s)
   }
 

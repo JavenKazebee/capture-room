@@ -98,21 +98,6 @@ export const useReplayStore = defineStore('replay', () => {
     return s
   }
 
-  async function speed(nodeId: string, channelId: string, rate: number) {
-    const s = await nodeApi(nodeId)<ChannelStatusDto>(`/channels/${channelId}/transport`, {
-      method: 'POST',
-      body: { action: 'speed', rate, position_ms: null, frames: null },
-    })
-    playout.setStatus(nodeId, channelId, s)
-  }
-
-  async function step(nodeId: string, channelId: string, frames: number) {
-    const s = await nodeApi(nodeId)<ChannelStatusDto>(`/channels/${channelId}/transport`, {
-      method: 'POST',
-      body: { action: 'step', frames, position_ms: null, rate: null },
-    })
-    playout.setStatus(nodeId, channelId, s)
-  }
 
   // ── Saved clips ─────────────────────────────────────────────────────────────
 
@@ -124,10 +109,6 @@ export const useReplayStore = defineStore('replay', () => {
     )
   }
 
-  async function loadAllClips() {
-    if (!nodes.nodes.length) await nodes.load()
-    await Promise.all(nodes.reachable.map((n) => loadClips(n.id).catch(() => {})))
-  }
 
   async function saveClip(nodeId: string, req: SaveReplayClipRequest) {
     const c = await nodeApi(nodeId)<ReplayClipDto>('/replay/clips', { method: 'POST', body: req })
@@ -171,10 +152,7 @@ export const useReplayStore = defineStore('replay', () => {
     setBuffer,
     removeBuffer,
     play,
-    speed,
-    step,
     loadClips,
-    loadAllClips,
     saveClip,
     renameClip,
     removeClip,

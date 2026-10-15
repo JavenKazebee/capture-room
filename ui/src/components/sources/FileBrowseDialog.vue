@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ArrowUp, Film, Folder, HardDrive, House, Loader2 } from '@lucide/vue'
-import { nodeApi, errorMessage } from '@/composables/useApi'
+import { errorMessage } from '@/composables/useApi'
 import { useSourcesStore } from '@/stores/sources'
+import { useStorageStore } from '@/stores/storage'
 import { formatBytes } from '@/lib/format'
 import type { DirListingDto } from '@/types/generated/DirListingDto'
 import type { DirEntryDto } from '@/types/generated/DirEntryDto'
-import type { StorageVolumeDto } from '@/types/generated/StorageVolumeDto'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -25,8 +25,10 @@ const props = defineProps<{ nodeId: string; start?: string }>()
 const emit = defineEmits<{ close: []; select: [path: string] }>()
 
 const store = useSourcesStore()
+const storage = useStorageStore()
+/** The node's disks, as shortcuts (the header polls them). */
+const volumes = computed(() => storage.volumes.get(props.nodeId) ?? [])
 const listing = ref<DirListingDto | null>(null)
-const volumes = ref<StorageVolumeDto[]>([])
 const selected = ref<string | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -68,9 +70,6 @@ function folderOf(path?: string) {
 }
 
 onMounted(async () => {
-  nodeApi(props.nodeId)<StorageVolumeDto[]>('/storage')
-    .then((v) => (volumes.value = v))
-    .catch(() => {})
   await open(folderOf(props.start))
   // A stale start folder: fall back to home.
   if (!listing.value && props.start) await open()

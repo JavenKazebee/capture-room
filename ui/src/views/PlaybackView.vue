@@ -207,7 +207,7 @@ function transport(action: TransportAction, positionMs?: number) {
   const c = channel.value
   if (!c) return
   const what = action === 'next' ? 'Playing the next item' : action[0].toUpperCase() + action.slice(1)
-  run(what, () => playout.transport(c.node_id, c.id, action, positionMs))
+  run(what, () => playout.transport(c.node_id, c.id, action, { position_ms: positionMs ?? null }))
 }
 
 const playlistPanel = ref<InstanceType<typeof PlaylistPanel> | null>(null)

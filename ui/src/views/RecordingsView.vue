@@ -16,6 +16,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import ToolbarSearch from '@/components/common/ToolbarSearch.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import ColumnsMenu from '@/components/common/ColumnsMenu.vue'
+import type { RecordingStatus } from '@/types/generated/RecordingStatus'
 import type { Column } from '@/components/common/dataTable'
 import StatusDot from '@/components/common/StatusDot.vue'
 import RecordingDetail from '@/components/recordings/RecordingDetail.vue'
@@ -25,7 +26,7 @@ const nodes = useNodesStore()
 const now = useNow({ interval: 1000 })
 
 const filter = ref('')
-type StatusFilter = 'all' | 'active' | 'stopped' | 'error'
+type StatusFilter = 'all' | RecordingStatus
 const statusFilter = useStorage<StatusFilter>('cr.recordings.status', 'all')
 const nodeFilter = ref('all')
 
