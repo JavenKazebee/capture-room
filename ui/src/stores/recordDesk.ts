@@ -4,9 +4,8 @@ import { useStorage } from '@vueuse/core'
 import { toast } from 'vue-sonner'
 import { api } from '@/composables/useApi'
 import { formatTimeLeft } from '@/lib/format'
-import { notifyError } from '@/lib/notify'
-import { LOW_TIME_SECS, useCapacityStore } from '@/stores/capacity'
-import { useEventsStore } from '@/stores/events'
+import { notifyError, notifyWarn } from '@/lib/notify'
+import { LOW_TIME_SECS, capacityWarningText, useCapacityStore } from '@/stores/capacity'
 import { useNodesStore } from '@/stores/nodes'
 import { blankLeg, presetLegs, usePresetsStore } from '@/stores/presets'
 import { useRecordingsStore } from '@/stores/recordings'
@@ -225,10 +224,8 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
       }
     }
     for (const [nodeId, { before, added }] of perNode) {
-      const pct = Math.round((before + added) * 100)
-      const name = nodes.nameOf(nodeId)
-      if (pct > 100) warnings.push({ nodeId, text: `${name} is over its benchmarked capacity (${pct}%): expect dropped frames.` })
-      else if (pct > 80) warnings.push({ nodeId, text: `${name} is near its benchmarked capacity (${pct}%).` })
+      const text = capacityWarningText(nodes.nameOf(nodeId), before + added)
+      if (text) warnings.push({ nodeId, text })
     }
     for (const { nodeId, mount, secs } of lowest.values()) {
       if (secs < LOW_TIME_SECS) {
@@ -239,11 +236,7 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
   }
 
   function showWarnings(warnings: Warning[]) {
-    const log = useEventsStore().log
-    for (const w of warnings) {
-      toast.warning(w.text)
-      log('warn', w.text, { node_id: w.nodeId })
-    }
+    for (const w of warnings) notifyWarn(w.text, w.nodeId)
   }
 
   /** Start or stop one source; failures go to a toast and the event log. */
@@ -277,8 +270,7 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     if (!unaligned.length) return
     const names = unaligned.map((s) => `${s.display_name} (${nodes.nameOf(s.node_id)})`).join(', ')
     const text = `Not lined up with the others: ${names}. ${unaligned.length === 1 ? "Its node isn't" : "Their nodes aren't"} on the shared clock, so ${unaligned.length === 1 ? 'it' : 'they'} started on arrival.`
-    toast.warning(text)
-    useEventsStore().log('warn', text)
+    notifyWarn(text)
   }
 
   /** Start (or stop) several at once; reports one summary toast plus a log entry per failure. */

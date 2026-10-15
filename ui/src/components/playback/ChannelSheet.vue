@@ -5,7 +5,8 @@ import { Trash2 } from '@lucide/vue'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { usePlayoutStore } from '@/stores/playout'
-import { useCapacityStore } from '@/stores/capacity'
+import { capacityWarningText, useCapacityStore } from '@/stores/capacity'
+import { notifyWarn } from '@/lib/notify'
 import { errorMessage, sourceKey } from '@/composables/useApi'
 import { useNodeDevices } from '@/composables/useNodeDevices'
 import type { ChannelConfig } from '@/types/generated/ChannelConfig'
@@ -168,10 +169,8 @@ async function save() {
 async function warnLoad(node: string, id: string, config: ChannelConfig) {
   const check = await capacity.checkChannel(node, config, id).catch(() => null)
   if (!check) return
-  const pct = Math.round(check.load_after * 100)
-  const name = nodes.nameOf(node)
-  if (pct > 100) toast.warning(`${name} is over its benchmarked capacity (${pct}%): expect dropped frames.`)
-  else if (pct > 80) toast.warning(`${name} is near its benchmarked capacity (${pct}%).`)
+  const text = capacityWarningText(nodes.nameOf(node), check.load_after)
+  if (text) notifyWarn(text, node)
   if (capacity.capacity.has(node)) capacity.load(node)
 }
 

@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { toast } from 'vue-sonner'
-import { useCapacityStore } from '@/stores/capacity'
+import { capacityWarningText, useCapacityStore } from '@/stores/capacity'
 import { useSourcesStore, type Source } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { CODECS, useReplayStore } from '@/stores/replay'
-import { notifyError } from '@/lib/notify'
+import { notifyError, notifyWarn } from '@/lib/notify'
 import { formatBytes } from '@/lib/format'
 import type { ReplayCodec } from '@/types/generated/ReplayCodec'
 import { Input } from '@/components/ui/input'
@@ -73,10 +72,8 @@ async function apply(s: Source, what: string, fn: () => Promise<unknown>, codec?
 async function warnLoad(s: Source, codec: ReplayCodec) {
   const check = await capacity.checkReplay(s.node_id, codec, [s.id]).catch(() => null)
   if (!check) return
-  const pct = Math.round(check.load_after * 100)
-  const name = nodes.nameOf(s.node_id)
-  if (pct > 100) toast.warning(`${name} is over its benchmarked capacity (${pct}%): expect dropped frames.`)
-  else if (pct > 80) toast.warning(`${name} is near its benchmarked capacity (${pct}%).`)
+  const text = capacityWarningText(nodes.nameOf(s.node_id), check.load_after)
+  if (text) notifyWarn(text, s.node_id)
 }
 
 async function toggle(s: Source, on: boolean) {

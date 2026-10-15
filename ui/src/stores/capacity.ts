@@ -15,6 +15,14 @@ import { onReconnect } from '@/lib/reconnect'
 /** Recording time left on a volume below which the UI warns. */
 export const LOW_TIME_SECS = 3600
 
+/** The warning for a node at `load` of its benchmarked capacity (1 = all of it), if it's near or over. */
+export function capacityWarningText(nodeName: string, load: number): string | null {
+  const pct = Math.round(load * 100)
+  if (pct > 100) return `${nodeName} is over its benchmarked capacity (${pct}%): expect dropped frames.`
+  if (pct > 80) return `${nodeName} is near its benchmarked capacity (${pct}%).`
+  return null
+}
+
 /** A channel benchmark's outputs: `NDI + SRT 8 Mb/s`, or `program only`. */
 export function channelOutputsLabel(outputs: OutputConfig[]) {
   const parts = outputs.map((o) =>
