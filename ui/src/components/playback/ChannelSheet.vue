@@ -9,6 +9,7 @@ import { capacityWarningText, useCapacityStore } from '@/stores/capacity'
 import { notifyWarn } from '@/lib/notify'
 import { errorMessage, sourceKey } from '@/composables/useApi'
 import { useNodeDevices } from '@/composables/useNodeDevices'
+import { useNodeDecklink } from '@/composables/useNodeDecklink'
 import type { ChannelConfig } from '@/types/generated/ChannelConfig'
 import type { DisplayDto } from '@/types/generated/DisplayDto'
 import { Button } from '@/components/ui/button'
@@ -81,6 +82,7 @@ const unavailable = computed(() => {
 })
 
 const devices = useNodeDevices(nodeId)
+const decklink = useNodeDecklink(nodeId)
 const displays = ref<DisplayDto[]>([])
 
 /** The node's screens and audio outputs, for display outputs. */
@@ -194,6 +196,10 @@ async function destroy() {
         :output-types="outputTypes"
         :displays="displays"
         :devices="devices.devices.value"
+        :decklink="decklink.status.value"
+        :node-id="nodeId"
+        :channel-id="editing?.id ?? null"
+        @refresh-decklink="decklink.refresh"
       />
     </div>
     <template v-if="editing && !loading" #footer-start>

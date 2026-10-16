@@ -736,6 +736,16 @@ impl SourceManager {
         self.outputs.insert(id.to_string(), ChannelOutputs { legs });
     }
 
+    /// Stop the channels that have Decklink outputs from keeping them, so
+    /// the next scan starts them again (with a card's new profile).
+    pub fn reset_decklink_outputs(&mut self) {
+        self.outputs.retain(|_, o| {
+            !o.legs
+                .iter()
+                .any(|(identity, _)| matches!(identity, OutputConfig::Decklink { .. }))
+        });
+    }
+
     /// Tell a channel's outputs whether it has something loaded.
     pub fn set_on_air(&self, source_id: &str, on_air: bool) {
         if let Some(outputs) = self.outputs.get(source_id) {

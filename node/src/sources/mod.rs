@@ -4,6 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use gstreamer::{self as gst, prelude::*};
 
 pub mod channel;
+pub mod decklink;
 pub mod device;
 pub mod file;
 pub mod live;
@@ -96,6 +97,12 @@ pub fn configured(
         )),
         SourceConfig::Channel(cfg) => Box::new(channel::ChannelSource::new(id, name, cfg.clone())),
         SourceConfig::Whip(cfg) => Box::new(whip::WhipSource::new(
+            id,
+            name,
+            cfg.clone(),
+            devices.clone(),
+        )),
+        SourceConfig::Decklink(cfg) => Box::new(decklink::DecklinkSource::new(
             id,
             name,
             cfg.clone(),

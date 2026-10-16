@@ -8,6 +8,8 @@ import { useNodesStore } from '@/stores/nodes'
 import type { ChannelLevelDto } from '@/types/generated/ChannelLevelDto'
 import type { ConfiguredSourceDto } from '@/types/generated/ConfiguredSourceDto'
 import type { ConfiguredSourceRequest } from '@/types/generated/ConfiguredSourceRequest'
+import type { DecklinkProfile } from '@/types/generated/DecklinkProfile'
+import type { DecklinkStatusDto } from '@/types/generated/DecklinkStatusDto'
 import type { DeviceDto } from '@/types/generated/DeviceDto'
 import type { DisplayDto } from '@/types/generated/DisplayDto'
 import type { DirListingDto } from '@/types/generated/DirListingDto'
@@ -31,7 +33,7 @@ export const thumbnailSeqs = shallowReactive(new Map<string, number>())
 
 /** Source types a node is configured with, rather than discovering them. */
 export type ConfiguredKind = Exclude<SourceType, 'ndi'>
-export const CONFIGURED_TYPES: readonly SourceType[] = ['test', 'file', 'stream', 'device', 'whip', 'channel']
+export const CONFIGURED_TYPES: readonly SourceType[] = ['test', 'file', 'stream', 'device', 'decklink', 'whip', 'channel']
 
 export const useSourcesStore = defineStore('sources', () => {
   const nodes = useNodesStore()
@@ -168,6 +170,19 @@ export const useSourcesStore = defineStore('sources', () => {
     return nodeApi(nodeId)<DeviceDto[]>('/devices')
   }
 
+  /** The node's Decklink cards and what uses their sub-devices. */
+  async function listDecklink(nodeId: string) {
+    return nodeApi(nodeId)<DecklinkStatusDto>('/decklink')
+  }
+
+  /** Set how a Decklink card splits its connectors; what uses the card restarts. */
+  async function setDecklinkProfile(nodeId: string, card: string, profile: DecklinkProfile) {
+    return nodeApi(nodeId)<DecklinkStatusDto>(`/decklink/${encodeURIComponent(card)}/profile`, {
+      method: 'PUT',
+      body: { profile },
+    })
+  }
+
   /** Screens attached to the node, for display outputs. */
   async function listDisplays(nodeId: string) {
     return nodeApi(nodeId)<DisplayDto[]>('/displays')
@@ -179,6 +194,8 @@ export const useSourcesStore = defineStore('sources', () => {
     ensureLoaded,
     listDevices,
     listDisplays,
+    listDecklink,
+    setDecklinkProfile,
     updateStatus,
     loadSources,
     refreshNode,

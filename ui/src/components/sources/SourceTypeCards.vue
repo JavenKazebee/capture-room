@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Component } from 'vue'
-import { Film, Network, Palette, RadioTower, Webcam } from '@lucide/vue'
+import { Cable, Film, Network, Palette, RadioTower, Webcam } from '@lucide/vue'
 import type { ConfiguredKind } from '@/stores/sources'
 
 /** The first step of adding a source: what kind it is. */
@@ -13,6 +13,7 @@ const emit = defineEmits<{ pick: [kind: ConfiguredKind] }>()
 const CARDS: { kind: ConfiguredKind; icon: Component; label: string; hint: string }[] = [
   { kind: 'stream', icon: Network, label: 'Network stream', hint: 'RTSP cameras, SRT, RTMP, HLS, UDP' },
   { kind: 'device', icon: Webcam, label: 'Capture device', hint: 'Capture cards, webcams, screens' },
+  { kind: 'decklink', icon: Cable, label: 'SDI (Decklink)', hint: 'An input on a Blackmagic Decklink card' },
   { kind: 'whip', icon: RadioTower, label: 'WHIP ingest', hint: 'OBS or a browser pushes WebRTC' },
   { kind: 'file', icon: Film, label: 'Media file', hint: 'A file on the node, looped' },
   { kind: 'test', icon: Palette, label: 'Test pattern', hint: 'Bars, tone and other test signals' },

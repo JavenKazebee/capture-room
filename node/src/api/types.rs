@@ -109,6 +109,7 @@ pub enum SourceType {
     Device,
     Whip,
     Channel,
+    Decklink,
 }
 
 /// Whether a live source (stream, device, WHIP) is delivering frames. While
@@ -194,6 +195,7 @@ pub enum SourceConfig {
     Device(DeviceSourceConfig),
     Whip(WhipSourceConfig),
     Channel(ChannelConfig),
+    Decklink(DecklinkSourceConfig),
 }
 
 /// A synthetic feed: a video pattern plus a test audio signal.
@@ -314,6 +316,133 @@ pub struct DeviceSourceConfig {
     pub format: Option<LiveVideoFormat>,
 }
 
+/// SDI (or HDMI) on a Blackmagic Decklink card: one sub-device's video and
+/// its embedded audio.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct DecklinkSourceConfig {
+    /// [`DecklinkDeviceDto::key`] of the sub-device.
+    pub device: String,
+    /// The sub-device's name when the source was saved, shown while it's
+    /// missing. Filled in by the node; ignored in requests.
+    #[serde(default)]
+    pub device_name: String,
+    #[serde(default)]
+    pub connection: DecklinkConnection,
+    /// A [`DecklinkModeDto::mode`], or none to follow whatever signal
+    /// arrives.
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// Embedded audio channels: 2, 8 or 16.
+    #[serde(default = "default_decklink_channels")]
+    pub channels: u32,
+    /// Hold the feed to this size and rate; by default it takes the
+    /// signal's first format.
+    #[serde(default)]
+    pub format: Option<LiveVideoFormat>,
+}
+
+fn default_decklink_channels() -> u32 {
+    2
+}
+
+/// Which input on a Decklink sub-device to capture from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum DecklinkConnection {
+    #[default]
+    Auto,
+    Sdi,
+    Hdmi,
+    OpticalSdi,
+}
+
+/// How a Decklink card splits its connectors into sub-devices (the
+/// `profile` of GStreamer's decklink elements). Half-duplex sub-devices
+/// capture or play out; full-duplex ones can do both at once.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum DecklinkProfile {
+    /// Leave the card as Desktop Video Setup left it.
+    #[default]
+    Default,
+    OneSubDeviceFull,
+    OneSubDeviceHalf,
+    TwoSubDevicesFull,
+    TwoSubDevicesHalf,
+    FourSubDevicesHalf,
+}
+
+/// The node's Decklink cards, and whether it can use them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct DecklinkStatusDto {
+    /// Why Decklink can't be used on this node (no plugin, no driver).
+    pub unavailable: Option<String>,
+    pub cards: Vec<DecklinkCardDto>,
+}
+
+/// One Decklink card: the sub-devices sharing a profile.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct DecklinkCardDto {
+    /// Its serial number where the driver gives one; what the profile is
+    /// stored under.
+    pub key: String,
+    pub name: String,
+    pub profile: DecklinkProfile,
+    pub devices: Vec<DecklinkDeviceDto>,
+}
+
+/// A Decklink sub-device: one SDI connector (or a pair, full duplex).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct DecklinkDeviceDto {
+    /// Stable across restarts and slot order (the driver's persistent id).
+    pub key: String,
+    pub name: String,
+    pub capture: bool,
+    pub playout: bool,
+    /// The modes it offers, from the driver.
+    pub modes: Vec<DecklinkModeDto>,
+    /// Sources and channels on this node using it.
+    pub used_by: Vec<DecklinkUseDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct DecklinkUseDto {
+    /// The configured source (or channel) id.
+    pub source_id: String,
+    pub name: String,
+    /// Capturing (a source) or playing out (a channel's output).
+    pub playout: bool,
+}
+
+/// A video mode a Decklink sub-device can run in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct DecklinkModeDto {
+    /// GStreamer's name for it (`1080p5994`).
+    pub mode: String,
+    /// What people call it (`1080p 59.94`).
+    pub label: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps_num: u32,
+    pub fps_den: u32,
+    pub interlaced: bool,
+}
+
+/// Body for setting a card's profile.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct DecklinkProfileRequest {
+    pub profile: DecklinkProfile,
+}
+
 /// WebRTC pushed to the node over WHIP (OBS 30+, browsers), at
 /// `http://<node>:<port>/whip/endpoint`. One publisher at a time; there's
 /// no authentication yet, so anyone who can reach the port can publish.
@@ -389,6 +518,16 @@ pub enum OutputConfig {
         /// The most each viewer is sent; less when their link can't take it.
         #[serde(default = "default_srt_bitrate")]
         bitrate_kbps: u32,
+    },
+    /// SDI out of a Decklink sub-device, with the program's audio embedded
+    /// (2, 8 or 16 channels).
+    Decklink {
+        /// A [`DecklinkDeviceDto::key`].
+        device: String,
+        /// A [`DecklinkModeDto::mode`]; by default the one matching the
+        /// channel's format.
+        #[serde(default)]
+        mode: Option<String>,
     },
     /// Fullscreen on a screen attached to the node, set to the channel's
     /// format when the screen offers it (for HDMI→SDI converters).

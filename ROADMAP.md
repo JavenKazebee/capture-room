@@ -19,7 +19,7 @@ _Last updated: 2026-10-16_
 7. ✅ **Benchmark + capacity estimator** (with storage headroom)
 8. ✅ **Recordings view** (+ browser preview)
 9. **Playback** — ✅ gapless playlists; NDI, SRT, RTSP, WHEP and display outputs; play
-   without cueing; renames without a restart. Decklink / AJA outputs wait for hardware
+   without cueing; renames without a restart. Decklink outputs built (untested on hardware); AJA waits for hardware
 10. **Clock sync across nodes** — ✅ shared node clock (controller's clock or PTP),
     synchronized start, and frame capture times as MOV timecode. Prerequisite for
     multi-angle replay
@@ -29,8 +29,8 @@ _Last updated: 2026-10-16_
     it's free: ✅ macOS installer (app bundle with GStreamer inside, `install.sh`,
     release workflow); ✅ login service that restarts on crash, with a menu bar icon
     (`capture-room service`); ✅ updater (signed releases, Update on the node card and
-    in the menu); then Decklink sources and outputs, shipped to the Mac Pro through
-    the updater. Linux and Windows installers next, behind the same service and update
+    in the menu); 🟡 Decklink sources and outputs (built; untested on hardware until
+    they reach the Mac Pro through the updater). Linux and Windows installers next, behind the same service and update
     code
 14. **Follow-on**, in rough priority order (see below)
 
@@ -345,7 +345,7 @@ Roughly in priority order.
      ScreenCast session (`ashpd`, `persist_mode=2`, restore token kept in the source
      config) into `pipewiresrc`. Offered as entries in the device list. macOS and Windows
      already list screens as devices.
-  2. **SDI via Decklink** — already specced; needs hardware.
+  2. **SDI via Decklink** — 🟡 built (see step 13); needs testing on the Mac Pro.
   3. **SDI via AJA** (`ajasrc`, gst-plugins-bad ≥ 1.24) — alongside Decklink; needs
      hardware.
   4. **Web page** (`wpesrc`) — render an HTML page (graphics, scoreboards) as a feed.

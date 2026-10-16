@@ -6,6 +6,9 @@ import type { OutputConfig } from '@/types/generated/OutputConfig'
 import type { DisplayDto } from '@/types/generated/DisplayDto'
 import type { DeviceDto } from '@/types/generated/DeviceDto'
 import type { DisplayIdle } from '@/types/generated/DisplayIdle'
+import type { DecklinkStatusDto } from '@/types/generated/DecklinkStatusDto'
+import { findSubDevice, subDeviceOptions } from '@/lib/decklink'
+import DecklinkProfileField from './DecklinkProfileField.vue'
 import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -29,7 +32,13 @@ const props = defineProps<{
   displays: DisplayDto[]
   /** The node's devices; its audio outputs are offered for display outputs. */
   devices: DeviceDto[]
+  /** The node's Decklink cards, for SDI outputs. */
+  decklink: DecklinkStatusDto
+  nodeId: string
+  /** The channel being edited, so its own SDI outputs aren't flagged as taken. */
+  channelId: string | null
 }>()
+const emit = defineEmits<{ refreshDecklink: [] }>()
 
 const cfg = defineModel<ChannelConfig>({ required: true })
 
@@ -166,7 +175,35 @@ function addDisplay() {
   add({ type: 'display', display: screen?.id ?? '', audio_device: audio?.key ?? null, idle: 'black' })
 }
 
-const TYPE_LABELS: Record<string, string> = { ndi: 'NDI', srt: 'SRT', rtsp: 'RTSP', whep: 'WHEP', display: 'Screen' }
+// ── SDI ───────────────────────────────────────────────────────────────────────
+
+const sdiOptions = computed(() => subDeviceOptions(props.decklink, true, props.channelId))
+
+function sdiDeviceOptions(key: string) {
+  if (!key || findSubDevice(props.decklink, key)) return sdiOptions.value
+  return [{ value: key, label: `${key} (not connected)` }, ...sdiOptions.value]
+}
+
+const MATCH = 'match'
+
+/** The modes a sub-device can play this channel in: progressive, at its size and rate. */
+function sdiModeOptions(key: string) {
+  const { width, height, fps_num, fps_den } = cfg.value.format
+  const modes = (findSubDevice(props.decklink, key)?.device.modes ?? []).filter(
+    (m) => !m.interlaced && m.width === width && m.height === height && m.fps_num * fps_den === fps_num * m.fps_den,
+  )
+  return [{ value: MATCH, label: "The channel's format" }, ...modes.map((m) => ({ value: m.mode, label: m.label }))]
+}
+
+/** A free playout sub-device first. */
+function addSdi() {
+  const used = new Set(cfg.value.outputs.map((o) => (o.type === 'decklink' ? o.device : '')))
+  const free = sdiOptions.value.filter((o) => !used.has(o.value))
+  const pick = free.find((o) => !o.label.includes(' — used by ')) ?? free[0]
+  add({ type: 'decklink', device: pick?.value ?? '', mode: null })
+}
+
+const TYPE_LABELS: Record<string, string> = { ndi: 'NDI', srt: 'SRT', rtsp: 'RTSP', whep: 'WHEP', display: 'Screen', decklink: 'SDI' }
 </script>
 
 <template>
@@ -204,6 +241,14 @@ const TYPE_LABELS: Record<string, string> = { ndi: 'NDI', srt: 'SRT', rtsp: 'RTS
             :options="displayFor(o.display) || !o.display ? displayOptions : [{ value: o.display, label: o.display }, ...displayOptions]"
             :aria-label="`Screen for output ${i + 1}`"
             @update:model-value="(v) => update(i, { display: String(v) })"
+          />
+          <OptionSelect
+            v-else-if="o.type === 'decklink'"
+            class="flex-1 min-w-0"
+            :model-value="o.device"
+            :options="sdiDeviceOptions(o.device)"
+            :aria-label="`Decklink output for output ${i + 1}`"
+            @update:model-value="(v) => update(i, { device: String(v), mode: null })"
           />
           <Input
             v-else-if="o.type === 'rtsp' || o.type === 'whep'"
@@ -265,6 +310,27 @@ const TYPE_LABELS: Record<string, string> = { ndi: 'NDI', srt: 'SRT', rtsp: 'RTS
             </template>
             <template v-else>Keeps the signal steady, which converters and switchers need.</template>
           </p>
+        </template>
+
+        <template v-if="o.type === 'decklink'">
+          <FormField label="Video mode">
+            <OptionSelect
+              :model-value="o.mode ?? MATCH"
+              :options="sdiModeOptions(o.device)"
+              @update:model-value="(v) => update(i, { mode: v === MATCH ? null : String(v) })"
+            />
+          </FormField>
+          <p class="text-xs text-muted-foreground">
+            Progressive only for now; the channel's format has to be an SDI mode. Audio is embedded on
+            {{ cfg.audio_channels <= 2 ? 2 : 8 }} channels. The card follows the node's clock, so it may repeat or drop
+            a frame every few minutes.
+          </p>
+          <DecklinkProfileField
+            v-if="findSubDevice(decklink, o.device)"
+            :node-id="nodeId"
+            :card="findSubDevice(decklink, o.device)!.card"
+            @changed="emit('refreshDecklink')"
+          />
         </template>
 
         <template v-if="o.type === 'rtsp'">
@@ -405,6 +471,16 @@ const TYPE_LABELS: Record<string, string> = { ndi: 'NDI', srt: 'SRT', rtsp: 'RTS
           >
             <span>Screen</span>
             <span class="text-[11px] text-muted-foreground">Fullscreen on a screen attached to the node, e.g. into an HDMI→SDI converter</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            :disabled="!props.outputTypes.includes('decklink') || !sdiOptions.length"
+            class="flex-col items-start gap-0"
+            @select="addSdi"
+          >
+            <span>SDI (Decklink)</span>
+            <span class="text-[11px] text-muted-foreground">
+              {{ decklink.unavailable ?? 'Out of a Blackmagic Decklink card, with embedded audio' }}
+            </span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
