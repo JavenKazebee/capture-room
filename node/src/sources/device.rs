@@ -365,13 +365,15 @@ fn rates(s: &gst::StructureRef) -> Vec<(u32, u32)> {
 
 /// Wrap a video device's element to output raw video from a static pad, as
 /// `fallbacksrc` needs: MJPEG is decoded (webcams often offer high
-/// resolutions only as MJPEG).
+/// resolutions only as MJPEG). An AVFoundation camera is found again by its
+/// unique ID each time the bin starts.
 fn capture_bin(
     id: &str,
+    device: &gst::Device,
     element: gst::Element,
-    device_caps: Option<gst::Caps>,
     format: Option<&LiveVideoFormat>,
 ) -> Result<gst::Element> {
+    let device_caps = device.caps();
     let want = |media: &str| {
         let mut b = gst::Caps::builder(media);
         if let Some(f) = format {
@@ -388,7 +390,8 @@ fn capture_bin(
     let offers = |caps: &gst::Caps| device_caps.as_ref().is_none_or(|d| d.can_intersect(caps));
     let raw = want("video/x-raw");
     let jpeg = want("image/jpeg");
-    let bin = gst::Bin::with_name(&format!("device-capture-{id}"));
+    let name = format!("device-capture-{id}");
+    let bin = camera_bin(&name, device, &element).unwrap_or_else(|| gst::Bin::with_name(&name));
     let mut chain = vec![element];
     if offers(&raw) || !offers(&jpeg) {
         chain.push(capsfilter(&format!("device-caps-{id}"), raw)?);
@@ -407,6 +410,21 @@ fn capture_bin(
         .build();
     bin.add_pad(&ghost).context("add device ghost pad")?;
     Ok(bin.upcast())
+}
+
+#[cfg(target_os = "macos")]
+fn camera_bin(name: &str, device: &gst::Device, element: &gst::Element) -> Option<gst::Bin> {
+    let unique_id = device
+        .properties()
+        .and_then(|p| p.get::<String>("avf.unique_id").ok())?;
+    element.find_property("device-index")?;
+    let bin = super::avf::CameraBin::new(name, element, &unique_id, &device.display_name());
+    Some(bin.upcast())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn camera_bin(_: &str, _: &gst::Device, _: &gst::Element) -> Option<gst::Bin> {
+    None
 }
 
 pub struct DeviceSource {
@@ -472,7 +490,7 @@ impl InputSource for DeviceSource {
         })?;
         super::privacy::check(kind(&device), &device.display_name())?;
         let element = open(&device)?;
-        let source = capture_bin(&self.id, element, device.caps(), cfg.format.as_ref())?;
+        let source = capture_bin(&self.id, &device, element, cfg.format.as_ref())?;
         let bin = live::build_bin(LiveInput {
             id: &self.id,
             source,

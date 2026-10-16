@@ -20,9 +20,9 @@ login service, menu bar icon and signed self-updates; a shared access token.
   updater and test. RP188 timecode isn't written to recordings yet (the compositor drops
   the meta).
 - **Display output** — try an HDMI→SDI converter.
-- **Device capture on real hardware** — so far only OBS Virtual Camera. Known issue:
-  `avfvideosrc` opens by index and `fallbacksrc` restarts the same element, so after
-  another device is unplugged a retry can open the wrong camera; re-resolve on restart.
+- **Device capture on real hardware** — so far only OBS Virtual Camera. A camera is now
+  found again by unique ID on each restart (it used to reopen by index, so unplugging
+  another camera could switch it); check that by unplugging a second camera mid-recording.
 
 ## To verify
 

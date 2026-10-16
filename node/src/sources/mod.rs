@@ -3,6 +3,8 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use gstreamer::{self as gst, prelude::*};
 
+#[cfg(target_os = "macos")]
+mod avf;
 pub mod channel;
 pub mod decklink;
 pub mod device;

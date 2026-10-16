@@ -437,7 +437,7 @@ impl Inputs {
 }
 
 /// A `fallbacksrc` that keeps retrying forever.
-fn fallback(name: &str, video: bool, audio: bool) -> Result<gst::Element> {
+pub(super) fn fallback(name: &str, video: bool, audio: bool) -> Result<gst::Element> {
     let fb = make_el("fallbacksrc", name)?;
     fb.set_property("enable-video", video);
     fb.set_property("enable-audio", audio);
