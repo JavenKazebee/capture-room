@@ -898,6 +898,9 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 | PUT / DELETE | `/configured-sources/{id}` | |
 | GET | `/checks` | Setup checks, read live: each check's status (`ok \| missing \| not_asked \| unknown`), whether something on the node needs it, the fix (steps, System Settings link, command, download link, whether the node can show the OS prompt); the OS, the app holding macOS permissions, and the ports others connect to |
 | POST | `/checks/request` | `{ id }`: show the macOS permission prompt (`camera`, `microphone`) on this machine |
+| GET | `/update` | where this node's software update stands (`UpdateStatusDto`: current and latest version, why it can't update, phase, download percent, last error) |
+| POST | `/update/check` | look for a newer release now |
+| POST | `/update` | update to the newest release: answers once started (400 with the reason if it can't), then the node restarts into it |
 | GET | `/devices` | capture and audio devices on the node (key, name, class, provider, modes), for picking one in a device source or audio plan |
 | GET / POST | `/media` | the media library (each entry flags a missing file) / add a file `{ path, name?, session_id? }`: probed, 400 if it can't be played, 409 if already in |
 | DELETE | `/media/{id}` | remove from the library (the file stays) |
@@ -1169,15 +1172,55 @@ curl -fsSL https://github.com/JavenKazebee/capture-room/releases/latest/download
   and the Bonjour types (`_capture-room._tcp`, `_ndi._tcp`), `LSUIElement` (no Dock
   icon) and `NSAppSleepDisabled`. The app is the permission holder for macOS privacy
   settings.
-- **Install:** `install.sh` installs the app for the Mac's architecture into
-  `/Applications` (`~/Applications` if that isn't writable), after checking the
-  checksum, and a LaunchAgent (`~/Library/LaunchAgents/com.capture-room.node.plist`):
-  it starts at login, restarts on exit (`KeepAlive`, which the updater will rely on),
-  and runs as `Interactive` so it isn't throttled. Its database is
-  `~/Library/Application Support/Capture Room/capture-room.db` and its log is
-  `~/Library/Logs/Capture Room/capture-room.log`. Running it again updates in place.
-  `--controller`, `--port`, `--version`, `--archive <local build>`, and
-  `--uninstall [--purge]`; recordings in `~/capture-room` are never removed.
+- **Install:** `install.sh` downloads the app for the Mac's architecture, checks
+  its checksum, puts it in `/Applications` (`~/Applications` if that isn't writable)
+  and runs `capture-room service install`; everything after that is the binary's
+  (`service` module), so installing, updating and the Finder agree. Options:
+  `--controller`, `--port`, `--version`, `--archive <local build>`,
+  `--uninstall [--purge]` (runs `service uninstall`); recordings in `~/capture-room`
+  are never removed. Opening the app from the Finder (no arguments, not run by the
+  service) installs the service if it isn't, starts it, opens the UI in the browser
+  and exits.
+- **Service:** a LaunchAgent, `com.capture-room.node`. Its plist lives in
+  `~/Library/Application Support/Capture Room/`, with the database
+  (`capture-room.db`); the log is `~/Library/Logs/Capture Room/capture-room.log`.
+  The service is always loaded from there, and *Start at Login* is a copy of the plist
+  in `~/Library/LaunchAgents` (what launchd loads at login), so turning it off never
+  stops the running node. `KeepAlive { SuccessfulExit = false }`: launchd restarts the
+  node when it crashes, panics or is killed, but not after a clean exit (Quit, or a
+  stop from launchd); it also starts it on load. (`KeepAlive { Crashed }` would allow
+  not starting at load, but misses panics and `SIGKILL`.) `ProcessType Interactive`,
+  so it isn't throttled, and `CAPTURE_ROOM_SERVICE=1` in its environment. A
+  reinstall keeps the port and the Start at Login choice. `capture-room service
+  status` reports it.
+- **Quitting:** Quit, `SIGTERM` and Ctrl+C stop every recording and wait for its files
+  to finish (`session::quit`) before exiting with 0; exit code 75 asks for a restart
+  (the updater).
+- **Menu bar icon** (`tray.rs`, on the window loop's thread; shown by the service, or
+  with `--tray`): a record symbol, drawn as a template image when idle and red while
+  recording. Its menu: the version, what it's doing (recording, channels playing),
+  Open Capture Room (the UI in the browser), Check for Updates / Update to X
+  (disabled while busy, with progress while updating), Start at Login, and Quit
+  (which says how many recordings it stops). The node sends it a status every second.
+  On a crowded menu bar (a notched MacBook) macOS hides items that don't fit.
+- **Updates** (`update.rs`): every release has `latest.json` (`{"version": …}`) and,
+  per archive, a minisign signature (`.minisig`). A node checks `latest.json` at
+  start and every 6 hours. Updating, from the node card's Update button or the menu:
+  only the installed app running as the service, only to a newer version, never while
+  recording, playing a channel or benchmarking. It downloads the archive and its
+  signature into `.capture-room-update` beside the app, verifies the signature with the
+  public key compiled in (`scripts/release-key.pub`), unpacks it, checks its
+  `Info.plist` version is the one expected, swaps it in with two renames (the old app
+  is kept in the staging folder until the next start), and exits with 75 so launchd
+  starts the new version. A failed download or signature is reported on `/update` and
+  in the menu, and nothing changes. `CAPTURE_ROOM_RELEASES` (passed to the service when
+  set at install) points the updater at a folder served over HTTP instead of GitHub,
+  for testing. Nodes run from a shell report `unsupported` and the UI shows nothing.
+- **Release key:** minisign, unencrypted, kept outside the repo (the maintainer's
+  `~/.config/capture-room/release.key`) and in the `MINISIGN_KEY` Actions secret;
+  `package.sh` signs when `MINISIGN_KEY_FILE` is set, and a tagged release fails
+  without it. Replacing the key means nodes on older versions refuse the new
+  releases; they'd need `install.sh` once.
 - **Signing:** ad hoc (`CODESIGN_IDENTITY`, default `-`) until there's a Developer ID.
   Nothing downloaded by `curl` or the updater is quarantined, so Gatekeeper never
   checks it; a browser download would need Open Anyway. An ad hoc signature changes
@@ -1185,6 +1228,11 @@ curl -fsSL https://github.com/JavenKazebee/capture-room/releases/latest/download
   network access again after each update; a stable identity (a self-signed
   certificate, or a Developer ID) fixes that. No hardened runtime yet: with ad hoc
   signatures it would refuse to load the plugins.
+- **Not yet:** Linux (a systemd user unit, GStreamer from distro packages) and Windows
+  (a logon task, a tray icon, renaming the running exe to replace it) behind the same
+  `service` and `update` modules; rolling back an update that won't start; the API has
+  no authentication yet, so anyone on the network can start an update (only to a
+  newer, signed release).
 
 ### Plugin provenance
 

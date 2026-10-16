@@ -7,6 +7,8 @@
 # Env:   GST_VERSION       GStreamer release to bundle (default below)
 #        GST_DIR           where gstreamer.sh unpacks it (default target/gstreamer-<version>)
 #        CODESIGN_IDENTITY signing identity (default "-": ad hoc)
+#        MINISIGN_KEY_FILE release key: signs the archive (.minisig), which
+#                          the updater requires
 #        SKIP_UI=1         use the existing ui/dist
 set -euo pipefail
 
@@ -71,4 +73,8 @@ mkdir -p dist
 archive=dist/capture-room-macos-$arch.tar.gz
 tar -C "$stage" -czf "$archive" "Capture Room.app"
 (cd dist && shasum -a 256 "$(basename "$archive")" >"$(basename "$archive").sha256")
+if [[ -n ${MINISIGN_KEY_FILE:-} ]]; then
+    minisign -S -s "$MINISIGN_KEY_FILE" -m "$archive" -t "capture-room $version $arch" >/dev/null
+fi
+printf '{"version": "%s"}\n' "$version" >dist/latest.json
 echo "Built $archive ($(du -h "$archive" | cut -f1)), version $version"

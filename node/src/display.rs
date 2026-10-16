@@ -92,6 +92,11 @@ enum Command {
     },
     Show(WindowId, bool),
     Close(WindowId),
+    /// The node's status, for the menu bar icon.
+    Tray(crate::tray::Status),
+    /// A menu bar item was picked.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    Menu(tray_icon::menu::MenuId),
     Quit,
 }
 
@@ -105,6 +110,13 @@ impl Displays {
     /// No window system: nothing to show on.
     pub fn none() -> Self {
         Self { proxy: None }
+    }
+
+    /// Show the node's status on its menu bar icon, if it has one.
+    pub fn show_status(&self, status: crate::tray::Status) {
+        if let Some(proxy) = &self.proxy {
+            let _ = proxy.send_event(Command::Tray(status));
+        }
     }
 
     /// Whether this node can open windows.
@@ -163,7 +175,10 @@ impl Displays {
 
 /// Run `node` (the node itself) with a window loop on this, the main
 /// thread, when there's a window system; otherwise just run it here.
-pub fn run<T: Send + 'static>(node: impl FnOnce(Displays) -> T + Send + 'static) -> T {
+pub fn run<T: Send + 'static>(
+    tray: Option<crate::tray::Config>,
+    node: impl FnOnce(Displays) -> T + Send + 'static,
+) -> T {
     let event_loop = match build_event_loop() {
         Ok(event_loop) => event_loop,
         Err(e) => {
@@ -183,7 +198,12 @@ pub fn run<T: Send + 'static>(node: impl FnOnce(Displays) -> T + Send + 'static)
             result
         })
         .expect("start the node thread");
-    if let Err(e) = event_loop.run_app(&mut WindowLoop::default()) {
+    let mut window_loop = WindowLoop {
+        tray_config: tray,
+        proxy: Some(event_loop.create_proxy()),
+        ..WindowLoop::default()
+    };
+    if let Err(e) = event_loop.run_app(&mut window_loop) {
         warn!(error = %e, "window loop failed");
     }
     match node.join() {
@@ -231,10 +251,43 @@ struct WindowLoop {
     windows: HashMap<WindowId, OutputWindow>,
     /// Keeps the screens from sleeping while any output window is open.
     awake: Option<power::KeepAwake>,
+    /// The menu bar icon to show once the loop runs, if any.
+    tray_config: Option<crate::tray::Config>,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    tray: Option<crate::tray::Tray>,
+    proxy: Option<EventLoopProxy<Command>>,
 }
 
 impl ApplicationHandler<Command> for WindowLoop {
     fn resumed(&mut self, _: &ActiveEventLoop) {}
+
+    // The menu bar icon can only be made once the application has started.
+    fn new_events(&mut self, _: &ActiveEventLoop, cause: winit::event::StartCause) {
+        if !matches!(cause, winit::event::StartCause::Init) {
+            return;
+        }
+        let Some(config) = self.tray_config.take() else {
+            return;
+        };
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            let proxy = std::sync::Mutex::new(self.proxy.clone());
+            let on_menu = move |id| {
+                if let Some(proxy) = proxy.lock().unwrap().as_ref() {
+                    let _ = proxy.send_event(Command::Menu(id));
+                }
+            };
+            match crate::tray::Tray::new(config, on_menu) {
+                Ok(tray) => {
+                    info!("menu bar icon shown");
+                    self.tray = Some(tray);
+                }
+                Err(e) => warn!(error = %e, "couldn't show the menu bar icon"),
+            }
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        drop(config);
+    }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, command: Command) {
         match command {
@@ -266,6 +319,20 @@ impl ApplicationHandler<Command> for WindowLoop {
                 }
                 if self.windows.is_empty() {
                     self.awake = None;
+                }
+            }
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            Command::Tray(status) => {
+                if let Some(tray) = &mut self.tray {
+                    tray.show(status);
+                }
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            Command::Tray(_) => {}
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            Command::Menu(id) => {
+                if let Some(tray) = &mut self.tray {
+                    tray.picked(&id);
                 }
             }
             Command::Quit => event_loop.exit(),

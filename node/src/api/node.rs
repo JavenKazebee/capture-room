@@ -28,7 +28,8 @@ use crate::api::types::{
     ConfiguredSourceRequest, DeviceDto, DirListingDto, DisplayDto, NdiSubscriptionsDto,
     NdiSubscriptionsInput, NodeCapacityDto, NodeChecksDto, NodeSettingsDto, NodeStatus,
     OutputConfig, RecordingSessionDto, RecordingStatus, RecordingsQuery, SourceConfig, SourceDto,
-    StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest, VolumeCheckDto, WsEvent,
+    StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest, UpdateStatusDto,
+    VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
 use crate::capacity::{Capacity, Load, Setup};
@@ -88,6 +89,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/capacity/check", post(post_capacity_check))
         .route("/thumbnails/{source_id}", get(get_thumbnail))
         .route("/ws", get(ws_handler))
+        .route("/update", get(get_update).post(post_update))
+        .route("/update/check", post(post_update_check))
         .merge(super::playout::router())
 }
 
@@ -112,6 +115,25 @@ pub async fn local_status(state: &AppState) -> NodeStatus {
         clock: Some(state.clock_status().await),
         replay_codecs: crate::api::types::ReplayCodec::usable(),
     }
+}
+
+// ── /update ───────────────────────────────────────────────────────────────────
+
+async fn get_update(State(state): State<Arc<AppState>>) -> Json<UpdateStatusDto> {
+    Json(crate::update::status(&state).await)
+}
+
+/// Look for a newer release now.
+async fn post_update_check(State(state): State<Arc<AppState>>) -> Json<UpdateStatusDto> {
+    crate::update::check(&state).await;
+    Json(crate::update::status(&state).await)
+}
+
+/// Update to the newest release: answers once it has started; the node
+/// restarts into the new version when it's installed.
+async fn post_update(State(state): State<Arc<AppState>>) -> ApiResult<Json<UpdateStatusDto>> {
+    crate::update::start(&state).await.map_err(ApiError::bad)?;
+    Ok(Json(crate::update::status(&state).await))
 }
 
 // ── /clock ────────────────────────────────────────────────────────────────────

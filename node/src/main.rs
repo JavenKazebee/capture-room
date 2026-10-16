@@ -8,10 +8,13 @@ mod db;
 mod display;
 mod pipeline;
 mod plugins;
+mod service;
 mod session;
 mod sources;
 mod state;
 mod storage;
+mod tray;
+mod update;
 mod ws;
 
 use std::net::SocketAddr;
@@ -43,6 +46,22 @@ struct Args {
 
     #[arg(long, default_value = "capture-room.db")]
     db: String,
+
+    /// Show the menu bar icon (the installed service always does).
+    #[arg(long)]
+    tray: bool,
+
+    #[command(subcommand)]
+    command: Option<Cmd>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Cmd {
+    /// Install, remove or inspect the login service.
+    Service {
+        #[command(subcommand)]
+        command: service::Command,
+    },
 }
 
 /// Where replay buffers (`.replay`) and saved replay clips
@@ -54,26 +73,41 @@ fn replay_root(folder: &str, node_id: &str) -> std::path::PathBuf {
 }
 
 fn main() -> Result<()> {
+    let mut args = Args::parse();
+    if let Some(Cmd::Service { command }) = args.command.take() {
+        return service::run_command(command);
+    }
+    if service::launched_from_desktop()? {
+        return Ok(());
+    }
     // Before the runtime's threads start: these set environment variables.
     #[cfg(target_os = "macos")]
     let bundled_gst = plugins::use_bundled_gstreamer();
     #[cfg(not(target_os = "macos"))]
     let bundled_gst: Option<std::path::PathBuf> = None;
     let ndi_dir = plugins::locate_ndi_runtime();
-    // The main thread runs the window loop for display outputs, where
-    // there's a window system; the node runs beside it.
-    display::run(move |displays| {
+    let (tray_tx, tray_rx) = tokio::sync::mpsc::unbounded_channel();
+    let tray = (args.tray || service::running_as_service()).then(|| tray::Config {
+        port: args.port,
+        actions: tray_tx,
+    });
+    let tray_rx = tray.is_some().then_some(tray_rx);
+    // The main thread runs the window loop for display outputs and the menu
+    // bar icon, where there's a window system; the node runs beside it.
+    display::run(tray, move |displays| {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?
-            .block_on(run(bundled_gst, ndi_dir, displays))
+            .block_on(run(args, bundled_gst, ndi_dir, displays, tray_rx))
     })
 }
 
 async fn run(
+    args: Args,
     bundled_gst: Option<std::path::PathBuf>,
     ndi_dir: Option<&'static str>,
     displays: display::Displays,
+    tray_actions: Option<tokio::sync::mpsc::UnboundedReceiver<tray::Action>>,
 ) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -84,7 +118,6 @@ async fn run(
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
 
-    let args = Args::parse();
     if let Some(dir) = bundled_gst {
         info!(dir = %dir.display(), "using the GStreamer bundled in");
     }
@@ -143,7 +176,7 @@ async fn run(
         node_clock.current(),
         ndi_monitor,
         std::sync::Arc::new(devices),
-        displays,
+        displays.clone(),
         leg_failure_tx,
         leg_file_tx,
     );
@@ -185,6 +218,7 @@ async fn run(
         controller: RwLock::new(None),
         http: reqwest::Client::new(),
         node_router: std::sync::OnceLock::new(),
+        updater: update::Updater::default(),
     });
     let _ = state.node_router.set(api::node_router(Arc::clone(&state)));
 
@@ -193,6 +227,11 @@ async fn run(
     session::spawn_clock_follower(Arc::clone(&state));
     session::spawn_leg_failure_reporter(Arc::clone(&state), leg_failure_rx);
     session::spawn_leg_file_recorder(Arc::clone(&state), leg_file_rx);
+    session::spawn_quit_on_signal(Arc::clone(&state));
+    update::spawn_checker(Arc::clone(&state));
+    if let Some(actions) = tray_actions {
+        tray::spawn(Arc::clone(&state), displays, actions);
+    }
 
     // ── Controller (optional, toggleable at runtime) ──────────────────────────
     if controller_enabled {

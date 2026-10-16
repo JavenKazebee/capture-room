@@ -79,6 +79,88 @@ pub async fn run_stop(state: Arc<AppState>, job: StopJob, source_error: Option<S
     state.source_manager.write().await.finish_stop(&session_id);
 }
 
+/// What the node is doing that an update or a quit would interrupt.
+pub struct Activity {
+    pub recordings: usize,
+    /// Channels playing a clip.
+    pub playing: usize,
+}
+
+pub async fn activity(state: &AppState) -> Activity {
+    let mgr = state.source_manager.read().await;
+    let playing = mgr
+        .sources()
+        .iter()
+        .filter_map(|s| s.playout())
+        .filter(|p| p.status().state == crate::api::types::TransportState::Playing)
+        .count();
+    Activity {
+        recordings: mgr.active_sessions().len(),
+        playing,
+    }
+}
+
+/// Stop every recording and wait until each one's files are finished.
+pub async fn stop_all_recordings(state: &Arc<AppState>) {
+    let ids: Vec<String> = state
+        .source_manager
+        .read()
+        .await
+        .active_sessions()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    join_all(ids.into_iter().map(|id| async move {
+        let outcome = state.source_manager.write().await.begin_stop_recording(&id);
+        match outcome {
+            StopOutcome::Start(job) => run_stop(Arc::clone(state), *job, None).await,
+            StopOutcome::Join(mut rx) => {
+                while rx.borrow_and_update().is_none() {
+                    if rx.changed().await.is_err() {
+                        break;
+                    }
+                }
+            }
+            StopOutcome::NotFound => {}
+        }
+    }))
+    .await;
+}
+
+/// Quit: finish the recordings, so their files are whole, then exit with
+/// `code` (0 leaves the service stopped; anything else restarts it).
+pub async fn quit(state: &Arc<AppState>, code: i32) -> ! {
+    stop_all_recordings(state).await;
+    info!(code, "quitting");
+    std::process::exit(code)
+}
+
+/// Quit cleanly on Ctrl+C, or when the service manager stops the node.
+pub fn spawn_quit_on_signal(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let (Ok(mut term), Ok(mut int)) = (
+                signal(SignalKind::terminate()),
+                signal(SignalKind::interrupt()),
+            ) else {
+                return;
+            };
+            tokio::select! {
+                _ = term.recv() => {}
+                _ = int.recv() => {}
+            }
+        }
+        #[cfg(not(unix))]
+        if tokio::signal::ctrl_c().await.is_err() {
+            return;
+        }
+        info!("stopping: finishing recordings first");
+        quit(&state, 0).await;
+    });
+}
+
 /// Run each teardown on its own task: finish the monitor's recordings, then
 /// stop its pipeline (which also frees the source bin for a new monitor).
 pub fn spawn_teardowns(state: &Arc<AppState>, teardowns: Vec<Teardown>) {

@@ -35,6 +35,8 @@ pub struct AppState {
     /// The node API router, used to serve `/api/v1/nodes/{self}/…` in-process.
     /// Set once at startup (it holds an `Arc` back to this state).
     pub node_router: std::sync::OnceLock<axum::Router>,
+    /// Where this node's software update stands.
+    pub updater: crate::update::Updater,
 }
 
 impl AppState {

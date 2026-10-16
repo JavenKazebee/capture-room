@@ -341,7 +341,11 @@ async fn transport_on_a_running_program() {
     assert!(!black(luma()), "replays: {}", luma());
 
     mon.stop().unwrap();
-    assert_eq!(*program.stalls.lock().unwrap(), vec![], "program stalls");
+    assert_eq!(
+        *program.stalls.lock().unwrap(),
+        Vec::<std::time::Duration>::new(),
+        "program stalls"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -494,7 +498,11 @@ async fn playlist_hands_over_without_a_gap() {
     }
 
     mon.stop().unwrap();
-    assert_eq!(*program.stalls.lock().unwrap(), vec![], "program stalls");
+    assert_eq!(
+        *program.stalls.lock().unwrap(),
+        Vec::<std::time::Duration>::new(),
+        "program stalls"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -596,7 +604,11 @@ async fn plays_without_cueing() {
     assert_eq!(status.item_id.as_deref(), Some("c"));
 
     mon.stop().unwrap();
-    assert_eq!(*program.stalls.lock().unwrap(), vec![], "program stalls");
+    assert_eq!(
+        *program.stalls.lock().unwrap(),
+        Vec::<std::time::Duration>::new(),
+        "program stalls"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

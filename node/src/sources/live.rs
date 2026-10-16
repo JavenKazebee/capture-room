@@ -975,7 +975,11 @@ mod tests {
                 Vec::<String>::new(),
                 "{name} timestamps"
             );
-            assert_eq!(*sink.stalls.lock().unwrap(), vec![], "{name} stalls");
+            assert_eq!(
+                *sink.stalls.lock().unwrap(),
+                Vec::<std::time::Duration>::new(),
+                "{name} stalls"
+            );
         }
         let vcaps = v.caps.lock().unwrap();
         let acaps = a.caps.lock().unwrap();

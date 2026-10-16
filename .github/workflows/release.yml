@@ -1,7 +1,8 @@
 name: Release
 
 # Pushing a tag vX.Y.Z (matching node/Cargo.toml's version) builds the macOS
-# apps and publishes them, with install.sh, as a GitHub release. Run by hand,
+# apps, signs them with the release key, and publishes them with latest.json
+# (what the updater checks) and install.sh as a GitHub release. Run by hand,
 # it builds the same files as a workflow artifact without releasing.
 on:
   push:
@@ -44,6 +45,24 @@ jobs:
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
+
+      # The updater only installs archives signed with the release key
+      # (scripts/release-key.pub); its secret half is the MINISIGN_KEY secret.
+      - name: Release key
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+        run: |
+          brew install minisign
+          if [ -z "$MINISIGN_KEY" ]; then
+            if [ "$GITHUB_REF_TYPE" = tag ]; then
+              echo "::error::The MINISIGN_KEY secret isn't set: a release must be signed."
+              exit 1
+            fi
+            echo "::warning::MINISIGN_KEY isn't set: this build is unsigned and nodes won't update to it."
+            exit 0
+          fi
+          printf '%s\n' "$MINISIGN_KEY" > "$RUNNER_TEMP/release.key"
+          echo "MINISIGN_KEY_FILE=$RUNNER_TEMP/release.key" >> "$GITHUB_ENV"
 
       - name: Package
         env:

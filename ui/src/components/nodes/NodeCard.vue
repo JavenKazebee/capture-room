@@ -19,6 +19,7 @@ import CopyButton from '@/components/common/CopyButton.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import StorageVolumeBar from '@/components/common/StorageVolumeBar.vue'
 import NodeCapacity from './NodeCapacity.vue'
+import NodeUpdate from './NodeUpdate.vue'
 
 /**
  * One node: identity, activity, storage, capacity. Sections keep their height whether the
@@ -207,6 +208,7 @@ async function saveRename() {
         <Radio class="size-3.5" /> Sources
       </Button>
       <div class="flex-1" />
+      <NodeUpdate :node="node" />
       <Button
         v-if="canRemove"
         variant="ghost"

@@ -48,6 +48,42 @@ impl NodeStatus {
     }
 }
 
+/// Where a node's software update stands (`/update`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct UpdateStatusDto {
+    /// The version running.
+    pub current: String,
+    /// The newest release, once checked.
+    pub latest: Option<String>,
+    /// `latest` is newer than `current`.
+    pub available: bool,
+    /// Why this node can't update itself at all (not the installed app), if
+    /// it can't.
+    pub unsupported: Option<String>,
+    /// Why it can't update right now (recording, a channel playing), if so.
+    pub busy: Option<String>,
+    pub phase: UpdatePhase,
+    /// How much of the download is done, while downloading.
+    pub percent: Option<u8>,
+    /// Why the last check or update failed.
+    pub error: Option<String>,
+    pub checked_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum UpdatePhase {
+    #[default]
+    Idle,
+    Checking,
+    Downloading,
+    Installing,
+    /// Installed; the node is restarting into the new version.
+    Restarting,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct SourceTypeSupport {

@@ -26,9 +26,12 @@ _Last updated: 2026-10-16_
 11. ✅ **Setup page** — per-node permission and system checks, with shortcuts to fix them
 12. **Instant replay**
 13. **Install, update, Decklink** — on the Mac Pro (Intel, two Decklink 8K Pro G2s) while
-    it's free: ✅ macOS installer (app bundle with GStreamer inside, LaunchAgent,
-    `install.sh`, release workflow); then the auto-updater; then Decklink sources and
-    outputs, shipped to the Mac Pro through the updater
+    it's free: ✅ macOS installer (app bundle with GStreamer inside, `install.sh`,
+    release workflow); ✅ login service that restarts on crash, with a menu bar icon
+    (`capture-room service`); ✅ updater (signed releases, Update on the node card and
+    in the menu); then Decklink sources and outputs, shipped to the Mac Pro through
+    the updater. Linux and Windows installers next, behind the same service and update
+    code
 14. **Follow-on**, in rough priority order (see below)
 
 Rationale for front-loading 1–2 ahead of NDI: a configurable TestSource plus the
