@@ -1141,6 +1141,51 @@ Config file:
 
 Cross-compiled for `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`, `aarch64-apple-darwin`, `x86_64-apple-darwin` via GitHub Actions.
 
+### macOS package (✅)
+
+```
+curl -fsSL https://github.com/JavenKazebee/capture-room/releases/latest/download/install.sh | bash
+```
+
+- **Release:** pushing a tag `vX.Y.Z` (it must match `node/Cargo.toml`) runs
+  `.github/workflows/release.yml` on a macOS runner, which publishes
+  `capture-room-macos-{aarch64,x86_64}.tar.gz`, their `.sha256` and `install.sh` as a
+  GitHub release. Run by hand, it builds the same files as a workflow artifact.
+- **Build:** `scripts/macos/package.sh <aarch64|x86_64>` (works locally too).
+  `scripts/macos/gstreamer.sh` downloads the official GStreamer packages (version
+  pinned in the workflow and the script) and unpacks them without installing into an
+  SDK, which the node links against, and a runtime that ships in the app. The runtime
+  leaves out the python, gtk, editing, visualizers, dvd and devtools packages, static
+  libraries and headers, and the framework's own `ndi`, `fallbackswitch` and
+  `rswebrtc` plugins (the node links its pinned ones in; two of each would clash).
+  Each app is one architecture, thinned from the universal framework: about 100 MB
+  to download, 300 MB installed.
+- **App:** `Capture Room.app` (`com.capture-room.node`): the binary in
+  `Contents/MacOS`, GStreamer in `Contents/Frameworks` (found through an rpath). At
+  startup `plugins::use_bundled_gstreamer` points GStreamer's plugin path, plugin
+  scanner, PTP helper and GIO modules into the bundle, with a registry of its own in
+  `~/Library/Caches/capture-room`, so a Homebrew GStreamer on the same Mac is never
+  mixed in. `Info.plist` has the camera, microphone and local network usage strings
+  and the Bonjour types (`_capture-room._tcp`, `_ndi._tcp`), `LSUIElement` (no Dock
+  icon) and `NSAppSleepDisabled`. The app is the permission holder for macOS privacy
+  settings.
+- **Install:** `install.sh` installs the app for the Mac's architecture into
+  `/Applications` (`~/Applications` if that isn't writable), after checking the
+  checksum, and a LaunchAgent (`~/Library/LaunchAgents/com.capture-room.node.plist`):
+  it starts at login, restarts on exit (`KeepAlive`, which the updater will rely on),
+  and runs as `Interactive` so it isn't throttled. Its database is
+  `~/Library/Application Support/Capture Room/capture-room.db` and its log is
+  `~/Library/Logs/Capture Room/capture-room.log`. Running it again updates in place.
+  `--controller`, `--port`, `--version`, `--archive <local build>`, and
+  `--uninstall [--purge]`; recordings in `~/capture-room` are never removed.
+- **Signing:** ad hoc (`CODESIGN_IDENTITY`, default `-`) until there's a Developer ID.
+  Nothing downloaded by `curl` or the updater is quarantined, so Gatekeeper never
+  checks it; a browser download would need Open Anyway. An ad hoc signature changes
+  with every build, so macOS asks for camera, microphone, screen recording and local
+  network access again after each update; a stable identity (a self-signed
+  certificate, or a Developer ID) fixes that. No hardened runtime yet: with ad hoc
+  signatures it would refuse to load the plugins.
+
 ### Plugin provenance
 
 Three tiers, the same on every OS:

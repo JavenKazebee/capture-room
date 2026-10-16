@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.capture-room.node</string>
+	<key>CFBundleName</key>
+	<string>Capture Room</string>
+	<key>CFBundleDisplayName</key>
+	<string>Capture Room</string>
+	<key>CFBundleExecutable</key>
+	<string>capture-room</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<!-- A background service: no Dock icon. Display outputs still open windows. -->
+	<key>LSUIElement</key>
+	<true/>
+	<!-- Live video: never let App Nap slow the node down. -->
+	<key>NSAppSleepDisabled</key>
+	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Capture Room records and streams the cameras you add as sources.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Capture Room records and streams the audio inputs you add as sources.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Capture Room finds other nodes and NDI senders on your network and sends video to them.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_capture-room._tcp</string>
+		<string>_ndi._tcp</string>
+	</array>
+</dict>
+</plist>

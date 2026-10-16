@@ -25,3 +25,4 @@ ui/dist/
 # Claude Code (personal settings and memory)
 .claude/settings.local.json
 .claude/projects/
+/dist/

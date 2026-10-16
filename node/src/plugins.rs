@@ -178,6 +178,41 @@ pub fn locate_ndi_runtime() -> Option<&'static str> {
     Some(dir)
 }
 
+/// When the node runs from the macOS app bundle, point GStreamer at the
+/// framework inside it (`Contents/Frameworks/GStreamer.framework`), so no
+/// GStreamer elsewhere on the machine is mixed in, and give it a registry of
+/// its own. Returns the framework's folder. Call before any threads start: it
+/// sets environment variables.
+#[cfg(target_os = "macos")]
+pub fn use_bundled_gstreamer() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let root = exe
+        .parent()?
+        .join("../Frameworks/GStreamer.framework/Versions/1.0")
+        .canonicalize()
+        .ok()?;
+    let set = |var: &str, path: std::path::PathBuf| std::env::set_var(var, path);
+    set("GST_PLUGIN_SYSTEM_PATH_1_0", root.join("lib/gstreamer-1.0"));
+    set(
+        "GST_PLUGIN_SCANNER_1_0",
+        root.join("libexec/gstreamer-1.0/gst-plugin-scanner"),
+    );
+    set(
+        "GST_PTP_HELPER_1_0",
+        root.join("libexec/gstreamer-1.0/gst-ptp-helper"),
+    );
+    set("GIO_MODULE_DIR", root.join("lib/gio/modules"));
+    if let Some(home) = std::env::home_dir() {
+        set(
+            "GST_REGISTRY_1_0",
+            home.join("Library/Caches/capture-room/gstreamer-registry.bin"),
+        );
+    }
+    std::env::remove_var("GST_PLUGIN_PATH_1_0");
+    std::env::remove_var("GST_PLUGIN_PATH");
+    Some(root)
+}
+
 /// Check that every required GStreamer element is registered on this machine.
 ///
 /// Returns an error listing all missing elements and the packages that provide

@@ -4,7 +4,7 @@ Active sequencing of work, decisions, and rationale. This complements
 [ARCHITECTURE.md](ARCHITECTURE.md) (the design spec) — when the two disagree on
 *order*, this file wins; ARCHITECTURE.md remains the source of truth for *design*.
 
-_Last updated: 2026-10-15_
+_Last updated: 2026-10-16_
 
 ---
 
@@ -25,7 +25,11 @@ _Last updated: 2026-10-15_
     multi-angle replay
 11. ✅ **Setup page** — per-node permission and system checks, with shortcuts to fix them
 12. **Instant replay**
-13. **Follow-on**, in rough priority order (see below)
+13. **Install, update, Decklink** — on the Mac Pro (Intel, two Decklink 8K Pro G2s) while
+    it's free: ✅ macOS installer (app bundle with GStreamer inside, LaunchAgent,
+    `install.sh`, release workflow); then the auto-updater; then Decklink sources and
+    outputs, shipped to the Mac Pro through the updater
+14. **Follow-on**, in rough priority order (see below)
 
 Rationale for front-loading 1–2 ahead of NDI: a configurable TestSource plus the
 Sources view gives a real authoring/verification surface, and live monitoring forces
@@ -322,8 +326,10 @@ Roughly in priority order.
 - **Authentication** — the API is open to anyone on the network, and any of them can
   start or stop recordings, or delete recorded files. At least a shared token, before
   packaging.
-- **Packaging** — cross-platform builds via GitHub Actions; NDI packaging per
-  ARCHITECTURE.md.
+- **Packaging** — ✅ macOS (2026-10-16): tagged releases build an app per architecture
+  with GStreamer inside, installed by `install.sh` (ARCHITECTURE.md, Deployment). Still
+  to come: a Developer ID (stable signature, notarization), Linux and Windows packages,
+  log rotation.
 - **Timecode** — real LTC/VITC extraction; not started (TestSource fakes wall-clock TC).
 - **Scheduler engine** — runs on the controller and sends ordinary start/stop commands
   (with inline outputs) at the scheduled times. Nodes stay stateless about schedules.

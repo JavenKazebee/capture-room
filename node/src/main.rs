@@ -54,7 +54,11 @@ fn replay_root(folder: &str, node_id: &str) -> std::path::PathBuf {
 }
 
 fn main() -> Result<()> {
-    // Before the runtime's threads start: it sets an environment variable.
+    // Before the runtime's threads start: these set environment variables.
+    #[cfg(target_os = "macos")]
+    let bundled_gst = plugins::use_bundled_gstreamer();
+    #[cfg(not(target_os = "macos"))]
+    let bundled_gst: Option<std::path::PathBuf> = None;
     let ndi_dir = plugins::locate_ndi_runtime();
     // The main thread runs the window loop for display outputs, where
     // there's a window system; the node runs beside it.
@@ -62,19 +66,28 @@ fn main() -> Result<()> {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?
-            .block_on(run(ndi_dir, displays))
+            .block_on(run(bundled_gst, ndi_dir, displays))
     })
 }
 
-async fn run(ndi_dir: Option<&'static str>, displays: display::Displays) -> Result<()> {
+async fn run(
+    bundled_gst: Option<std::path::PathBuf>,
+    ndi_dir: Option<&'static str>,
+    displays: display::Displays,
+) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "capture_room=debug,info".into()),
         )
+        // No colour codes in a service's log file.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
 
     let args = Args::parse();
+    if let Some(dir) = bundled_gst {
+        info!(dir = %dir.display(), "using the GStreamer bundled in");
+    }
     if let Some(dir) = ndi_dir {
         info!(dir, "using the NDI library found in");
     }
