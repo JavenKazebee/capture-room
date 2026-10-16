@@ -25,7 +25,7 @@ use gstreamer::{self as gst, prelude::*};
 use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
-use super::recording::set_property;
+use super::recording::{set_property, stamp_timecode};
 use super::{
     audio_hold_queue, capsfilter, make_el, mark_prores_keyframes, pcm_audiorate, share_clock,
     start_or_reason, ConsumerPipeline,
@@ -601,6 +601,11 @@ pub fn save(span: &ReplaySpan, dir: &Path) -> Result<Vec<String>> {
 /// the cut can fall on any of them. The same frames a channel plays between
 /// those points. Blocks until the file is written.
 ///
+/// With `timecode` (the clock time position 0 shows, and the UTC offset of
+/// that clock's domain) the file gets the time of day of its first frame as
+/// timecode, as a recording of that source would: exports of a group's
+/// angles line up in an NLE.
+///
 /// ```text
 /// splitmuxsrc ─┬→ [gate] → qtmux → filesink
 ///              └→ [gate] ↗
@@ -609,6 +614,7 @@ pub fn export(
     files: &[String],
     from: gst::ClockTime,
     to: gst::ClockTime,
+    timecode: Option<(gst::ClockTime, i64)>,
     out: &Path,
 ) -> Result<()> {
     let pipeline = gst::Pipeline::with_name("replay-export");
@@ -632,7 +638,8 @@ pub fn export(
         let Some(mux) = mux_weak.upgrade() else {
             return;
         };
-        let template = if pad.name().starts_with("video") {
+        let video = pad.name().starts_with("video");
+        let template = if video {
             "video_%u"
         } else if pad.name().starts_with("audio") {
             "audio_%u"
@@ -642,6 +649,18 @@ pub fn export(
         gate(pad, from);
         match mux.request_pad_simple(template) {
             Some(sink) => {
+                // On the muxer's side of the gate: the segment it sees is
+                // the seek's, whose stream time is the position. The frame
+                // on the cut can start just before it.
+                if let (true, Some((base, offset))) = (video, timecode) {
+                    stamp_timecode(&sink, move |segment, pts| {
+                        let position = match segment?.to_stream_time_full(pts)? {
+                            gst::Signed::Positive(p) => p.useconds() as i64,
+                            gst::Signed::Negative(p) => -(p.useconds() as i64),
+                        };
+                        Some(base.useconds() as i64 + position + offset)
+                    });
+                }
                 if let Err(e) = pad.link(&sink) {
                     warn!(pad = %pad.name(), error = ?e, "can't export replay stream");
                 }
@@ -791,6 +810,7 @@ mod tests {
     use crate::api::types::{
         AudioTestSignal, MonitorSettingsDto, TestSourceConfig, VideoTestPattern,
     };
+    use crate::pipeline::recording::time_code;
     use crate::sources::test::TestSource;
     use gstreamer_app as gst_app;
     use gstreamer_video as gst_video;
@@ -1035,7 +1055,7 @@ mod tests {
         assert_eq!(span.files.len(), 2);
         let clip_dir = root.join("clip");
         let files = save(&span, &clip_dir).unwrap();
-        let (from, to) = (span.from, span.to);
+        let (base, from, to) = (span.base, span.from, span.to);
         drop(span);
         drop(leg);
         let _ = monitor.stop();
@@ -1048,10 +1068,37 @@ mod tests {
 
         let out = root.join("export.mov");
         let saved = files.clone();
-        tokio::task::spawn_blocking(move || export(&saved, from, to, &out))
+        // An hour off this machine's own mapping, as a controller's might be.
+        let offset = crate::clock::local_utc_offset_us(&clock).unwrap() + 3_600_000_000;
+        let timecode = Some((base, offset));
+        tokio::task::spawn_blocking(move || export(&saved, from, to, timecode, &out))
             .await
             .unwrap()
             .unwrap();
+        // The in point's time of day, give or take the frame on the cut.
+        let fps = gst::Fraction::new(30, 1);
+        let frame = 1_000_000 / 30;
+        let at = (base + from).useconds() as i64 + offset;
+        let want: Vec<String> = [at - frame, at, at + frame]
+            .iter()
+            .map(|&t| time_code(t, fps).unwrap().to_string())
+            .collect();
+        match std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-select_streams", "v:0"])
+            .args(["-show_entries", "stream_tags=timecode", "-of", "csv=p=0"])
+            .arg(root.join("export.mov"))
+            .output()
+        {
+            Ok(out) => {
+                let got = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                println!("export timecode {got}, expected about {}", want[1]);
+                assert!(
+                    want.contains(&got),
+                    "the export's timecode: {got}, not {want:?}"
+                );
+            }
+            Err(_) => println!("no ffprobe: not reading the timecode back"),
+        }
         let (video, audio) = count_frames(&root.join("export.mov"));
         // 30 fps: a second's frames, give or take the one on the cut.
         assert!((29..=31).contains(&video), "{video} frames exported");

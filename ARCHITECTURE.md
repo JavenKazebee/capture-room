@@ -104,7 +104,7 @@ Initial implementations:
 - `StreamSource` — ✅ implemented — one type for every network stream, chosen by URL scheme: RTSP, SRT (caller, or listener for OBS-style pushes), RTMP pull, HLS/HTTP and UDP MPEG-TS. `uridecodebin3` builds the protocol element and decodes; the source sets that element's properties (jitter buffer `latency_ms`, RTSP transport). Saving checks the scheme is available on the node and that no other configured source binds the same listening port.
 - `DeviceSource` — ✅ implemented — a local capture device (HDMI/USB capture card, webcam), configured from a picker rather than auto-discovered. A persistent `GstDeviceMonitor` (`Video/Source`, `Audio/Source`, `Source/Monitor`), like `NdiMonitor`, serves `/devices`; each platform's provider makes the element (`v4l2src` / `pulsesrc` on Linux, `avfvideosrc` on macOS, `mfvideosrc` / `wasapi2src` on Windows), so the only platform code is the stable device key (v4l2 path, AVFoundation unique id, Windows device path, display name as a last resort). Devices without raw video in the requested format are captured as MJPEG and decoded. On Linux, PipeWire's devices are skipped: `pipewiresrc` fails to open its target on some systems (PipeWire 1.6 / GStreamer 1.28), and the v4l2 and PulseAudio providers list the same devices. ALSA's raw devices are skipped too (they'd fight the sound server for the card). An unplugged device keeps the source, shown by its saved name.
 - `WhipSource` — ✅ implemented — WebRTC ingest from OBS 30+ and browsers: `whipserversrc` (gst-plugins-rs, statically linked) serves `http://<node>:<port>/whip/endpoint`. Black and silence until a publisher connects. Each publisher session gets fresh input chains, and the element restarts when its pads go (it won't serve a second session's media otherwise). Ports are unique across WHIP and stream listeners.
-- `DecklinkSource` — ⬜ deferred (no hardware) — Decklink SDK via FFI / `decklinkvideosrc`
+- `DecklinkSource` — 🟡 built, untested on hardware — an SDI (or HDMI) input on a Blackmagic Decklink card through gst-plugins-bad's `decklinkvideosrc` + `decklinkaudiosrc` (the Desktop Video driver supplies `DeckLinkAPI`; the macOS bundle already ships the plugin). Sub-devices come from the same device monitor as `DeviceSource` (Decklink's are kept out of `/devices` and served by `GET /decklink`, grouped by card), keyed by the driver's `persistent-id` so a source finds the same connector after a restart. Video and embedded audio (2, 8 or 16 channels) are in one bin, as the card requires. Mode is detected from the signal by default, or pinned. It goes through `live::build_bin` as a direct source, never restarted: the card keeps sending frames without a signal, flagged as gaps, which are dropped so the link reads Connecting / Reconnecting and the compositor shows black. Each frame's RP188 timecode is shown on the source (not yet written to recordings: the compositor drops the meta). A card's **profile** (how its connectors split into sub-devices, half or full duplex) is a node setting per card (`PUT /decklink/{card}/profile`, `node_config` key `decklink_profiles`), set on every video element opened on the card; it's in the source's fingerprint, so a change rebuilds the card's sources, and the card's outputs are restarted. Saving checks a sub-device is captured and played out at most once each, and not both on a half-duplex profile.
 - Linux screen capture — ⬜ not started — X11 `ximagesrc`, or a Wayland xdg-desktop-portal ScreenCast session into `pipewiresrc`, offered as entries in the device list. On macOS and Windows screens already appear as devices.
 
 **Configured vs discovered sources.** Test, file, stream, device and WHIP sources are *configured*: stored in `configured_sources` as a JSON config tagged with its `type` (`SourceConfig` in `api/types.rs`), and served from `/configured-sources`. A new configured type adds a `SourceConfig` variant and a case in `sources::configured`. NDI sources are *discovered* and not stored.
@@ -656,8 +656,17 @@ MonitorPipeline producers ─┬─► recording legs (unchanged)
   `srt`, `rtsp`, `whep`, `display`).
 - **Capacity:** running channels count against the node's benchmarked capacity, and the
   benchmark measures channels (see Benchmark Runner).
-- **Still to come:** Decklink / AJA outputs (SDI cards are the clock master, which
-  changes the clock design); slates.
+- **Decklink output** (🟡 built, untested on hardware): `decklinkvideosink` +
+  `decklinkaudiosink` on a sub-device, in the mode matching the channel's format
+  (progressive only for now; a pinned mode has to match it). Audio is embedded on 2
+  or 8 channels, the program's first and silence after. The output runs on the node
+  clock like every other output: the sink schedules frames on the card's clock and
+  drops or repeats one when they drift apart (crystal error of 20–50 ppm is one every
+  5–15 minutes at 59.94). Its dropped-frame count includes the card's. Making the card
+  the clock master would avoid those frames, but changes which clock a channel runs
+  on and how that relates to the shared node clock; deferred until hardware shows it
+  matters, or there's house reference to lock to.
+- **Still to come:** AJA outputs; interlaced SDI out; slates.
 
 ### Media library
 
@@ -775,6 +784,11 @@ plays from it at variable speed.
   start there: qtdemux hands out PCM in chunks of about half a second starting on the
   sample before the cut, and qtmux drops a chunk that starts before it whole. Tested:
   the export holds exactly the frames marked, and as long a stretch of sound.
+  Each frame is stamped with its time of day (the clip's `base_us` plus its position,
+  mapped to UTC by the clip's `utc_offset_us`), as a MOV recording is, so the file's
+  timecode track starts at the in point's time of day and a group's angles line up in
+  an NLE. The browser downloads an export from the media library
+  (`GET /media/{id}/file?download`), or from the Download button on the export's toast.
 
 ### What the prototype showed
 
@@ -904,6 +918,7 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 | GET | `/devices` | capture and audio devices on the node (key, name, class, provider, modes), for picking one in a device source or audio plan |
 | GET / POST | `/media` | the media library (each entry flags a missing file) / add a file `{ path, name?, session_id? }`: probed, 400 if it can't be played, 409 if already in |
 | DELETE | `/media/{id}` | remove from the library (the file stays) |
+| GET | `/media/{id}/file` | the entry's file, with range requests; `?download` as an attachment |
 | GET | `/channels/{id}` | a playout channel's transport: state (`idle \| cued \| playing \| paused \| ended`), clip, item on air, next item and whether it's in standby, position, duration, error, each output's status |
 | GET / PUT | `/channels/{id}/playlist` | the playlist (items with in, out and end, whether it loops) / replace it |
 | POST | `/channels/{id}/play` | `{ item_id }` → plays now, straight on from what's on air |

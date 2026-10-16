@@ -1,10 +1,11 @@
 use anyhow::{Context, Result};
 use sqlx::{sqlite::SqliteConnectOptions, types::Json, FromRow, Sqlite, SqlitePool, Transaction};
+use std::collections::HashMap;
 use std::str::FromStr;
 use tracing::info;
 
 use crate::api::types::{
-    BenchmarkRunDto, BenchmarkStatus, ClipEnd, ConfiguredSourceDto, MediaItemDto,
+    BenchmarkRunDto, BenchmarkStatus, ClipEnd, ConfiguredSourceDto, DecklinkProfile, MediaItemDto,
     MonitorSettingsDto, NdiConnect, NdiSubscriptionsInput, PresetDto, PresetOutputInput,
     RecordingSessionDto, ReplayCodec, ReplayConfigInput,
 };
@@ -445,6 +446,15 @@ pub async fn media_list(pool: &SqlitePool) -> Result<Vec<MediaItemDto>> {
     Ok(rows)
 }
 
+pub async fn media_get(pool: &SqlitePool, id: &str) -> Result<Option<MediaItemDto>> {
+    Ok(
+        sqlx::query_as::<_, MediaItemDto>(&format!("{MEDIA_SELECT} WHERE id = ?"))
+            .bind(id)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
 /// Add `item`; false if its path is already in the library.
 pub async fn media_insert(pool: &SqlitePool, item: &MediaItemDto) -> Result<bool> {
     let res = sqlx::query(
@@ -509,6 +519,26 @@ pub async fn ndi_subscriptions_set(pool: &SqlitePool, subs: &NdiSubscriptionsInp
     }
     tx.commit().await?;
     Ok(())
+}
+
+// ── Decklink profiles ─────────────────────────────────────────────────────────
+
+const DECKLINK_PROFILES: &str = "decklink_profiles";
+
+/// Each Decklink card's profile, by card key (cards left at the default
+/// aren't stored).
+pub async fn decklink_profiles_get(pool: &SqlitePool) -> Result<HashMap<String, DecklinkProfile>> {
+    Ok(config_get(pool, DECKLINK_PROFILES)
+        .await?
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default())
+}
+
+pub async fn decklink_profiles_set(
+    pool: &SqlitePool,
+    profiles: &HashMap<String, DecklinkProfile>,
+) -> Result<()> {
+    config_set(pool, DECKLINK_PROFILES, &serde_json::to_string(profiles)?).await
 }
 
 // ── replay buffers ────────────────────────────────────────────────────────────

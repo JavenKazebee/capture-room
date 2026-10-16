@@ -2,7 +2,7 @@
 
 use crate::api::types::{ChannelConfig, OutputConfig};
 use crate::pipeline::{output, rtsp, whep};
-use crate::sources::stream;
+use crate::sources::{decklink, stream};
 
 /// Check a config before it's saved. `others` are the node's other
 /// channels, whose NDI names this one mustn't reuse (listening ports are
@@ -44,6 +44,20 @@ pub fn validate(
             OutputConfig::Whep { bitrate_kbps, .. } => {
                 needs("WHEP", whep::WHEP_ELEMENTS, available)?;
                 bitrate("WHEP", *bitrate_kbps)?;
+            }
+            OutputConfig::Decklink { device, mode } => {
+                needs("SDI", decklink::OUTPUT_ELEMENTS, available)?;
+                if device.trim().is_empty() {
+                    return Err("pick a Decklink sub-device".into());
+                }
+                decklink::output_mode(
+                    (f.width, f.height),
+                    (f.fps_num, f.fps_den),
+                    mode.as_deref(),
+                )?;
+                if channels > 16 {
+                    return Err("SDI carries at most 16 audio channels".into());
+                }
             }
             OutputConfig::Display { display, .. } => {
                 needs("display", &[output::DISPLAY_SINK], available)?;

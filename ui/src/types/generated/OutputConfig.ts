@@ -21,7 +21,16 @@ path: string | null,
 /**
  * The most each viewer is sent; less when their link can't take it.
  */
-bitrate_kbps: number, } | { "type": "display", 
+bitrate_kbps: number, } | { "type": "decklink", 
+/**
+ * A [`DecklinkDeviceDto::key`].
+ */
+device: string, 
+/**
+ * A [`DecklinkModeDto::mode`]; by default the one matching the
+ * channel's format.
+ */
+mode: string | null, } | { "type": "display", 
 /**
  * A [`DisplayDto::id`].
  */

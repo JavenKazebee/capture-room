@@ -30,6 +30,7 @@ use super::whep::WhepOutput;
 use super::{make_el, start_or_reason, ConsumerPipeline};
 use crate::api::types::{DisplayIdle, OutputConfig, SourceCapabilitiesDto};
 use crate::display::{DisplayWindow, Displays, WantedFormat};
+use crate::sources::decklink::DecklinkOutput;
 use crate::sources::device::LocalDevices;
 use crate::sources::stream;
 
@@ -199,6 +200,12 @@ pub fn sink(
         OutputConfig::Whep { path, bitrate_kbps } => Box::new(WhepOutput {
             path: rtsp::mount_path(path.as_deref(), name),
             bitrate_kbps: *bitrate_kbps,
+        }),
+        OutputConfig::Decklink { device, mode } => Box::new(DecklinkOutput {
+            device: device.clone(),
+            mode: mode.clone().filter(|m| !m.is_empty()),
+            program,
+            devices: context.devices.clone(),
         }),
         OutputConfig::Display {
             display,

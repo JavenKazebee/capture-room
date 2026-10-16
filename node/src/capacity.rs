@@ -68,6 +68,7 @@ pub fn channel_outputs(outputs: &[OutputConfig]) -> Vec<OutputConfig> {
             }),
             OutputConfig::Rtsp { .. }
             | OutputConfig::Whep { .. }
+            | OutputConfig::Decklink { .. }
             | OutputConfig::Display { .. } => None,
         })
         .collect();

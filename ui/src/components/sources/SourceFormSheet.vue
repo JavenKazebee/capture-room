@@ -8,7 +8,10 @@ import { notifyError } from '@/lib/notify'
 import { errorMessage } from '@/composables/useApi'
 import { withPairedAudio } from '@/lib/deviceAudio'
 import { useNodeDevices } from '@/composables/useNodeDevices'
+import { useNodeDecklink } from '@/composables/useNodeDecklink'
+import { subDeviceOptions } from '@/lib/decklink'
 import type { ConfiguredSourceRequest } from '@/types/generated/ConfiguredSourceRequest'
+import type { DecklinkSourceConfig } from '@/types/generated/DecklinkSourceConfig'
 import type { DeviceSourceConfig } from '@/types/generated/DeviceSourceConfig'
 import type { MediaInfo } from '@/types/generated/MediaInfo'
 import type { StreamSourceConfig } from '@/types/generated/StreamSourceConfig'
@@ -23,6 +26,7 @@ import TestFields from './TestFields.vue'
 import FileFields from './FileFields.vue'
 import StreamFields from './StreamFields.vue'
 import DeviceFields from './DeviceFields.vue'
+import DecklinkFields from './DecklinkFields.vue'
 import WhipFields from './WhipFields.vue'
 
 /**
@@ -44,6 +48,7 @@ const NAME_PLACEHOLDERS: Record<Kind, string> = {
   file: 'Camera 1 footage',
   stream: 'Stage cam (RTSP)',
   device: 'Cam Link 1',
+  decklink: 'Camera 1 (SDI)',
   whip: 'Remote guest',
   channel: 'Playout A',
 }
@@ -54,6 +59,7 @@ const KIND_TITLES: Record<Kind, string> = {
   file: 'media file',
   stream: 'network stream',
   device: 'capture device',
+  decklink: 'SDI input',
   whip: 'WHIP ingest',
   channel: 'playout channel',
 }
@@ -63,6 +69,7 @@ const KIND_DESCRIPTIONS: Record<Kind, string> = {
   file: "A media file on the node's disk, played in a loop as a live feed.",
   stream: 'A network stream. If it drops, the feed plays black and silence and recordings keep going until it reconnects.',
   device: 'A camera, capture card or screen on the node, with audio from one of its audio inputs.',
+  decklink: 'An SDI (or HDMI) input on a Blackmagic Decklink card, with its embedded audio.',
   whip: 'An endpoint on the node that OBS or a browser publishes WebRTC to. Black and silence while nobody publishes.',
   channel: 'Plays clips from the media library out at a fixed format, operated from Playback. Black and silence when nothing plays.',
 }
@@ -92,6 +99,7 @@ const filePath = ref('')
 const fileMedia = ref<MediaInfo | null>(null)
 const stream = ref<StreamSourceConfig>({ url: '', latency_ms: 200, rtsp_transport: 'auto', audio: { from: 'source', channels: 2 }, format: null })
 const device = ref<DeviceSourceConfig>({ video_device: '', video_device_name: '', audio: { from: 'silence', channels: 2 }, format: null })
+const decklink = ref<DecklinkSourceConfig>({ device: '', device_name: '', connection: 'auto', mode: null, channels: 2, format: null })
 const whip = ref<WhipSourceConfig>({ port: 8890, audio: { from: 'source', channels: 2 }, format: null })
 
 const node = computed(() => nodesStore.nodes.find((n) => n.id === nodeId.value))
@@ -111,11 +119,19 @@ const unavailable = computed(() => {
   return out
 })
 const nodeDevices = useNodeDevices(nodeId)
+const nodeDecklink = useNodeDecklink(nodeId)
 
 function pickKind(k: Kind) {
   kind.value = k
   formError.value = null
   const picked = nodeId.value
+  if (k === 'decklink') nodeDecklink.refresh().then(() => {
+    // Preselect the first free input for a new SDI source.
+    if (!decklink.value.device && nodeId.value === picked) {
+      const free = subDeviceOptions(nodeDecklink.status.value, false, null).find((o) => !o.label.includes(' — used by '))
+      if (free) decklink.value = { ...decklink.value, device: free.value }
+    }
+  })
   if (k === 'device' || k === 'stream' || k === 'whip') nodeDevices.refresh().then(() => {
     // Preselect the first camera for a new device source (on the node still picked).
     if (k === 'device' && !device.value.video_device && nodeId.value === picked) {
@@ -162,6 +178,9 @@ onMounted(async () => {
   } else if (c.type === 'whip') {
     const { type: _type, ...rest } = c
     whip.value = rest
+  } else if (c.type === 'decklink') {
+    const { type: _type, ...rest } = c
+    decklink.value = rest
   }
   ready.value = true
   if (c.type === 'stream' || c.type === 'device' || c.type === 'whip') nodeDevices.refresh()
@@ -176,6 +195,8 @@ function formProblem(): string | null {
       return stream.value.url.trim() ? audioProblem(stream.value.audio) : 'Enter the stream URL.'
     case 'device':
       return device.value.video_device ? audioProblem(device.value.audio) : 'Pick a video device.'
+    case 'decklink':
+      return decklink.value.device ? null : 'Pick a Decklink input.'
     case 'whip':
       return whip.value.port >= 1024 && whip.value.port <= 65535
         ? audioProblem(whip.value.audio)
@@ -199,6 +220,8 @@ function formConfig(): ConfiguredSourceRequest['config'] {
       return { type: 'stream', ...stream.value, url: stream.value.url.trim() }
     case 'device':
       return { type: 'device', ...device.value }
+    case 'decklink':
+      return { type: 'decklink', ...decklink.value }
     case 'whip':
       return { type: 'whip', ...whip.value }
     default:
@@ -283,6 +306,16 @@ async function save() {
         :loading="nodeDevices.loading.value"
         :error="nodeDevices.error.value"
         @refresh="nodeDevices.refresh"
+      />
+      <DecklinkFields
+        v-else-if="kind === 'decklink'"
+        v-model="decklink"
+        :node-id="nodeId"
+        :source-id="source?.id ?? null"
+        :status="nodeDecklink.status.value"
+        :loading="nodeDecklink.loading.value"
+        :error="nodeDecklink.error.value"
+        @refresh="nodeDecklink.refresh"
       />
       <WhipFields v-else-if="kind === 'whip'" v-model="whip" :host="host" :devices="nodeDevices.devices.value" />
       <FileFields v-else-if="kind === 'file'" v-model:path="filePath" v-model:media="fileMedia" :node-id="nodeId" />

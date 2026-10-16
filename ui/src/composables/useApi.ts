@@ -28,6 +28,22 @@ export function recordingFileUrl(nodeId: string, sessionId: string, output: numb
   return download ? `${url}?download=1` : url
 }
 
+/** A media library item's file, with range requests; `download` to save it. */
+export function mediaFileUrl(nodeId: string, mediaId: string, download = false) {
+  const url = `/api/v1/nodes/${encodeURIComponent(nodeId)}/media/${encodeURIComponent(mediaId)}/file`
+  return download ? `${url}?download=1` : url
+}
+
+/** Start the browser downloading `url`, as clicking a download link would. */
+export function downloadUrl(url: string) {
+  const a = document.createElement('a')
+  a.href = url
+  a.download = ''
+  document.body.append(a)
+  a.click()
+  a.remove()
+}
+
 /**
  * A failed request's message for display. The server replies with plain-text
  * error bodies; ofetch's own `message` is only "[POST] /url: 500 …".

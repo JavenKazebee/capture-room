@@ -4,6 +4,7 @@ import { toast } from 'vue-sonner'
 import { Download, FileWarning, Loader2, Pencil, Play, Trash2 } from '@lucide/vue'
 import { useReplayStore, type ReplayClip, type ReplayClipGroup } from '@/stores/replay'
 import { notifyError } from '@/lib/notify'
+import { downloadUrl, mediaFileUrl } from '@/composables/useApi'
 import { clockTime, formatBytes, formatClock, plural } from '@/lib/format'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -113,11 +114,23 @@ async function exportEntry(e: Entry) {
   try {
     if (e.kind === 'clip') {
       const item = await replay.exportClip(e.clip)
-      toast.success(`Exported ${name}`, { description: `${item.path} — now in the media library` })
+      const nodeId = e.clip.node_id
+      toast.success(`Exported ${name}`, {
+        description: `${item.path} — now in the media library`,
+        duration: 10_000,
+        action: { label: 'Download', onClick: () => downloadUrl(mediaFileUrl(nodeId, item.id, true)) },
+      })
     } else {
       const items = await replay.exportClipGroup(e.group)
+      const nodeId = e.group.node_id
       toast.success(`Exported ${name}`, {
         description: `${plural(items.length, 'file')} in the Replay clips folder — now in the media library`,
+        duration: 10_000,
+        // A file per angle: the browser may ask to allow several downloads.
+        action: {
+          label: items.length > 1 ? 'Download all' : 'Download',
+          onClick: () => items.forEach((item) => downloadUrl(mediaFileUrl(nodeId, item.id, true))),
+        },
       })
     }
   } catch (err) {

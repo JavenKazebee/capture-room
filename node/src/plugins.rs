@@ -92,7 +92,7 @@ pub fn source_types(can_display: bool) -> Vec<SourceTypeSupport> {
     // pipewire, applemedia, mediafoundation / wasapi2).
     let has_provider = gst::DeviceProviderFactory::factories(gst::Rank::NONE)
         .iter()
-        .any(|f| f.name() != "ndideviceprovider");
+        .any(|f| !["ndideviceprovider", "decklinkdeviceprovider"].contains(&f.name().as_str()));
     if !has_provider {
         device.missing.push("a capture device provider".into());
     }
@@ -125,7 +125,13 @@ pub fn source_types(can_display: bool) -> Vec<SourceTypeSupport> {
     if can_display && has(crate::pipeline::output::DISPLAY_SINK) {
         channel.protocols.push("display".into());
     }
-    vec![stream, device, whip, channel]
+    // Decklink needs the driver too: unavailable without it, with why.
+    let mut decklink = support(SourceType::Decklink, &[]);
+    match crate::sources::decklink::unavailable(has) {
+        Some(reason) => decklink.missing.push(reason),
+        None => channel.protocols.push("decklink".into()),
+    }
+    vec![stream, device, whip, channel, decklink]
 }
 
 fn support(source_type: SourceType, elements: &[&str]) -> SourceTypeSupport {

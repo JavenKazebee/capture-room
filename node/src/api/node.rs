@@ -25,11 +25,11 @@ use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     BenchmarkRequest, BenchmarkRunDto, CapacityCheckDto, CapacityCheckRequest, ChannelConfig,
     CheckRequest, ClockClaim, ClockStatusDto, ClockTimeDto, ConfiguredSourceDto,
-    ConfiguredSourceRequest, DeviceDto, DirListingDto, DisplayDto, NdiSubscriptionsDto,
-    NdiSubscriptionsInput, NodeCapacityDto, NodeChecksDto, NodeSettingsDto, NodeStatus,
-    OutputConfig, RecordingSessionDto, RecordingStatus, RecordingsQuery, SourceConfig, SourceDto,
-    StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest, UpdateStatusDto,
-    VolumeCheckDto, WsEvent,
+    ConfiguredSourceRequest, DecklinkProfileRequest, DecklinkStatusDto, DeviceDto, DirListingDto,
+    DisplayDto, NdiSubscriptionsDto, NdiSubscriptionsInput, NodeCapacityDto, NodeChecksDto,
+    NodeSettingsDto, NodeStatus, OutputConfig, RecordingSessionDto, RecordingStatus,
+    RecordingsQuery, SourceConfig, SourceDto, StartRecordingRequest, StorageVolumeDto,
+    UpdateNodeSettingsRequest, UpdateStatusDto, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
 use crate::capacity::{Capacity, Load, Setup};
@@ -54,6 +54,11 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/files", get(get_files))
         .route("/devices", get(get_devices))
         .route("/displays", get(get_displays))
+        .route("/decklink", get(get_decklink))
+        .route(
+            "/decklink/{card}/profile",
+            axum::routing::put(put_decklink_profile),
+        )
         .route("/checks", get(get_checks))
         .route("/checks/request", post(post_check_request))
         // Sources — static paths before dynamic {id}
@@ -299,6 +304,11 @@ async fn validated(
         SourceConfig::Device(cfg) => {
             crate::sources::device::validate(cfg, &devices).map_err(ApiError::bad)?;
         }
+        SourceConfig::Decklink(cfg) => {
+            let configs = db::configured_sources_list(&state.db).await?;
+            crate::sources::decklink::validate(cfg, &devices, id, &configs)
+                .map_err(ApiError::bad)?;
+        }
         SourceConfig::Whip(cfg) => {
             crate::sources::whip::validate(cfg).map_err(ApiError::bad)?;
             crate::sources::device::validate_audio(&cfg.audio, &devices).map_err(ApiError::bad)?;
@@ -315,6 +325,21 @@ async fn validated(
                 .collect();
             crate::sources::channel::validate(cfg, &req.name, &others, crate::plugins::has)
                 .map_err(ApiError::bad)?;
+            if cfg
+                .outputs
+                .iter()
+                .any(|o| matches!(o, OutputConfig::Decklink { .. }))
+            {
+                let configs = db::configured_sources_list(&state.db).await?;
+                crate::sources::decklink::validate_outputs(
+                    &cfg.outputs,
+                    &devices,
+                    id,
+                    &req.name,
+                    &configs,
+                )
+                .map_err(ApiError::bad)?;
+            }
             for o in &cfg.outputs {
                 if let OutputConfig::Display {
                     audio_device: Some(key),
@@ -448,6 +473,39 @@ fn serves_rtsp(config: &SourceConfig) -> bool {
 async fn get_devices(State(state): State<Arc<AppState>>) -> Json<Vec<DeviceDto>> {
     let devices = state.source_manager.read().await.devices().clone();
     Json(devices.list())
+}
+
+// ── /decklink ─────────────────────────────────────────────────────────────────
+
+/// The node's Decklink cards, their sub-devices and what uses them.
+async fn get_decklink(State(state): State<Arc<AppState>>) -> ApiResult<Json<DecklinkStatusDto>> {
+    let devices = state.source_manager.read().await.devices().clone();
+    let configs = db::configured_sources_list(&state.db).await?;
+    Ok(Json(crate::sources::decklink::status(&devices, &configs)))
+}
+
+/// Set how a card splits its connectors. Everything on the card is rebuilt
+/// with it: sources (their fingerprint has the profile) and channels'
+/// Decklink outputs, recordings of them included.
+async fn put_decklink_profile(
+    State(state): State<Arc<AppState>>,
+    AxumPath(card): AxumPath<String>,
+    Json(req): Json<DecklinkProfileRequest>,
+) -> ApiResult<Json<DecklinkStatusDto>> {
+    let devices = state.source_manager.read().await.devices().clone();
+    let configs = db::configured_sources_list(&state.db).await?;
+    if !crate::sources::decklink::status(&devices, &configs)
+        .cards
+        .iter()
+        .any(|c| c.key == card)
+    {
+        return Err(ApiError::NotFound("no such Decklink card"));
+    }
+    devices.decklink_profiles.set(&card, req.profile);
+    db::decklink_profiles_set(&state.db, &devices.decklink_profiles.all()).await?;
+    state.source_manager.write().await.reset_decklink_outputs();
+    rescan_after(&state, "Decklink profile change").await;
+    Ok(Json(crate::sources::decklink::status(&devices, &configs)))
 }
 
 // ── /displays ─────────────────────────────────────────────────────────────────
@@ -658,9 +716,9 @@ async fn remove_recording_file(path: &str) -> std::io::Result<()> {
 }
 
 #[derive(Deserialize)]
-struct FileQuery {
+pub(super) struct FileQuery {
     /// Present (any value) to download rather than play.
-    download: Option<String>,
+    pub download: Option<String>,
 }
 
 /// One of a finished session's files, by output and file index (a split
@@ -701,12 +759,22 @@ async fn get_recording_file(
         Some("mkv") => "video/x-matroska",
         _ => "application/octet-stream",
     };
-    let mime: mime_guess::Mime = mime.parse()?;
-    let mut resp = ServeFile::new_with_mime(&path, &mime)
+    serve_file(&path, mime.parse()?, q.download.is_some(), req).await
+}
+
+/// `path` as `mime`, with range requests; with `download`, as an attachment
+/// under its own file name.
+pub(super) async fn serve_file(
+    path: &std::path::Path,
+    mime: mime_guess::Mime,
+    download: bool,
+    req: Request,
+) -> ApiResult<Response> {
+    let mut resp = ServeFile::new_with_mime(path, &mime)
         .oneshot(req)
         .await?
         .into_response();
-    if q.download.is_some() {
+    if download {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())

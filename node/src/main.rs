@@ -168,6 +168,9 @@ async fn run(
     let devices = tokio::task::spawn_blocking(sources::device::LocalDevices::start)
         .await
         .expect("device monitor thread panicked");
+    devices
+        .decklink_profiles
+        .replace(db::decklink_profiles_get(&pool).await?);
     let node_clock = Arc::new(clock::NodeClock::new(&node_id));
     let (leg_failure_tx, leg_failure_rx) = tokio::sync::mpsc::unbounded_channel();
     let (leg_file_tx, leg_file_rx) = tokio::sync::mpsc::unbounded_channel();

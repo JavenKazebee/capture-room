@@ -5,6 +5,7 @@ use anyhow::{anyhow, Context, Result};
 use gstreamer::{self as gst, prelude::*};
 use tracing::warn;
 
+use super::decklink::{is_decklink, Profiles};
 use super::live::{self, LinkTracker, LiveAudio, LiveInput};
 use super::InputSource;
 use crate::api::types::{
@@ -15,12 +16,14 @@ use crate::pipeline::{capsfilter, make_el};
 
 /// Device classes the monitor watches. Screens are `Source/Monitor` on
 /// Windows; macOS lists them as video sources. Audio sinks are where display
-/// outputs play their sound.
+/// outputs play their sound. Decklink cards' playout sub-devices are
+/// hardware video sinks (see [`super::decklink`]).
 const CLASSES: &[&str] = &[
     "Video/Source",
     "Audio/Source",
     "Source/Monitor",
     "Audio/Sink",
+    "Video/Sink/Hardware",
 ];
 
 /// Modes listed per video device, at most.
@@ -36,6 +39,8 @@ const MAX_MODES: usize = 32;
 /// found.
 pub struct LocalDevices {
     monitor: gst::DeviceMonitor,
+    /// Decklink cards' profiles, set on this node.
+    pub decklink_profiles: Profiles,
 }
 
 impl LocalDevices {
@@ -51,12 +56,26 @@ impl LocalDevices {
         if let Err(e) = monitor.start() {
             warn!("device monitor failed to start: {e}");
         }
-        Self { monitor }
+        Self {
+            monitor,
+            decklink_profiles: Profiles::default(),
+        }
+    }
+
+    /// Everything the monitor sees, Decklink sub-devices included.
+    pub(super) fn all(&self) -> Vec<gst::Device> {
+        self.monitor.devices().into_iter().collect()
     }
 
     pub fn list(&self) -> Vec<DeviceDto> {
         let mut seen = BTreeSet::new();
-        let devices = self.monitor.devices();
+        // Decklink sub-devices are listed by `GET /decklink` instead.
+        let devices: Vec<gst::Device> = self
+            .monitor
+            .devices()
+            .into_iter()
+            .filter(|d| !is_decklink(d))
+            .collect();
         let has_pulse = devices.iter().any(is_pulse);
         let mut list: Vec<(bool, DeviceDto)> = devices
             .into_iter()
