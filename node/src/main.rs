@@ -1,4 +1,5 @@
 mod api;
+mod auth;
 mod benchmark;
 mod capacity;
 mod checks;
@@ -218,7 +219,9 @@ async fn run(
         http: reqwest::Client::new(),
         node_router: std::sync::OnceLock::new(),
         updater: update::Updater::default(),
+        access_token: auth::AccessToken::default(),
     });
+    auth::load(&state).await?;
     let _ = state.node_router.set(api::node_router(Arc::clone(&state)));
 
     ws::spawn_emitter(Arc::clone(&state));

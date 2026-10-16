@@ -187,7 +187,9 @@ async function saveRename() {
 
     <section class="px-4 py-3 space-y-2">
       <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Storage</h3>
-      <p v-if="!node.healthy" class="text-xs text-muted-foreground h-[1.625rem] flex items-center">Not available while unreachable.</p>
+      <p v-if="!node.healthy" class="text-xs h-[1.625rem] flex items-center" :class="node.access_denied ? 'text-destructive' : 'text-muted-foreground'">
+        {{ node.access_denied ? 'Refuses this controller’s access token: set the same one on it.' : 'Not available while unreachable.' }}
+      </p>
       <p v-else-if="volumes === undefined" class="text-xs text-muted-foreground h-[1.625rem] flex items-center">Loading…</p>
       <p v-else-if="volumes === null" class="text-xs text-destructive h-[1.625rem] flex items-center">Couldn't read storage.</p>
       <StorageVolumeBar v-for="v in node.healthy ? volumes ?? [] : []" :key="v.mount_point" :volume="v" />

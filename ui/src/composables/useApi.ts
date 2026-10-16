@@ -1,10 +1,16 @@
-import { FetchError, ofetch } from 'ofetch'
+import { FetchError, ofetch, type FetchContext } from 'ofetch'
+import { signedOut } from '@/composables/useAuth'
 
-export const api = ofetch.create({ baseURL: '/api/v1' })
+/** A 401 means this browser isn't signed in (any more): show the sign-in. */
+function onResponseError({ response }: FetchContext) {
+  if (response?.status === 401) signedOut()
+}
+
+export const api = ofetch.create({ baseURL: '/api/v1', onResponseError })
 
 /** One node's API; on a controller the server forwards `/nodes/{id}/…` to peers. */
 export function nodeApi(nodeId: string) {
-  return ofetch.create({ baseURL: `/api/v1/nodes/${encodeURIComponent(nodeId)}` })
+  return ofetch.create({ baseURL: `/api/v1/nodes/${encodeURIComponent(nodeId)}`, onResponseError })
 }
 
 /** Stable key for a source across nodes (source ids are only unique per node). */

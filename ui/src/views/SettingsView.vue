@@ -18,6 +18,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import OptionSelect from '@/components/OptionSelect.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import KeyValueList from '@/components/common/KeyValueList.vue'
+import AccessTokenSettings from '@/components/auth/AccessTokenSettings.vue'
 import type { UpdateNodeSettingsRequest } from '@/types/generated/UpdateNodeSettingsRequest'
 
 const { colorMode, density } = usePreferences()
@@ -341,6 +342,8 @@ const about = computed(() => [
         </div>
       </div>
     </section>
+
+    <AccessTokenSettings />
 
     <section class="space-y-2">
       <div>

@@ -33,12 +33,17 @@ pub fn encode(node_id: &str, event: &WsEvent) -> Option<String> {
 }
 
 /// Drive a single WebSocket connection: forward broadcast events to the client
-/// and keep the connection alive until it closes.
-pub async fn handle(socket: WebSocket, mut rx: broadcast::Receiver<String>) {
+/// and keep the connection alive until it closes or the access token changes.
+pub async fn handle(
+    socket: WebSocket,
+    mut rx: broadcast::Receiver<String>,
+    mut token_changed: tokio::sync::watch::Receiver<()>,
+) {
     let (mut sender, mut receiver) = socket.split();
 
     loop {
         tokio::select! {
+            _ = token_changed.changed() => break,
             // Broadcast → client
             result = rx.recv() => {
                 match result {

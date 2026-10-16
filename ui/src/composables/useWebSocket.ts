@@ -9,6 +9,7 @@ import { usePlayoutStore } from '@/stores/playout'
 import { useReplayStore } from '@/stores/replay'
 import { DEFAULT_PRESET } from '@/stores/presets'
 import { runReconnectReloads } from '@/lib/reconnect'
+import { checkAuth, needsSignIn } from '@/composables/useAuth'
 import { plural } from '@/lib/format'
 import type { WsEvent } from '@/types/generated/WsEvent'
 
@@ -29,6 +30,8 @@ export const wsStatus = ref<WsStatus>('disconnected')
 
 function connect() {
   if (socket && socket.readyState <= WebSocket.OPEN) return
+  // Refused until signed in; signing in reloads the page.
+  if (needsSignIn.value) return
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   socket = new WebSocket(`${proto}://${location.host}/ws`)
@@ -59,6 +62,8 @@ function connect() {
   socket.addEventListener('close', () => {
     if (wsStatus.value === 'connected') useEventsStore().log('warn', 'Lost connection to server — reconnecting')
     wsStatus.value = 'disconnected'
+    // A changed token closes nothing else the page would notice.
+    checkAuth()
     const delay = Math.min(BASE_DELAY * 2 ** attempt, MAX_DELAY)
     attempt++
     reconnectTimer = setTimeout(connect, delay)

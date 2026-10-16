@@ -26,12 +26,20 @@ pub fn node_router(state: Arc<AppState>) -> Router {
 
 /// No CORS layer: the UI is same-origin, and allowing other origins would let
 /// any open page start recordings or add nodes. Only `/whep` allows any origin.
+/// The access token guards everything under it (see [`crate::auth`]); the
+/// node router served in-process for `/nodes/{self}` is behind it already.
 pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .nest("/api/v1/node", node::router())
         .merge(crate::controller::api::router())
+        .merge(crate::auth::router())
+        .merge(crate::auth::open_router())
         .merge(whep::router())
         .fallback(serve_ui)
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            crate::auth::require,
+        ))
         .with_state(state)
 }
 

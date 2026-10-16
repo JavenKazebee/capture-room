@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -33,7 +34,18 @@ async fn run(ctx: Ctx, node_id: String) {
         // http → ws, https → wss.
         let ws_url = url.replacen("http", "ws", 1) + "/api/v1/node/ws";
 
-        match tokio_tungstenite::connect_async(&ws_url).await {
+        let mut request = match ws_url.as_str().into_client_request() {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(node_id = %node_id, error = %e, "bad WS relay URL");
+                return;
+            }
+        };
+        if let Some(bearer) = ctx.state.access_token.bearer() {
+            request.headers_mut().insert("authorization", bearer);
+        }
+
+        match tokio_tungstenite::connect_async(request).await {
             Ok((stream, _)) => {
                 info!(node_id = %node_id, "WS relay connected");
                 let (_, mut read) = stream.split();

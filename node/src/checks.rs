@@ -49,6 +49,7 @@ pub async fn run(state: &AppState) -> anyhow::Result<NodeChecksDto> {
     }
     checks.push(tokio::task::spawn_blocking(storage_check).await?);
     checks.extend(clock_check(&clock));
+    checks.push(access_token_check(state.access_token.is_set()));
 
     Ok(NodeChecksDto {
         os: std::env::consts::OS.to_string(),
@@ -324,6 +325,31 @@ fn ndi_intake_check(ndi: &NdiSubscriptionsDto) -> CheckDto {
 
 /// The default recording folder can be written, with room to record.
 /// Blocking.
+fn access_token_check(set: bool) -> CheckDto {
+    let mut c = check(
+        "access_token",
+        CheckGroup::Network,
+        "Access token",
+        "Keeping others on the network from controlling this node",
+    );
+    c.required = false;
+    if set {
+        c.summary = "Set: the API needs it.".into();
+    } else {
+        c.status = CheckStatus::Missing;
+        c.summary = "None set: anyone who can reach this node can record, delete files or \
+                     update it."
+            .into();
+        c.fix = Some(CheckFix {
+            steps: "Set one in Settings › Access token. On a controller it's set on every \
+                    node too."
+                .into(),
+            ..Default::default()
+        });
+    }
+    c
+}
+
 fn storage_check() -> CheckDto {
     let mut c = check(
         "storage",

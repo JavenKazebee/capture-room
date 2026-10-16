@@ -13,6 +13,8 @@ pub struct NodeEntry {
     pub healthy: bool,
     /// Consecutive failed health checks. Reset to 0 on success.
     pub fail_count: u32,
+    /// The last check was refused: it has a different access token.
+    pub access_denied: bool,
     /// Added by URL and persisted in the `nodes` table. Manual nodes are never
     /// pruned for being unreachable; mDNS ones are (they re-announce).
     pub manual: bool,
@@ -31,6 +33,7 @@ impl From<&NodeEntry> for NodeDto {
             healthy: n.healthy,
             is_self: false,
             manual: n.manual,
+            access_denied: n.access_denied,
             status: n
                 .status
                 .clone()
@@ -99,16 +102,19 @@ impl NodeRegistry {
         e.status = Some(status.clone());
         e.healthy = true;
         e.fail_count = 0;
+        e.access_denied = false;
         (recovered, clock_changed)
     }
 
-    /// Record a failed health check. Returns the new consecutive failure count
-    /// and whether the entry is manual.
-    pub fn record_failure(&mut self, id: &str) -> (u32, bool) {
+    /// Record a failed health check, `denied` if it refused this node's
+    /// access token. Returns the new consecutive failure count and whether
+    /// the entry is manual.
+    pub fn record_failure(&mut self, id: &str, denied: bool) -> (u32, bool) {
         match self.entries.get_mut(id) {
             Some(e) => {
                 e.healthy = false;
                 e.fail_count += 1;
+                e.access_denied = denied;
                 (e.fail_count, e.manual)
             }
             None => (0, false),

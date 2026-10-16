@@ -1,7 +1,8 @@
 //! `/api/v1/nodes/{node_id}/{*path}` → that node's `/api/v1/node/{path}`: the
 //! only way the UI reaches a node's API. This instance is served in-process,
 //! peers over HTTP. Bodies stream through untouched with range and caching
-//! headers, so a browser can seek in a peer's file.
+//! headers, so a browser can seek in a peer's file. Peers get this node's
+//! access token, never the browser's credentials.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -97,7 +98,7 @@ async fn forward_peer(state: &AppState, req: Request, url: &str) -> Response {
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
 
-    let mut out = state.http.request(parts.method, url).body(body);
+    let mut out = state.peer(parts.method, url).body(body);
     for name in REQUEST_HEADERS {
         if let Some(v) = parts.headers.get(&name) {
             out = out.header(name, v);
@@ -111,6 +112,16 @@ async fn forward_peer(state: &AppState, req: Request, url: &str) -> Response {
             return (StatusCode::GATEWAY_TIMEOUT, "node didn't answer in time").into_response()
         }
     };
+
+    // The browser is signed in here; a peer refusing this controller's
+    // token mustn't look like the browser being signed out.
+    if resp.status() == StatusCode::UNAUTHORIZED {
+        return (
+            StatusCode::BAD_GATEWAY,
+            crate::auth::AccessDenied.to_string(),
+        )
+            .into_response();
+    }
 
     let mut builder = Response::builder().status(resp.status());
     for name in RESPONSE_HEADERS {

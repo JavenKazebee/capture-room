@@ -12,7 +12,7 @@ crash-safe files and splitting; benchmark and capacity estimates; Recordings vie
 browser preview; playout channels with gapless playlists and NDI, SRT, RTSP, WHEP,
 display and Decklink outputs; shared node clock, synchronized start and MOV timecode;
 Setup › Checks; instant replay (buffers, clips, groups, export); macOS installer,
-login service, menu bar icon and signed self-updates.
+login service, menu bar icon and signed self-updates; a shared access token.
 
 ## Now: Mac Pro (Intel, two Decklink 8K Pro G2s)
 
@@ -32,9 +32,10 @@ login service, menu bar icon and signed self-updates.
 
 ## Next
 
-- **Authentication** — the API is open to the network: anyone can start/stop recordings,
-  delete files or start an update. At least a shared token, sent by the UI, checked by
-  every node, passed on by the controller's forwarder and relay.
+- **Authentication, next steps** — a shared access token is built and off by default.
+  Left: TLS (the token crosses the LAN in the clear); only trust nodes that were added or
+  approved, not anything that announces over mDNS; a way to recover a lost token without
+  editing the database (menu bar or CLI).
 - **Packaging** — Developer ID (stable signature so permissions survive updates,
   notarization, hardened runtime); rolling back an update that won't start; log rotation.
 - **Hardware encoders** — NVENC, QSV and VA-API in `RecordingProfile::encoders` with the

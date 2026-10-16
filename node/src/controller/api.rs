@@ -106,6 +106,7 @@ async fn get_nodes(State(state): State<Arc<AppState>>) -> Json<Vec<NodeDto>> {
         healthy: true,
         is_self: true,
         manual: false,
+        access_denied: false,
         status: crate::api::node::local_status(&state).await,
     }];
 
@@ -136,8 +137,7 @@ async fn get_reachability(
         .ok_or(ApiError::NotFound("unknown node"))?;
     let checks: NodeChecksDto = async {
         state
-            .http
-            .get(format!("{url}/api/v1/node/checks"))
+            .peer(reqwest::Method::GET, &format!("{url}/api/v1/node/checks"))
             .timeout(std::time::Duration::from_secs(10))
             .send()
             .await?
@@ -268,5 +268,6 @@ fn validate_outputs(mut outputs: Vec<PresetOutputInput>) -> ApiResult<Vec<Preset
 
 async fn ws_handler(State(state): State<Arc<AppState>>, upgrade: WebSocketUpgrade) -> Response {
     let rx = state.ws_tx.subscribe();
-    upgrade.on_upgrade(move |socket| ws::handle(socket, rx))
+    let token_changed = state.access_token.subscribe();
+    upgrade.on_upgrade(move |socket| ws::handle(socket, rx, token_changed))
 }

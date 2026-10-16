@@ -66,6 +66,7 @@ impl Controller {
                 url: row.url,
                 healthy: false,
                 fail_count: 0,
+                access_denied: false,
                 manual: true,
                 status: None,
                 relay: ctx.cancel.child_token(),

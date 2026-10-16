@@ -283,6 +283,7 @@ Local only; ids are local to the node.
 | Path | Purpose |
 |---|---|
 | `/status`, `/settings`, `/storage`, `/checks`, `/update` | node info, monitor settings, volumes, setup checks, self-update |
+| `/access-token` | set this node's token |
 | `/clock`, `/clock/now`, `/clock/claim` | clock status, current time, controller claim |
 | `/sources`, `/configured-sources`, `/devices`, `/decklink`, `/ndi`, `/displays`, `/files` | sources, and what can become a source or output |
 | `/recordings[/{id}[/stop \| /outputs/{i}/files/{j}]]` | sessions, start/stop, files |
@@ -300,6 +301,8 @@ Local only; ids are local to the node.
 | `/nodes`, `/nodes/{id}`, `/reachability/{id}` | registry, port probes |
 | `/nodes/{id}/{*path}` | forwarded to that node's `/api/v1/node/{path}` |
 | `/presets` | presets |
+| `/access-token` | set the token here and on every registered node |
+| `/auth`, `/auth/sign-in`, `/auth/sign-out` | open: whether a token is needed, browser sign-in |
 | `/ws` | own events + every peer's |
 
 ### Events
@@ -344,8 +347,23 @@ One HTTP port (default 7700); the controller's clock on UDP port + 100; PTP on U
 polled; mDNS peers are pruned after ~15 s, URL-added peers persist. The controller
 initiates every connection; the only push is the clock claim.
 
-**No authentication.** Anyone who can reach a node can record, delete files or update it
-(only to a newer signed release). A shared token is on the roadmap.
+**Access token** (`auth.rs`): one shared secret per cluster, stored in each node's config.
+With none set the API is open (Setup › Checks warns). Once set, every `/api` route and
+`/ws` need it; the UI assets, `/api/v1/auth/…` and `/whep` stay open, and WHIP has its own
+port.
+
+- Browsers sign in once and get an HttpOnly, `SameSite=Strict` cookie named per port, so
+  `<img>`, `<video>`, downloads and the WebSocket need no code of their own. A 401 shows
+  the sign-in; a changed token closes open WebSockets so pages notice.
+- Nodes send it as `Authorization: Bearer` (health polls, clock claims, the forwarder, the
+  relay, port probes). The forwarder never passes the browser's cookie on, and turns a
+  peer's 401 into a 502 so the browser isn't signed out. A peer that refuses the token
+  shows as `access_denied`.
+- Setting it on a controller sets it on each registered node first (with the old one),
+  then itself. Unreachable nodes keep their old token and are listed.
+- **Limits:** plain HTTP, so anyone sniffing the LAN can read it; and a controller sends it
+  to whatever answers an mDNS announcement. A lost token is recovered by deleting
+  `access_token` from `node_config` in the node's database.
 
 ## Deployment (macOS)
 

@@ -32,11 +32,21 @@ pub struct AppState {
     /// Set once at startup (it holds an `Arc` back to this state).
     pub node_router: std::sync::OnceLock<axum::Router>,
     pub updater: crate::update::Updater,
+    pub access_token: crate::auth::AccessToken,
 }
 
 impl AppState {
     pub fn node_name(&self) -> String {
         self.node_name.read().unwrap().clone()
+    }
+
+    /// A request to a peer node, carrying this node's access token.
+    pub fn peer(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {
+        let req = self.http.request(method, url);
+        match self.access_token.bearer() {
+            Some(v) => req.header(reqwest::header::AUTHORIZATION, v),
+            None => req,
+        }
     }
 
     pub async fn is_controller(&self) -> bool {

@@ -1889,6 +1889,8 @@ pub struct NodeDto {
     pub is_self: bool,
     /// Whether this node was added by URL (persisted) rather than via mDNS.
     pub manual: bool,
+    /// Its last health check was refused: it has a different access token.
+    pub access_denied: bool,
     /// What the node last reported; see [`NodeStatus::unanswered`] for one
     /// that hasn't answered yet.
     #[serde(flatten)]
@@ -2116,4 +2118,40 @@ pub enum PortProtocol {
 pub struct CheckRequest {
     /// A permission check's id: `camera`, `microphone` or `screen_recording`.
     pub id: String,
+}
+
+/// Whether this node needs an access token, and whether this browser has it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct AuthStatusDto {
+    pub required: bool,
+    pub signed_in: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct SignInRequest {
+    pub token: String,
+}
+
+/// A new access token; `null` (or blank) turns it off.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct AccessTokenRequest {
+    pub token: Option<String>,
+}
+
+/// Nodes the token couldn't be set on; they keep their old one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct AccessTokenResultDto {
+    pub failed: Vec<AccessTokenFailure>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct AccessTokenFailure {
+    pub node_id: String,
+    pub name: String,
+    pub error: String,
 }

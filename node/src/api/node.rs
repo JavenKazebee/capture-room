@@ -96,6 +96,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/update", get(get_update).post(post_update))
         .route("/update/check", post(post_update_check))
         .merge(super::playout::router())
+        .merge(crate::auth::node_router())
 }
 
 async fn get_status(State(state): State<Arc<AppState>>) -> Json<NodeStatus> {
@@ -1124,7 +1125,8 @@ async fn get_thumbnail(
 
 async fn ws_handler(State(state): State<Arc<AppState>>, upgrade: WebSocketUpgrade) -> Response {
     let rx = state.node_tx.subscribe();
-    upgrade.on_upgrade(move |socket| ws::handle(socket, rx))
+    let token_changed = state.access_token.subscribe();
+    upgrade.on_upgrade(move |socket| ws::handle(socket, rx, token_changed))
 }
 
 fn source_to_dto(mgr: &SourceManager, s: &dyn InputSource) -> SourceDto {

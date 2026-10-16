@@ -11,6 +11,7 @@ use tracing::{debug, info, warn};
 use super::registry::NodeEntry;
 use super::{relay, Ctx};
 use crate::api::types::{ClockClaim, ClockMode, NodeStatus, WsEvent};
+use crate::auth::AccessDenied;
 
 const SERVICE_TYPE: &str = "_capture-room._tcp.local.";
 const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
@@ -100,6 +101,7 @@ pub async fn add_node(ctx: &Ctx, url: String, manual: bool) -> Result<Option<Nod
         url: url.clone(),
         healthy: true,
         fail_count: 0,
+        access_denied: false,
         manual,
         status: Some(status.clone()),
         relay: ctx.cancel.child_token(),
@@ -119,8 +121,10 @@ pub async fn add_node(ctx: &Ctx, url: String, manual: bool) -> Result<Option<Nod
 
 async fn send_claim(ctx: &Ctx, url: &str, claim: &ClockClaim) -> Result<()> {
     ctx.state
-        .http
-        .post(format!("{url}/api/v1/node/clock/claim"))
+        .peer(
+            reqwest::Method::POST,
+            &format!("{url}/api/v1/node/clock/claim"),
+        )
         .json(claim)
         .timeout(STATUS_TIMEOUT)
         .send()
@@ -132,12 +136,14 @@ async fn send_claim(ctx: &Ctx, url: &str, claim: &ClockClaim) -> Result<()> {
 async fn fetch_status(ctx: &Ctx, url: &str) -> Result<NodeStatus> {
     let resp = ctx
         .state
-        .http
-        .get(format!("{url}/api/v1/node/status"))
+        .peer(reqwest::Method::GET, &format!("{url}/api/v1/node/status"))
         .timeout(STATUS_TIMEOUT)
         .send()
-        .await?
-        .error_for_status()?;
+        .await?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(AccessDenied.into());
+    }
+    let resp = resp.error_for_status()?;
     Ok(resp.json::<NodeStatus>().await?)
 }
 
@@ -207,8 +213,9 @@ pub fn start_health_poller(ctx: Ctx) {
                             ctx.state.emit_controller(&WsEvent::NodeUpdated);
                         }
                     }
-                    _ => {
-                        let (failures, manual) = reg.record_failure(&id);
+                    result => {
+                        let denied = result.is_err_and(|e| e.is::<AccessDenied>());
+                        let (failures, manual) = reg.record_failure(&id, denied);
                         if !manual && failures >= PRUNE_AFTER_FAILURES {
                             reg.remove(&id);
                             info!(id = %id, "node pruned after {failures} failed checks");
@@ -218,7 +225,11 @@ pub fn start_health_poller(ctx: Ctx) {
                                 peer_id: id.clone(),
                             });
                         } else if failures == 1 {
-                            warn!(id = %id, "node health check failed");
+                            if denied {
+                                warn!(id = %id, "node refused this controller's access token");
+                            } else {
+                                warn!(id = %id, "node health check failed");
+                            }
                             ctx.state.emit_controller(&WsEvent::NodeOffline {
                                 peer_id: id.clone(),
                             });

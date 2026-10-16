@@ -11,6 +11,8 @@ import { useStorageStore } from '@/stores/storage'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import AppHeader from '@/components/app/AppHeader.vue'
+import SignIn from '@/components/auth/SignIn.vue'
+import { authStatus, checkAuth, needsSignIn } from '@/composables/useAuth'
 import BottomPanel from '@/components/app/BottomPanel.vue'
 import CommandPalette from '@/components/app/CommandPalette.vue'
 
@@ -19,6 +21,8 @@ const storage = useStorageStore()
 const commandOpen = ref(false)
 
 onMounted(async () => {
+  await checkAuth()
+  if (needsSignIn.value) return
   startWebSocket()
   usePresetsStore().load()
   // Shared with a page that asked first (its onMounted runs before this).
@@ -33,15 +37,18 @@ useIntervalFn(() => storage.load(), 30_000)
 
 <template>
   <TooltipProvider :delay-duration="300">
-    <div class="h-svh flex flex-col bg-background text-foreground">
-      <AppHeader @command="commandOpen = true" />
-      <main class="flex-1 min-h-0 overflow-hidden">
-        <RouterView />
-      </main>
-      <BottomPanel />
-    </div>
+    <SignIn v-if="needsSignIn" />
+    <template v-else-if="authStatus">
+      <div class="h-svh flex flex-col bg-background text-foreground">
+        <AppHeader @command="commandOpen = true" />
+        <main class="flex-1 min-h-0 overflow-hidden">
+          <RouterView />
+        </main>
+        <BottomPanel />
+      </div>
 
-    <CommandPalette v-model:open="commandOpen" />
+      <CommandPalette v-model:open="commandOpen" />
+    </template>
     <Toaster :theme="colorMode === 'light' ? 'light' : 'dark'" position="bottom-right" :offset="44" rich-colors close-button />
   </TooltipProvider>
 </template>

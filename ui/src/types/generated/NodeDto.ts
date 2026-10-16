@@ -11,7 +11,11 @@ url: string, healthy: boolean, is_self: boolean,
 /**
  * Whether this node was added by URL (persisted) rather than via mDNS.
  */
-manual: boolean, id: string, name: string, version: string, uptime_secs: number, is_controller: boolean, 
+manual: boolean, 
+/**
+ * Its last health check was refused: it has a different access token.
+ */
+access_denied: boolean, id: string, name: string, version: string, uptime_secs: number, is_controller: boolean, 
 /**
  * Video encoder elements this node has (of those recording can use), so
  * the UI can say what an output's Auto encoder resolves to here.
