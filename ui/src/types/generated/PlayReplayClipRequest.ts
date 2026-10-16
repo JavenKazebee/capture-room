@@ -11,4 +11,9 @@ rate: number | null,
 /**
  * Play straight away; otherwise it's cued on its first frame.
  */
-play: boolean, };
+play: boolean, 
+/**
+ * Cue it here instead, on the node clock (µs) as its `from_us` and
+ * `to_us` are: another angle of its group at the same moment.
+ */
+at_us: number | null, };

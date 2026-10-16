@@ -299,8 +299,13 @@ Builds on playback (#9) and clock sync (#10). Design in ARCHITECTURE.md (Instant
   timing showed). Measured on one machine: re-run across two when a second Mac runs a
   node. Sources marks a sender several nodes have ("Also on"), and Replay › Buffers
   warns when another node already buffers it.
-- **Next:** clips from several angles grouped as one, downloading an export from the
-  browser, MOV timecode on exports.
+- ✅ **Clip groups (2026-10-15)** — Shift+S saves in → out on every angle as one
+  group (all or none), one row in the clip list with a chip per angle. With one of
+  its clips on air, a number key or an angle's chip takes the other angle's clip at
+  the same moment, playing on if it was, and the group's in and out stay. Export writes
+  a file per angle; rename and delete act on the group. A channel can cue a clip at a
+  given position (`at_us`), so it shows that frame, not a flash of its first.
+- **Next:** downloading an export from the browser, MOV timecode on exports.
 
 ## 13. Follow-on
 

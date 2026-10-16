@@ -2,6 +2,7 @@ import { computed, ref, type Ref } from 'vue'
 import { usePlayoutStore } from '@/stores/playout'
 import { useReplayStore, type ReplayBuffer, type ReplayClip } from '@/stores/replay'
 import type { Source } from '@/stores/sources'
+import { sourceKey } from '@/composables/useApi'
 import { notifyError } from '@/lib/notify'
 import type { TransportAction } from '@/types/generated/TransportAction'
 import type { TransportRequest } from '@/types/generated/TransportRequest'
@@ -119,13 +120,34 @@ export function useReplayControl(opts: {
     })
   }
 
-  /** Switch angle; a replay on air carries on from the same moment on the new one. */
+  /** The saved clip on the channel, if it's showing one. */
+  function savedOnAir() {
+    const id = status.value?.clip?.replay_clip_id
+    return id ? (clips.value.find((x) => x.id === id) ?? null) : null
+  }
+
+  /** The clip of `sourceId` in the group of the saved clip on air, if there's one. */
+  function sibling(sourceId: string) {
+    const on = savedOnAir()
+    if (!on?.group_id) return null
+    return clips.value.find((x) => x.group_id === on.group_id && x.source_id === sourceId && !x.missing) ?? null
+  }
+
+  /**
+   * Switch angle; a replay on air carries on from the same moment on the new
+   * one: from the angle's clip in the same group if a grouped clip is on
+   * air, else from its buffer.
+   */
   function selectAngle(source: Source) {
     if (!usableAngles.value.some((a) => a.source.key === source.key)) return
     angleKey.value = source.key
     run(`Switching to ${source.display_name}`, async () => {
       const s = showing.value
-      if (s && s.key !== source.key) await load(source, s.us, playing.value, s.rate)
+      const c = channel.value
+      if (!s || s.key === source.key || !c) return
+      const clip = sibling(source.id)
+      if (clip) await replay.playClip(c.id, clip, s.rate, playing.value, s.us)
+      else await load(source, s.us, playing.value, s.rate)
     })
   }
 
@@ -208,26 +230,43 @@ export function useReplayControl(opts: {
       const from = inUs.value
       const to = outUs.value
       if (from === null || to === null || to <= from) throw new Error('Mark an in point and a later out point first.')
-      const targets = everyAngle ? usableAngles.value : [a]
-      for (const t of targets) {
-        await replay.saveClip(c.node_id, {
-          source_id: t.source.id,
-          from_us: Math.round(from),
-          to_us: Math.round(to),
-          name: null,
-        })
+      const span = { from_us: Math.round(from), to_us: Math.round(to), name: null }
+      if (everyAngle && usableAngles.value.length > 1) {
+        await replay.saveClipGroup(c.node_id, { source_ids: usableAngles.value.map((t) => t.source.id), ...span })
+      } else {
+        await replay.saveClip(c.node_id, { source_id: a.source.id, ...span })
       }
     })
   }
 
+  /**
+   * Cue a saved clip on its first frame; one of the group on air takes over
+   * at the same moment instead, playing on if it was.
+   */
   function cueClip(clip: ReplayClip) {
     const c = channel.value
-    if (c) run(`Cueing ${clip.name}`, () => replay.playClip(c.id, clip, rate.value, false))
+    if (!c) return
+    const angle = angles.value.find((a) => a.source.key === sourceKey(clip.node_id, clip.source_id))
+    run(`Cueing ${clip.name}`, async () => {
+      const s = showing.value
+      const on = savedOnAir()
+      if (s && on && on.id !== clip.id && on.group_id && on.group_id === clip.group_id) {
+        await replay.playClip(c.id, clip, s.rate, playing.value, s.us)
+      } else {
+        await replay.playClip(c.id, clip, rate.value, false)
+      }
+      if (angle) angleKey.value = angle.source.key
+    })
   }
 
   function playClip(clip: ReplayClip) {
     const c = channel.value
-    if (c) run(`Playing ${clip.name}`, () => replay.playClip(c.id, clip, rate.value, true))
+    if (!c) return
+    const angle = angles.value.find((a) => a.source.key === sourceKey(clip.node_id, clip.source_id))
+    run(`Playing ${clip.name}`, async () => {
+      await replay.playClip(c.id, clip, rate.value, true)
+      if (angle) angleKey.value = angle.source.key
+    })
   }
 
   /** Mark the frame shown, once the commands before have shown it. */

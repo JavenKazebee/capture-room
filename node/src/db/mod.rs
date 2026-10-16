@@ -573,15 +573,21 @@ pub struct ReplayClipRow {
     pub utc_offset_us: Option<i64>,
     pub bytes: i64,
     pub created_at: String,
+    /// The group it was saved in, with the other angles' clips.
+    pub group_id: Option<String>,
+    /// Read only: the group's name.
+    pub group_name: Option<String>,
 }
 
-const REPLAY_CLIP_SELECT: &str = "SELECT id, source_id, source_name, name, codec, files, base_us,
-    from_us, to_us, utc_offset_us, bytes, created_at FROM replay_clips";
+const REPLAY_CLIP_SELECT: &str = "SELECT c.id, c.source_id, c.source_name, c.name, c.codec,
+    c.files, c.base_us, c.from_us, c.to_us, c.utc_offset_us, c.bytes, c.created_at,
+    c.group_id, g.name AS group_name
+    FROM replay_clips c LEFT JOIN replay_clip_groups g ON g.id = c.group_id";
 
-/// Newest first.
+/// Newest first; a group's clips in the order they were saved.
 pub async fn replay_clips_list(pool: &SqlitePool) -> Result<Vec<ReplayClipRow>> {
     Ok(sqlx::query_as::<_, ReplayClipRow>(&format!(
-        "{REPLAY_CLIP_SELECT} ORDER BY created_at DESC"
+        "{REPLAY_CLIP_SELECT} ORDER BY COALESCE(g.created_at, c.created_at) DESC, c.rowid"
     ))
     .fetch_all(pool)
     .await?)
@@ -589,18 +595,74 @@ pub async fn replay_clips_list(pool: &SqlitePool) -> Result<Vec<ReplayClipRow>> 
 
 pub async fn replay_clip_get(pool: &SqlitePool, id: &str) -> Result<Option<ReplayClipRow>> {
     Ok(
-        sqlx::query_as::<_, ReplayClipRow>(&format!("{REPLAY_CLIP_SELECT} WHERE id = ?"))
+        sqlx::query_as::<_, ReplayClipRow>(&format!("{REPLAY_CLIP_SELECT} WHERE c.id = ?"))
             .bind(id)
             .fetch_optional(pool)
             .await?,
     )
 }
 
+/// A group's clips, in the order they were saved.
+pub async fn replay_clip_group_clips(
+    pool: &SqlitePool,
+    group_id: &str,
+) -> Result<Vec<ReplayClipRow>> {
+    Ok(sqlx::query_as::<_, ReplayClipRow>(&format!(
+        "{REPLAY_CLIP_SELECT} WHERE c.group_id = ? ORDER BY c.rowid"
+    ))
+    .bind(group_id)
+    .fetch_all(pool)
+    .await?)
+}
+
 pub async fn replay_clip_insert(pool: &SqlitePool, clip: &ReplayClipRow) -> Result<()> {
+    insert_clip(pool, clip).await
+}
+
+/// A group and its clips, all or none.
+pub async fn replay_clip_group_insert(
+    pool: &SqlitePool,
+    id: &str,
+    name: &str,
+    created_at: &str,
+    clips: &[ReplayClipRow],
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("INSERT INTO replay_clip_groups (id, name, created_at) VALUES (?, ?, ?)")
+        .bind(id)
+        .bind(name)
+        .bind(created_at)
+        .execute(&mut *tx)
+        .await?;
+    for clip in clips {
+        insert_clip(&mut *tx, clip).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn replay_clip_group_rename(pool: &SqlitePool, id: &str, name: &str) -> Result<bool> {
+    let res = sqlx::query("UPDATE replay_clip_groups SET name = ? WHERE id = ?")
+        .bind(name)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Delete a group and its clips' rows; their files are the caller's.
+pub async fn replay_clip_group_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
+    delete_one(pool, "DELETE FROM replay_clip_groups WHERE id = ?", id).await
+}
+
+async fn insert_clip<'e>(
+    db: impl sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    clip: &ReplayClipRow,
+) -> Result<()> {
     sqlx::query(
         "INSERT INTO replay_clips (id, source_id, source_name, name, codec, files, base_us,
-         from_us, to_us, utc_offset_us, bytes, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         from_us, to_us, utc_offset_us, bytes, created_at, group_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&clip.id)
     .bind(&clip.source_id)
@@ -614,7 +676,8 @@ pub async fn replay_clip_insert(pool: &SqlitePool, clip: &ReplayClipRow) -> Resu
     .bind(clip.utc_offset_us)
     .bind(clip.bytes)
     .bind(&clip.created_at)
-    .execute(pool)
+    .bind(&clip.group_id)
+    .execute(db)
     .await?;
     Ok(())
 }
@@ -628,8 +691,28 @@ pub async fn replay_clip_rename(pool: &SqlitePool, id: &str, name: &str) -> Resu
     Ok(res.rows_affected() > 0)
 }
 
+/// Delete a clip, and its group if it was the group's last.
 pub async fn replay_clip_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
-    delete_one(pool, "DELETE FROM replay_clips WHERE id = ?", id).await
+    let mut tx = pool.begin().await?;
+    let group: Option<Option<String>> =
+        sqlx::query_scalar("DELETE FROM replay_clips WHERE id = ? RETURNING group_id")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(group) = group else {
+        return Ok(false);
+    };
+    if let Some(group) = group {
+        sqlx::query(
+            "DELETE FROM replay_clip_groups WHERE id = ?1
+             AND NOT EXISTS (SELECT 1 FROM replay_clips WHERE group_id = ?1)",
+        )
+        .bind(group)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(true)
 }
 
 // ── playlists ─────────────────────────────────────────────────────────────────
@@ -860,6 +943,72 @@ mod tests {
             ndi_subscriptions_set(&pool, &set).await.unwrap();
             assert_eq!(ndi_subscriptions_get(&pool).await.unwrap(), set);
         }
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn clip_groups_list_together_and_go_with_their_last_clip() {
+        let path =
+            std::env::temp_dir().join(format!("capture-room-clips-{}.db", std::process::id()));
+        let pool = init(&format!("sqlite://{}", path.display())).await.unwrap();
+        let clip = |id: &str, group: Option<&str>, created_at: &str| ReplayClipRow {
+            id: id.into(),
+            source_id: id.into(),
+            source_name: id.into(),
+            name: id.into(),
+            codec: ReplayCodec::Mjpeg,
+            files: Json(vec![]),
+            base_us: 0,
+            from_us: 0,
+            to_us: 1,
+            utc_offset_us: None,
+            bytes: 0,
+            created_at: created_at.into(),
+            group_id: group.map(Into::into),
+            group_name: None,
+        };
+        replay_clip_insert(&pool, &clip("old", None, "1"))
+            .await
+            .unwrap();
+        let group = [clip("b", Some("g"), "2"), clip("a", Some("g"), "2")];
+        replay_clip_group_insert(&pool, "g", "Goal", "2", &group)
+            .await
+            .unwrap();
+        replay_clip_insert(&pool, &clip("new", None, "3"))
+            .await
+            .unwrap();
+
+        let list = replay_clips_list(&pool).await.unwrap();
+        let ids: Vec<_> = list.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["new", "b", "a", "old"],
+            "newest first, a group in save order"
+        );
+        assert_eq!(list[1].group_name.as_deref(), Some("Goal"));
+
+        assert!(replay_clip_group_rename(&pool, "g", "Save").await.unwrap());
+        let a = replay_clip_get(&pool, "a").await.unwrap().unwrap();
+        assert_eq!(a.group_name.as_deref(), Some("Save"));
+
+        assert!(replay_clip_delete(&pool, "b").await.unwrap());
+        assert_eq!(replay_clip_group_clips(&pool, "g").await.unwrap().len(), 1);
+        assert!(replay_clip_delete(&pool, "a").await.unwrap());
+        assert!(
+            !replay_clip_group_rename(&pool, "g", "x").await.unwrap(),
+            "group left behind"
+        );
+
+        replay_clip_group_insert(&pool, "h", "Miss", "4", &[clip("c", Some("h"), "4")])
+            .await
+            .unwrap();
+        assert!(replay_clip_group_delete(&pool, "h").await.unwrap());
+        assert!(
+            replay_clip_get(&pool, "c").await.unwrap().is_none(),
+            "clip left behind"
+        );
+
         pool.close().await;
         let _ = std::fs::remove_file(path);
     }

@@ -10,6 +10,8 @@ import type { ReplayCodec } from '@/types/generated/ReplayCodec'
 import type { ReplayConfigInput } from '@/types/generated/ReplayConfigInput'
 import type { ReplayClipDto } from '@/types/generated/ReplayClipDto'
 import type { SaveReplayClipRequest } from '@/types/generated/SaveReplayClipRequest'
+import type { SaveReplayClipGroupRequest } from '@/types/generated/SaveReplayClipGroupRequest'
+import type { ReplayClipGroupDto } from '@/types/generated/ReplayClipGroupDto'
 import type { MediaItemDto } from '@/types/generated/MediaItemDto'
 import type { PlayReplayClipRequest } from '@/types/generated/PlayReplayClipRequest'
 import type { UpdateReplayClipRequest } from '@/types/generated/UpdateReplayClipRequest'
@@ -26,6 +28,16 @@ export type ReplayClip = ReplayClipDto & {
   node_id: string
   /** `node_id/id`. */
   key: string
+}
+
+/** Clips saved together on several angles (Shift+S), each named after its angle. */
+export type ReplayClipGroup = {
+  id: string
+  node_id: string
+  /** `node_id/id`. */
+  key: string
+  name: string
+  clips: ReplayClip[]
 }
 
 export const CODECS: Record<ReplayCodec, { label: string; note: string }> = {
@@ -113,6 +125,32 @@ export const useReplayStore = defineStore('replay', () => {
     return c
   }
 
+  /** Save in → out on several angles as one group. */
+  async function saveClipGroup(nodeId: string, req: SaveReplayClipGroupRequest) {
+    const g = await nodeApi(nodeId)<ReplayClipGroupDto>('/replay/clip-groups', { method: 'POST', body: req })
+    await loadClips(nodeId)
+    return g
+  }
+
+  async function renameClipGroup(group: ReplayClipGroup, name: string) {
+    await nodeApi(group.node_id)(`/replay/clip-groups/${group.id}`, {
+      method: 'PATCH',
+      body: { name } satisfies UpdateReplayClipRequest,
+    })
+    await loadClips(group.node_id)
+  }
+
+  /** Delete every angle's clip in a group, and their files. */
+  async function removeClipGroup(group: ReplayClipGroup) {
+    await nodeApi(group.node_id)(`/replay/clip-groups/${group.id}`, { method: 'DELETE' })
+    await loadClips(group.node_id)
+  }
+
+  /** Export every angle's clip in a group, a file each. */
+  async function exportClipGroup(group: ReplayClipGroup) {
+    return nodeApi(group.node_id)<MediaItemDto[]>(`/replay/clip-groups/${group.id}/export`, { method: 'POST' })
+  }
+
   async function renameClip(clip: ReplayClip, name: string) {
     await nodeApi(clip.node_id)(`/replay/clips/${clip.id}`, { method: 'PATCH', body: { name } satisfies UpdateReplayClipRequest })
     await loadClips(clip.node_id)
@@ -128,11 +166,15 @@ export const useReplayStore = defineStore('replay', () => {
     return nodeApi(clip.node_id)<MediaItemDto>(`/replay/clips/${clip.id}/export`, { method: 'POST' })
   }
 
-  /** Put a saved clip on a channel (same node), cued or playing. */
-  async function playClip(channelId: string, clip: ReplayClip, rate: number, play: boolean) {
+  /**
+   * Put a saved clip on a channel (same node), cued or playing: from its
+   * first frame, or from `atUs` (node clock), as another angle of its group
+   * at the same moment.
+   */
+  async function playClip(channelId: string, clip: ReplayClip, rate: number, play: boolean, atUs: number | null = null) {
     const s = await nodeApi(clip.node_id)<ChannelStatusDto>(`/channels/${channelId}/replay-clip`, {
       method: 'POST',
-      body: { clip_id: clip.id, rate, play } satisfies PlayReplayClipRequest,
+      body: { clip_id: clip.id, rate, play, at_us: atUs === null ? null : Math.round(atUs) } satisfies PlayReplayClipRequest,
     })
     playout.setStatus(clip.node_id, channelId, s)
     return s
@@ -150,6 +192,10 @@ export const useReplayStore = defineStore('replay', () => {
     play,
     loadClips,
     saveClip,
+    saveClipGroup,
+    renameClipGroup,
+    removeClipGroup,
+    exportClipGroup,
     renameClip,
     removeClip,
     exportClip,

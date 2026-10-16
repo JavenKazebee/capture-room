@@ -23,4 +23,8 @@ start_utc_us: number | null, bytes: number, created_at: string,
 /**
  * Some of its files are no longer on disk.
  */
-missing: boolean, };
+missing: boolean, 
+/**
+ * The group it was saved in with other angles (Shift+S), and its name.
+ */
+group_id: string | null, group_name: string | null, };

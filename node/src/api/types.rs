@@ -744,6 +744,11 @@ pub struct ReplayClipDto {
     /// Some of its files are no longer on disk.
     #[serde(default)]
     pub missing: bool,
+    /// The group it was saved in with other angles (Shift+S), and its name.
+    #[serde(default)]
+    pub group_id: Option<String>,
+    #[serde(default)]
+    pub group_name: Option<String>,
 }
 
 /// Save part of a source's replay buffer as a clip.
@@ -761,7 +766,33 @@ pub struct SaveReplayClipRequest {
     pub name: Option<String>,
 }
 
-/// Rename a saved replay clip.
+/// Save one in → out on several angles: a clip each, grouped.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct SaveReplayClipGroupRequest {
+    /// The angles, at least one. Every one's buffer must hold the span.
+    pub source_ids: Vec<String>,
+    /// In and out on the node clock (µs), moved into each buffer's span.
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub from_us: u64,
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub to_us: u64,
+    /// "Replay" and the time of day it starts, if `None`.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Replay clips saved together on several angles; each clip is named after
+/// its angle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct ReplayClipGroupDto {
+    pub id: String,
+    pub name: String,
+    pub clips: Vec<ReplayClipDto>,
+}
+
+/// Rename a saved replay clip, or a group of them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct UpdateReplayClipRequest {
@@ -779,6 +810,11 @@ pub struct PlayReplayClipRequest {
     /// Play straight away; otherwise it's cued on its first frame.
     #[serde(default)]
     pub play: bool,
+    /// Cue it here instead, on the node clock (µs) as its `from_us` and
+    /// `to_us` are: another angle of its group at the same moment.
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
+    pub at_us: Option<u64>,
 }
 
 // ── Media library ─────────────────────────────────────────────────────────────

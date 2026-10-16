@@ -18,8 +18,9 @@ use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     AddMediaRequest, ChannelStatusDto, ClipEnd, CueRequest, LoadedClipDto, MediaItemDto,
     MediaOrigin, OutputStatusDto, PlayReplayClipRequest, PlaylistDto, PlaylistInput,
-    PlaylistItemDto, ReplayBufferDto, ReplayClipDto, ReplayClipRequest, ReplayConfigInput,
-    SaveReplayClipRequest, TransportAction, TransportRequest, UpdateReplayClipRequest, WsEvent,
+    PlaylistItemDto, ReplayBufferDto, ReplayClipDto, ReplayClipGroupDto, ReplayClipRequest,
+    ReplayConfigInput, SaveReplayClipGroupRequest, SaveReplayClipRequest, TransportAction,
+    TransportRequest, UpdateReplayClipRequest, WsEvent,
 };
 use crate::benchmark;
 use crate::db::{self, ReplayClipRow};
@@ -50,6 +51,15 @@ pub fn router() -> Router<Arc<AppState>> {
             axum::routing::patch(patch_clip).delete(delete_clip),
         )
         .route("/replay/clips/{id}/export", post(post_clip_export))
+        .route("/replay/clip-groups", post(post_clip_group))
+        .route(
+            "/replay/clip-groups/{id}",
+            axum::routing::patch(patch_clip_group).delete(delete_clip_group),
+        )
+        .route(
+            "/replay/clip-groups/{id}/export",
+            post(post_clip_group_export),
+        )
         .route(
             "/replay/{source_id}",
             axum::routing::put(put_replay).delete(delete_replay),
@@ -180,6 +190,7 @@ async fn reload_playlist(state: &AppState, id: &str, playout: &Arc<Playout>) -> 
                 path: r.path,
                 in_point: gst::ClockTime::from_mseconds(r.in_ms as u64),
                 out_point: r.out_ms.map(|v| gst::ClockTime::from_mseconds(v as u64)),
+                start: None,
                 end: r.end_action,
                 rate: 1.0,
                 replay: None,
@@ -504,6 +515,7 @@ async fn post_replay(
         path,
         in_point: replay.span.from,
         out_point: Some(replay.span.to),
+        start: None,
         end: ClipEnd::Hold,
         rate,
         replay: Some(replay),
@@ -538,6 +550,8 @@ fn clip_dto(row: ReplayClipRow) -> ReplayClipDto {
         codec: row.codec,
         bytes: us(row.bytes),
         created_at: row.created_at,
+        group_id: row.group_id,
+        group_name: row.group_name,
     }
 }
 
@@ -573,29 +587,29 @@ fn default_clip_name(source: &str, start_utc_us: Option<i64>) -> String {
     }
 }
 
-/// Save part of a source's replay buffer as a clip of its own.
-async fn post_clip(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<SaveReplayClipRequest>,
-) -> ApiResult<(StatusCode, Json<ReplayClipDto>)> {
-    if req.to_us <= req.from_us {
-        return Err(ApiError::bad("the out point must be after the in point"));
-    }
+/// Save part of a source's replay buffer as a clip's own files, in a new
+/// clip folder. Named after the angle and its time of day, in no group.
+async fn save_span(
+    state: &AppState,
+    source_id: &str,
+    from_us: u64,
+    to_us: u64,
+) -> ApiResult<ReplayClipRow> {
     let id = uuid::Uuid::new_v4().to_string();
     let utc_offset_us = state.clock.utc_offset_us();
     let (replay, source_name, dir) = {
         let mgr = state.source_manager.read().await;
         let replay = mgr
             .replay_clip(
-                &req.source_id,
-                gst::ClockTime::from_useconds(req.from_us),
-                Some(gst::ClockTime::from_useconds(req.to_us)),
+                source_id,
+                gst::ClockTime::from_useconds(from_us),
+                Some(gst::ClockTime::from_useconds(to_us)),
             )
             .map_err(ApiError::bad)?;
         let name = mgr
-            .get_source(&req.source_id)
+            .get_source(source_id)
             .map(|s| s.display_name().to_string())
-            .unwrap_or_else(|| req.source_id.clone());
+            .unwrap_or_else(|| source_id.to_string());
         (replay, name, mgr.replay_clip_dir(&id))
     };
     // The span holds the buffer's files until they're linked.
@@ -612,16 +626,11 @@ async fn post_clip(
         .map(|m| m.len())
         .sum::<u64>();
     let start_utc_us = utc_offset_us.map(|o| (span.base + span.from).useconds() as i64 + o);
-    let name = req
-        .name
-        .map(|n| n.trim().to_string())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| default_clip_name(&source_name, start_utc_us));
-    let row = ReplayClipRow {
+    Ok(ReplayClipRow {
         id,
-        source_id: req.source_id,
+        source_id: source_id.to_string(),
+        name: default_clip_name(&source_name, start_utc_us),
         source_name,
-        name,
         codec: span.codec,
         files: sqlx::types::Json(files),
         base_us: span.base.useconds() as i64,
@@ -630,10 +639,105 @@ async fn post_clip(
         utc_offset_us,
         bytes: bytes as i64,
         created_at: chrono::Utc::now().to_rfc3339(),
+        group_id: None,
+        group_name: None,
+    })
+}
+
+/// Delete saved clips' folders, logging what can't be.
+async fn remove_clip_dirs(state: &AppState, ids: impl IntoIterator<Item = String>) {
+    let dirs: Vec<_> = {
+        let mgr = state.source_manager.read().await;
+        ids.into_iter().map(|id| mgr.replay_clip_dir(&id)).collect()
     };
-    db::replay_clip_insert(&state.db, &row).await?;
+    for dir in dirs {
+        if dir.exists() {
+            if let Err(e) = tokio::fs::remove_dir_all(&dir).await {
+                tracing::warn!(dir = ?dir, error = %e, "can't delete a replay clip's files");
+            }
+        }
+    }
+}
+
+fn check_span(from_us: u64, to_us: u64) -> ApiResult<()> {
+    if to_us <= from_us {
+        return Err(ApiError::bad("the out point must be after the in point"));
+    }
+    Ok(())
+}
+
+/// A name from a request: trimmed, `None` if blank.
+fn given_name(name: Option<String>) -> Option<String> {
+    name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty())
+}
+
+/// Save part of a source's replay buffer as a clip of its own.
+async fn post_clip(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SaveReplayClipRequest>,
+) -> ApiResult<(StatusCode, Json<ReplayClipDto>)> {
+    check_span(req.from_us, req.to_us)?;
+    let mut row = save_span(&state, &req.source_id, req.from_us, req.to_us).await?;
+    if let Some(name) = given_name(req.name) {
+        row.name = name;
+    }
+    if let Err(e) = db::replay_clip_insert(&state.db, &row).await {
+        remove_clip_dirs(&state, [row.id]).await;
+        return Err(e.into());
+    }
     state.emit(&WsEvent::ReplayClipsUpdated);
     Ok((StatusCode::CREATED, Json(clip_dto(row))))
+}
+
+/// Save one in → out on several angles, a clip each, as one group: all of
+/// them or none.
+async fn post_clip_group(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SaveReplayClipGroupRequest>,
+) -> ApiResult<(StatusCode, Json<ReplayClipGroupDto>)> {
+    check_span(req.from_us, req.to_us)?;
+    let mut sources = req.source_ids;
+    let mut seen = HashSet::new();
+    sources.retain(|s| seen.insert(s.clone()));
+    if sources.is_empty() {
+        return Err(ApiError::bad("pick at least one angle"));
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut rows: Vec<ReplayClipRow> = Vec::with_capacity(sources.len());
+    for source in &sources {
+        match save_span(&state, source, req.from_us, req.to_us).await {
+            Ok(mut row) => {
+                row.name = row.source_name.clone();
+                row.group_id = Some(id.clone());
+                rows.push(row);
+            }
+            Err(e) => {
+                remove_clip_dirs(&state, rows.into_iter().map(|r| r.id)).await;
+                return Err(e);
+            }
+        }
+    }
+    let start_utc_us = rows[0]
+        .utc_offset_us
+        .map(|o| rows[0].base_us + rows[0].from_us + o);
+    let name = given_name(req.name).unwrap_or_else(|| default_clip_name("Replay", start_utc_us));
+    let created_at = rows[0].created_at.clone();
+    if let Err(e) = db::replay_clip_group_insert(&state.db, &id, &name, &created_at, &rows).await {
+        remove_clip_dirs(&state, rows.into_iter().map(|r| r.id)).await;
+        return Err(e.into());
+    }
+    state.emit(&WsEvent::ReplayClipsUpdated);
+    let clips = rows
+        .into_iter()
+        .map(|mut r| {
+            r.group_name = Some(name.clone());
+            clip_dto(r)
+        })
+        .collect();
+    Ok((
+        StatusCode::CREATED,
+        Json(ReplayClipGroupDto { id, name, clips }),
+    ))
 }
 
 async fn patch_clip(
@@ -664,12 +768,40 @@ async fn delete_clip(
     if !db::replay_clip_delete(&state.db, &id).await? {
         return Err(CLIP_NOT_FOUND);
     }
-    let dir = state.source_manager.read().await.replay_clip_dir(&id);
-    if dir.exists() {
-        if let Err(e) = tokio::fs::remove_dir_all(&dir).await {
-            tracing::warn!(dir = ?dir, error = %e, "can't delete a replay clip's files");
-        }
+    remove_clip_dirs(&state, [id]).await;
+    state.emit(&WsEvent::ReplayClipsUpdated);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+const GROUP_NOT_FOUND: ApiError = ApiError::NotFound("replay clip group not found");
+
+async fn patch_clip_group(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<UpdateReplayClipRequest>,
+) -> ApiResult<StatusCode> {
+    let name = req.name.trim();
+    if name.is_empty() {
+        return Err(ApiError::bad("a group needs a name"));
     }
+    if !db::replay_clip_group_rename(&state.db, &id, name).await? {
+        return Err(GROUP_NOT_FOUND);
+    }
+    state.emit(&WsEvent::ReplayClipsUpdated);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Delete a group's clips and their files, as `DELETE /replay/clips/{id}`
+/// does for each.
+async fn delete_clip_group(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> ApiResult<StatusCode> {
+    let clips = db::replay_clip_group_clips(&state.db, &id).await?;
+    if !db::replay_clip_group_delete(&state.db, &id).await? {
+        return Err(GROUP_NOT_FOUND);
+    }
+    remove_clip_dirs(&state, clips.into_iter().map(|c| c.id)).await;
     state.emit(&WsEvent::ReplayClipsUpdated);
     Ok(StatusCode::NO_CONTENT)
 }
@@ -698,17 +830,23 @@ fn free_path(dir: &Path, name: &str, listed: &HashSet<String>) -> std::path::Pat
     path
 }
 
+/// What an export of a clip is called: a grouped clip is its group's name
+/// and its angle.
+fn export_name(row: &ReplayClipRow) -> String {
+    match &row.group_name {
+        Some(group) => format!("{group} – {}", row.name),
+        None => row.name.clone(),
+    }
+}
+
 /// Remux a saved clip into one .mov in the Replay clips folder, without
 /// re-encoding, and add it to the media library.
-async fn post_clip_export(
-    State(state): State<Arc<AppState>>,
-    AxumPath(id): AxumPath<String>,
-) -> ApiResult<(StatusCode, Json<MediaItemDto>)> {
-    let row = clip_row(&state, &id).await?;
+async fn export_clip(state: &AppState, row: ReplayClipRow) -> ApiResult<MediaItemDto> {
     let (from, to) = clip_points(&row);
     let dir = export_dir();
-    let name = row.name.clone();
-    let files = row.files.0.clone();
+    let name = export_name(&row);
+    let stem = name.clone();
+    let files = row.files.0;
     let listed: HashSet<String> = db::media_list(&state.db)
         .await?
         .into_iter()
@@ -716,7 +854,7 @@ async fn post_clip_export(
         .collect();
     let path = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
         std::fs::create_dir_all(&dir)?;
-        let out = free_path(&dir, &name, &listed);
+        let out = free_path(&dir, &stem, &listed);
         replay::export(&files, from, to, &out)?;
         Ok(out.to_string_lossy().into_owned())
     })
@@ -726,7 +864,40 @@ async fn post_clip_export(
     let info = tokio::task::spawn_blocking(move || crate::sources::file::probe(&probe_path))
         .await?
         .map_err(|e| ApiError::Internal(e.context("the export can't be read")))?;
-    add_media(&state, path, row.name, info, MediaOrigin::Replay, None).await
+    let (_, Json(item)) = add_media(state, path, name, info, MediaOrigin::Replay, None).await?;
+    Ok(item)
+}
+
+async fn post_clip_export(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> ApiResult<(StatusCode, Json<MediaItemDto>)> {
+    let row = clip_row(&state, &id).await?;
+    Ok((StatusCode::CREATED, Json(export_clip(&state, row).await?)))
+}
+
+/// Export each of a group's clips, as `POST /replay/clips/{id}/export` does.
+/// Clips whose files are gone are left out.
+async fn post_clip_group_export(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> ApiResult<(StatusCode, Json<Vec<MediaItemDto>>)> {
+    let rows = db::replay_clip_group_clips(&state.db, &id).await?;
+    if rows.is_empty() {
+        return Err(GROUP_NOT_FOUND);
+    }
+    let rows: Vec<_> = rows
+        .into_iter()
+        .filter(|r| r.files.iter().all(|f| Path::new(f).is_file()))
+        .collect();
+    if rows.is_empty() {
+        return Err(ApiError::Conflict("the clips' files are no longer on disk"));
+    }
+    let mut items = Vec::with_capacity(rows.len());
+    for row in rows {
+        items.push(export_clip(&state, row).await?);
+    }
+    Ok((StatusCode::CREATED, Json(items)))
 }
 
 /// Play (or cue) a saved replay clip on a channel.
@@ -740,6 +911,9 @@ async fn post_replay_clip(
     check_rate(rate).map_err(ApiError::bad)?;
     let row = clip_row(&state, &req.clip_id).await?;
     let (from, to) = clip_points(&row);
+    let start = req
+        .at_us
+        .map(|at| gst::ClockTime::from_useconds(at.saturating_sub(row.base_us.max(0) as u64)));
     let path = state
         .source_manager
         .read()
@@ -765,6 +939,7 @@ async fn post_replay_clip(
         path,
         in_point: from,
         out_point: Some(to),
+        start,
         end: ClipEnd::Hold,
         rate,
         replay: Some(replay),

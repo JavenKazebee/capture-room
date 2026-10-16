@@ -857,6 +857,7 @@ impl Run {
             path: self.dto.media_path.clone(),
             in_point: gst::ClockTime::ZERO,
             out_point: None,
+            start: None,
             end: ClipEnd::Loop,
             rate: 1.0,
             replay: None,

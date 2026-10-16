@@ -188,6 +188,7 @@ fn clip(path: &std::path::Path, in_s: f64, out_s: Option<f64>, end: ClipEnd) -> 
         path: path.to_string_lossy().into(),
         in_point: t(in_s),
         out_point: out_s.map(t),
+        start: None,
         end,
         rate: 1.0,
         replay: None,
@@ -599,6 +600,67 @@ async fn plays_without_cueing() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A clip cued at a start shows that frame, not its in point, and plays on
+/// from it; played again after it ends, it starts from its in point.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "real-time (~4 s); run with --ignored"]
+async fn cues_at_a_start() {
+    gst::init().unwrap();
+    let dir = std::env::temp_dir().join(format!("cr-start-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("clip.mp4");
+    make_clip(&file);
+
+    let src = channel();
+    let playout = src.playout().unwrap().clone();
+    let mon = MonitorPipeline::new(
+        &src,
+        &MonitorSettingsDto::default(),
+        &gst::SystemClock::obtain(),
+    )
+    .unwrap();
+    let sleep = |ms| tokio::time::sleep(Duration::from_millis(ms));
+    sleep(500).await;
+
+    let mut request = clip(&file, 0.5, Some(2.5), ClipEnd::Hold);
+    request.start = Some(gst::ClockTime::from_seconds(2));
+    playout.load(request, false).await.unwrap();
+    sleep(200).await;
+    let shown: Vec<_> = take_pushed(&playout)
+        .into_iter()
+        .filter(|p| p.kind == Kind::Video)
+        .map(|p| p.clip.mseconds())
+        .collect();
+    assert!(!shown.is_empty(), "nothing shown");
+    assert!(
+        shown.iter().all(|&ms| ms >= 2000),
+        "only the start frame shows: {shown:?}"
+    );
+
+    playout.play().await.unwrap();
+    sleep(1000).await;
+    assert_eq!(playout.status().state, TransportState::Ended);
+    let video = played(&take_pushed(&playout), Kind::Video);
+    assert!(video[0].clip.mseconds() >= 2000, "plays on from the start");
+    assert!(
+        (13..=17).contains(&video.len()),
+        "{} frames to the out",
+        video.len()
+    );
+
+    playout.play().await.unwrap();
+    sleep(300).await;
+    let video = played(&take_pushed(&playout), Kind::Video);
+    assert!(
+        (500..534).contains(&video[0].clip.mseconds()),
+        "again from the in point: {}",
+        video[0].clip.mseconds()
+    );
+
+    mon.stop().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A 5.1 program runs, laid out as 5.1, and a stereo clip plays into
 /// it.
 #[tokio::test(flavor = "multi_thread")]
@@ -737,6 +799,7 @@ async fn replay_plays_at_any_speed() {
         path: dir.to_string_lossy().into(),
         in_point: span.from,
         out_point: Some(span.to),
+        start: None,
         end: ClipEnd::Hold,
         rate: 1.0,
         replay: Some(ReplayClip {

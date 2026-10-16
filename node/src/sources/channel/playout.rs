@@ -23,6 +23,9 @@ pub struct ClipRequest {
     pub path: String,
     pub in_point: gst::ClockTime,
     pub out_point: Option<gst::ClockTime>,
+    /// Where it's cued, if not on its first frame: playing goes on from
+    /// there, and again plays it from the start.
+    pub start: Option<gst::ClockTime>,
     pub end: ClipEnd,
     /// Speed: 1 is normal, negative plays from the out point back to the
     /// in point. Audio is only heard at 1.
@@ -493,7 +496,7 @@ impl Playout {
             // Lanes before the seek's preroll, so the cued frame shows.
             self.lanes.open(has_audio)?;
         }
-        seek(&player, request, gst::SeekFlags::FLUSH)
+        seek_cued(&player, request, gst::SeekFlags::FLUSH)
             .with_context(|| format!("can't seek {}", request.path))?;
         wait_async_done(&mut messages, &player, request).await?;
 
@@ -543,7 +546,7 @@ impl Playout {
         } else {
             clip.mode.store(ClipMode::Cued);
             // Preroll again, now that it shows.
-            seek(&clip.player, &clip.request, gst::SeekFlags::FLUSH)
+            seek_cued(&clip.player, &clip.request, gst::SeekFlags::FLUSH)
                 .with_context(|| format!("can't seek {}", clip.request.path))?;
         }
         let state = if play {
@@ -921,25 +924,47 @@ async fn seek_from(
     position: gst::ClockTime,
     rate: f64,
 ) -> Result<gst::ClockTime> {
+    let (at, start, stop) = span_from(clip, position, rate);
+    seek_span(player, clip, start, stop, rate, gst::SeekFlags::FLUSH)
+        .with_context(|| format!("can't seek {}", clip.path))?;
+    settle(player).await?;
+    Ok(at)
+}
+
+/// From `position` (kept within the clip) at `rate`: the position, and the
+/// seek's start and stop.
+fn span_from(
+    clip: &ClipRequest,
+    position: gst::ClockTime,
+    rate: f64,
+) -> (gst::ClockTime, gst::ClockTime, Option<gst::ClockTime>) {
     let mut at = position.max(clip.in_point);
     if let Some(out) = clip.out_point {
         at = at.min(out);
     }
-    let (start, stop) = if rate > 0.0 {
-        (at, clip.out_point)
+    if rate > 0.0 {
+        (at, at, clip.out_point)
     } else {
         // Backwards from the frame at `at`, which starts there: a stop at
         // `at` would leave it out.
         let stop = at + gst::ClockTime::from_nseconds(1);
         (
+            at,
             clip.in_point,
             Some(clip.out_point.map_or(stop, |out| stop.min(out))),
         )
-    };
-    seek_span(player, clip, start, stop, rate, gst::SeekFlags::FLUSH)
-        .with_context(|| format!("can't seek {}", clip.path))?;
-    settle(player).await?;
-    Ok(at)
+    }
+}
+
+/// The seek a clip is cued with: from its `start` if it has one.
+fn seek_cued(player: &gst::Pipeline, clip: &ClipRequest, flags: gst::SeekFlags) -> Result<()> {
+    match clip.start {
+        Some(position) => {
+            let (_, start, stop) = span_from(clip, position, clip.rate);
+            seek_span(player, clip, start, stop, clip.rate, flags)
+        }
+        None => seek(player, clip, flags),
+    }
 }
 
 /// Wait for a player's state change (a seek's preroll) to finish.

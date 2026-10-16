@@ -38,7 +38,7 @@ const SHORTCUTS: [string[], string][] = [
   [['I', 'O'], 'Mark in / out at the frame shown'],
   [['Enter'], 'Play from in to out'],
   [['S'], 'Save in → out as a clip'],
-  [['Shift', 'S'], 'Save in → out on every angle'],
+  [['Shift', 'S'], 'Save in → out on every angle, as one clip'],
   [['Esc'], 'Stop (back to black)'],
 ]
 
@@ -346,6 +346,7 @@ onMounted(() => sources.ensureLoaded())
           <ClipList
             :clips="clips"
             :on-air-id="status?.clip?.replay_clip_id ?? null"
+            :angle-source-id="angle?.source.id ?? null"
             @cue="ctl.cueClip"
             @play="ctl.playClip"
           />

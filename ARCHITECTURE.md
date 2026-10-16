@@ -755,10 +755,17 @@ plays from it at variable speed.
   if a link can't be made), so saving is instant, takes no room while the buffer still
   has them, and the buffer rolls on regardless; nothing holds its segments. Stored in
   `replay_clips` with positions in those files, so a clip plays and exports after the
-  buffer has moved on, and after a restart. One angle per clip; saving on every angle
-  makes one clip each for the same span. A clip on a channel reports its id in the
-  status (`replay_clip_id`) and keeps its node clock times, which line up with the
-  buffers until the clock changes.
+  buffer has moved on, and after a restart. One angle per clip. A clip on a channel
+  reports its id in the status (`replay_clip_id`) and keeps its node clock times, which
+  line up with the buffers until the clock changes.
+- **Clip groups:** saving on every angle (Shift+S) makes one clip per angle for the
+  same span, as a group (`replay_clip_groups`; each clip's `group_id`): all of them or
+  none. The group has the name (`Replay 14:03:22` by default) and its clips are named
+  after their angles. The UI lists it as one row; with one of its clips on air,
+  switching angle (a number key or the angle's chip) cues the other angle's clip at the
+  same moment (`at_us`, the node clock time shown) and plays on if it was, so its in
+  and out stay the group's. Exporting a group writes a file per angle (`<group> –
+  <angle>.mov`); deleting it deletes every clip; a group goes with its last clip.
 - **Clip export** (`replay::export`): the clip's files through `splitmuxsrc`, an
   accurate seek on the source to its in and out, into `qtmux` → one .mov in
   `~/capture-room/Replay clips/`, named after the clip (never overwriting), added to
@@ -902,10 +909,13 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 | POST | `/channels/{id}/replay` | `{ source_id, from_us, to_us?, rate?, play }` → part of a source's replay buffer on air (node clock times; clamped into one stretch of the buffer, to its newest frame without `to_us`), cued on its first frame or playing |
 | GET | `/replay` | replay buffers: source, codec, length, encoder, error, the span held (`start_us`, `end_us`, gaps), the clock now and its UTC offset, bytes |
 | PUT / DELETE | `/replay/{source_id}` | `{ codec: prores_proxy \| h264_intra \| mjpeg, minutes }` → give a source a buffer or change it (a new codec starts afresh) / remove it and what it recorded |
-| GET / POST | `/replay/clips` | saved clips, newest first (angle, name, codec, in and out on the node clock, capture time in UTC, bytes, whether files are missing) / save one `{ source_id, from_us, to_us, name? }` (named after the angle and its time of day by default) |
+| GET / POST | `/replay/clips` | saved clips, newest first, a group's together (angle, name, codec, in and out on the node clock, capture time in UTC, bytes, whether files are missing, group id and name) / save one `{ source_id, from_us, to_us, name? }` (named after the angle and its time of day by default) |
 | PATCH / DELETE | `/replay/clips/{id}` | `{ name }` → rename / delete it and its files (exports stay) |
 | POST | `/replay/clips/{id}/export` | remux it into one .mov in the Replay clips folder, add it to the media library → the media entry |
-| POST | `/channels/{id}/replay-clip` | `{ clip_id, rate?, play }` → a saved clip on air, cued on its first frame or playing |
+| POST | `/replay/clip-groups` | `{ source_ids, from_us, to_us, name? }` → save in → out on several angles as one group, a clip each (all or none) |
+| PATCH / DELETE | `/replay/clip-groups/{id}` | `{ name }` → rename / delete it with its clips and their files |
+| POST | `/replay/clip-groups/{id}/export` | export each clip whose files are there → the media entries |
+| POST | `/channels/{id}/replay-clip` | `{ clip_id, rate?, play, at_us? }` → a saved clip on air, cued on its first frame (or at `at_us` on the node clock, as another angle of its group) or playing |
 | GET | `/files?path=` | folders and media files in a directory (home if no path), for picking a file source. Read-only |
 | GET / POST | `/recordings` | list (`?before=&limit=`: newest first, 100 by default, at most 500, paged by `started_at`; the first page also carries active sessions) / start. Start body: `{ source_id, preset_id?, outputs: [...], start_at?: { domain, time_us } }` (see Clock sync). Refused onto a volume with under 1 GB free; cancels a running benchmark |
 | GET / DELETE | `/recordings/{id}` | session details / remove a finished session from history; `?files` deletes its files from disk first, and if any can't be deleted the session stays, listing those still on disk (409 while recording) |
@@ -1035,7 +1045,7 @@ join when the backend supports them — not before.
 | **Setup › Checks** | Per node: permissions, software, storage, clock and network checks, problems first in the counts, with how to fix each; Nodes cards badge their problems |
 | **Setup › Settings** | Appearance; monitoring settings (thumbnail/meter rate, applied to all nodes); About |
 | **Playback** | Playout channels, playlists, transport, channel settings |
-| **Replay** | Angles (sources with a buffer, numbered) beside the program of the channel picked to play on, the selected angle live, and its buffer on a timeline up to now (30 s, 2 min or all). Replay the last N seconds (R), switch angle at the same moment (1–9), play, pause, step a frame (← →), reverse and 25–100 % speed (J K L, ↑ ↓), mark in and out on the frame shown (I O), play in → out (Enter) and save it as a clip (S, Shift+S on every angle). The clip list under the timeline cues a clip (click), plays it at the chosen speed (double-click), exports, renames and deletes it. Commands queue and each decides what to do when its turn comes, so fast keying isn't lost. A Buffers sheet turns buffers on per source with their codec and length |
+| **Replay** | Angles (sources with a buffer, numbered) beside the program of the channel picked to play on, the selected angle live, and its buffer on a timeline up to now (30 s, 2 min or all). Replay the last N seconds (R), switch angle at the same moment (1–9), play, pause, step a frame (← →), reverse and 25–100 % speed (J K L, ↑ ↓), mark in and out on the frame shown (I O), play in → out (Enter) and save it as a clip (S, Shift+S on every angle as one group). The clip list under the timeline cues a clip (click), plays it at the chosen speed (double-click), exports, renames and deletes it; a group is one row that plays the selected angle, with a chip per angle that switches to it at the same moment. Commands queue and each decides what to do when its turn comes, so fast keying isn't lost. A Buffers sheet turns buffers on per source with their codec and length |
 | **Schedules** _(planned)_ | Create, edit, and view upcoming scheduled recordings |
 | **Logs** _(planned)_ | Aggregated log viewer with filter by node and level |
 
