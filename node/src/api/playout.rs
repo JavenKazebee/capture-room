@@ -7,8 +7,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, Query, Request, State},
     http::StatusCode,
+    response::Response,
     routing::{get, post},
     Json, Router,
 };
@@ -34,6 +35,7 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/media", get(get_media).post(post_media))
         .route("/media/{id}", axum::routing::delete(delete_media))
+        .route("/media/{id}/file", get(get_media_file))
         .route("/channels/{id}", get(get_channel))
         .route(
             "/channels/{id}/playlist",
@@ -138,6 +140,25 @@ async fn add_media(
     }
     state.emit(&WsEvent::MediaUpdated);
     Ok((StatusCode::CREATED, Json(item)))
+}
+
+/// A library item's file, with range requests; `?download` to save it, as
+/// an export from Replay is fetched from the browser.
+async fn get_media_file(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Query(q): Query<super::node::FileQuery>,
+    req: Request,
+) -> ApiResult<Response> {
+    let item = db::media_get(&state.db, &id)
+        .await?
+        .ok_or(MEDIA_NOT_FOUND)?;
+    let path = Path::new(&item.path);
+    if !tokio::fs::try_exists(path).await.unwrap_or(false) {
+        return Err(ApiError::NotFound("file is no longer on disk"));
+    }
+    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    super::node::serve_file(path, mime, q.download.is_some(), req).await
 }
 
 /// Remove an entry from the library. The file stays on disk.
@@ -846,6 +867,8 @@ async fn export_clip(state: &AppState, row: ReplayClipRow) -> ApiResult<MediaIte
     let dir = export_dir();
     let name = export_name(&row);
     let stem = name.clone();
+    let base = gst::ClockTime::from_useconds(row.base_us.max(0) as u64);
+    let timecode = row.utc_offset_us.map(|offset| (base, offset));
     let files = row.files.0;
     let listed: HashSet<String> = db::media_list(&state.db)
         .await?
@@ -855,7 +878,7 @@ async fn export_clip(state: &AppState, row: ReplayClipRow) -> ApiResult<MediaIte
     let path = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
         std::fs::create_dir_all(&dir)?;
         let out = free_path(&dir, &stem, &listed);
-        replay::export(&files, from, to, &out)?;
+        replay::export(&files, from, to, timecode, &out)?;
         Ok(out.to_string_lossy().into_owned())
     })
     .await?

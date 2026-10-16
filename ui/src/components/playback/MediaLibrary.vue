@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { toast } from 'vue-sonner'
-import { FileWarning, Plus, X } from '@lucide/vue'
+import { Download, FileWarning, Plus, X } from '@lucide/vue'
 import { usePlayoutStore } from '@/stores/playout'
 import { notifyError } from '@/lib/notify'
+import { mediaFileUrl } from '@/composables/useApi'
 import { formatClock } from '@/lib/format'
 import { formatLabel } from '@/lib/sourceFormat'
 import type { MediaItemDto } from '@/types/generated/MediaItemDto'
@@ -112,6 +113,20 @@ async function remove(m: MediaItemDto) {
             <FileWarning class="size-3" /> File no longer on disk
           </div>
         </div>
+        <Tooltip v-if="!m.missing">
+          <TooltipTrigger as-child>
+            <a
+              class="size-6 grid place-items-center rounded text-muted-foreground opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground hover:bg-accent"
+              :href="mediaFileUrl(nodeId, m.id, true)"
+              :aria-label="`Download ${m.name}`"
+              download
+              @click.stop
+            >
+              <Download class="size-3.5" />
+            </a>
+          </TooltipTrigger>
+          <TooltipContent>Download</TooltipContent>
+        </Tooltip>
         <Tooltip>
           <TooltipTrigger as-child>
             <button

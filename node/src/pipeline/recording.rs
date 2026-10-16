@@ -489,7 +489,10 @@ impl RecordingLeg {
         if let (Some(pad), Some(base), Some(offset)) =
             (&self.timecode_pad, self.base_time, utc_offset_us)
         {
-            stamp_timecode(pad, base, offset);
+            stamp_timecode(pad, move |segment, pts| {
+                let rt = segment.map_or(Some(pts), |s| s.to_running_time(pts))?;
+                Some((base + rt).useconds() as i64 + offset)
+            });
         }
 
         // The bus handler keeps the reason (e.g. "Could not open file … for writing").
@@ -624,13 +627,20 @@ fn gate(
 }
 
 /// Stamp each frame leaving `pad` with its time of day as SMPTE timecode:
-/// its time on the clock (running time + `base`) mapped to UTC by
-/// `utc_offset_us`, in this machine's time zone. Nodes on one clock domain
-/// share the mapping, so their files' timecode lines up frame for frame.
+/// `to_utc_us` maps a frame's PTS, in its segment, to UTC (µs since the
+/// Unix epoch), shown in this machine's time zone. For a recording that's
+/// its time on the clock (running time + base) plus the domain's UTC
+/// offset, so files from nodes on one clock domain line up frame for frame.
 /// qtmux writes the first frame's into the file's timecode track (each file's,
 /// when a leg splits). A frame that already has timecode (from its source)
 /// keeps it.
-fn stamp_timecode(pad: &gst::Pad, base: gst::ClockTime, utc_offset_us: i64) {
+pub(super) fn stamp_timecode(
+    pad: &gst::Pad,
+    to_utc_us: impl Fn(Option<&gst::FormattedSegment<gst::ClockTime>>, gst::ClockTime) -> Option<i64>
+        + Send
+        + Sync
+        + 'static,
+) {
     pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
         let Some(pts) = info.buffer().and_then(|b| b.pts()) else {
             return gst::PadProbeReturn::Ok;
@@ -641,22 +651,18 @@ fn stamp_timecode(pad: &gst::Pad, base: gst::ClockTime, utc_offset_us: i64) {
         {
             return gst::PadProbeReturn::Ok;
         }
-        let rt = pad
-            .sticky_event::<gst::event::Segment>(0)
-            .and_then(|e| {
-                e.segment()
-                    .downcast_ref::<gst::ClockTime>()
-                    .and_then(|s| s.to_running_time(pts))
-            })
-            .unwrap_or(pts);
+        let segment = pad.sticky_event::<gst::event::Segment>(0);
+        let segment = segment
+            .as_ref()
+            .and_then(|e| e.segment().downcast_ref::<gst::ClockTime>());
         let fps = pad
             .current_caps()
             .and_then(|c| c.structure(0)?.get::<gst::Fraction>("framerate").ok())
             .filter(|f| f.numer() > 0 && f.denom() > 0);
-        let utc_us = (base + rt).useconds() as i64 + utc_offset_us;
-        if let (Some(tc), Some(buffer)) =
-            (fps.and_then(|f| time_code(utc_us, f)), info.buffer_mut())
-        {
+        let tc = fps
+            .zip(to_utc_us(segment, pts))
+            .and_then(|(fps, utc_us)| time_code(utc_us, fps));
+        if let (Some(tc), Some(buffer)) = (tc, info.buffer_mut()) {
             gst_video::VideoTimeCodeMeta::add(buffer.make_mut(), &tc);
         }
         gst::PadProbeReturn::Ok
@@ -665,7 +671,7 @@ fn stamp_timecode(pad: &gst::Pad, base: gst::ClockTime, utc_offset_us: i64) {
 
 /// The timecode at `utc_us` (µs since the Unix epoch) in local time, at
 /// `fps`. 29.97 and 59.94 count drop-frame, as their timecode does.
-fn time_code(utc_us: i64, fps: gst::Fraction) -> Option<gst_video::ValidVideoTimeCode> {
+pub(super) fn time_code(utc_us: i64, fps: gst::Fraction) -> Option<gst_video::ValidVideoTimeCode> {
     let dt = glib::DateTime::from_unix_local(utc_us.div_euclid(1_000_000))
         .ok()?
         .add(glib::TimeSpan::from_microseconds(

@@ -784,6 +784,11 @@ plays from it at variable speed.
   start there: qtdemux hands out PCM in chunks of about half a second starting on the
   sample before the cut, and qtmux drops a chunk that starts before it whole. Tested:
   the export holds exactly the frames marked, and as long a stretch of sound.
+  Each frame is stamped with its time of day (the clip's `base_us` plus its position,
+  mapped to UTC by the clip's `utc_offset_us`), as a MOV recording is, so the file's
+  timecode track starts at the in point's time of day and a group's angles line up in
+  an NLE. The browser downloads an export from the media library
+  (`GET /media/{id}/file?download`), or from the Download button on the export's toast.
 
 ### What the prototype showed
 
@@ -913,6 +918,7 @@ Local only. Never forwards, never knows about other nodes. Source and session id
 | GET | `/devices` | capture and audio devices on the node (key, name, class, provider, modes), for picking one in a device source or audio plan |
 | GET / POST | `/media` | the media library (each entry flags a missing file) / add a file `{ path, name?, session_id? }`: probed, 400 if it can't be played, 409 if already in |
 | DELETE | `/media/{id}` | remove from the library (the file stays) |
+| GET | `/media/{id}/file` | the entry's file, with range requests; `?download` as an attachment |
 | GET | `/channels/{id}` | a playout channel's transport: state (`idle \| cued \| playing \| paused \| ended`), clip, item on air, next item and whether it's in standby, position, duration, error, each output's status |
 | GET / PUT | `/channels/{id}/playlist` | the playlist (items with in, out and end, whether it loops) / replace it |
 | POST | `/channels/{id}/play` | `{ item_id }` → plays now, straight on from what's on air |

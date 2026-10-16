@@ -446,6 +446,15 @@ pub async fn media_list(pool: &SqlitePool) -> Result<Vec<MediaItemDto>> {
     Ok(rows)
 }
 
+pub async fn media_get(pool: &SqlitePool, id: &str) -> Result<Option<MediaItemDto>> {
+    Ok(
+        sqlx::query_as::<_, MediaItemDto>(&format!("{MEDIA_SELECT} WHERE id = ?"))
+            .bind(id)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
 /// Add `item`; false if its path is already in the library.
 pub async fn media_insert(pool: &SqlitePool, item: &MediaItemDto) -> Result<bool> {
     let res = sqlx::query(

@@ -24,7 +24,7 @@ _Last updated: 2026-10-16_
     synchronized start, and frame capture times as MOV timecode. Prerequisite for
     multi-angle replay
 11. ✅ **Setup page** — per-node permission and system checks, with shortcuts to fix them
-12. **Instant replay**
+12. ✅ **Instant replay**
 13. **Install, update, Decklink** — on the Mac Pro (Intel, two Decklink 8K Pro G2s) while
     it's free: ✅ macOS installer (app bundle with GStreamer inside, `install.sh`,
     release workflow); ✅ login service that restarts on crash, with a menu bar icon
@@ -312,7 +312,11 @@ Builds on playback (#9) and clock sync (#10). Design in ARCHITECTURE.md (Instant
   the same moment, playing on if it was, and the group's in and out stay. Export writes
   a file per angle; rename and delete act on the group. A channel can cue a clip at a
   given position (`at_us`), so it shows that frame, not a flash of its first.
-- **Next:** downloading an export from the browser, MOV timecode on exports.
+- ✅ **Export timecode and downloads (2026-10-16)** — an export carries its in point's
+  time of day as MOV timecode, as recordings do, so a group's angles line up in an
+  NLE. Exports download from the browser: Download on the export's toast (every angle
+  of a group), and on any media library entry in Playback
+  (`GET /media/{id}/file`).
 
 ## 13. Follow-on
 

@@ -716,9 +716,9 @@ async fn remove_recording_file(path: &str) -> std::io::Result<()> {
 }
 
 #[derive(Deserialize)]
-struct FileQuery {
+pub(super) struct FileQuery {
     /// Present (any value) to download rather than play.
-    download: Option<String>,
+    pub download: Option<String>,
 }
 
 /// One of a finished session's files, by output and file index (a split
@@ -759,12 +759,22 @@ async fn get_recording_file(
         Some("mkv") => "video/x-matroska",
         _ => "application/octet-stream",
     };
-    let mime: mime_guess::Mime = mime.parse()?;
-    let mut resp = ServeFile::new_with_mime(&path, &mime)
+    serve_file(&path, mime.parse()?, q.download.is_some(), req).await
+}
+
+/// `path` as `mime`, with range requests; with `download`, as an attachment
+/// under its own file name.
+pub(super) async fn serve_file(
+    path: &std::path::Path,
+    mime: mime_guess::Mime,
+    download: bool,
+    req: Request,
+) -> ApiResult<Response> {
+    let mut resp = ServeFile::new_with_mime(path, &mime)
         .oneshot(req)
         .await?
         .into_response();
-    if q.download.is_some() {
+    if download {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
