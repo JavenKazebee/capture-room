@@ -29,8 +29,6 @@ const desk = useRecordDeskStore()
 const route = useRoute()
 const router = useRouter()
 
-// ── List ──────────────────────────────────────────────────────────────────────
-
 const query = ref('')
 const listed = computed(() => {
   const q = query.value.trim().toLowerCase()
@@ -47,8 +45,6 @@ function codecsOf(outputs: PresetOutputInput[]) {
 function usedBy(id: string) {
   return sources.sources.filter((s) => desk.presetIdOf(s.key) === id).length
 }
-
-// ── Selection + draft ─────────────────────────────────────────────────────────
 
 /** A preset id, `default` (the built-in, read-only), or `new`. */
 const selectedId = ref<string | null>(null)
@@ -134,8 +130,6 @@ function revert() {
 
 onBeforeRouteLeave(() => !dirty.value || confirm('Discard unsaved preset changes?'))
 
-// ── Outputs ───────────────────────────────────────────────────────────────────
-
 function addOutput() {
   const n = draftLegs.value.length + 1
   // {output} keeps a second output from writing the first one's file.
@@ -187,8 +181,6 @@ const preview = computed(() => ({
   node: nodes.self?.node_name ?? 'node',
   preset: draftName.value.trim(),
 }))
-
-// ── Save / delete ─────────────────────────────────────────────────────────────
 
 async function save() {
   if (saving.value || !dirty.value || problemCount.value) return
@@ -263,7 +255,6 @@ watch(selected, (p) => p && !dirty.value && p.id === selectedId.value && loadPre
     </PageHeader>
 
     <div class="flex-1 min-h-0 flex">
-      <!-- List -->
       <aside class="w-64 shrink-0 border-r border-border flex flex-col min-h-0">
         <div class="p-2 border-b border-border relative">
           <Search class="absolute left-4 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
@@ -306,7 +297,6 @@ watch(selected, (p) => p && !dirty.value && p.id === selectedId.value && loadPre
         </nav>
       </aside>
 
-      <!-- Editor -->
       <section v-if="selectedId" class="flex-1 min-w-0 flex flex-col min-h-0">
         <div class="shrink-0 flex flex-wrap items-center gap-3 px-4 py-2.5 border-b border-border">
           <Input

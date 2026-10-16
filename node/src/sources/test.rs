@@ -8,8 +8,6 @@ use crate::api::types::{
 };
 use crate::pipeline::{capsfilter, make_el};
 
-// ── TestSource ────────────────────────────────────────────────────────────────
-
 pub struct TestSource {
     id: String,
     name: String,
@@ -25,14 +23,13 @@ impl TestSource {
 fn build_bin(id: &str, cfg: &TestSourceConfig) -> Result<gst::Bin> {
     let bin = gst::Bin::with_name(&format!("testsrc-bin-{id}"));
 
-    // ── Video: videotestsrc → capsfilter → videoconvert ───────────────────────
     let vsrc = make_el("videotestsrc", &format!("vsrc-{id}"))?;
     vsrc.set_property("is-live", true);
     vsrc.set_property_from_str("pattern", pattern_gst_name(cfg.pattern));
     let vcaps = capsfilter(
         &format!("vcaps-{id}"),
-        // videotestsrc draws limited range whatever it negotiates, so say so:
-        // left open, a full-range consumer (a JPEG encoder) gets it mislabelled.
+        // videotestsrc draws limited range whatever it negotiates; unlabelled,
+        // a full-range consumer (a JPEG encoder) mislabels it.
         gst::Caps::builder("video/x-raw")
             .field("format", "I420")
             .field("colorimetry", "bt709")
@@ -47,7 +44,6 @@ fn build_bin(id: &str, cfg: &TestSourceConfig) -> Result<gst::Bin> {
     let vconv = make_el("videoconvert", &format!("vconv-{id}"))?;
     add_chain(&bin, &[&vsrc, &vcaps, &vconv], "video")?;
 
-    // ── Audio: audiotestsrc → audioconvert → capsfilter ───────────────────────
     let asrc = make_el("audiotestsrc", &format!("asrc-{id}"))?;
     asrc.set_property("is-live", true);
     asrc.set_property_from_str("wave", signal_gst_wave(cfg.audio_signal));

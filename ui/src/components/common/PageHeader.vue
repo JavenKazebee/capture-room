@@ -3,12 +3,7 @@ import { Keyboard } from '@lucide/vue'
 import { Kbd } from '@/components/ui/kbd'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
-/**
- * A view's toolbar row. Every page lays it out the same way:
- * title and count, then `#actions` (what you do here, primary first), then,
- * pushed right, the default slot's filters, a divider, and `#view` options
- * (columns, overlays, sizing). Keyboard shortcuts sit in a tooltip by the title.
- */
+/** A view's toolbar: title, `#actions` (primary first), then pushed right the default slot's filters and `#view` options. */
 defineProps<{
   title: string
   count?: number | string

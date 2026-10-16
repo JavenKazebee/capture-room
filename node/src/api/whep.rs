@@ -1,10 +1,7 @@
-//! `/whep/<path>`: the WHEP endpoints of the node's WHEP outputs, proxied to
-//! each output's signaller on localhost (see `pipeline::whep`).
-//!
-//! A viewer POSTs its offer to `/whep/<path>` and gets the answer, with the
-//! session's resource at `/whep/<path>/resource/<id>` (PATCH for ICE,
-//! DELETE to leave). These routes allow any origin, so web players on other
-//! sites can watch; they only ever give out the program, like RTSP does.
+//! `/whep/<path>`: proxies to each WHEP output's signaller on localhost.
+//! Offers POST to `/whep/<path>`; the session lives at
+//! `/whep/<path>/resource/<id>` (PATCH for ICE, DELETE to leave). Any origin
+//! is allowed: these only ever give out the program, like RTSP.
 
 use std::sync::LazyLock;
 use std::time::Duration;

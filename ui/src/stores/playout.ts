@@ -14,10 +14,8 @@ import type { CueRequest } from '@/types/generated/CueRequest'
 import type { PlaylistInput } from '@/types/generated/PlaylistInput'
 
 /**
- * Playout: each channel's transport (from `channel.state` events and the
- * replies to commands), its playlist (fetched when the status says it
- * changed) and each node's media library. A channel is a source of type
- * `channel`, keyed like any source.
+ * Each channel's transport (from `channel.state` and command replies), its playlist (fetched
+ * when the status says it changed) and each node's media library. Channels are keyed like sources.
  */
 export const usePlayoutStore = defineStore('playout', () => {
   const sources = useSourcesStore()

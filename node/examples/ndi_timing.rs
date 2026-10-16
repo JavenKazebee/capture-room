@@ -1,11 +1,10 @@
-//! How closely two NDI receivers of one sender agree on when each frame
-//! happened, per `ndisrc` timestamp mode: what a capture node and a replay node
-//! would each stamp the same camera frame with. Sends a test pattern over NDI,
-//! receives it twice (the second receiver joining `JOIN_LATE` after the first),
-//! and matches frames by the sender's NDI timestamp.
+//! How closely two NDI receivers of one sender agree on each frame's time, per
+//! `ndisrc` timestamp mode (as a capture node and a replay node would stamp it).
+//! Sends a test pattern, receives it twice (the second `JOIN_LATE` after), and
+//! matches frames by the sender's NDI timestamp.
 //!
 //! `cargo run -p capture-room --release --example ndi_timing` (needs the NDI
-//! Runtime: `NDI_RUNTIME_DIR_V6`, else where NDI Tools puts it on macOS).
+//! Runtime: `NDI_RUNTIME_DIR_V6`, else NDI Tools' location on macOS).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

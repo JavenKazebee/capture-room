@@ -1,33 +1,19 @@
 //! The benchmark runner: how many feeds this node can record with a set of
 //! outputs, keep replay buffers of in a codec, or run as playout channels.
 //!
-//! Each feed is a looping media file (real footage: test patterns compress
-//! unrealistically) with its own monitor and recording legs (or replay
-//! buffer), built the same way as a real recording but kept out of the
-//! [`SourceManager`], so they never show up as sources. A channel feed is a
-//! playout channel's program instead (the compositor and mixer at the
-//! footage's format) playing the footage on loop through its player, with
-//! its NDI and SRT outputs. Each step runs some number of feeds and, after a
-//! warm-up, measures:
+//! Each feed loops real footage (test patterns compress unrealistically)
+//! through its own monitor and legs or buffer, built like a real recording but
+//! kept out of the [`SourceManager`]. A channel feed is a playout program at
+//! the footage's format playing it with its NDI and SRT outputs. After a
+//! warm-up each step measures source shortfall (frames not delivered, plus a
+//! channel's late clip frames), output drops (encoder input queues), CPU,
+//! memory and bytes written.
 //!
-//! - **Source shortfall:** frames the feeds didn't deliver, from the
-//!   monitors' frame counts against the footage's frame rate. Decoding (or
-//!   the monitors) fell behind. For a channel, also the clip frames that
-//!   reached its program too late to be shown.
-//! - **Output drops:** frames the legs' (or buffers' or channel outputs')
-//!   input queues dropped because an encoder couldn't keep up.
-//! - CPU, memory, and what the legs wrote per second.
-//!
-//! The feed count is searched for (see [`Search`]): doubled with quick checks
-//! until frames drop, then narrowed down with full-length steps, so a node
-//! that sustains 40 feeds takes about a dozen steps, not 40. A full step that
-//! drops frames is measured once more before it counts, and the answer is
-//! always confirmed by a full step. The search is capped by the feed limit,
-//! and by memory or a scratch volume running short; a run also ends on an
-//! error, or when cancelled — starting a real recording cancels it, since
-//! real recordings always win. Files go to a
-//! scratch folder beside where the outputs would write (so the same disks are
-//! measured) and are deleted at the end.
+//! The feed count doubles with quick checks until frames drop, then narrows
+//! with full steps (see [`Search`]). A run stops at the feed limit, short
+//! memory or disk, an error, or a cancel (a real recording start cancels it).
+//! Scratch files go beside where the outputs would write, so the same disks
+//! are measured, and are deleted at the end.
 //!
 //! [`SourceManager`]: crate::sources::manager::SourceManager
 
@@ -64,17 +50,14 @@ const DEFAULT_MAX_FEEDS: u32 = 64;
 const MAX_FEEDS_LIMIT: u32 = 128;
 const DEFAULT_STEP_SECS: u32 = 20;
 const DEFAULT_DROP_THRESHOLD_PCT: f64 = 0.5;
-/// Settling time after changing the feed count, before measuring: encoders
-/// start up, queues fill…
+/// Settling time after changing the feed count, before measuring…
 const WARMUP: Duration = Duration::from_secs(5);
-/// …plus a second for every this many feeds started, so starting a lot at
-/// once doesn't fail a step that would otherwise pass.
+/// …plus a second per this many feeds started, so a big start doesn't fail a passing step.
 const WARMUP_FEEDS_PER_SEC: u32 = 4;
 /// How long a quick check measures, while doubling the feeds.
 const QUICK_SECS: u32 = 5;
-/// A quick check counts as a pass only well clear of the limit: under half
-/// the drop threshold, and below this much CPU. Anything closer is measured
-/// in full.
+/// A quick check passes only well clear of the limit: under half the drop
+/// threshold and below this CPU. Anything closer is measured in full.
 const QUICK_MAX_CPU_PCT: f64 = 85.0;
 /// A quick check this many times over the drop threshold fails outright.
 const QUICK_FAIL_FACTOR: f64 = 4.0;
@@ -87,18 +70,15 @@ const MIN_FREE_BYTES: u64 = 2_000_000_000;
 const MIN_FREE_MEMORY: u64 = 3 << 29;
 /// …or this share of all of it, whichever is more. See [`MemoryBudget`].
 const MIN_FREE_MEMORY_SHARE: u64 = 8;
-/// A feed is assumed to need this much more than the most any has used so
-/// far, when deciding whether more of them fit.
+/// Headroom over the most any feed has used so far, when deciding whether more fit.
 const MEMORY_MARGIN: f64 = 1.25;
-/// How often memory is looked at while feeds run.
 const MEMORY_POLL: Duration = Duration::from_millis(500);
 /// How long a recording start waits for a cancelled benchmark to tear down.
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(15);
-/// Scratch folders are named this plus the start of the run id. Only folders
-/// named so are ever deleted.
+/// Scratch folder prefix (plus the run id's start). Only folders named so are deleted.
 const SCRATCH_PREFIX: &str = ".capture-room-benchmark-";
-/// How much a replay buffer feed keeps. Old segments are deleted as they
-/// would be in a real buffer, and the scratch volume doesn't fill.
+/// How much a replay buffer feed keeps, so old segments go as in a real
+/// buffer and the scratch volume doesn't fill.
 const REPLAY_KEEP: gst::ClockTime = gst::ClockTime::from_seconds(30);
 
 /// The benchmark running on this node; there's at most one.
@@ -111,11 +91,8 @@ pub struct Running {
     done: watch::Receiver<bool>,
 }
 
-// ── Control ───────────────────────────────────────────────────────────────────
-
 /// Check a request, set up the run and start it. Refused while recording or
-/// keeping replay buffers (the result would be skewed, and the benchmark
-/// would compete with them) or while another benchmark runs.
+/// keeping replay buffers (they'd skew and compete) or while another runs.
 pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<BenchmarkRunDto> {
     let setup = Setup::new(&req.outputs, req.replay, req.channel.as_deref());
     match setup {
@@ -161,8 +138,8 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
         });
     }
     let slot = SlotGuard { state, armed: true };
-    // Checked after taking the slot: a recording or replay buffer that
-    // starts from here on cancels this run instead.
+    // Checked after taking the slot: a recording or buffer starting from here
+    // on cancels this run instead.
     let busy = {
         let mgr = state.source_manager.read().await;
         if !mgr.active_sessions().is_empty() {
@@ -176,8 +153,7 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
     if let Some(why) = busy {
         return Err(ApiError::Conflict(why));
     }
-    // Channels always run, so they aren't stopped for a benchmark; the
-    // result says they ran.
+    // Channels always run, so they aren't stopped; the result says they ran.
     let channels_running = state
         .source_manager
         .read()
@@ -216,8 +192,7 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
             preset_name: req.preset_name.clone(),
             outputs: req.outputs.clone(),
             replay: req.replay,
-            // What's measured, so the run is keyed like the channels it
-            // stands for.
+            // Keyed like the channels it stands for.
             channel: req.channel.as_deref().map(capacity::channel_outputs),
             media_path: path.clone(),
             media: media.clone(),
@@ -264,8 +239,8 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
     Ok(dto)
 }
 
-/// Frees the benchmark slot [`start`] took when dropped, unless disarmed
-/// once the run has started (it frees the slot itself when it ends).
+/// Frees [`start`]'s benchmark slot when dropped, unless disarmed once the run
+/// starts (it frees the slot itself when it ends).
 struct SlotGuard<'a> {
     state: &'a AppState,
     armed: bool,
@@ -285,9 +260,8 @@ impl Drop for SlotGuard<'_> {
     }
 }
 
-/// Refuse a channel benchmark that can't run: one that also asks for
-/// recording outputs or a replay codec, or for outputs it doesn't measure
-/// (see [`capacity::channel_outputs`]) or this node can't send.
+/// Refuse a channel benchmark that also asks for recording outputs or a replay
+/// codec, or for outputs it doesn't measure or this node can't send.
 fn check_channel_benchmark(req: &BenchmarkRequest, outputs: &[OutputConfig]) -> ApiResult<()> {
     if !req.outputs.is_empty() || req.replay.is_some() {
         return Err(ApiError::bad(
@@ -341,7 +315,6 @@ pub async fn cancel(state: &AppState, id: Option<&str>, reason: &str) -> bool {
     true
 }
 
-/// The id of the running benchmark, if any.
 pub fn running_id(state: &AppState) -> Option<String> {
     state
         .benchmark
@@ -370,10 +343,7 @@ pub async fn recover(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ── Run ───────────────────────────────────────────────────────────────────────
-
-/// One feed: a looping file (or a channel's program) with its monitor, and
-/// what it feeds.
+/// One feed: a looping file (or a channel's program), its monitor, and what it feeds.
 struct Feed {
     monitor: Arc<MonitorPipeline>,
     work: Work,
@@ -398,8 +368,7 @@ impl Feed {
         }
     }
 
-    /// The encoder elements it uses, one per output (a channel's outputs,
-    /// by name).
+    /// The encoder elements it uses, one per output (a channel's by name).
     fn encoders(&self) -> Vec<String> {
         match &self.work {
             Work::Record(legs) => legs.iter().map(|l| l.encoder().to_string()).collect(),
@@ -434,7 +403,6 @@ impl Feed {
     }
 }
 
-/// Why a run ended early.
 enum Stop {
     Cancelled,
     /// The machine's memory ran short: the step is abandoned, not the run.
@@ -451,7 +419,6 @@ impl<E: Into<anyhow::Error>> From<E> for Stop {
 struct Run {
     state: Arc<AppState>,
     dto: BenchmarkRunDto,
-    /// Per output, the folder its files go in.
     scratch: Vec<PathBuf>,
     cancel: CancellationToken,
     reason: Arc<Mutex<Option<String>>>,
@@ -507,8 +474,7 @@ impl Run {
         let _ = done.send(true);
     }
 
-    /// Search for the most feeds the node sustains. Returns the run's closing
-    /// message.
+    /// Search for the most feeds the node sustains. Returns the closing message.
     async fn search(&mut self, feeds: &mut Vec<Feed>) -> Result<String, Stop> {
         let mut search = Search::new(self.dto.max_feeds);
         let mut system = System::new();
@@ -573,8 +539,7 @@ impl Run {
         }
     }
 
-    /// Run `n` feeds and measure them (see [`Self::check`]), noting how much
-    /// memory they take.
+    /// Run `n` feeds and measure them, noting how much memory they take.
     async fn step(
         &mut self,
         feeds: &mut Vec<Feed>,
@@ -592,11 +557,9 @@ impl Run {
         Ok(result)
     }
 
-    /// Measure `n` feeds: a quick check that passes only well clear of the
-    /// limit (and fails outright far over it), else full-length steps, one
-    /// more if the first drops frames.
-    /// Returns `Some(full)` if they kept up — `full` when a full-length step
-    /// showed it — or `None` if they didn't.
+    /// Measure `n` feeds: a quick check passing only well clear of the limit
+    /// (failing outright far over it), else full steps, one more if the first
+    /// drops frames. `Some(full)` if they kept up, `None` if not.
     async fn check(
         &mut self,
         feeds: &[Feed],
@@ -653,7 +616,6 @@ impl Run {
         Ok(None)
     }
 
-    /// Measure the running feeds for `secs`.
     async fn measure_window(
         &self,
         feeds: &[Feed],
@@ -809,9 +771,8 @@ impl Run {
         Ok(Arc::new(monitor))
     }
 
-    /// Start feed `n` as a playout channel at the footage's format, with
-    /// `outputs` (each its own: a numbered NDI name, an SRT listener on a
-    /// free local port), playing the footage on loop.
+    /// Start feed `n` as a playout channel at the footage's format, with its
+    /// own copies of `outputs`, playing the footage on loop.
     async fn add_channel(&self, n: u32, outputs: &[OutputConfig]) -> Result<Feed, Stop> {
         let m = &self.dto.media;
         let channel = ChannelSource::new(
@@ -900,8 +861,7 @@ impl Run {
         plan_legs(&outputs, Some(&vars)).map_err(|e| anyhow!(e))
     }
 
-    /// Wait `duration`, returning early on a cancel, a failure, or memory
-    /// running short (checked every [`MEMORY_POLL`]).
+    /// Wait `duration`, returning early on a cancel, a failure, or short memory.
     async fn pause(&self, feeds: &[Feed], duration: Duration) -> Result<(), Stop> {
         let until = tokio::time::Instant::now() + duration;
         loop {
@@ -940,7 +900,6 @@ impl Run {
             .map(|v| v.mount_point)
     }
 
-    /// Save the run's state and send it to the UI.
     async fn publish(&self) {
         if let Err(e) = db::benchmark_save(&self.state.db, &self.dto).await {
             error!(error = %e, "save benchmark");
@@ -951,8 +910,7 @@ impl Run {
     }
 }
 
-/// Tear feeds down. Legs are discarded rather than finished: their files are
-/// thrown away, so there's nothing to finalize.
+/// Tear feeds down. Legs are discarded, not finished: their files are thrown away.
 async fn discard_feeds(feeds: Vec<Feed>) {
     // A channel's clip first: its player's bus task holds the transport.
     for feed in &feeds {
@@ -981,23 +939,18 @@ async fn discard_feeds(feeds: Vec<Feed>) {
     }
 }
 
-// ── Search ────────────────────────────────────────────────────────────────────
-
-/// What to measure next.
 #[derive(Debug, PartialEq)]
 enum Next {
-    /// Run this many feeds and measure them: in full, or with a quick check
-    /// first.
+    /// Run this many feeds and measure them, in full or quick-checked first.
     Measure { feeds: u32, full: bool },
     /// The search is over: the node sustains this many.
     Done(u32),
 }
 
-/// The search for the most feeds a node sustains. Doubles the feeds (1, 2,
-/// 4, …) with quick checks until a count fails or the limit is reached, then
-/// halves the gap between the most that passed and the fewest that failed
-/// with full-length steps. The answer must have passed a full step; if one
-/// that only passed a quick check fails it, the search carries on below.
+/// The search for the most feeds a node sustains: double (1, 2, 4, …) with
+/// quick checks until one fails or the limit, then bisect with full steps.
+/// The answer must pass a full step; if a quick-passed count fails one, the
+/// search continues below.
 struct Search {
     limit: u32,
     /// Counts that passed, and whether a full step showed it.
@@ -1015,7 +968,6 @@ impl Search {
         }
     }
 
-    /// The most feeds that have passed so far.
     fn best(&self) -> u32 {
         self.passes.keys().next_back().copied().unwrap_or(0)
     }
@@ -1061,21 +1013,17 @@ impl Search {
     }
 }
 
-// ── Memory ────────────────────────────────────────────────────────────────────
-
-/// How much memory feeds take, and how many more fit. Each feed (a decoder,
-/// a monitor, encoders, and on macOS VideoToolbox's own service) takes
-/// memory outside what a step measures, and an encoder that keeps up never
-/// fails a step, so without this a run would add feeds until the machine
-/// ran out.
+/// How much memory feeds take, and how many more fit. Feeds (decoder, monitor,
+/// encoders, VideoToolbox's service on macOS) use memory a step doesn't
+/// measure, and an encoder that keeps up never fails a step, so without this a
+/// run adds feeds until the machine runs out.
 #[derive(Debug, Clone, Copy)]
 struct MemoryBudget {
     /// Available before any feed ran.
     baseline: u64,
     /// Never go below this much available.
     floor: u64,
-    /// The most any one feed has taken so far: the drop from the baseline
-    /// over the feeds running.
+    /// The most any one feed has taken: the drop from baseline over feeds running.
     per_feed: u64,
 }
 
@@ -1099,8 +1047,7 @@ impl MemoryBudget {
         }
     }
 
-    /// How many feeds fit, with a margin; `None` until feeds have shown
-    /// what they take.
+    /// How many feeds fit, with a margin; `None` until feeds have shown what they take.
     fn fits(&self) -> Option<u32> {
         (self.per_feed > 0).then(|| {
             let room = self.baseline.saturating_sub(self.floor) as f64;
@@ -1130,10 +1077,9 @@ impl MemoryWatch {
         watch
     }
 
-    /// Memory new feeds could have. On macOS, the kernel's own measure (the
-    /// share it counts as free, as `memory_pressure` shows it): sysinfo's
-    /// subtracts compressed memory, and reads nothing at all on a Mac that's
-    /// merely compressing. Elsewhere, sysinfo's (`MemAvailable` on Linux).
+    /// Memory new feeds could have. On macOS, the kernel's free share (as
+    /// `memory_pressure` shows): sysinfo's subtracts compressed memory and reads
+    /// nothing on a Mac that's merely compressing. Elsewhere, sysinfo's.
     fn available(&mut self) -> u64 {
         #[cfg(target_os = "macos")]
         if let Some(pct) = macos_free_pct() {
@@ -1173,8 +1119,6 @@ fn macos_free_pct() -> Option<u64> {
     (ok && (0..=100).contains(&level)).then_some(level as u64)
 }
 
-// ── Measuring ─────────────────────────────────────────────────────────────────
-
 /// Counters across every feed at one moment.
 struct Snapshot {
     at: Instant,
@@ -1190,8 +1134,7 @@ struct Snapshot {
 }
 
 impl Snapshot {
-    /// Replay buffers' one "output" is counted by what the buffers have
-    /// written, since old segments go.
+    /// Replay buffers' one "output" counts what they've written, since old segments go.
     async fn take(feeds: &[Feed], setup: Setup<'_>) -> anyhow::Result<Self> {
         let frames = feeds.iter().map(|f| f.monitor.video_progress()).collect();
         let played: Vec<PlayedProgress> = feeds.iter().filter_map(Feed::played).collect();
@@ -1249,8 +1192,8 @@ impl Snapshot {
     }
 }
 
-/// `run`'s step at `feeds`, from the counters `before` and `after` it and
-/// the CPU use sampled in between.
+/// `run`'s step at `feeds`, from the counters `before` and `after` it and the
+/// CPU sampled between.
 fn measure(
     run: &BenchmarkRunDto,
     feeds: u32,
@@ -1302,10 +1245,9 @@ fn measure(
     }
 }
 
-/// Per feed: the frames delivered against the time their timestamps span,
-/// less the gaps where the footage looped (see `VideoProgress`). A frame of
-/// slack covers one landing between the count and the timestamp reads.
-/// Returns the frames delivered, those due, and those missing.
+/// Per feed: frames delivered against the time their timestamps span, less
+/// loop gaps. A frame of slack covers one landing between the count and the
+/// timestamp reads. Returns delivered, due, and missing.
 fn shortfall(
     before: &[VideoProgress],
     after: &[VideoProgress],
@@ -1330,10 +1272,8 @@ fn shortfall(
     (produced, expected, missing)
 }
 
-// ── Scratch folders ───────────────────────────────────────────────────────────
-
-/// Per output, a scratch folder on the volume it would write to: in the
-/// nearest existing folder of where its files would go. Created here.
+/// Per output, a scratch folder (created here) in the nearest existing folder
+/// of where its files would go.
 fn scratch_dirs(
     outputs: &[PresetOutputInput],
     id: &str,
@@ -1346,8 +1286,7 @@ fn scratch_dirs(
         .collect()
 }
 
-/// A scratch folder on the volume `folder` is on: in its nearest existing
-/// folder. Created here.
+/// A scratch folder (created here) in `folder`'s nearest existing folder.
 fn scratch_dir(folder: &std::path::Path, id: &str) -> anyhow::Result<PathBuf> {
     let existing = folder
         .ancestors()
@@ -1389,9 +1328,8 @@ fn dedup(dirs: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
-/// Channel feed `n`'s own copy of a measured output: NDI under a numbered
-/// name (each feed's shows on the network while the run lasts), SRT
-/// listening on a free local port, so N of them can run at once.
+/// Channel feed `n`'s own copy of a measured output (a numbered NDI name, an
+/// SRT listener on a free port), so N can run at once.
 fn feed_output(config: &OutputConfig, n: u32) -> anyhow::Result<OutputConfig> {
     Ok(match config {
         OutputConfig::Ndi { .. } => OutputConfig::Ndi {
@@ -1616,9 +1554,8 @@ mod tests {
         assert!(step.output_bytes_per_sec.is_empty());
     }
 
-    /// Run a search against a node that sustains `capacity` feeds, where
-    /// quick checks also pass up to `quick_ok` (a quick check can be fooled
-    /// near the limit). Returns the answer and the counts measured, in order.
+    /// Search a node sustaining `capacity` feeds, where quick checks also pass
+    /// up to `quick_ok`. Returns the answer and the counts measured, in order.
     fn simulate(limit: u32, capacity: u32, quick_ok: u32) -> (u32, Vec<(u32, bool)>) {
         let mut search = Search::new(limit);
         let mut measured = Vec::new();

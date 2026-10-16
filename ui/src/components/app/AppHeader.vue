@@ -46,7 +46,6 @@ const runningOut = computed(() => {
 
 <template>
   <header class="h-11 shrink-0 flex items-center gap-1 px-3 border-b border-border bg-sidebar">
-    <!-- Identity -->
     <RouterLink to="/record" class="flex items-center gap-2 pr-3 mr-1 border-r border-border h-6">
       <span class="size-5 rounded-[5px] bg-zinc-900 ring-1 ring-white/15 grid place-items-center">
         <span class="size-2 rounded-full bg-brand" />
@@ -54,7 +53,6 @@ const runningOut = computed(() => {
       <span class="text-sm font-semibold tracking-tight">Capture Room</span>
     </RouterLink>
 
-    <!-- Workspaces -->
     <nav class="flex items-center gap-0.5 h-full">
       <RouterLink
         v-for="w in workspaces"
@@ -69,7 +67,6 @@ const runningOut = computed(() => {
 
     <div class="flex-1" />
 
-    <!-- Global status -->
     <div class="flex items-center gap-1.5">
       <button
         class="chip w-52 text-muted-foreground hover:text-foreground"

@@ -54,8 +54,8 @@ pub(super) fn build_player(
         Some(sink)
     });
 
-    // A file without audio (or video) leaves that branch unlinked; take it
-    // out so the player can preroll without it.
+    // A file without audio (or video) leaves that branch unlinked; remove it
+    // so the player can preroll.
     let player_weak = player.downgrade();
     decode.connect_no_more_pads(move |_| {
         let Some(player) = player_weak.upgrade() else {
@@ -74,9 +74,8 @@ pub(super) fn build_player(
     Ok((player, streams))
 }
 
-/// splitmuxsrc over a replay span's files, in a bin with the codec's
-/// decoder, exposing raw video (and the audio, which is PCM) like
-/// uridecodebin does.
+/// splitmuxsrc over a replay span's files plus the codec's decoder, exposing
+/// raw video (and PCM audio) like uridecodebin.
 ///
 /// splitmuxsrc ─┬→ decoder ─→ "video" ghost pad
 ///              └→ "audio" ghost pad
@@ -185,9 +184,8 @@ pub(super) struct Streams {
     pub(super) audio: AtomicBool,
 }
 
-/// `kind`'s branch of channel `id`'s player, pushing into its lane as `mode`
-/// says. The video branch keeps where it is in `marks`.
-/// Returns the first element, for the decoder to link to.
+/// `kind`'s branch of channel `id`'s player, pushing into its lane per `mode`;
+/// video tracks its position in `marks`. Returns the first element.
 fn add_branch(
     player: &gst::Pipeline,
     kind: Kind,
@@ -203,8 +201,7 @@ fn add_branch(
     let callbacks = gst_app::AppSinkCallbacks::builder()
         .new_sample(move |sink| {
             let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
-            // Audio only at normal speed: the program plays silence
-            // meanwhile.
+            // Audio only at normal speed; the program plays silence meanwhile.
             let normal = sample.segment().is_none_or(|s| s.rate() == 1.0);
             if kind == Kind::Audio && !normal {
                 return Ok(gst::FlowSuccess::Ok);
@@ -226,8 +223,8 @@ fn add_branch(
                 let rt = running_time(&sample).unwrap_or(gst::ClockTime::ZERO);
                 marks_p.first_rt.store(rt.nseconds(), Ordering::SeqCst);
                 marks_p.show(&sample);
-                // Cued or paused: show the frame now. (While playing, a
-                // preroll is followed by the same buffer as a sample.)
+                // Cued or paused: show now. (While playing, a preroll is
+                // followed by the same buffer as a sample.)
                 if mode_p.load() == ClipMode::Cued {
                     on_preroll.push(kind, &sample, None);
                 }

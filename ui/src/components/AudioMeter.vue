@@ -6,7 +6,6 @@ const props = defineProps<{
   channels: ChannelLevelDto[]
 }>()
 
-// dB range
 const DB_MIN = -60
 const DB_MAX = 0
 

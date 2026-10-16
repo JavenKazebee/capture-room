@@ -16,9 +16,8 @@ preset_name: string | null,
  */
 outputs: Array<PresetOutputInput>, 
 /**
- * Start at this time on the shared clock, so recordings started
- * together on several nodes line up: every leg begins at the first
- * frame due at or after it. A node on another clock starts now (its
- * session's `clock.start_at_us` is then `null`).
+ * Start at this time on the shared clock so recordings on several nodes
+ * line up: each leg begins at the first frame due at or after it. A node
+ * on another clock starts now (its `clock.start_at_us` is then `null`).
  */
 start_at: ClockTimeDto | null, };

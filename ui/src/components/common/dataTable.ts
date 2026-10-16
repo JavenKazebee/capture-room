@@ -1,8 +1,4 @@
-/**
- * A dense table with sortable columns, a text filter, per-browser column
- * visibility (see `ColumnsMenu`), and optional grouping. Cells render through
- * `#cell-<id>` slots, falling back to the column's `value`.
- */
+/** Cells render through `#cell-<id>` slots, falling back to the column's `value`. */
 export interface Column<R> {
   id: string
   label: string

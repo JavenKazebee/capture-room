@@ -20,8 +20,6 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 /// Manual nodes are kept and just shown as unhealthy.
 const PRUNE_AFTER_FAILURES: u32 = 3;
 
-// ── mDNS registration (every instance advertises itself) ─────────────────────
-
 /// This machine's hostname without a trailing `.local` (macOS often reports
 /// `name.local`). `$HOSTNAME` is a shell variable and usually isn't exported.
 pub fn local_hostname() -> Option<String> {
@@ -31,10 +29,8 @@ pub fn local_hostname() -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
-/// Register this instance on the local network so controllers can find it.
-/// The returned daemon must be kept alive for the registration to persist.
-/// Fails on machines without working mDNS; the node still runs, but has to be
-/// added to a controller by URL.
+/// Advertise this instance so controllers can find it. Keep the daemon alive.
+/// Fails without working mDNS; the node then has to be added by URL.
 pub fn register_mdns_service(node_id: &str, node_name: &str, port: u16) -> Result<ServiceDaemon> {
     let daemon = ServiceDaemon::new()?;
     let hostname = local_hostname().unwrap_or_else(|| "capture-room".to_string());
@@ -50,8 +46,6 @@ pub fn register_mdns_service(node_id: &str, node_name: &str, port: u16) -> Resul
     info!(instance = %instance, port = port, "registered mDNS service");
     Ok(daemon)
 }
-
-// ── mDNS browser ─────────────────────────────────────────────────────────────
 
 /// Browse for other nodes. Shutting down the returned daemon ends the browse.
 pub fn start_mdns_browser(ctx: Ctx) -> Result<ServiceDaemon> {
@@ -86,8 +80,6 @@ pub fn start_mdns_browser(ctx: Ctx) -> Result<ServiceDaemon> {
 
     Ok(daemon)
 }
-
-// ── Adding a node ────────────────────────────────────────────────────────────
 
 /// Identify the node at `url` and add it to the registry. Returns its status,
 /// or `None` if `url` is this node (every controller hears its own mDNS
@@ -148,8 +140,6 @@ async fn fetch_status(ctx: &Ctx, url: &str) -> Result<NodeStatus> {
         .error_for_status()?;
     Ok(resp.json::<NodeStatus>().await?)
 }
-
-// ── Health poller ────────────────────────────────────────────────────────────
 
 pub fn start_health_poller(ctx: Ctx) {
     tokio::spawn(async move {

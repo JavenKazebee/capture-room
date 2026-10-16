@@ -68,8 +68,6 @@ pub fn router() -> Router<Arc<AppState>> {
         )
 }
 
-// ── /media ────────────────────────────────────────────────────────────────────
-
 const MEDIA_NOT_FOUND: ApiError = ApiError::NotFound("media not found");
 
 async fn get_media(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<MediaItemDto>>> {
@@ -142,8 +140,8 @@ async fn add_media(
     Ok((StatusCode::CREATED, Json(item)))
 }
 
-/// A library item's file, with range requests; `?download` to save it, as
-/// an export from Replay is fetched from the browser.
+/// A library item's file, with range requests; `?download` saves it (how
+/// Replay exports reach the browser).
 async fn get_media_file(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -179,8 +177,6 @@ async fn delete_media(
     state.emit(&WsEvent::MediaUpdated);
     Ok(StatusCode::NO_CONTENT)
 }
-
-// ── /channels ─────────────────────────────────────────────────────────────────
 
 /// A channel's transport, with its playlist read in.
 async fn playout(state: &AppState, id: &str) -> ApiResult<Arc<Playout>> {
@@ -380,7 +376,6 @@ async fn post_cue(
     reply_to(&state, &id, &playout, result).await
 }
 
-/// Play a playlist item now.
 async fn post_play(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -419,8 +414,6 @@ async fn post_transport(
     };
     reply_to(&state, &id, &playout, result).await
 }
-
-// ── /replay ───────────────────────────────────────────────────────────────────
 
 /// The longest replay buffer allowed, in minutes.
 const MAX_REPLAY_MINUTES: u32 = 24 * 60;
@@ -544,8 +537,6 @@ async fn post_replay(
     let result = playout.load(request, req.play).await;
     reply_to(&state, &id, &playout, result).await
 }
-
-// ── /replay/clips ─────────────────────────────────────────────────────────────
 
 const CLIP_NOT_FOUND: ApiError = ApiError::NotFound("replay clip not found");
 

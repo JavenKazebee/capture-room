@@ -12,7 +12,6 @@ pub struct AppState {
     pub node_name: std::sync::RwLock<String>,
     pub started_at: Instant,
 
-    // ── Node: local capture (present on every instance) ────────────────────
     pub source_manager: Arc<RwLock<SourceManager>>,
     pub db: SqlitePool,
     /// This node's own events only. Served on `/api/v1/node/ws`.
@@ -20,22 +19,18 @@ pub struct AppState {
     /// This node's events plus everything relayed from peers while acting as
     /// a controller. Served on `/ws`.
     pub ws_tx: broadcast::Sender<String>,
-    /// The benchmark running on this node, if any.
     pub benchmark: std::sync::Mutex<Option<crate::benchmark::Running>>,
     /// What this node's pipelines run on.
     pub clock: Arc<crate::clock::NodeClock>,
-    /// The HTTP port this instance listens on.
     pub port: u16,
     /// The UDP port this instance serves its clock on while a controller.
     pub clock_port: u16,
 
-    // ── Controller: present only while promoted ────────────────────────────
     pub controller: RwLock<Option<Controller>>,
     pub http: reqwest::Client,
     /// The node API router, used to serve `/api/v1/nodes/{self}/…` in-process.
     /// Set once at startup (it holds an `Arc` back to this state).
     pub node_router: std::sync::OnceLock<axum::Router>,
-    /// Where this node's software update stands.
     pub updater: crate::update::Updater,
 }
 
@@ -48,7 +43,6 @@ impl AppState {
         self.controller.read().await.is_some()
     }
 
-    /// Where this node's clock stands.
     pub async fn clock_status(&self) -> crate::api::types::ClockStatusDto {
         let stale = self.source_manager.read().await.stale_sources();
         self.clock.status(stale)

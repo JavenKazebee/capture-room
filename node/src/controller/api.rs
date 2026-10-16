@@ -56,8 +56,6 @@ async fn with_controller<T>(state: &AppState, f: impl FnOnce(&Controller) -> T) 
         .ok_or(NOT_CONTROLLER)
 }
 
-// ── /api/v1/controller ───────────────────────────────────────────────────────
-
 async fn put_controller(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ControllerToggleRequest>,
@@ -70,8 +68,6 @@ async fn put_controller(
     }
     Ok(Json(req))
 }
-
-// ── /api/v1/controller/clock ─────────────────────────────────────────────────
 
 async fn controller_clock(state: &AppState) -> ApiResult<ControllerClockDto> {
     let serving = with_controller(state, Controller::serves_clock).await?;
@@ -103,8 +99,6 @@ async fn put_controller_clock(
     state.emit(&WsEvent::NodeUpdated);
     Ok(Json(controller_clock(&state).await?))
 }
-
-// ── /api/v1/nodes ────────────────────────────────────────────────────────────
 
 async fn get_nodes(State(state): State<Arc<AppState>>) -> Json<Vec<NodeDto>> {
     let mut dtos = vec![NodeDto {
@@ -200,10 +194,8 @@ async fn delete_node(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ── /api/v1/presets ──────────────────────────────────────────────────────────
-//
-// Presets live on whichever instance the UI is talking to. Nodes never store
-// them: starting a recording sends the preset's outputs inline.
+// Presets live on whichever instance the UI talks to. Nodes never store them:
+// starting a recording sends the preset's outputs inline.
 
 const PRESET_NOT_FOUND: ApiError = ApiError::NotFound("preset not found");
 
@@ -253,10 +245,9 @@ async fn delete_preset(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Store blank resolution/framerate as `None` ("match the source"), and reject
-/// outputs a recording couldn't start with — at save time rather than when
-/// someone presses Record. Each leg's pipeline is built (not started), which
-/// catches a codec its container can't carry.
+/// Store blank resolution/framerate as `None` ("match the source") and reject
+/// outputs a recording couldn't start with. Each leg's pipeline is built (not
+/// started), which catches a codec its container can't carry.
 fn validate_outputs(mut outputs: Vec<PresetOutputInput>) -> ApiResult<Vec<PresetOutputInput>> {
     fn blank_to_none(v: Option<String>) -> Option<String> {
         v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
@@ -274,8 +265,6 @@ fn validate_outputs(mut outputs: Vec<PresetOutputInput>) -> ApiResult<Vec<Preset
     recording::check_legs(&legs).map_err(ApiError::bad)?;
     Ok(outputs)
 }
-
-// ── /ws (merged: this node + relayed peers) ──────────────────────────────────
 
 async fn ws_handler(State(state): State<Arc<AppState>>, upgrade: WebSocketUpgrade) -> Response {
     let rx = state.ws_tx.subscribe();

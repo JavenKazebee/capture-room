@@ -40,10 +40,7 @@ export function setupLabel(s: { preset_name: string | null; replay: ReplayCodec 
   return s.preset_name ?? DEFAULT_PRESET.name
 }
 
-/**
- * Benchmarks and capacity per node: what each benchmarked setup sustains, how
- * loaded the node is, the benchmark running now, and past runs.
- */
+/** Benchmarks and capacity per node: what each setup sustains, current load, the running benchmark and past runs. */
 export const useCapacityStore = defineStore('capacity', () => {
   /** Per node id; `null` = failed to load. */
   const capacity = reactive(new Map<string, NodeCapacityDto | null>())
@@ -109,10 +106,7 @@ export const useCapacityStore = defineStore('capacity', () => {
     })
   }
 
-  /**
-   * Would running a playout channel like `channel` fit on the node? `editing`
-   * is the channel it replaces, which stops counting as it was.
-   */
+  /** Would a playout channel like `channel` fit? `editing` is the channel it replaces, no longer counted. */
   function checkChannel(nodeId: string, channel: ChannelConfig, editing?: string) {
     return nodeApi(nodeId)<CapacityCheckDto>('/capacity/check', {
       method: 'POST',

@@ -1,5 +1,4 @@
-//! Storage volumes this node can record to, and browsing its filesystem for
-//! media files.
+//! Storage volumes this node can record to, and browsing for media files.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -10,12 +9,10 @@ use sysinfo::Disks;
 use crate::api::types::{DirEntryDto, DirListingDto, StorageVolumeDto};
 use crate::sources::file::MEDIA_EXTENSIONS;
 
-/// The default recording folder's name, in the home folder.
 pub const DEFAULT_FOLDER: &str = "capture-room";
 
-/// The default recording folder, `~/capture-room`, where the default output
-/// path records and replay buffers and exported clips are kept. In the temp
-/// folder on a node with no home folder.
+/// `~/capture-room`: default recording path, replay buffers and exported
+/// clips. In the temp folder on a node with no home folder.
 pub fn default_folder() -> PathBuf {
     std::env::home_dir()
         .unwrap_or_else(std::env::temp_dir)
@@ -27,10 +24,8 @@ const PSEUDO_FS: &[&str] = &[
     "autofs", "devfs", "devtmpfs", "tmpfs", "overlay", "squashfs", "proc", "sysfs", "nullfs",
 ];
 
-/// List writable mounted volumes, skipping pseudo filesystems, one entry per
-/// filesystem. Read-only mounts (disk images, the sealed macOS system volume)
-/// can't hold recordings, so they're left out. Blocking: call from
-/// `spawn_blocking`.
+/// Writable mounted volumes, one per filesystem. Read-only mounts (disk images,
+/// the sealed macOS system volume) are left out. Blocking.
 pub fn list_volumes() -> Vec<StorageVolumeDto> {
     let disks = Disks::new_with_refreshed_list();
     let volumes: Vec<StorageVolumeDto> = disks
@@ -66,10 +61,9 @@ pub fn list_volumes() -> Vec<StorageVolumeDto> {
     merge_shared(volumes)
 }
 
-/// One entry per filesystem. Mounts of the same device node (btrfs
-/// subvolumes, bind mounts) share its space, so they're folded into the entry
-/// with the shortest mount point. Only device paths are compared: elsewhere
-/// `name` is a volume label, which two different drives can share.
+/// Mounts of the same device node (btrfs subvolumes, bind mounts) fold into
+/// the one with the shortest mount point. Only device paths are compared:
+/// elsewhere `name` is a volume label, which two drives can share.
 fn merge_shared(mut volumes: Vec<StorageVolumeDto>) -> Vec<StorageVolumeDto> {
     volumes.sort_by(|a, b| {
         (a.mount_point.len(), &a.mount_point).cmp(&(b.mount_point.len(), &b.mount_point))
@@ -89,10 +83,10 @@ fn merge_shared(mut volumes: Vec<StorageVolumeDto>) -> Vec<StorageVolumeDto> {
     merged
 }
 
-/// Which of `volumes` `path` is on. `path` needn't exist yet: its nearest
-/// existing folder is used. On Unix the device decides, which follows
-/// firmlinks (macOS `/Users` is on `/System/Volumes/Data`) and bind mounts;
-/// elsewhere, the longest mount point the path starts with. Blocking.
+/// Which of `volumes` `path` is on (its nearest existing folder). On Unix the
+/// device decides, which follows firmlinks (macOS `/Users` is on
+/// `/System/Volumes/Data`) and bind mounts; elsewhere the longest mount point
+/// prefix. Blocking.
 pub fn volume_of(path: &Path, volumes: &[StorageVolumeDto]) -> Option<usize> {
     let existing = path.ancestors().find(|p| p.exists())?;
     let mounts = |v: &StorageVolumeDto| {
@@ -119,8 +113,7 @@ pub fn volume_of(path: &Path, volumes: &[StorageVolumeDto]) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-/// The first volume of `paths` with under `min` bytes free, if any.
-/// Blocking.
+/// The first volume of `paths` with under `min` bytes free. Blocking.
 pub fn short_volume(paths: &[PathBuf], min: u64) -> Option<StorageVolumeDto> {
     let volumes = list_volumes();
     paths.iter().find_map(|p| {
@@ -153,9 +146,8 @@ pub const MIN_FREE_TO_RECORD: u64 = 1_000_000_000;
 /// first seconds include headers and encoder start-up.
 const MIN_MEASURE: Duration = Duration::from_secs(5);
 
-/// What each recording leg writes per second, averaged since its session
-/// started, keyed by the file it's writing now. Takes each leg's files and
-/// how long it has recorded. Blocking: reads file sizes.
+/// Each leg's write rate since its session started, keyed by its current
+/// file. Takes each leg's files and recorded duration. Blocking.
 pub fn leg_write_rates(legs: &[(Vec<String>, Duration)]) -> Vec<(PathBuf, u64)> {
     legs.iter()
         .filter(|(files, elapsed)| !files.is_empty() && *elapsed >= MIN_MEASURE)
@@ -186,8 +178,8 @@ pub fn apply_write_rates(volumes: &mut [StorageVolumeDto], writes: &[(PathBuf, u
     }
 }
 
-/// List `dir` (the home directory if `None`): its subdirectories and media
-/// files, skipping hidden entries. Blocking: call from `spawn_blocking`.
+/// Subdirectories and media files of `dir` (home if `None`), skipping hidden
+/// entries. Blocking.
 pub fn list_dir(dir: Option<&str>) -> Result<DirListingDto> {
     let home = std::env::home_dir();
     let dir = match dir.filter(|d| !d.is_empty()) {

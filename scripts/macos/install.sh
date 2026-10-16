@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Install or remove Capture Room on this Mac. It downloads the app and puts it
-# in Applications; the app sets itself up as a service (`capture-room service
-# install`): it starts at login, restarts if it crashes, shows a menu bar
-# icon, and updates itself from then on.
+# Install or remove Capture Room on this Mac. The app then installs itself as a
+# login service (`capture-room service install`) and updates itself.
 #
 #   curl -fsSL https://github.com/JavenKazebee/capture-room/releases/latest/download/install.sh | bash
 #

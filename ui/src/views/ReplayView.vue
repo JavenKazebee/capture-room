@@ -42,8 +42,6 @@ const SHORTCUTS: [string[], string][] = [
   [['Esc'], 'Stop (back to black)'],
 ]
 
-// ── Channel and angles ────────────────────────────────────────────────────────
-
 const { channel, choice: channelChoice } = useChannelChoice('cr.replay.channel')
 const channelOptions = computed(() =>
   playout.channels.map((c) => ({
@@ -94,8 +92,6 @@ useIntervalFn(
   { immediateCallback: true },
 )
 
-// ── Settings ──────────────────────────────────────────────────────────────────
-
 const rate = useStorage('cr.replay.rate', 0.5)
 const lastSecs = useStorage('cr.replay.last', 8)
 const windowSecs = useStorage<number | null>('cr.replay.window', 30)
@@ -104,8 +100,6 @@ const windowChoice = computed({
   set: (v: string) => (windowSecs.value = v === 'all' ? null : Number(v)),
 })
 const buffersOpen = ref(false)
-
-// ── Control ───────────────────────────────────────────────────────────────────
 
 const ctl = useReplayControl({ channel, angles, usableAngles, angle, angleKey, clips, rate, lastSecs })
 const { status, showing, playing, inUs, outUs, reverse } = ctl
@@ -210,7 +204,6 @@ onMounted(() => sources.ensureLoaded())
             {{ status.error }}
           </div>
 
-          <!-- Transport -->
           <section class="flex flex-col gap-3">
             <div class="flex flex-wrap items-center gap-2">
               <div class="flex items-center gap-1">

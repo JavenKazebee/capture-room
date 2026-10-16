@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "export-types")]
 use ts_rs::TS;
 
-// ── Node status ───────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct NodeStatus {
@@ -52,14 +50,12 @@ impl NodeStatus {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct UpdateStatusDto {
-    /// The version running.
     pub current: String,
     /// The newest release, once checked.
     pub latest: Option<String>,
     /// `latest` is newer than `current`.
     pub available: bool,
-    /// Why this node can't update itself at all (not the installed app), if
-    /// it can't.
+    /// Why this node can never update itself (not the installed app).
     pub unsupported: Option<String>,
     /// Why it can't update right now (recording, a channel playing), if so.
     pub busy: Option<String>,
@@ -95,8 +91,6 @@ pub struct SourceTypeSupport {
     /// types it can send (`ndi`, `srt`).
     pub protocols: Vec<String>,
 }
-
-// ── Sources ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -155,10 +149,8 @@ pub struct SourceDto {
     pub link: Option<LinkState>,
 }
 
-// ── Configured sources ────────────────────────────────────────────────────────
-//
-// Sources a node is told about, as opposed to ones it discovers (NDI). Stored
-// in `configured_sources`, the config as JSON tagged with its `type`.
+// Sources a node is told about, as opposed to discovered (NDI). Stored in
+// `configured_sources` as JSON tagged with its `type`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -465,7 +457,6 @@ pub struct ChannelConfig {
     pub format: LiveVideoFormat,
     #[serde(default = "default_channel_audio")]
     pub audio_channels: u32,
-    /// Where the program is sent.
     #[serde(default)]
     pub outputs: Vec<OutputConfig>,
 }
@@ -764,8 +755,6 @@ pub struct TransportRequest {
     pub frames: Option<i32>,
 }
 
-// ── Instant replay ────────────────────────────────────────────────────────────
-
 /// What a replay buffer records with. All intra-frame, so it can be cut,
 /// played backwards and stepped on any frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
@@ -992,8 +981,6 @@ pub struct PlayReplayClipRequest {
     pub at_us: Option<u64>,
 }
 
-// ── Media library ─────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "lowercase")]
 #[sqlx(rename_all = "lowercase")]
@@ -1136,8 +1123,6 @@ pub struct ConfiguredSourceRequest {
     pub config: SourceConfig,
 }
 
-// ── File browsing ─────────────────────────────────────────────────────────────
-
 /// A directory on the node, for picking a media file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
@@ -1163,8 +1148,6 @@ pub struct DirEntryDto {
     pub size: Option<u64>,
 }
 
-// ── Recordings ────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "lowercase")]
 #[sqlx(rename_all = "lowercase")]
@@ -1182,8 +1165,7 @@ pub struct RecordingSessionDto {
     pub id: String,
     pub source_id: String,
     pub preset_id: String,
-    /// The source's name when recording started. `None` for sessions
-    /// recorded before names were kept.
+    /// The source's name when recording started. `None` for older sessions.
     pub source_name: Option<String>,
     /// The preset's name, as sent with the start. `None` without a preset
     /// (or for older sessions).
@@ -1191,11 +1173,10 @@ pub struct RecordingSessionDto {
     pub started_at: String,
     pub stopped_at: Option<String>,
     /// What each output leg recorded, ordered like `output_paths`. Empty for
-    /// sessions recorded before this was kept.
+    /// older sessions.
     #[sqlx(json)]
     pub outputs: Vec<SessionOutputDto>,
-    /// Ordered list of output file paths, one per preset output leg.
-    /// Stored as a JSON array.
+    /// The planned path of each output leg.
     #[sqlx(json)]
     pub output_paths: Vec<String>,
     /// Video frames each output leg dropped because it couldn't keep up,
@@ -1203,9 +1184,8 @@ pub struct RecordingSessionDto {
     #[sqlx(json)]
     #[cfg_attr(feature = "export-types", ts(type = "Array<number>"))]
     pub dropped_frames: Vec<u64>,
-    /// Every file each output leg has written, in order, ordered like
-    /// `output_paths`: one per leg unless it splits. Saved as each file
-    /// opens, so it survives a crash.
+    /// Every file each leg has written, ordered like `output_paths` (several
+    /// if it splits). Saved as each file opens, so it survives a crash.
     #[sqlx(json)]
     pub files: Vec<Vec<String>>,
     pub status: RecordingStatus,
@@ -1288,15 +1268,12 @@ pub struct StartRecordingRequest {
     pub preset_name: Option<String>,
     /// The output legs to record. Sent inline so nodes keep no preset store.
     pub outputs: Vec<PresetOutputInput>,
-    /// Start at this time on the shared clock, so recordings started
-    /// together on several nodes line up: every leg begins at the first
-    /// frame due at or after it. A node on another clock starts now (its
-    /// session's `clock.start_at_us` is then `null`).
+    /// Start at this time on the shared clock so recordings on several nodes
+    /// line up: each leg begins at the first frame due at or after it. A node
+    /// on another clock starts now (its `clock.start_at_us` is then `null`).
     #[serde(default)]
     pub start_at: Option<ClockTimeDto>,
 }
-
-// ── Presets ───────────────────────────────────────────────────────────────────
 
 /// Video codec of an output leg. Stored as text in `preset_outputs`; the serde
 /// and sqlx names must match.
@@ -1375,7 +1352,6 @@ pub struct PresetOutputInput {
     #[cfg_attr(feature = "export-types", ts(as = "Option<bool>", optional))]
     pub preview: bool,
     /// Fine-tuning; every field defaults to the recording defaults.
-    /// Stored as JSON.
     #[serde(default)]
     #[sqlx(json)]
     pub advanced: OutputAdvanced,
@@ -1502,8 +1478,6 @@ pub struct PresetCreateRequest {
     pub outputs: Vec<PresetOutputInput>,
 }
 
-// ── WebSocket events ──────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct ChannelLevelDto {
@@ -1600,8 +1574,6 @@ pub enum WsEvent {
     NodeRemoved { peer_id: String },
 }
 
-// ── Settings ──────────────────────────────────────────────────────────────────
-
 /// How each source's monitor pipeline samples thumbnails and audio levels.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
@@ -1625,9 +1597,8 @@ impl Default for MonitorSettingsDto {
 }
 
 impl MonitorSettingsDto {
-    /// Limit every field to a range the pipelines handle well. Thumbnail
-    /// notifications go out on the emitter's 100 ms tick, so 10 fps is the
-    /// most a client can actually see.
+    /// Limit every field to a range the pipelines handle well. Thumbnails go
+    /// out on the emitter's 100 ms tick, so 10 fps is the most a client sees.
     pub fn clamped(self) -> Self {
         Self {
             thumb_fps: self.thumb_fps.clamp(1, 10),
@@ -1654,8 +1625,6 @@ pub struct UpdateNodeSettingsRequest {
     pub monitor: Option<MonitorSettingsDto>,
 }
 
-// ── Storage ───────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct StorageVolumeDto {
@@ -1680,8 +1649,6 @@ pub struct StorageVolumeDto {
     #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
     pub seconds_left: Option<u64>,
 }
-
-// ── Benchmarks ────────────────────────────────────────────────────────────────
 
 /// Body for starting a benchmark: the outputs to record (sent inline, like a
 /// recording start) and the media file every feed plays.
@@ -1804,8 +1771,6 @@ pub struct BenchmarkRunDto {
     pub scratch_dirs: Vec<String>,
 }
 
-// ── Capacity ──────────────────────────────────────────────────────────────────
-
 /// What one benchmarked setup sustains on this node: the latest finished
 /// run for those outputs (or that replay codec) and that footage format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1853,9 +1818,8 @@ pub struct NodeCapacityDto {
     pub running: Option<BenchmarkRunDto>,
 }
 
-/// Would recording `source_ids` with `outputs` (or giving them replay
-/// buffers in `replay`, or running the playout `channel`) fit, on top of
-/// what's recording already (and the buffers and playout channels running)?
+/// Would recording `source_ids` with `outputs` (or giving them replay buffers
+/// in `replay`, or running the playout `channel`) fit on top of what runs?
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct CapacityCheckRequest {
@@ -1916,8 +1880,6 @@ pub struct VolumeCheckDto {
     pub seconds_left: Option<u64>,
 }
 
-// ── Controller ────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct NodeDto {
@@ -1944,8 +1906,6 @@ pub struct AddNodeRequest {
 pub struct ControllerToggleRequest {
     pub enabled: bool,
 }
-
-// ── Clock ─────────────────────────────────────────────────────────────────────
 
 /// How a controller keeps its nodes' clocks in step. Set on the controller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -2049,8 +2009,6 @@ pub struct ClockTimeDto {
     #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub time_us: u64,
 }
-
-// ── Setup checks ──────────────────────────────────────────────────────────────
 
 /// What a node needs from its machine for each feature, and whether it has
 /// it. Read live from the OS on every request; nothing is stored.

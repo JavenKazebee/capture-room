@@ -86,8 +86,6 @@ const details = computed(() => {
   ]
 })
 
-// ── Delete ──────────────────────────────────────────────────────────────────
-
 const confirmDelete = ref(false)
 
 async function remove() {
@@ -116,7 +114,6 @@ async function remove() {
       <p v-else-if="!runs.length" class="text-xs text-muted-foreground">No benchmarks have run on this node.</p>
 
       <div v-else class="grid grid-cols-[17rem_1fr] gap-4 min-h-0 flex-1">
-        <!-- Runs -->
         <ul class="overflow-y-auto -mx-1 space-y-0.5 pr-1">
           <li v-for="run in runs" :key="run.id">
             <button
@@ -140,7 +137,6 @@ async function remove() {
           </li>
         </ul>
 
-        <!-- Selected run -->
         <section v-if="selected" class="min-w-0 overflow-y-auto space-y-3">
           <div class="flex items-center gap-2">
             <Badge :variant="STATUS[selected.status].variant">{{ STATUS[selected.status].label }}</Badge>

@@ -14,8 +14,7 @@ use crate::sources::live::{Chain, Inputs};
 use crate::sources::player::{self, Kind, QueueLimit};
 
 /// The appsrcs a loaded clip pushes into, in the current program bin. The
-/// monitor builds a new bin each time it (re)starts; [`Lanes::attach`] moves
-/// the clip over to it.
+/// monitor builds a new bin each (re)start; [`Lanes::attach`] moves the clip over.
 pub struct Lanes {
     pub(super) id: String,
     pub(super) inner: Mutex<LanesInner>,
@@ -25,11 +24,9 @@ pub struct Lanes {
 /// How a playing clip's video has reached the program, for the benchmark.
 #[derive(Default)]
 struct Played {
-    /// In program time, with the gaps the lane marked (a seek, a loop's
-    /// restart).
+    /// In program time, with the gaps the lane marked (a seek, a loop).
     frames: FrameCount,
-    /// Frames that reached the lane after their slot: the compositor drops
-    /// them.
+    /// Frames that reached the lane after their slot; the compositor drops them.
     late: AtomicU64,
 }
 
@@ -38,7 +35,6 @@ struct Played {
 pub struct PlayedProgress {
     /// Like a monitor's, in program time.
     pub progress: VideoProgress,
-    /// Frames that came too late to be shown.
     pub late: u64,
 }
 
@@ -46,7 +42,6 @@ pub struct PlayedProgress {
 pub(super) struct LanesInner {
     video_in: Option<Inputs>,
     audio_in: Option<Inputs>,
-    /// Bumped for every set of lanes, to name their elements uniquely.
     serial: u32,
     /// Whether a clip wants lanes, and an audio one.
     want: Option<bool>,
@@ -64,8 +59,7 @@ struct Lane {
     last: Option<(gst::ClockTime, gst::ClockTime)>,
 }
 
-/// A buffer as pushed, for tests: its position in the clip (stream time)
-/// and its program timestamp.
+/// A pushed buffer, for tests: its clip position (stream time) and program timestamp.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Pushed {
@@ -84,8 +78,8 @@ impl Lanes {
         }
     }
 
-    /// A new program bin was built: its inputs replace the old bin's (whose
-    /// lanes go with it), and a loaded clip gets lanes in it.
+    /// A new program bin was built: its inputs replace the old bin's, and a
+    /// loaded clip gets lanes in it.
     pub(super) fn attach(&self, video: Inputs, audio: Inputs) {
         let mut inner = self.inner.lock().unwrap();
         inner.video_in = Some(video);
@@ -99,8 +93,8 @@ impl Lanes {
         }
     }
 
-    /// The program's clock, which a player has to share for timestamps to
-    /// map between them. The system clock until the program runs.
+    /// The program's clock, which a player must share for timestamps to map.
+    /// The system clock until the program runs.
     pub(super) fn clock(&self) -> gst::Clock {
         let inner = self.inner.lock().unwrap();
         inner
@@ -119,9 +113,8 @@ impl Lanes {
         self.open_locked(&mut inner, audio)
     }
 
-    /// Make sure there are lanes for a clip: video, and audio if `audio`.
-    /// Unlike [`Lanes::open`], lanes already there are kept, with what they
-    /// have queued, so one clip can follow another without a gap.
+    /// Like [`Lanes::open`], but keeps existing lanes and what they've queued,
+    /// so one clip follows another without a gap.
     pub(super) fn ensure(&self, audio: bool) -> Result<()> {
         let mut inner = self.inner.lock().unwrap();
         inner.want = Some(audio);
@@ -149,9 +142,9 @@ impl Lanes {
         Ok(())
     }
 
-    /// The base time a player has to run at for its buffer at running time
-    /// `rt` to follow straight on from what the video lane has queued (or to
-    /// play now, if that's later). `None` until the program runs.
+    /// The base time a player must run at for its buffer at `rt` to follow on
+    /// from what the video lane has queued (or play now if later). `None` until
+    /// the program runs.
     pub(super) fn follow_on_base(&self, rt: gst::ClockTime) -> Option<gst::ClockTime> {
         let inner = self.inner.lock().unwrap();
         let src = inner.video.src.as_ref()?;
@@ -163,8 +156,8 @@ impl Lanes {
     fn lane(&self, inputs: &Inputs, tag: &str) -> Result<Lane> {
         let bin = inputs.bin().context("program bin gone")?;
         let mut chain = inputs.add(tag)?;
-        // Buffers arrive LEAD early; hold that and some, then drop the
-        // oldest rather than block the player.
+        // Buffers arrive LEAD early; hold that and some, then drop the oldest
+        // rather than block the player.
         let src = player::live_appsrc(
             &format!("channel-src-{tag}-{}", self.id),
             gst::ClockTime::ZERO,
@@ -202,9 +195,8 @@ impl Lanes {
         }
     }
 
-    /// Push a player's buffer into its lane. `player_base` is the player's
-    /// base time while it plays; `None` for a preroll (a cued or paused
-    /// frame), which is shown right away.
+    /// Push a player's buffer into its lane. `player_base` is the player's base
+    /// time while playing; `None` for a preroll (cued or paused frame), shown now.
     pub(super) fn push(
         &self,
         kind: Kind,
@@ -226,13 +218,12 @@ impl Lanes {
         let Some(mut pts) = program_pts(sample, &src, player_base) else {
             return;
         };
-        // A preroll (paused, stepped) shows after what's queued from
-        // playing, or it would be dropped as late.
+        // A preroll shows after what's queued from playing, or it'd be dropped as late.
         if let (None, Some((_, end))) = (player_base, last) {
             pts = pts.max(end);
         }
-        // Never backwards or repeated: after a seek, a preroll or a loop,
-        // buffers stamped before the ones already queued are dropped.
+        // Never backwards or repeated: after a seek, preroll or loop, buffers
+        // stamped before those already queued are dropped.
         if last.is_some_and(|(start, end)| {
             pts <= start || pts + gst::ClockTime::from_mseconds(1) < end
         }) {
@@ -279,9 +270,8 @@ impl Lanes {
 }
 
 impl Lanes {
-    /// Count a played video frame stamped `pts`, following one that ended
-    /// at `end`. Late if the program is already past it (`pts` includes
-    /// [`LEAD`], so a frame on time is ahead of it).
+    /// Count a played video frame stamped `pts`. Late if the program is past
+    /// it (`pts` includes [`LEAD`], so an on-time frame is ahead).
     fn count_played(
         &self,
         src: &gst_app::AppSrc,

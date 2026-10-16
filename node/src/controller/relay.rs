@@ -1,13 +1,7 @@
-//! WS relay: a peer's local event stream → this controller's merged `/ws`.
-//!
-//! Peers stamp every event with their own `node_id`, so frames are forwarded
-//! verbatim. The relay subscribes to `/api/v1/node/ws` (the peer's *own*
-//! events only), so a peer that is itself a controller never echoes its peers.
-//!
-//! The relay owns no URL: it looks the node up in the registry on every
-//! connection attempt, so an IP change is picked up on the next reconnect.
-//! It stops as soon as its entry's token is cancelled — when the node is
-//! removed or the controller is disabled.
+//! WS relay: a peer's `/api/v1/node/ws` (its own events only, so a peer
+//! controller never echoes its peers) → this controller's merged `/ws`.
+//! Frames are forwarded verbatim. The URL is looked up on every reconnect so
+//! IP changes are picked up; it stops when the entry's token is cancelled.
 
 use std::time::Duration;
 

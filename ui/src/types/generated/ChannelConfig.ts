@@ -7,8 +7,4 @@ import type { OutputConfig } from "./OutputConfig";
  * silence when nothing plays. Its program is a source like any other, so it
  * can be monitored and recorded.
  */
-export type ChannelConfig = { format: LiveVideoFormat, audio_channels: number, 
-/**
- * Where the program is sent.
- */
-outputs: Array<OutputConfig>, };
+export type ChannelConfig = { format: LiveVideoFormat, audio_channels: number, outputs: Array<OutputConfig>, };

@@ -1,11 +1,7 @@
 import { computed, ref, watch, type Ref } from 'vue'
 import { useResizeObserver } from '@vueuse/core'
 
-/**
- * The largest tile width that fits `count` tiles in the container without
- * scrolling, like a hardware multiviewer. A tile is a 16:9 picture plus a
- * caption whose height is measured from a rendered tile.
- */
+/** The largest tile width fitting `count` tiles without scrolling; a tile is 16:9 plus a measured caption. */
 export function useFitTiles(
   container: Ref<HTMLElement | undefined>,
   count: Ref<number>,
@@ -41,11 +37,7 @@ export function useFitTiles(
     return Math.floor(Math.min(Math.max(best, min), max))
   })
 
-  /**
-   * Re-measures the caption from a rendered tile (its height beyond the 16:9
-   * picture). Only a tile already laid out at the fitted width counts: one
-   * caught mid-layout reads wildly tall and would pin the size at `min`.
-   */
+  /** Only a tile already laid out at the fitted width counts: one mid-layout reads wildly tall and pins the size at `min`. */
   function measure(tile: Element | null | undefined) {
     if (!(tile instanceof HTMLElement) || Math.abs(tile.offsetWidth - size.value) > 2) return
     const h = Math.round(tile.offsetHeight - (tile.offsetWidth * 9) / 16)

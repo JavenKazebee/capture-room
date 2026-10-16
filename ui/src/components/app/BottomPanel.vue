@@ -52,8 +52,6 @@ watch(
   { immediate: true },
 )
 
-// ── Resize ────────────────────────────────────────────────────────────────────
-
 const MIN = 120
 const clamp = (h: number) => Math.round(Math.min(Math.max(h, MIN), window.innerHeight * 0.75))
 
@@ -74,7 +72,6 @@ function startResize(e: PointerEvent) {
 
 <template>
   <section class="shrink-0 flex flex-col border-t border-border bg-card">
-    <!-- Resize handle -->
     <div
       v-if="open"
       class="h-1 -mt-0.5 cursor-row-resize hover:bg-primary/50 active:bg-primary transition-colors"
@@ -106,7 +103,6 @@ function startResize(e: PointerEvent) {
       </button>
     </div>
 
-    <!-- Content -->
     <div v-if="open" class="min-h-0" :style="{ height: `${clamp(height)}px` }">
       <EventLog v-if="tab === 'log'" />
       <RecordingsTab v-else-if="tab === 'recordings'" />

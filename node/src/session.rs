@@ -1,8 +1,6 @@
-//! Session and monitor lifecycle work that has to wait on GStreamer or run in
-//! the background: finishing recordings (detaching legs, persisting the
-//! outcome and broadcasting it), reporting legs that fail mid-recording, and
-//! restarting failed monitors. Always runs on spawned tasks — see
-//! [`SourceManager::begin_stop_recording`](crate::sources::manager::SourceManager::begin_stop_recording).
+//! Session and monitor lifecycle work that waits on GStreamer, so always runs
+//! on spawned tasks: finishing recordings, reporting failed legs, restarting
+//! failed monitors.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,25 +17,22 @@ use crate::state::AppState;
 /// How long a leg may take to drain to EOS and close its file.
 const EOS_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How often to check for failed monitors to restart. Each rescan that
-/// leaves a source still failing doubles the wait, up to the max; the wait
-/// resets once every source is healthy.
+/// Failed-monitor check interval; doubles while a source keeps failing, up
+/// to the max, and resets once all are healthy.
 const RECOVERY_INTERVAL: Duration = Duration::from_secs(5);
 const RECOVERY_MAX_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Drain a stopping session's legs, persist and broadcast the outcome, and
-/// publish it to every request waiting on the stop. `source_error` is set when
-/// the session is ending because its source's monitor failed.
+/// answer every request waiting on the stop. `source_error`: the session ends
+/// because its monitor failed.
 pub async fn run_stop(state: Arc<AppState>, job: StopJob, source_error: Option<String>) {
     let StopJob { legs, mut dto, tx } = job;
 
-    // Stop every leg concurrently, so all of them stop recording at the same
-    // moment rather than each waiting for the previous one to finalize.
+    // Concurrently, so all legs stop at the same moment.
     let results = join_all(legs.into_iter().map(|leg| leg.stop(EOS_TIMEOUT))).await;
 
     dto.stopped_at = Some(chrono::Utc::now().to_rfc3339());
-    // A failed source is the root cause of anything its legs report. Each
-    // leg's error names its output path, so all of them are kept.
+    // A failed source is the root cause of anything its legs report.
     let leg_errors: Vec<String> = results
         .into_iter()
         .filter_map(Result::err)
@@ -100,7 +95,6 @@ pub async fn activity(state: &AppState) -> Activity {
     }
 }
 
-/// Stop every recording and wait until each one's files are finished.
 pub async fn stop_all_recordings(state: &Arc<AppState>) {
     let ids: Vec<String> = state
         .source_manager
@@ -162,7 +156,7 @@ pub fn spawn_quit_on_signal(state: Arc<AppState>) {
 }
 
 /// Run each teardown on its own task: finish the monitor's recordings, then
-/// stop its pipeline (which also frees the source bin for a new monitor).
+/// stop its pipeline, freeing the source bin for a new monitor.
 pub fn spawn_teardowns(state: &Arc<AppState>, teardowns: Vec<Teardown>) {
     for Teardown {
         source_id,
@@ -187,8 +181,8 @@ pub fn spawn_teardowns(state: &Arc<AppState>, teardowns: Vec<Teardown>) {
     }
 }
 
-/// Rescan sources: rebuild the list from the configured sources and the NDI
-/// sources on the network, tearing down whatever went away, changed or failed.
+/// Rebuild the source list, tearing down whatever went away, changed or
+/// failed.
 pub async fn rebuild_sources(state: &Arc<AppState>) -> anyhow::Result<()> {
     let configs = db::configured_sources_list(&state.db).await?;
     let teardowns = state.source_manager.write().await.scan(&configs);
@@ -196,11 +190,9 @@ pub async fn rebuild_sources(state: &Arc<AppState>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Restart failed monitors (e.g. an NDI sender that dropped out), or ones that
-/// failed to start, by rescanning whenever a source lacks a healthy monitor. A
-/// rescan ends a failed source's recordings, so their files are finalized
-/// rather than left waiting for frames that never come; a sender that has left
-/// the network is removed instead.
+/// Rescan whenever a source lacks a healthy monitor. This also ends a failed
+/// source's recordings, so files are finalised rather than waiting for frames
+/// that never come.
 pub fn spawn_monitor_recovery(state: Arc<AppState>) {
     tokio::spawn(async move {
         let mut wait = RECOVERY_INTERVAL;
@@ -219,9 +211,8 @@ pub fn spawn_monitor_recovery(state: Arc<AppState>) {
     });
 }
 
-/// Move monitors onto the node clock when it changes. Idle ones are rebuilt
-/// now; busy ones (recording, playing out) are left for the monitor recovery
-/// loop to rebuild once they're idle.
+/// Move monitors onto the node clock when it changes: idle ones now, busy
+/// ones by the recovery loop once idle.
 pub fn spawn_clock_follower(state: Arc<AppState>) {
     let mut changed = state.clock.subscribe();
     tokio::spawn(async move {
@@ -242,10 +233,8 @@ pub fn spawn_clock_follower(state: Arc<AppState>) {
     });
 }
 
-/// Report recording legs that fail mid-recording as they happen, rather than
-/// only when the session is stopped. The session's other legs keep recording;
-/// once every leg has failed nothing is being recorded, so the session is
-/// stopped (and finishes as `error`).
+/// Report legs that fail mid-recording as they happen. Other legs keep
+/// recording; once all have failed the session is stopped as `error`.
 pub fn spawn_leg_failure_reporter(
     state: Arc<AppState>,
     mut failures: mpsc::UnboundedReceiver<LegFailure>,
@@ -277,9 +266,8 @@ pub fn spawn_leg_failure_reporter(
     });
 }
 
-/// Save a running session's file list whenever a leg opens a new file (a
-/// split), so the Recordings tab lists every file even after a crash. Stops
-/// save the final list themselves.
+/// Persist a running session's file list whenever a leg opens a new file, so
+/// it survives a crash.
 pub fn spawn_leg_file_recorder(
     state: Arc<AppState>,
     mut sessions: mpsc::UnboundedReceiver<String>,

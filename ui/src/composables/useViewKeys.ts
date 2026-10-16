@@ -3,11 +3,7 @@ import { useEventListener } from '@vueuse/core'
 /** Where a page's single-key shortcuts never apply: typing, and dialogs and menus over the page. */
 const IGNORED = 'input, textarea, select, [role="dialog"], [role="menu"]'
 
-/**
- * A page's keyboard shortcuts. Keys typed into a field, dialog or menu are
- * left alone, and so (unless `modifiers`) are Ctrl, ⌘ and Alt combinations.
- * `alsoIgnore` adds elements where the page's keys mean something else.
- */
+/** A page's shortcuts. Ctrl/⌘/Alt combinations are ignored unless `modifiers`; `alsoIgnore` adds elements. */
 export function useViewKeys(
   handler: (e: KeyboardEvent) => void,
   opts: { alsoIgnore?: string; modifiers?: boolean } = {},

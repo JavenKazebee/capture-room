@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# Replay buffer picture quality (ROADMAP #12): each replay codec, with the
-# encoder settings of `ReplayLeg::build` (node/src/pipeline/replay.rs), scored
-# against the footage it was given, as a channel shows it: the replay player's
-# software decoder, then the program's I420 BT.709.
+# Replay buffer picture quality: each replay codec, with `ReplayLeg::build`'s
+# encoder settings, scored against its input as a channel shows it (software
+# decode, then I420 BT.709).
 #
 #   node/examples/replay_quality.sh FOOTAGE [DIR] [START_S…]
 #
-# FOOTAGE is any video file; 10 s from each START (default 170 735 1040) is
-# scaled to 1080p as the reference. Prints data rate and VMAF (mean, worst 1%,
-# worst frame), PSNR-Y and SSIM per clip. Keep `variant` in step with
-# replay.rs. Needs gst-launch-1.0, and ffmpeg built with libvmaf.
+# 10 s from each START (default 170 735 1040) scaled to 1080p is the reference.
+# Prints data rate, VMAF (mean, worst 1%, worst frame), PSNR-Y and SSIM per
+# clip. Keep `variant` in step with replay.rs. Needs gst-launch-1.0 and ffmpeg
+# with libvmaf.
 set -euo pipefail
 
 footage=$1
@@ -32,8 +31,8 @@ variant() {
 }
 
 for t in "${starts[@]}"; do
-  # The reference is what the encoders get: read back through the same demux,
-  # so frames line up one for one.
+  # The reference is read back through the same demux the encoders get, so
+  # frames line up one for one.
   [ -f "ref_$t.y4m" ] || {
     ffmpeg -v error -ss "$t" -i "$footage" -t 10 -an \
       -vf "scale=1920:1080:flags=lanczos,format=yuv420p" -c:v ffv1 -y "ref_$t.mkv"

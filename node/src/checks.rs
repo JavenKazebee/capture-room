@@ -1,7 +1,6 @@
-//! Setup checks: what each feature needs from the machine, and whether it
-//! has it. Everything is read live (permissions get revoked, machines get
-//! reinstalled), so nothing here is stored. Network reachability can't be
-//! seen from inside, so it's probed by a controller (`probe_ports`).
+//! Setup checks: what each feature needs from the machine, and whether it has
+//! it. Read live, never stored (permissions get revoked). Network reachability
+//! is probed from a controller (`probe_ports`).
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -73,8 +72,6 @@ fn check(id: &str, group: CheckGroup, label: &str, needed_for: &str) -> CheckDto
     }
 }
 
-// ── macOS privacy ─────────────────────────────────────────────────────────────
-
 /// The `id` of a permission's check.
 pub fn permission_id(permission: Permission) -> &'static str {
     match permission {
@@ -140,8 +137,7 @@ fn permission_check(
         Access::Denied => {
             c.status = CheckStatus::Missing;
             // macOS doesn't say whether it has asked about screen recording,
-            // and only ever asks once, so offering its prompt would mostly do
-            // nothing.
+            // and only asks once, so offering its prompt would mostly do nothing.
             if permission == Permission::ScreenRecording {
                 c.summary = "Not allowed (or not asked yet).".into();
                 c.fix = Some(settings(
@@ -249,8 +245,6 @@ fn permission_holder() -> Option<String> {
     None
 }
 
-// ── NDI ───────────────────────────────────────────────────────────────────────
-
 fn ndi_check(loaded: bool, configured: &[ConfiguredSourceDto]) -> CheckDto {
     let mut c = check(
         "ndi_runtime",
@@ -328,8 +322,6 @@ fn ndi_intake_check(ndi: &NdiSubscriptionsDto) -> CheckDto {
     c
 }
 
-// ── Storage ───────────────────────────────────────────────────────────────────
-
 /// The default recording folder can be written, with room to record.
 /// Blocking.
 fn storage_check() -> CheckDto {
@@ -388,8 +380,6 @@ fn write_test(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::write(&file, b"")?;
     std::fs::remove_file(&file)
 }
-
-// ── Clock ─────────────────────────────────────────────────────────────────────
 
 /// Whether the shared clock this node is meant to follow reaches it. None
 /// on a node running on its own clock.
@@ -482,8 +472,6 @@ fn ptp_fix() -> CheckFix {
         }
     }
 }
-
-// ── Network ───────────────────────────────────────────────────────────────────
 
 /// Ports others connect to on this node.
 fn ports(http_port: u16, configured: &[ConfiguredSourceDto]) -> Vec<NodePortDto> {

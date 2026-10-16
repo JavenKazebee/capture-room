@@ -1,12 +1,10 @@
 //! The service on macOS: a LaunchAgent in the user's login session.
 //!
-//! Its plist lives in the node's Application Support folder, and the
-//! service is always loaded from there. Starting at login is a copy of it in
-//! `~/Library/LaunchAgents` (the folder launchd loads at login), so turning
-//! that off never touches the running node. `KeepAlive` with
-//! `SuccessfulExit = false` restarts the node when it exits with an error or
-//! is killed, but not after a clean quit (it also starts it on load).
-//! A `Crashed` condition can't replace it: it misses panics and kills.
+//! The plist lives in Application Support and the service always loads from
+//! there; start-at-login is a copy in `~/Library/LaunchAgents`, so toggling it
+//! never touches the running node. `KeepAlive` with `SuccessfulExit = false`
+//! restarts on errors and kills but not a clean quit; a `Crashed` condition
+//! would miss panics and kills.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -161,7 +159,6 @@ pub fn set_start_at_login(on: bool) -> Result<()> {
     Ok(())
 }
 
-/// Load the service if it isn't, and start it if it isn't running.
 pub fn start() -> Result<()> {
     if !loaded() {
         launchctl(&["bootstrap", &domain(), &plist_path().display().to_string()])?;
@@ -169,7 +166,6 @@ pub fn start() -> Result<()> {
     launchctl(&["kickstart", &target()])
 }
 
-/// Stop and unload the service, waiting for the node to exit.
 fn stop() -> Result<()> {
     if !loaded() {
         return Ok(());

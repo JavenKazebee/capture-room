@@ -1,17 +1,12 @@
 //! The node clock: what every pipeline on this node runs on.
 //!
-//! On its own a node runs on its local system clock. A controller serves that
-//! clock on the network (a `NetTimeProvider`) and claims its nodes with every
-//! health check; a claimed node follows it (a `NetClientClock`), so running
-//! time means the same thing on every machine. In PTP mode the controller and
-//! its nodes all follow a PTP domain's grandmaster instead.
-//!
-//! A node keeps the first controller that claims it until that controller
-//! goes quiet ([`MASTER_TIMEOUT`]). A controller follows no one: it's a
-//! master itself. A new clock is used once it has synced; until then the old
-//! one stays. Pipelines can't change clocks while running, so the source
-//! manager rebuilds idle monitors on the new clock and leaves busy ones
-//! (recording, playing out) until they're idle.
+//! A node runs on its local system clock until a controller claims it (with
+//! every health check); then it follows the controller's `NetTimeProvider`
+//! via a `NetClientClock`, or a PTP domain in PTP mode, so running time
+//! matches across machines. The first claimer keeps the node until it goes
+//! quiet ([`MASTER_TIMEOUT`]). A new clock is used only once synced.
+//! Pipelines can't change clocks while running, so the source manager
+//! rebuilds idle monitors and leaves busy ones until they're idle.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -381,15 +376,11 @@ fn same_source(a: &ClockSourceDto, b: &ClockSourceDto) -> bool {
     }
 }
 
-// ── Serving (controllers) ─────────────────────────────────────────────────────
-
 /// Serve `clock` on UDP `port` (all interfaces) for nodes to follow.
 pub fn serve(clock: &gst::Clock, port: u16) -> Result<gst_net::NetTimeProvider> {
     gst_net::NetTimeProvider::new(clock, None, i32::from(port))
         .map_err(|e| anyhow!("can't serve the clock on UDP port {port}: {e}"))
 }
-
-// ── PTP ───────────────────────────────────────────────────────────────────────
 
 /// Start GStreamer's PTP support (once). It runs a helper that needs to bind
 /// UDP ports 319 and 320, which on Linux takes capabilities on the helper.

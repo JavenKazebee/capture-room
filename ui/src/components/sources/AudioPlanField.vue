@@ -6,11 +6,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
 
-/**
- * Where a live source's audio comes from: its own (`sourceLabel`, hidden
- * when the source has none, like a camera), an audio device on the node
- * with picked channels, or silence.
- */
+/** A live source's audio: its own (`sourceLabel`), an audio device's picked channels, or silence. */
 const props = defineProps<{
   /** The node's devices; only audio inputs are offered. */
   devices: DeviceDto[]

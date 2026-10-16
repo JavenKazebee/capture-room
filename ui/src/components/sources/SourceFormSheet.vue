@@ -29,11 +29,7 @@ import DeviceFields from './DeviceFields.vue'
 import DecklinkFields from './DecklinkFields.vue'
 import WhipFields from './WhipFields.vue'
 
-/**
- * Add a configured source, or edit one (`source`). Mount it with `v-if`; an
- * edit opens once the source's config has come from its node. Channels are
- * set up in Playback, not here.
- */
+/** Add or edit (`source`) a configured source. Mount with `v-if`; an edit opens once its config arrives. Channels are set up in Playback. */
 const props = defineProps<{ source: Source | null }>()
 const emit = defineEmits<{ close: [] }>()
 

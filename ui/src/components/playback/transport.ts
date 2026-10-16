@@ -1,9 +1,6 @@
 import type { TransportState } from '@/types/generated/TransportState'
 
-/**
- * How each transport state reads. Tally red stays reserved for recording, so
- * playing is green and cued uses the primary color.
- */
+/** Tally red is reserved for recording, so playing is green and cued is primary. */
 export const TRANSPORT: Record<
   TransportState,
   { label: string; badge: string; dot: 'ok' | 'warn' | 'off' | 'info' }

@@ -38,15 +38,11 @@ const SHORTCUTS: [string[], string][] = [
   [['Esc'], 'Stop (back to black)'],
 ]
 
-// ── Channel ───────────────────────────────────────────────────────────────────
-
 const { channelKey, channel } = useChannelChoice('cr.playback.channel')
 const status = computed(() => (channel.value ? playout.status.get(channel.value.key) : undefined))
 const nodeId = computed(() => channel.value?.node_id ?? nodes.self?.node_id ?? '')
 const playlist = computed(() => (channel.value ? playout.playlists.get(channel.value.key) : undefined))
 const items = computed(() => playlist.value?.items ?? [])
-
-// ── Channel settings ──────────────────────────────────────────────────────────
 
 /** The channel sheet: `'new'`, the channel being edited, or closed. */
 const sheet = ref<'new' | { nodeId: string; id: string } | null>(null)
@@ -88,8 +84,6 @@ watch(
   { immediate: true },
 )
 
-// ── Item setup ────────────────────────────────────────────────────────────────
-
 /** The playlist item picked for editing and cueing. */
 const selectedId = ref<string | null>(null)
 const selected = computed(() => items.value.find((i) => i.id === selectedId.value) ?? null)
@@ -107,8 +101,6 @@ watch(
   },
   { immediate: true },
 )
-
-// ── Commands ──────────────────────────────────────────────────────────────────
 
 const busy = ref(false)
 
@@ -165,8 +157,6 @@ function addMedia(item: MediaItemDto) {
   playlistPanel.value?.add(item.id)
 }
 
-// ── Keyboard ──────────────────────────────────────────────────────────────────
-
 useViewKeys((e) => {
   const t = e.target as HTMLElement
   const key = e.key.toLowerCase()
@@ -217,7 +207,6 @@ onMounted(() => sources.ensureLoaded())
     </div>
 
     <div v-else class="flex-1 min-h-0 flex">
-      <!-- Channels -->
       <nav class="w-52 shrink-0 border-r border-border overflow-y-auto" aria-label="Channels">
         <button
           v-for="c in playout.channels"
@@ -241,7 +230,6 @@ onMounted(() => sources.ensureLoaded())
         </button>
       </nav>
 
-      <!-- Program, transport, clip -->
       <main v-if="channel" class="flex-1 min-w-0 overflow-y-auto p-4">
         <div class="max-w-4xl mx-auto flex flex-col gap-4">
           <ProgramMonitor :source="channel" :status="status" />
@@ -285,7 +273,6 @@ onMounted(() => sources.ensureLoaded())
         </div>
       </main>
 
-      <!-- Media -->
       <aside class="w-80 shrink-0 border-l border-border min-h-0">
         <MediaLibrary
           v-if="nodeId"

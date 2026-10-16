@@ -3,12 +3,7 @@ import { computed, ref } from 'vue'
 import { useRafFn } from '@vueuse/core'
 import { useReplayStore, type ReplayBuffer } from '@/stores/replay'
 
-/**
- * One angle's buffer on a strip running up to now (the right edge): what's
- * recorded, the second or so that can't be replayed yet, gaps, the in and
- * out marks and the playhead. Clicking or dragging picks a moment (node
- * clock, µs); it's emitted on release.
- */
+/** One angle's buffer on a strip ending at now. Click or drag picks a moment (node clock, µs), emitted on release. */
 const props = defineProps<{
   buffer: ReplayBuffer
   /** How far back the strip reaches, seconds; `null` for the whole buffer. */
@@ -113,14 +108,12 @@ const head = computed(() => dragging.value ?? props.playheadUs)
         :style="{ left: pct(b) }"
         title="Gap: the source restarted"
       />
-      <!-- Ticks -->
       <template v-for="t in ticks" :key="t.label">
         <div class="absolute bottom-0 h-1.5 w-px bg-foreground/30" :style="{ left: pct(t.us) }" />
         <span class="absolute bottom-1.5 -translate-x-1/2 text-[9px] num text-muted-foreground pointer-events-none" :style="{ left: pct(t.us) }">
           {{ t.label }}
         </span>
       </template>
-      <!-- In → out -->
       <div
         v-if="inUs !== null && outUs !== null && outUs > inUs"
         class="absolute top-0 h-2 bg-warning/60"
@@ -128,7 +121,6 @@ const head = computed(() => dragging.value ?? props.playheadUs)
       />
       <div v-if="inUs !== null" class="absolute inset-y-0 w-0.5 bg-warning" :style="{ left: pct(inUs) }" title="In" />
       <div v-if="outUs !== null" class="absolute inset-y-0 w-0.5 bg-warning" :style="{ left: pct(outUs) }" title="Out" />
-      <!-- Playhead -->
       <div v-if="head !== null" class="absolute inset-y-0 w-0.5 -ml-px bg-foreground" :style="{ left: pct(head) }" />
       <span class="absolute right-1.5 top-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground pointer-events-none">
         Live

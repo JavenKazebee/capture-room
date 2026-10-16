@@ -8,8 +8,7 @@ import type { SessionOutputDto } from "./SessionOutputDto";
  */
 export type RecordingSessionDto = { id: string, source_id: string, preset_id: string, 
 /**
- * The source's name when recording started. `None` for sessions
- * recorded before names were kept.
+ * The source's name when recording started. `None` for older sessions.
  */
 source_name: string | null, 
 /**
@@ -19,12 +18,11 @@ source_name: string | null,
 preset_name: string | null, started_at: string, stopped_at: string | null, 
 /**
  * What each output leg recorded, ordered like `output_paths`. Empty for
- * sessions recorded before this was kept.
+ * older sessions.
  */
 outputs: Array<SessionOutputDto>, 
 /**
- * Ordered list of output file paths, one per preset output leg.
- * Stored as a JSON array.
+ * The planned path of each output leg.
  */
 output_paths: Array<string>, 
 /**
@@ -33,9 +31,8 @@ output_paths: Array<string>,
  */
 dropped_frames: Array<number>, 
 /**
- * Every file each output leg has written, in order, ordered like
- * `output_paths`: one per leg unless it splits. Saved as each file
- * opens, so it survives a crash.
+ * Every file each leg has written, ordered like `output_paths` (several
+ * if it splits). Saved as each file opens, so it survives a crash.
  */
 files: Array<Array<string>>, status: RecordingStatus, error_message: string | null, 
 /**

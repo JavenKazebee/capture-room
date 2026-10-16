@@ -14,16 +14,14 @@ pub struct PathVars {
     pub source_name: String,
     pub node: String,
     pub preset: String,
-    /// When the recording starts.
     pub at: DateTime<Local>,
     /// `{take}`: the first number whose paths don't exist yet.
     pub take: u32,
-    /// Added to the file name as `_N` when it's 2 or more, on templates
-    /// without `{take}`, for files that already exist (e.g. `{datetime}`
-    /// restarted within the same second).
+    /// Appended as `_N` when 2 or more, on templates without `{take}`, so an
+    /// existing file (e.g. `{datetime}` within the same second) isn't reused.
     pub suffix: u32,
-    /// The source's current format, for `{resolution}` and `{fps}` on an
-    /// output that matches the source. `None` until it's negotiated.
+    /// For `{resolution}` and `{fps}` on an output that matches the source.
+    /// `None` until negotiated.
     pub source_resolution: Option<(u32, u32)>,
     pub source_framerate: Option<(u32, u32)>,
     /// Channel count and whether they're positioned; see
@@ -106,13 +104,9 @@ pub fn unknown_token(template: &str) -> Option<&str> {
 }
 
 /// Build every leg's profile and output path, rejecting a format that doesn't
-/// parse or two legs that would write the same file.
-///
-/// With `vars` as `None` the per-recording tokens are left unexpanded, so the
-/// check covers every future recording — what a preset save wants. Tokens the
-/// leg settles itself (`{output}`, `{ext}`, `{codec}`, and `{resolution}` /
-/// `{fps}` when it sets them) are always expanded; a leading `~` is this
-/// node's home.
+/// parse or two legs that would write the same file. With `vars` `None` (a
+/// preset save) per-recording tokens stay unexpanded, so the collision check
+/// covers every future recording.
 pub fn plan_legs(
     outputs: &[PresetOutputInput],
     vars: Option<&PathVars>,
@@ -143,10 +137,9 @@ pub fn plan_legs(
                 path = before_extension(&path, &format!("_{}", v.suffix));
             }
         }
-        // `{segment}` is the file's number within a split recording; the
-        // first file's path is what the leg is known by. A leg that only
-        // rolls over to a new file at `PCM_MAX_FILE` keeps a plain first name
-        // (most recordings never reach it) and numbers the files after it.
+        // The leg is known by its first file's path. A leg that only rolls
+        // over at `PCM_MAX_FILE` keeps a plain first name (most never reach
+        // it) and numbers the files after it.
         if profile.splits() {
             let template = with_segment(&path);
             profile.segment_template = Some(expand_home(&template).to_string_lossy().into_owned());
@@ -200,9 +193,8 @@ fn format_framerate((n, d): (u32, u32)) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
-/// A split leg's template with `{segment}` in it: added before the file
-/// name's extension (or at its end) when the template doesn't place it, so
-/// every file gets its own name.
+/// `path` with `{segment}` added before the extension, unless it already
+/// has one.
 fn with_segment(path: &str) -> String {
     if path.contains("{segment}") {
         return path.to_string();
@@ -228,8 +220,7 @@ pub fn segment_number(index: u32) -> String {
     format!("{:03}", index + 1)
 }
 
-/// `~` or `~/…` → this node's home directory. Paths are resolved on the node,
-/// so the UI can't know it.
+/// `~` or `~/…` → this node's home directory.
 fn expand_home(path: &str) -> PathBuf {
     let rest = match path.strip_prefix('~') {
         Some("") => "",
@@ -242,7 +233,6 @@ fn expand_home(path: &str) -> PathBuf {
     }
 }
 
-/// Configures a single recording output leg.
 #[derive(Debug, Clone)]
 pub struct RecordingProfile {
     pub video_codec: VideoCodec,
@@ -254,33 +244,29 @@ pub struct RecordingProfile {
     /// `None` = Auto: sized from the frame size and rate, see [`Self::bitrate`].
     pub bitrate_kbps: Option<u32>,
     pub chroma: ChromaSubsampling,
-    /// The source's format when recording starts (`None` when checking a
-    /// preset, or before the source has negotiated). Sizes Auto bitrate and
-    /// the keyframe interval for outputs that match the source.
+    /// The source's format at start (`None` for a preset check or before
+    /// negotiation). Sizes Auto bitrate and keyframes when matching source.
     pub source_size: Option<(u32, u32)>,
     pub source_rate: Option<(u32, u32)>,
-    /// The source's audio channel count and whether they have positions
-    /// (stereo, 5.1…) rather than being plain numbered channels. Needed to
-    /// mix down or pick channels; `None` until known.
+    /// Channel count and whether they have positions (stereo, 5.1…) rather
+    /// than plain numbers. Needed to mix down or pick channels.
     pub source_audio: Option<(u32, bool)>,
     pub advanced: OutputAdvanced,
-    /// For a leg that splits: its path with `{segment}` still in it, to name
-    /// each file. Set by [`plan_legs`].
+    /// The path with `{segment}` unexpanded, for legs with several files.
+    /// Set by [`plan_legs`].
     pub segment_template: Option<String>,
 }
 
-/// A video encoder element and what it needs around it. Each codec lists its
-/// candidates best first (see [`RecordingProfile::encoders`]); a leg uses the
-/// first one that builds.
+/// A video encoder element. A leg uses the first of
+/// [`RecordingProfile::encoders`] that builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VideoEncoder {
     X264,
     X265,
     Vp9,
     ProResKs,
-    /// VideoToolbox (macOS). `vtenc_h264`/`vtenc_h265` fall back to
-    /// VideoToolbox's software encoder themselves when the hardware is busy;
-    /// the `_hw` variants would fail instead.
+    /// Not the `_hw` variants: these fall back to VideoToolbox's software
+    /// encoder when the hardware is busy instead of failing.
     VtH264,
     VtH265,
     VtProRes,
@@ -306,7 +292,6 @@ impl VideoEncoder {
     }
 }
 
-/// How a leg's audio is written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioFormat {
     /// 24-bit PCM: what editors expect beside ProRes and uncompressed video.
@@ -322,17 +307,15 @@ pub enum AudioFormat {
 /// A change to the source's audio channels.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioMix {
-    /// `audioconvert`'s `mix-matrix`: a row of input gains per output
-    /// channel. `None` leaves the mapping to `audioconvert` (a positioned
-    /// downmix), or isn't known yet (a preset check, before the source's
-    /// channel count is).
+    /// `audioconvert`'s `mix-matrix`. `None` leaves the mapping to
+    /// `audioconvert` (a positioned downmix), or the channel count isn't known.
     pub matrix: Option<Vec<Vec<f32>>>,
     pub channels: u32,
 }
 
-/// Longest file a leg with PCM audio in .mov writes before starting the
-/// next: the index space it reserves (see `CRASH_SAFE_*` in `recording.rs`)
-/// is sized for this, and qtmux stops the leg with an error if it fills up.
+/// Longest file a PCM .mov leg writes before starting the next: its reserved
+/// index (`CRASH_SAFE_*` in `recording.rs`) is sized for this, and qtmux
+/// errors if it fills.
 pub const PCM_MAX_FILE: std::time::Duration = std::time::Duration::from_secs(4 * 3600);
 
 /// Keyframe spacing: short enough to scrub, cut and split files cleanly.
@@ -352,9 +335,8 @@ pub fn available_encoders() -> Vec<String> {
 }
 
 impl RecordingProfile {
-    /// Build a profile from an output leg. Resolution and framerate are free
-    /// text: blank means "match the source", anything else must parse — a
-    /// typo is rejected rather than silently recording at the source format.
+    /// Resolution and framerate are free text: blank matches the source,
+    /// anything else must parse, so a typo isn't silently the source format.
     pub fn from_output(o: &PresetOutputInput) -> Result<Self, &'static str> {
         if let Some(reason) = incompatible(o.codec, o.container) {
             return Err(reason);
@@ -467,9 +449,9 @@ impl RecordingProfile {
         }
     }
 
-    /// Raw format `encoder` is fed. Without this the encoder follows the
-    /// source's format, which is how H.264 ended up as High 4:4:4 (unplayable
-    /// in most players), and how VideoToolbox ProRes would get 4:2:0 input.
+    /// Raw format `encoder` is fed. Left to follow the source, H.264 becomes
+    /// High 4:4:4 (unplayable in most players) and VideoToolbox ProRes gets
+    /// 4:2:0.
     pub fn encoder_input_format(&self, encoder: VideoEncoder) -> Option<&'static str> {
         match encoder {
             VideoEncoder::X264
@@ -480,8 +462,8 @@ impl RecordingProfile {
                 ChromaSubsampling::Yuv422 => "Y42B",
                 ChromaSubsampling::Yuv444 => "Y444",
             }),
-            // Profile 0 (4:2:0) is the VP9 everything plays; left to follow
-            // the source, an RGB source gave 4:4:4 Profile 1.
+            // Profile 0 (4:2:0) is the VP9 everything plays; an RGB source
+            // would give 4:4:4 Profile 1.
             VideoEncoder::Vp9 => Some("I420"),
             // 4:2:2 is what NDI sends, so this is usually no conversion at all.
             VideoEncoder::VtProRes if self.video_codec == VideoCodec::ProRes4444 => Some("AYUV64"),
@@ -490,9 +472,8 @@ impl RecordingProfile {
         }
     }
 
-    /// Parser between encoder and muxer. x265enc only emits Annex-B
-    /// byte-stream, which no container muxer accepts (they want hvc1/hev1);
-    /// the parser converts it, and fills in codec headers for H.264 too.
+    /// Parser between encoder and muxer: x265enc only emits Annex-B, which
+    /// muxers reject; the parser converts it and fills in codec headers.
     pub fn video_parser_element(&self) -> Option<&'static str> {
         match self.video_codec {
             VideoCodec::H264 => Some("h264parse"),
@@ -501,7 +482,6 @@ impl RecordingProfile {
         }
     }
 
-    /// GStreamer element name for the container muxer.
     pub fn muxer_element(&self) -> &'static str {
         match self.container {
             Container::Mov => "qtmux",
@@ -539,10 +519,9 @@ impl RecordingProfile {
         }
     }
 
-    /// Whether PCM bound for .mov has to be relabelled as plain numbered
-    /// channels: qtmux takes PCM beyond stereo only that way, and otherwise
-    /// audioconvert quietly downmixes it to stereo (it won't relabel a
-    /// layout like 7.1 itself). Picked channels are numbered already.
+    /// Whether PCM bound for .mov must be relabelled as plain numbered
+    /// channels: qtmux only takes >2 channels that way, and audioconvert
+    /// otherwise quietly downmixes to stereo rather than relabel.
     pub fn relabel_pcm_channels(&self) -> bool {
         self.container == Container::Mov
             && self.audio_format() == AudioFormat::Pcm24
@@ -556,7 +535,6 @@ impl RecordingProfile {
         self.advanced.deinterlace == Deinterlace::Auto && self.prores_profile().is_none()
     }
 
-    /// The x264/x265 `speed-preset` value.
     pub fn speed_preset(&self) -> &'static str {
         match self.advanced.speed_preset.unwrap_or(SpeedPreset::Veryfast) {
             SpeedPreset::Ultrafast => "ultrafast",
@@ -578,7 +556,6 @@ impl RecordingProfile {
         self.advanced.quality.unwrap_or(DEFAULT_QUALITY)
     }
 
-    /// Whether the leg starts new files as it goes.
     pub fn splits(&self) -> bool {
         self.advanced.split_minutes.is_some() || self.advanced.split_gb.is_some()
     }
@@ -591,8 +568,7 @@ impl RecordingProfile {
     }
 
     /// Whether the leg reserves its index at the front of the file for crash
-    /// safety: PCM in .mov (the only container besides .mkv that takes it).
-    /// Other .mov/.mp4 legs write fragments instead.
+    /// safety: PCM in .mov. Other .mov/.mp4 legs write fragments instead.
     pub fn reserves_index(&self) -> bool {
         self.container == Container::Mov && self.audio_format() == AudioFormat::Pcm24
     }
@@ -619,13 +595,9 @@ impl RecordingProfile {
             .unwrap_or(KEYFRAME_INTERVAL_SECS)
     }
 
-    /// How the output changes the source's audio channels; `None` records
-    /// them as they are.
-    ///
-    /// Stereo lets `audioconvert` downmix positioned layouts (5.1…) itself;
-    /// plain numbered channels have no layout to follow, so odd channels go
-    /// left and even ones right. Picked channels the source doesn't have are
-    /// silent.
+    /// How the output changes the source's audio channels; `None` keeps them.
+    /// Stereo from numbered channels sends odd ones left and even ones right;
+    /// positioned layouts are left to `audioconvert`. Missing picks are silent.
     pub fn audio_mix(&self) -> Option<AudioMix> {
         let a = &self.advanced;
         let row =
@@ -675,9 +647,8 @@ impl RecordingProfile {
         }
     }
 
-    /// Whether browsers play this leg's files: H.264 4:2:0 (High 4:2:2 and
-    /// 4:4:4 aren't decoded) with AAC audio, in MP4 or MOV (Chrome and Firefox
-    /// play an H.264/AAC .mov as MP4).
+    /// Whether browsers play this leg's files: H.264 4:2:0 with AAC, in MP4
+    /// or MOV (Chrome and Firefox play an H.264/AAC .mov as MP4).
     pub fn browser_playable(&self) -> bool {
         self.video_codec == VideoCodec::H264
             && self.chroma == ChromaSubsampling::Yuv420
@@ -685,7 +656,6 @@ impl RecordingProfile {
             && matches!(self.audio_format(), AudioFormat::Aac { .. })
     }
 
-    /// What a session keeps about this leg.
     pub fn session_output(&self, name: &str, preview: bool) -> SessionOutputDto {
         SessionOutputDto {
             name: name.to_string(),
@@ -701,7 +671,6 @@ impl RecordingProfile {
         }
     }
 
-    /// File extension for the output path template.
     pub fn file_extension(&self) -> &'static str {
         match self.container {
             Container::Mov => "mov",
@@ -710,7 +679,7 @@ impl RecordingProfile {
         }
     }
 
-    /// `{codec}` in a path template: the codec's API name.
+    /// `{codec}` in a path template.
     pub fn codec_slug(&self) -> &'static str {
         match self.video_codec {
             VideoCodec::H264 => "h264",
@@ -749,7 +718,6 @@ impl RecordingProfile {
         self.framerate.or(self.source_rate).unwrap_or((30, 1))
     }
 
-    /// Frames between keyframes.
     pub fn keyframe_interval(&self) -> u32 {
         let (n, d) = self.frame_rate();
         (self.keyframe_secs() * n as f64 / d as f64)
@@ -757,9 +725,8 @@ impl RecordingProfile {
             .max(1.0) as u32
     }
 
-    /// Video bitrate in kbps, for codecs that take one: the output's, or Auto
-    /// — scaled by pixels per second, about 12 Mbps for H.264 at 1080p30 and
-    /// 60% of that for H.265 and VP9, which compress better.
+    /// Video bitrate in kbps, for codecs that take one. Auto scales by pixels
+    /// per second: ~12 Mbps for H.264 at 1080p30, 60% of that for H.265/VP9.
     pub fn bitrate(&self) -> Option<u32> {
         let bits_per_pixel = match self.video_codec {
             VideoCodec::H264 => 0.19,
@@ -775,10 +742,8 @@ impl RecordingProfile {
         }))
     }
 
-    /// Roughly what the leg writes per second, video and audio, for storage
-    /// estimates when no benchmark has measured it: the bitrate where there
-    /// is one, Apple's target rates for ProRes (scaled from 1080p29.97), and
-    /// the raw size for uncompressed video.
+    /// Rough bytes per second written, for storage estimates without a
+    /// benchmark. ProRes uses Apple's target rates scaled from 1080p29.97.
     pub fn estimated_bytes_per_sec(&self) -> u64 {
         let (w, h) = self.frame_size();
         let (n, d) = self.frame_rate();
@@ -818,10 +783,9 @@ impl RecordingProfile {
     }
 }
 
-/// Why `codec` can't be recorded in `container`, if it can't. Found by
-/// recording every combination: these fail when the muxer is linked, or (VP9
-/// in MOV/MP4) at caps negotiation once frames flow. The preset editor offers
-/// the same choices (`CONTAINERS_FOR` in `PresetsView.vue`).
+/// Why `codec` can't be recorded in `container`, if it can't. VP9 in MOV/MP4
+/// only fails at negotiation once frames flow. Keep in step with
+/// `CONTAINERS_FOR` in `PresetsView.vue`.
 fn incompatible(codec: VideoCodec, container: Container) -> Option<&'static str> {
     use VideoCodec::*;
     match (codec, container) {
@@ -854,9 +818,8 @@ fn parse_resolution(s: &str) -> Option<(u32, u32)> {
     nonzero_pair(w, h)
 }
 
-/// "30" → (30, 1); "30000/1001" → (30000, 1001); "29.97" → (30000, 1001).
-/// A decimal within rounding of an NTSC rate (N×1000/1001) means that rate;
-/// any other decimal is taken exactly ("12.5" → (25, 2)).
+/// "30" → (30, 1); "30000/1001" and "29.97" → (30000, 1001). A decimal near
+/// an NTSC rate means that rate; others are exact ("12.5" → (25, 2)).
 fn parse_framerate(s: &str) -> Option<(u32, u32)> {
     let s = s.trim();
     if s.contains('.') && !s.contains('/') {

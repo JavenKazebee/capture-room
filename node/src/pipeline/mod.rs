@@ -17,8 +17,6 @@ use monitor::MonitorPipeline;
 
 use crate::api::types::ChannelLevelDto;
 
-// ── Latest value ──────────────────────────────────────────────────────────────
-
 /// The most recent value a pipeline produced, shared between the GStreamer
 /// thread that writes it and the API that reads it. Clones share storage.
 #[derive(Debug)]
@@ -51,8 +49,6 @@ impl<T: Clone> Latest<T> {
 pub type AudioMeter = Latest<Vec<ChannelLevelDto>>;
 /// Latest thumbnail JPEG.
 pub type ThumbnailStore = Latest<Vec<u8>>;
-
-// ── First error ───────────────────────────────────────────────────────────────
 
 /// The first error a pipeline posted, kept to show: a pipeline stops after
 /// one, so later errors only follow from it. Clones share storage.
@@ -112,8 +108,6 @@ pub(crate) fn describe_error(err: &gst::message::Error) -> String {
     }
 }
 
-// ── Element builders ──────────────────────────────────────────────────────────
-
 /// Change `pipeline`'s state on a thread outside the tokio runtime. Some
 /// elements run their own runtime and block on it while changing state
 /// (`whipserversrc`), which panics — and aborts, across the FFI boundary —
@@ -170,11 +164,9 @@ pub(super) fn link_tee(tee: &gst::Element, sink: &gst::Element) -> Result<()> {
     Ok(())
 }
 
-/// An appsrc to take a monitor's stream: live, time format, and a 500 ms
-/// queue that drops the oldest buffers if downstream can't keep up — so a
-/// slow encoder only drops frames here. `add_consumer` applies this too, but
-/// by then the pipeline is playing and a base source only adopts its format
-/// before it starts.
+/// An appsrc for a monitor's stream: live, time format, and a leaky 500 ms
+/// queue so a slow encoder only drops frames here. Configured at build time
+/// because a base source only adopts its format before it starts.
 pub(crate) fn consumer(name: &str) -> gst_app::AppSrc {
     let src = gst_app::AppSrc::builder().name(name).build();
     StreamProducer::configure_consumer(&src);
@@ -249,7 +241,6 @@ impl ConsumerPipeline {
         Ok(chain[chain.len() - 1].clone())
     }
 
-    /// Stop taking the monitor's streams.
     pub fn disconnect(&mut self) {
         self.links.clear();
     }
@@ -260,11 +251,9 @@ impl ConsumerPipeline {
         let _ = set_state(&self.pipeline, gst::State::Null);
     }
 
-    /// Video frames dropped so far because the pipeline couldn't keep up:
-    /// its appsrc's 500 ms queue overflowed (see
-    /// `StreamProducer::configure_consumer`). Read from the appsrc rather
-    /// than the `ConsumptionLink`: the link's count includes these same
-    /// drops, plus keyframe waits that raw video never has.
+    /// Video frames dropped because the appsrc's 500 ms queue overflowed.
+    /// Read from the appsrc, not the `ConsumptionLink`, whose count also
+    /// includes keyframe waits.
     pub fn dropped_frames(&self) -> u64 {
         self.video_src.property::<u64>("dropped")
     }
@@ -322,8 +311,6 @@ pub(super) fn pcm_audiorate() -> Result<gst::Element> {
         .build()
         .context("create audiorate")
 }
-
-// ── Audio level message parsing ───────────────────────────────────────────────
 
 pub(super) fn handle_level_message(s: &gst::StructureRef, meter: &AudioMeter) {
     use gstreamer::glib;

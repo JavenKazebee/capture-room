@@ -19,10 +19,8 @@ import {
 import OptionSelect from '@/components/OptionSelect.vue'
 
 /**
- * Which NDI senders each node connects to: every one it finds (the default),
- * or only the chosen ones, so a node doesn't pull feeds it never uses. A
- * sender a recording or replay buffer uses stays connected either way, and a
- * node never connects to its own outputs. Changes apply at once.
+ * Which NDI senders each node connects to: all (default) or only chosen ones. A sender in use
+ * by a recording or replay buffer stays connected; a node never connects to its own outputs.
  */
 const emit = defineEmits<{ close: [] }>()
 

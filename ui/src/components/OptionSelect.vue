@@ -3,11 +3,7 @@ import { computed, type HTMLAttributes } from 'vue'
 import { cn } from '@/lib/utils'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
-/**
- * A Select over a fixed list of `{ value, label }` options. An option can be
- * `disabled` with a `reason`, shown beside it so nothing is unavailable
- * without saying why.
- */
+/** A Select over fixed options; a `disabled` option shows its `reason`. */
 const props = defineProps<{
   options: readonly { value: T; label: string; disabled?: boolean; reason?: string }[]
   disabled?: boolean
@@ -15,9 +11,8 @@ const props = defineProps<{
 }>()
 
 const model = defineModel<T>({ required: true })
-// Rendered from the current options: SelectValue alone keeps the label the
-// items had when last open, so a label that depends on other fields ("Auto
-// (AAC)") went stale while closed.
+// SelectValue alone keeps the label from when the menu was last open, so a label that
+// depends on other fields ("Auto (AAC)") would go stale.
 const selectedLabel = computed(() => props.options.find((o) => o.value === model.value)?.label)
 </script>
 

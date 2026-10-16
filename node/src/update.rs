@@ -1,16 +1,13 @@
 //! Updating a node to the newest GitHub release.
 //!
-//! Each release carries `latest.json` (`{"version": "0.2.0"}`) and, per
-//! platform, an archive of the app with a minisign signature. A node checks
-//! `latest.json` every few hours; updating downloads its platform's archive,
-//! checks the signature against the release key compiled in (so only our
-//! releases install, whoever asks), unpacks it beside the installed app,
-//! checks it's the version expected, swaps it in and exits with
-//! [`RESTART_EXIT_CODE`](crate::service::RESTART_EXIT_CODE); the service
-//! manager starts the new version. Only the installed app running as a
-//! service updates, never to an older version, and never while it records
-//! or a channel plays. The previous app is kept until the new one starts.
-//! See ARCHITECTURE.md (Deployment).
+//! Each release has `latest.json` and, per platform, an app archive with a
+//! minisign signature checked against the compiled-in key (so only our
+//! releases install, whoever asks). The archive is unpacked beside the app,
+//! version-checked, swapped in, and the node exits with
+//! [`RESTART_EXIT_CODE`](crate::service::RESTART_EXIT_CODE) for the service
+//! manager to start it. Only the installed service updates, never to an older
+//! version or while recording or playing. The old app is kept until the new
+//! one starts.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -25,7 +22,6 @@ use crate::service;
 use crate::state::AppState;
 
 const REPO: &str = "JavenKazebee/capture-room";
-/// The minisign public key releases are signed with.
 const PUBLIC_KEY: &str = include_str!("../../scripts/release-key.pub");
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 /// Where an update is unpacked, beside the app (one volume, so the swap is
@@ -34,7 +30,6 @@ const STAGING: &str = ".capture-room-update";
 #[cfg(target_os = "macos")]
 const APP_NAME: &str = "Capture Room.app";
 
-/// The update state a node serves and its menu bar icon shows.
 pub struct Updater {
     status: Mutex<UpdateStatusDto>,
 }
@@ -81,7 +76,6 @@ fn unsupported() -> Option<String> {
     None
 }
 
-/// The archive for this platform.
 fn asset() -> String {
     let os = if cfg!(target_os = "macos") {
         "macos"
@@ -147,7 +141,6 @@ struct Latest {
     version: String,
 }
 
-/// Look for a newer release.
 pub async fn check(state: &AppState) {
     if state.updater.busy() {
         return;
@@ -294,7 +287,6 @@ async fn download(state: &AppState, url: &str, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Check `file` was signed with the release key.
 fn verify(file: &Path, signature: &str) -> Result<()> {
     let key = PUBLIC_KEY
         .lines()

@@ -4,11 +4,7 @@ import type { UpdatePhase } from "./UpdatePhase";
 /**
  * Where a node's software update stands (`/update`).
  */
-export type UpdateStatusDto = { 
-/**
- * The version running.
- */
-current: string, 
+export type UpdateStatusDto = { current: string, 
 /**
  * The newest release, once checked.
  */
@@ -18,8 +14,7 @@ latest: string | null,
  */
 available: boolean, 
 /**
- * Why this node can't update itself at all (not the installed app), if
- * it can't.
+ * Why this node can never update itself (not the installed app).
  */
 unsupported: string | null, 
 /**

@@ -1,8 +1,6 @@
-//! Controller: an optional layer on top of a node that discovers other nodes,
-//! forwards commands to them, and merges their event streams.
-//!
-//! Promotion is live: [`Controller::enable`] / [`Controller::disable`] start and
-//! stop the background tasks without touching local capture.
+//! Controller: an optional layer on a node that discovers other nodes,
+//! forwards commands to them and merges their event streams. Enabling and
+//! disabling is live and never touches local capture.
 
 pub mod api;
 pub mod discovery;

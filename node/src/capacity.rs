@@ -1,15 +1,9 @@
-//! Capacity estimates from benchmark results: how many feeds a recording
-//! setup (or replay buffers of a codec, or playout channels with a set of
-//! outputs) sustains on this node, and how much of that the active
-//! recordings, replay buffers and channels use.
-//!
-//! A benchmark measures one setup — a set of outputs, a replay codec or a
-//! channel's outputs, fed footage of one format — so results are looked up
-//! by both. Each feed of a setup that sustains N feeds uses 1/N of the node,
-//! and the shares of the active recordings, buffers and channels add up to
-//! the node's load (1 = full). That holds across setups only
-//! roughly (an encoder bound by the GPU and one bound by the CPU share less
-//! than this assumes), so it's a guide, not a guarantee.
+//! Capacity estimates from benchmark results: how many feeds a setup (recording
+//! outputs, a replay codec, or a channel's outputs) sustains, and how much the
+//! active ones use. Results are looked up by setup and footage format; a feed of
+//! a setup sustaining N uses 1/N of the node, and shares add up to the load
+//! (1 = full). Across setups that's only rough (GPU- and CPU-bound encoders
+//! share less than assumed), so it's a guide.
 
 use crate::api::types::{
     BenchmarkRunDto, BenchmarkStatus, CapacityVerdict, OutputAdvanced, OutputConfig,
@@ -17,12 +11,10 @@ use crate::api::types::{
 };
 use crate::pipeline::monitor::SourceFormat;
 
-/// Load above which a node is "tight" rather than comfortably within its
-/// benchmarked capacity.
+/// Load above which a node is "tight" rather than comfortably within capacity.
 const TIGHT_LOAD: f64 = 0.8;
 
-/// Identifies what a set of outputs encodes, ignoring where it writes and
-/// how it splits files, which don't change the work.
+/// Identifies what outputs encode, ignoring where they write and how they split.
 pub fn outputs_key(outputs: &[PresetOutputInput]) -> String {
     let normalized: Vec<PresetOutputInput> = outputs
         .iter()
@@ -41,8 +33,7 @@ pub fn outputs_key(outputs: &[PresetOutputInput]) -> String {
     serde_json::to_string(&normalized).unwrap_or_default()
 }
 
-/// Identifies replay buffers in `codec`, alongside [`outputs_key`]'s
-/// recording setups.
+/// Identifies replay buffers in `codec`.
 pub fn replay_key(codec: ReplayCodec) -> String {
     format!(
         "replay:{}",
@@ -50,11 +41,9 @@ pub fn replay_key(codec: ReplayCodec) -> String {
     )
 }
 
-/// The outputs of a playout channel's that a benchmark measures: NDI and
-/// SRT, which encode the program all the time, without what doesn't change
-/// the work (names, URLs, latency, passphrase), in a fixed order. RTSP and
-/// WHEP encode only for viewers, and a display only draws, so they're left
-/// out: a channel is judged by its program and the outputs that always run.
+/// The channel outputs a benchmark measures: NDI and SRT, which always encode
+/// the program, minus what doesn't change the work, in a fixed order. RTSP and
+/// WHEP encode only for viewers and displays only draw, so they're left out.
 pub fn channel_outputs(outputs: &[OutputConfig]) -> Vec<OutputConfig> {
     let mut measured: Vec<OutputConfig> = outputs
         .iter()
@@ -76,9 +65,7 @@ pub fn channel_outputs(outputs: &[OutputConfig]) -> Vec<OutputConfig> {
     measured
 }
 
-/// Identifies playout channels with `outputs` (see [`channel_outputs`]),
-/// alongside [`outputs_key`]'s recording setups. A channel's format is its
-/// source format, looked up like a recording's.
+/// Identifies playout channels with `outputs` (see [`channel_outputs`]).
 pub fn channel_key(outputs: &[OutputConfig]) -> String {
     format!(
         "channel:{}",
@@ -87,8 +74,8 @@ pub fn channel_key(outputs: &[OutputConfig]) -> String {
 }
 
 /// What a benchmark measures: a recording setup, replay buffers or playout
-/// channels. A run (or request) names one by which of its fields is set: a
-/// channel's outputs, else a replay codec, else recording outputs.
+/// channels. A run names one by which field is set: channel outputs, else a
+/// replay codec, else recording outputs.
 #[derive(Debug, Clone, Copy)]
 pub enum Setup<'a> {
     Record(&'a [PresetOutputInput]),
@@ -109,12 +96,10 @@ impl<'a> Setup<'a> {
         }
     }
 
-    /// What `run` measured.
     pub fn of(run: &'a BenchmarkRunDto) -> Self {
         Self::new(&run.outputs, run.replay, run.channel.as_deref())
     }
 
-    /// Identifies the setup, to look its results up by.
     pub fn key(&self) -> String {
         match *self {
             Self::Record(outputs) => outputs_key(outputs),
@@ -154,7 +139,6 @@ impl Profile {
     }
 }
 
-/// What a lookup found for one feed.
 pub struct Match {
     /// Feeds of this setup the node sustains (fractional when scaled).
     pub feeds: f64,
@@ -165,8 +149,8 @@ pub struct Match {
 }
 
 impl Match {
-    /// The share of the node one feed uses. A setup that couldn't sustain
-    /// even one feed counts as twice the node.
+    /// The share of the node one feed uses. A setup that couldn't sustain one
+    /// feed counts as twice the node.
     fn load(&self) -> f64 {
         1.0 / self.feeds.max(0.5)
     }
@@ -216,9 +200,8 @@ impl Capacity {
             }) {
                 continue;
             }
-            // A full step at the answer measures what a feed writes when the
-            // node keeps up; failing that any step that passed, and if none
-            // did, the first step is all there is.
+            // A full step at the answer measures a keeping-up feed's writes;
+            // else any passing step, else the first.
             let step = run
                 .steps
                 .iter()
@@ -227,8 +210,7 @@ impl Capacity {
                 .or_else(|| run.steps.iter().rev().find(|s| s.passed))
                 .or(run.steps.first())
                 .expect("non-empty");
-            // Every step up to the limit kept up (one re-measured after a
-            // hiccup still counts).
+            // Every step up to the limit kept up (one re-measured after a hiccup counts).
             let at_limit = run.sustainable_feeds >= run.max_feeds;
             profiles.push(Profile {
                 key,
@@ -258,10 +240,9 @@ impl Capacity {
         self.profiles.iter().map(|p| p.dto.clone()).collect()
     }
 
-    /// What the node sustains of the setup `key` recording a source of
-    /// `format`. A benchmark of the same format answers exactly; failing
-    /// that, the nearest format's result is scaled by pixels per second, and
-    /// a source whose format isn't known yet takes the newest result as is.
+    /// What the node sustains of setup `key` for a source of `format`: exact
+    /// for the same format, else the nearest format scaled by pixels per second,
+    /// else (format unknown) the newest result as is.
     pub fn lookup(&self, key: &str, format: SourceFormat) -> Option<Match> {
         let candidates: Vec<&Profile> = self.profiles.iter().filter(|p| p.key == key).collect();
         let found = |p: &Profile, feeds: f64, estimated: bool| Match {

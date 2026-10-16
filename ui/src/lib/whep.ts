@@ -1,10 +1,4 @@
-/**
- * A WHEP viewer: receives a stream from a WHEP endpoint (a node's WHEP
- * output, `api/whep.rs`) into a `MediaStream`.
- *
- * Non-trickle: the offer goes once ICE gathering is done, so the endpoint
- * never needs a PATCH. Leaving deletes the session.
- */
+/** A WHEP viewer. Non-trickle: the offer goes once ICE gathering is done, so the endpoint never needs a PATCH. */
 export interface WhepSession {
   stream: MediaStream
   /** Leave: closes the connection and ends the session on the node. */

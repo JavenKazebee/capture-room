@@ -13,11 +13,7 @@ import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { MEDIA_DRAG } from './transport'
 
-/**
- * A channel's playlist. Click selects an item, double-click (or Enter) plays
- * it. Rows drag to reorder, and media dragged in from the library is added
- * where it's dropped. Each edit saves the whole list.
- */
+/** A channel's playlist; rows drag to reorder, library media drops in. Each edit saves the whole list. */
 const props = defineProps<{ channel: Source; status?: ChannelStatusDto }>()
 const selected = defineModel<string | null>('selected', { required: true })
 const emit = defineEmits<{ play: [item: PlaylistItemDto] }>()
@@ -71,8 +67,6 @@ async function remove(i: PlaylistItemDto) {
 function setLoop(on: boolean) {
   save(items.value.map(input), on)
 }
-
-// ── Drag and drop ─────────────────────────────────────────────────────────────
 
 const ITEM_DRAG = 'application/x-cr-playlist-item'
 /** Where a drop would land: before this index. */

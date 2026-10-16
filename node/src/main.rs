@@ -64,10 +64,8 @@ enum Cmd {
     },
 }
 
-/// Where replay buffers (`.replay`) and saved replay clips
-/// (`.replay-clips`) are kept: beside the default recording folder, per node
-/// (several can run on one machine). On one volume, so a clip's files can be
-/// hard links to the buffer's.
+/// Replay buffers (`.replay`) and clips (`.replay-clips`), per node, beside
+/// the default recording folder: one volume, so clips can hard-link buffers.
 fn replay_root(folder: &str, node_id: &str) -> std::path::PathBuf {
     storage::default_folder().join(folder).join(node_id)
 }
@@ -134,7 +132,6 @@ async fn run(
     plugins::check_required_plugins()?;
     let pool = db::init(&args.db).await?;
 
-    // ── Node identity ─────────────────────────────────────────────────────────
     let node_id = match db::config_get(&pool, "uuid").await? {
         Some(id) => id,
         None => {
@@ -159,7 +156,6 @@ async fn run(
     db::sessions_mark_crashed(&pool).await?;
     benchmark::recover(&pool).await?;
 
-    // ── Source manager ────────────────────────────────────────────────────────
     let configured = db::configured_sources_list(&pool).await?;
     let monitor_config = db::monitor_settings_get(&pool).await?;
     let ndi_monitor = tokio::task::spawn_blocking(sources::ndi::NdiMonitor::start)
@@ -236,7 +232,6 @@ async fn run(
         tray::spawn(Arc::clone(&state), displays, actions);
     }
 
-    // ── Controller (optional, toggleable at runtime) ──────────────────────────
     if controller_enabled {
         Controller::enable(&state).await?;
     }
@@ -247,7 +242,6 @@ async fn run(
         )
         .ok();
 
-    // ── HTTP server ───────────────────────────────────────────────────────────
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let router = api::build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;

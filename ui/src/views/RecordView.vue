@@ -36,8 +36,6 @@ const fit = useFitTiles(gridScroller, computed(() => desk.visible.length), { gap
 /** The tile width in use: fitted, or the one picked on the slider. */
 const tileWidth = computed(() => (tileFit.value ? fit.size.value : tileSize.value))
 
-// ── Toolbar ───────────────────────────────────────────────────────────────────
-
 const nodeOptions = computed(() => [
   { value: 'all', label: 'All nodes' },
   ...nodes.nodes.map((n) => ({ value: n.id, label: nodes.nameOf(n.id) })),
@@ -76,8 +74,6 @@ const scopeLive = computed(() => desk.scope.filter((s) => desk.isLive(s)))
 const scopeIdle = computed(() => desk.scope.filter((s) => !desk.isLive(s)))
 const allScope = computed(() => desk.selected.size === 0)
 
-// ── Keyboard ──────────────────────────────────────────────────────────────────
-
 useViewKeys((e) => {
   // Esc closes an open info popover first, then clears the selection.
   if (e.key === 'Escape') {
@@ -97,11 +93,7 @@ useViewKeys((e) => {
   <div class="h-full flex flex-col min-h-0">
     <PageHeader title="Record" :count="sources.sources.length" :shortcuts="SHORTCUTS">
       <template #actions>
-        <!--
-          Transport: one fixed-width group acting on the selection, or on every
-          visible feed when nothing is selected. Only labels change, so the
-          toolbar never shifts when the selection does.
-        -->
+        <!-- Fixed width and only labels change, so the toolbar never shifts with the selection. -->
         <div class="flex items-center gap-2">
           <span class="w-24 flex items-center gap-1 text-xs tabular-nums">
             <template v-if="allScope">

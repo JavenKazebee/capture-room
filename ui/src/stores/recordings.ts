@@ -10,34 +10,22 @@ import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import type { RecordingSessionDto } from '@/types/generated/RecordingSessionDto'
 import type { StartRecordingRequest } from '@/types/generated/StartRecordingRequest'
 
-/**
- * A node's session tagged with the node it lives on (`id` and `source_id` are
- * local to that node).
- */
+/** A session tagged with its node (`id` and `source_id` are node-local). */
 export type RecordingSession = RecordingSessionDto & { node_id: string }
 
-/**
- * Each output's files: every file it wrote (none once they're all deleted), or
- * its planned path while it hasn't opened one yet or for sessions from before
- * files were kept.
- */
+/** An output's files, or its planned path before it opens one (and for sessions with no file list). */
 export function outputFiles(s: Pick<RecordingSessionDto, 'output_paths' | 'files' | 'status'>, i: number): string[] {
   if (!s.files.length) return [s.output_paths[i]!]
   const files = s.files[i] ?? []
   return files.length || s.status !== 'active' ? files : [s.output_paths[i]!]
 }
 
-/**
- * The output to preview a session with: the one its preset marked, else the
- * first a browser can play. `-1` when none can be played (or the session is
- * from before outputs were recorded with it).
- */
+/** The preset's preview output, else the first browser-playable one; `-1` if none. */
 export function previewOutput(s: Pick<RecordingSessionDto, 'outputs'>): number {
   const marked = s.outputs.findIndex((o) => o.playable && o.preview)
   return marked !== -1 ? marked : s.outputs.findIndex((o) => o.playable)
 }
 
-/** Video frames a session dropped across all its outputs. */
 export function totalDropped(s: Pick<RecordingSessionDto, 'dropped_frames'>) {
   return s.dropped_frames.reduce((a, b) => a + b, 0)
 }
@@ -66,10 +54,8 @@ export const useRecordingsStore = defineStore('recordings', () => {
   }
 
   /**
-   * History is paged per node, so a node with busy days may have loaded only
-   * this week while another has loaded a month. Sessions before the newest
-   * cursor among nodes with more to load could have gaps; `history` leaves
-   * them out until "load older" fills them in.
+   * History is paged per node, so nodes load different spans. Sessions before the
+   * newest cursor among incomplete nodes may have gaps; `history` hides them.
    */
   const horizon = computed(() => {
     let h: string | null = null
@@ -142,9 +128,8 @@ export const useRecordingsStore = defineStore('recordings', () => {
       () => null,
     )
     if (!list) return
-    // The page also carries active sessions, so a short one is the whole
-    // history. A full one replaces only the span it covers, keeping older
-    // pages already loaded (a refresh mid-scroll shouldn't lose them).
+    // A short page is the whole history. A full one replaces only its span, so a
+    // refresh mid-scroll keeps older pages.
     const whole = list.length < PAGE
     const oldest = list.reduce((min, s) => (s.started_at < min ? s.started_at : min), list[0]?.started_at ?? '')
     sessions.value = sessions.value.filter(
@@ -177,11 +162,7 @@ export const useRecordingsStore = defineStore('recordings', () => {
     }
   }
 
-  /**
-   * Remove a finished session from history. With `files`, its files are
-   * deleted from disk first; if some can't be, the session stays, listing
-   * only those still on disk.
-   */
+  /** Remove a finished session. With `files`, deletes them first; any that can't be keep the session. */
   async function remove(nodeId: string, sessionId: string, { files = false } = {}) {
     const path = `/recordings/${encodeURIComponent(sessionId)}`
     try {
@@ -196,10 +177,7 @@ export const useRecordingsStore = defineStore('recordings', () => {
     removeLocal(nodeId, sessionId)
   }
 
-  /**
-   * Delete one of a finished session's files from disk; the session stays.
-   * `path` guards against the list having changed since it was shown.
-   */
+  /** Delete one file of a finished session; `path` guards against the list having changed. */
   async function deleteFile(nodeId: string, sessionId: string, output: number, file: number, path: string) {
     const dto = await nodeApi(nodeId)<RecordingSessionDto>(
       `/recordings/${encodeURIComponent(sessionId)}/outputs/${output}/files/${file}`,
@@ -233,10 +211,8 @@ export const useRecordingsStore = defineStore('recordings', () => {
   }
 
   /**
-   * Start recording `sourceId` on `nodeId`. The preset's outputs are sent
-   * inline — nodes keep no preset store. With no preset, a single default
-   * H.264/MOV output is used. With `startAt`, the recording begins at that
-   * time on the shared clock (see `syncedStartTime`).
+   * The preset's outputs are sent inline (nodes keep no presets); none means one
+   * H.264/MOV output. `startAt` is a time on the shared clock.
    */
   async function start(nodeId: string, sourceId: string, preset: PresetDto | null, startAt: ClockTimeDto | null = null) {
     const outputs: PresetOutputInput[] = preset ? preset.outputs : [blankLeg()]

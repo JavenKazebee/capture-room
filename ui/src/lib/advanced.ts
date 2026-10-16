@@ -8,10 +8,8 @@ import type { RateControl } from '@/types/generated/RateControl'
 import type { SpeedPreset } from '@/types/generated/SpeedPreset'
 import { CONTAINERS, hasBitrate } from '@/lib/codecs'
 
-// Client-side copy of an output's Advanced settings logic, mirroring
-// `RecordingProfile` in `node/src/pipeline/profile.rs` (encoder candidates,
-// Auto audio, checks), so the editor can explain and validate without a
-// round trip.
+// Mirrors `RecordingProfile` in `profile.rs` (encoders, Auto audio, checks) so the
+// editor can validate without a round trip.
 
 export const DEFAULT_QUALITY = 70
 export const DEFAULT_KEYFRAME_SECS = 2
@@ -33,8 +31,6 @@ export function defaultAdvanced(): OutputAdvanced {
     split_gb: null,
   }
 }
-
-// ── Encoders ──────────────────────────────────────────────────────────────────
 
 const ENCODER_NAMES: Record<string, string> = {
   vtenc_h264: 'VideoToolbox',
@@ -100,8 +96,6 @@ export function usesSpeedPreset(leg: PresetOutputInput) {
   return legEncoders(leg).some((e) => e === 'x264enc' || e === 'x265enc')
 }
 
-// ── Audio ─────────────────────────────────────────────────────────────────────
-
 const AUDIO_FOR: Record<Exclude<AudioCodecChoice, 'auto'>, Container[]> = {
   pcm: ['mov', 'mkv'],
   aac: ['mov', 'mp4', 'mkv'],
@@ -147,8 +141,6 @@ export function formatChannels(list: number[]) {
   return parts.join(', ')
 }
 
-// ── Options ───────────────────────────────────────────────────────────────────
-
 export const RATE_CONTROL_OPTIONS: { value: RateControl; label: string }[] = [
   { value: 'average', label: 'Average bitrate' },
   { value: 'constant', label: 'Constant bitrate' },
@@ -174,8 +166,6 @@ export function audioCodecOptions(leg: PresetOutputInput) {
     }),
   ]
 }
-
-// ── Checks and summary ────────────────────────────────────────────────────────
 
 export type AdvancedField =
   | 'encoder'

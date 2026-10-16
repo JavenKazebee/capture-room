@@ -24,10 +24,8 @@ pub fn node_router(state: Arc<AppState>) -> Router {
     node::router().with_state(state)
 }
 
-/// No CORS layer: the UI is served from this origin (or proxied by Vite in
-/// development), and allowing other origins would let any page the operator
-/// has open start recordings or add nodes. Only `/whep` allows any origin,
-/// for web players (see [`whep`]).
+/// No CORS layer: the UI is same-origin, and allowing other origins would let
+/// any open page start recordings or add nodes. Only `/whep` allows any origin.
 pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .nest("/api/v1/node", node::router())
@@ -44,8 +42,6 @@ pub(crate) async fn probe(path: String) -> ApiResult<MediaInfo> {
         .await?
         .map_err(ApiError::bad)
 }
-
-// ── Embedded UI ───────────────────────────────────────────────────────────────
 
 #[derive(RustEmbed)]
 #[folder = "../ui/dist"]

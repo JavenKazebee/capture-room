@@ -29,8 +29,6 @@ const visibleColumns = computed(() => {
   return props.columns.filter((c) => c.alwaysVisible || (prefs[c.id] ?? !c.hiddenByDefault))
 })
 
-// ── Sorting ───────────────────────────────────────────────────────────────────
-
 const sort = ref<{ id: string; dir: 'asc' | 'desc' } | null>(null)
 
 function toggleSort(c: Column<T>) {

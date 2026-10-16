@@ -58,8 +58,6 @@ function openInRecord() {
   router.push('/record')
 }
 
-// ── Rename ────────────────────────────────────────────────────────────────────
-
 const editing = ref(false)
 const draft = ref('')
 const saving = ref(false)
@@ -94,7 +92,6 @@ async function saveRename() {
 
 <template>
   <article class="flex flex-col rounded-lg border border-border bg-card">
-    <!-- Identity -->
     <header class="px-4 pt-3 pb-2.5">
       <div class="flex items-center gap-2 h-7">
         <StatusDot :status="node.healthy ? 'ok' : 'error'" />
@@ -161,7 +158,6 @@ async function saveRename() {
       </div>
     </header>
 
-    <!-- Activity -->
     <dl class="grid grid-cols-3 border-y border-border divide-x divide-border text-xs">
       <div class="px-4 py-2">
         <dt class="text-muted-foreground">Sources</dt>
@@ -189,7 +185,6 @@ async function saveRename() {
       </div>
     </dl>
 
-    <!-- Storage -->
     <section class="px-4 py-3 space-y-2">
       <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Storage</h3>
       <p v-if="!node.healthy" class="text-xs text-muted-foreground h-[1.625rem] flex items-center">Not available while unreachable.</p>

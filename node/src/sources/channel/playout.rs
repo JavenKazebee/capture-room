@@ -23,19 +23,18 @@ pub struct ClipRequest {
     pub path: String,
     pub in_point: gst::ClockTime,
     pub out_point: Option<gst::ClockTime>,
-    /// Where it's cued, if not on its first frame: playing goes on from
-    /// there, and again plays it from the start.
+    /// Where it's cued, if not its first frame: playing continues from there,
+    /// and replaying starts from the beginning.
     pub start: Option<gst::ClockTime>,
     pub end: ClipEnd,
-    /// Speed: 1 is normal, negative plays from the out point back to the
-    /// in point. Audio is only heard at 1.
+    /// Speed: 1 is normal, negative plays from the out point back to the in
+    /// point. Audio is only heard at 1.
     pub rate: f64,
     /// Part of a replay buffer, played instead of `path` (its folder).
     pub replay: Option<ReplayClip>,
 }
 
-/// A replay buffer's span, as a clip's source: positions in the clip count
-/// from the start of its first file.
+/// A replay buffer's span as a clip source; positions count from its first file's start.
 #[derive(Debug, Clone)]
 pub struct ReplayClip {
     pub source_id: String,
@@ -53,14 +52,12 @@ impl PartialEq for ReplayClip {
     }
 }
 
-/// An entry in a channel's playlist.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaylistItem {
     pub id: String,
     pub clip: ClipRequest,
 }
 
-/// What a channel is doing, for the API.
 #[derive(Debug, Clone)]
 pub struct PlayoutStatus {
     pub state: TransportState,
@@ -78,15 +75,13 @@ pub struct PlayoutStatus {
     pub playlist_rev: u64,
 }
 
-/// A channel's transport: loads clips and plays them into its program, and
-/// runs its playlist. Lives as long as the channel, across monitor restarts
-/// and config changes (see [`InputSource::adopt`]).
+/// A channel's transport: loads clips into its program and runs its playlist.
+/// Lives across monitor restarts and config changes (see [`InputSource::adopt`]).
 ///
-/// The *deck* holds the clip on air and the playlist's next item, cued in
-/// the background (in *standby*: prerolled, pushing nothing), so it starts
-/// at once: also while the channel is idle, when it's the item Play starts. A clip that ends into the next item hands over to it at the
-/// frame after its last one: the next player's base time is set so its
-/// first buffer lands there, on the same lanes.
+/// The *deck* holds the clip on air and the next item cued in *standby*
+/// (prerolled, pushing nothing) so it starts at once, including as what Play
+/// starts while idle. A clip ending into the next item hands over at the frame
+/// after its last: the next player's base time puts its first buffer there.
 pub struct Playout {
     pub(super) lanes: Arc<Lanes>,
     /// Serializes transport commands.
@@ -100,13 +95,11 @@ pub struct Playout {
 #[derive(Default)]
 struct Deck {
     current: Option<Clip>,
-    /// The next item, cued in standby.
     next: Option<Clip>,
     /// The item being cued for `next`, meanwhile.
     preloading: Option<PlaylistItem>,
-    /// Where the item on air (or the last one) was in the playlist, for
-    /// finding the next one if it's removed while it plays, and what's next
-    /// once the channel is idle.
+    /// Where the item on air (or the last) was in the playlist, to find the
+    /// next one if it's removed while playing, or once idle.
     position: Option<usize>,
 }
 
@@ -115,7 +108,7 @@ struct Playlist {
     items: Vec<PlaylistItem>,
     loop_playlist: bool,
     rev: u64,
-    /// Read from the database (by the API) yet.
+    /// Read from the database yet.
     loaded: bool,
 }
 
@@ -130,8 +123,8 @@ struct Shared {
     player: Option<glib::WeakRef<gst::Pipeline>>,
     /// Where the player on air is showing.
     marks: Option<Arc<Marks>>,
-    /// The last position read (or sought to): a player can't answer while
-    /// it flushes for a seek.
+    /// The last position read or sought to: a player can't answer while it
+    /// flushes for a seek.
     position: Option<gst::ClockTime>,
 }
 
@@ -187,8 +180,7 @@ impl Clip {
         self.item.as_ref() == Some(&item.id) && self.request == item.clip
     }
 
-    /// Set what the appsinks do, then put the player in `state` (playing or
-    /// paused).
+    /// Set the appsinks' mode, then put the player in `state`.
     fn run(&self, mode: ClipMode, state: gst::State) -> Result<()> {
         self.mode.store(mode);
         let verb = if state == gst::State::Playing {
@@ -239,8 +231,8 @@ impl Playout {
         }
     }
 
-    /// How the clips played so far have reached the program: frames that
-    /// arrived, and those too late to show. For the benchmark.
+    /// Frames the clips played so far delivered to the program, and how many
+    /// were too late. For the benchmark.
     pub fn played(&self) -> PlayedProgress {
         self.lanes.played()
     }
@@ -249,8 +241,7 @@ impl Playout {
         let rev = self.playlist.lock().unwrap().rev;
         let mut shared = self.shared.lock().unwrap();
         let player = shared.player.as_ref().and_then(|p| p.upgrade());
-        // The frame showing; a player's own position is off after a step
-        // and backwards.
+        // The frame showing; a player's own position is off after a step and backwards.
         if let Some(position) = shared
             .marks
             .as_ref()
@@ -272,9 +263,6 @@ impl Playout {
         }
     }
 
-    // ── Playlist ──────────────────────────────────────────────────────────────
-
-    /// Whether the playlist has been read from the database.
     pub fn playlist_loaded(&self) -> bool {
         self.playlist.lock().unwrap().loaded
     }
@@ -285,15 +273,15 @@ impl Playout {
         (p.items.clone(), p.loop_playlist, p.rev)
     }
 
-    /// Replace the playlist. The clip on air plays on (as it was cued); the
-    /// next item is cued again if it changed.
+    /// Replace the playlist. The clip on air plays on as cued; the next item
+    /// is recued if it changed.
     pub async fn set_playlist(self: &Arc<Self>, items: Vec<PlaylistItem>, loop_playlist: bool) {
         let mut deck = self.deck.lock().await;
         {
             let mut p = self.playlist.lock().unwrap();
-            // What the clip on air does at its out point follows its item,
-            // so "stop after this one" works while it plays. Not into or out
-            // of a loop, which its seeks set up.
+            // The on-air clip's out-point behavior follows its item, so "stop
+            // after this one" works mid-play. Not into or out of a loop, which
+            // its seeks set up.
             if let Some(clip) = deck.current.as_mut() {
                 let edited = items.iter().find(|i| clip.item.as_ref() == Some(&i.id));
                 if let Some(item) = edited {
@@ -317,8 +305,8 @@ impl Playout {
         self.refresh_next(&mut deck);
     }
 
-    /// The item after the one on air, if there's one on air from the
-    /// playlist. Idle, the item after the last one played, or the first.
+    /// The item after the one on air from the playlist; idle, the item after
+    /// the last played, or the first.
     fn following(&self, deck: &mut Deck) -> Option<PlaylistItem> {
         let p = self.playlist.lock().unwrap();
         let index = match deck.current.as_ref() {
@@ -394,8 +382,6 @@ impl Playout {
         });
     }
 
-    // ── Transport ─────────────────────────────────────────────────────────────
-
     fn item(&self, item_id: &str) -> Result<PlaylistItem> {
         self.playlist
             .lock()
@@ -422,8 +408,7 @@ impl Playout {
         self.take(&mut deck, item, true).await
     }
 
-    /// Load `request` (not from the playlist) and cue it, or play it.
-    /// Replaces any clip.
+    /// Load `request` (not from the playlist), replacing any clip, and cue or play it.
     pub async fn load(self: &Arc<Self>, request: ClipRequest, play: bool) -> Result<()> {
         self.load_clip(request, None).await?;
         if play {
@@ -465,8 +450,8 @@ impl Playout {
         Ok(())
     }
 
-    /// Open and preroll a clip at its in point. On air, its lanes are opened
-    /// and its first frame shows; otherwise it's in standby.
+    /// Open and preroll a clip at its in point. On air, its lanes open and
+    /// its first frame shows; otherwise it's in standby.
     async fn cue(
         self: &Arc<Self>,
         request: &ClipRequest,
@@ -527,8 +512,8 @@ impl Playout {
         })
     }
 
-    /// Put a standby clip on air in place of the current one: playing, from
-    /// the frame after the current one's last, or cued.
+    /// Put a standby clip on air in place of the current one: playing from the
+    /// frame after the current one's last, or cued.
     fn put_on_air(&self, deck: &mut Deck, clip: Clip, play: bool) -> Result<()> {
         if let Some(old) = &deck.current {
             old.mode.store(ClipMode::Off);
@@ -537,8 +522,8 @@ impl Playout {
         if play || !playing {
             self.lanes.ensure(clip.has_audio)?;
         } else {
-            // Cued over a clip playing: new lanes, or its frame would land
-            // behind what's queued and be dropped.
+            // Cued over a playing clip: new lanes, or its frame lands behind
+            // what's queued and is dropped.
             self.lanes.open(clip.has_audio)?;
         }
         if play {
@@ -564,8 +549,8 @@ impl Playout {
         Ok(())
     }
 
-    /// Play a prerolled clip from its first frame, following straight on
-    /// from what the program has queued.
+    /// Play a prerolled clip from its first frame, following on from what the
+    /// program has queued.
     fn start(&self, clip: &Clip) -> Result<()> {
         let rt = gst::ClockTime::from_nseconds(clip.marks.first_rt.load(Ordering::SeqCst));
         let base = self.lanes.follow_on_base(rt);
@@ -666,8 +651,8 @@ impl Playout {
         self.refresh_next(&mut deck);
     }
 
-    /// Go to `position` in the file, kept within the clip's in and out
-    /// points. Paused or cued, the frame there is shown.
+    /// Go to `position`, kept within the clip's in and out points. Paused or
+    /// cued, the frame there shows.
     pub async fn seek(&self, position: gst::ClockTime) -> Result<()> {
         let mut deck = self.deck.lock().await;
         let clip = deck.current.as_mut().context("no clip loaded")?;
@@ -677,8 +662,8 @@ impl Playout {
         Ok(())
     }
 
-    /// Play the clip on air at `rate` from where it is (1 normal, 0.5 half
-    /// speed, negative backwards). Only replays change speed.
+    /// Play the clip on air at `rate` from where it is (negative backwards).
+    /// Only replays change speed.
     pub async fn set_rate(&self, rate: f64) -> Result<()> {
         check_rate(rate)?;
         let mut deck = self.deck.lock().await;
@@ -724,9 +709,8 @@ impl Playout {
             true,
             false,
         ));
-        // Done once the frame stepped to shows (a step leaves the player's
-        // state alone, so there's no state change to wait for). None comes
-        // at either end of the clip.
+        // Done once the stepped-to frame shows: a step doesn't change state,
+        // so there's nothing else to wait for. None comes at either end.
         let until = tokio::time::Instant::now() + STEP_TIMEOUT;
         while clip.marks.shown() == before && tokio::time::Instant::now() < until {
             tokio::time::sleep(Duration::from_millis(2)).await;
@@ -746,8 +730,7 @@ impl Playout {
             .unwrap_or(clip.request.in_point)
     }
 
-    /// An ended clip is shown paused again, its lanes back if it went to
-    /// black.
+    /// Show an ended clip paused again, its lanes back if it went to black.
     fn reopen_if_ended(&self, clip: &Clip) -> Result<()> {
         let mut shared = self.shared.lock().unwrap();
         if shared.state == TransportState::Ended {
@@ -776,7 +759,7 @@ impl Playout {
                 }
             }
         }
-        // Hold (or go to black) on the last frame; also when the next item
+        // Hold (or go to black) on the last frame, also when the next item
         // couldn't be taken.
         let Some(clip) = deck.current.as_ref().filter(|c| c.serial == serial) else {
             return;
@@ -788,8 +771,8 @@ impl Playout {
         self.shared.lock().unwrap().state = TransportState::Ended;
     }
 
-    /// A clip's player failed: on air, stop it and go to black, keeping the
-    /// error to show; in standby, drop it.
+    /// A clip's player failed: on air, stop and go to black, keeping the error;
+    /// in standby, drop it.
     async fn failed(self: Arc<Self>, serial: u64, error: String) {
         let mut deck = self.deck.lock().await;
         if let Some(clip) = deck.next.take_if(|c| c.serial == serial) {
@@ -833,8 +816,7 @@ impl Playout {
     }
 }
 
-/// Sets a player to NULL on drop unless forgotten: a failed cue doesn't
-/// leave it running.
+/// Sets a player to NULL on drop unless forgotten, so a failed cue doesn't leave it running.
 struct PlayerGuard(Option<gst::Pipeline>);
 
 impl Drop for PlayerGuard {
@@ -845,9 +827,9 @@ impl Drop for PlayerGuard {
     }
 }
 
-/// Wait for a state change to finish, or the player to fail. A looping
-/// clip's segment can end meanwhile (the demuxer runs ahead of playback
-/// into the decoder's queues, even paused), so it's looped here too.
+/// Wait for a state change to finish, or the player to fail. A looping clip's
+/// segment can end meanwhile (the demuxer runs ahead into the decoder's
+/// queues, even paused), so it's looped here too.
 async fn wait_async_done(
     messages: &mut gst::bus::BusStream,
     player: &gst::Pipeline,
@@ -873,10 +855,9 @@ async fn wait_async_done(
         .map_err(|_| anyhow!("{path}: timed out loading"))?
 }
 
-/// A seek to the clip's in point, ending at its out point. A looping clip's
-/// seeks are segment seeks: the segment's end comes as `SEGMENT_DONE`, and
-/// the next seek continues from it without a gap.
-/// At a negative rate, it plays from the out point back to the in point.
+/// A seek to the clip's in point, ending at its out point (or the reverse at a
+/// negative rate). Looping clips use segment seeks: `SEGMENT_DONE` ends the
+/// segment and the next seek continues without a gap.
 fn seek(player: &gst::Pipeline, clip: &ClipRequest, flags: gst::SeekFlags) -> Result<()> {
     seek_span(
         player,
@@ -915,9 +896,8 @@ fn seek_span(
     Ok(())
 }
 
-/// Go to `position` (kept within the clip) at `rate`, going on from there
-/// towards the out point, or the in point backwards; wait for the frame
-/// there. Returns the position.
+/// Go to `position` (kept within the clip) at `rate`, continuing toward the
+/// out point (or in point backwards), and wait for the frame. Returns the position.
 async fn seek_from(
     player: &gst::Pipeline,
     clip: &ClipRequest,
@@ -931,8 +911,7 @@ async fn seek_from(
     Ok(at)
 }
 
-/// From `position` (kept within the clip) at `rate`: the position, and the
-/// seek's start and stop.
+/// From `position` (kept within the clip) at `rate`: the position and the seek's start and stop.
 fn span_from(
     clip: &ClipRequest,
     position: gst::ClockTime,
@@ -945,8 +924,7 @@ fn span_from(
     if rate > 0.0 {
         (at, at, clip.out_point)
     } else {
-        // Backwards from the frame at `at`, which starts there: a stop at
-        // `at` would leave it out.
+        // Backwards from the frame starting at `at`: a stop at `at` would leave it out.
         let stop = at + gst::ClockTime::from_nseconds(1);
         (
             at,
@@ -986,8 +964,7 @@ fn spawn_failed(playout: Arc<Playout>, serial: u64, error: String) {
     tokio::spawn(playout.failed(serial, error));
 }
 
-/// Loop the clip, and tell the transport when it ends or fails. Runs until
-/// the clip is unloaded.
+/// Loop the clip and report when it ends or fails. Runs until it's unloaded.
 async fn watch_player(
     mut messages: gst::bus::BusStream,
     player: glib::WeakRef<gst::Pipeline>,

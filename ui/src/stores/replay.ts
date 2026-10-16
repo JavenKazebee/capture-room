@@ -18,7 +18,6 @@ import type { UpdateReplayClipRequest } from '@/types/generated/UpdateReplayClip
 
 export type ReplayBuffer = ReplayBufferDto & {
   node_id: string
-  /** The source's key. */
   key: string
   /** `performance.now()` when it was fetched, to run its clock on from `now_us`. */
   fetched_at: number
@@ -49,11 +48,7 @@ export const CODECS: Record<ReplayCodec, { label: string; note: string }> = {
   mjpeg: { label: 'Motion JPEG', note: 'About 40–55 GB an hour at 1080p59.94. Any platform.' },
 }
 
-/**
- * Replay buffers on every node (polled while the Replay workspace is open:
- * their span moves every second) and the commands that play from them on a
- * channel. Channel status lands in the playout store, like Playback's.
- */
+/** Replay buffers on every node (polled while Replay is open) and their commands; channel status lives in the playout store. */
 export const useReplayStore = defineStore('replay', () => {
   const nodes = useNodesStore()
   const playout = usePlayoutStore()
@@ -107,8 +102,6 @@ export const useReplayStore = defineStore('replay', () => {
     return s
   }
 
-
-  // ── Saved clips ─────────────────────────────────────────────────────────────
 
   async function loadClips(nodeId: string) {
     const list = await nodeApi(nodeId)<ReplayClipDto[]>('/replay/clips')
@@ -166,11 +159,7 @@ export const useReplayStore = defineStore('replay', () => {
     return nodeApi(clip.node_id)<MediaItemDto>(`/replay/clips/${clip.id}/export`, { method: 'POST' })
   }
 
-  /**
-   * Put a saved clip on a channel (same node), cued or playing: from its
-   * first frame, or from `atUs` (node clock), as another angle of its group
-   * at the same moment.
-   */
+  /** Put a saved clip on a channel (same node), from its first frame or from `atUs` (node clock). */
   async function playClip(channelId: string, clip: ReplayClip, rate: number, play: boolean, atUs: number | null = null) {
     const s = await nodeApi(clip.node_id)<ChannelStatusDto>(`/channels/${channelId}/replay-clip`, {
       method: 'POST',

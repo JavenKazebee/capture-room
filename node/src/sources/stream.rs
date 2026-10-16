@@ -22,10 +22,7 @@ pub const PROTOCOLS: &[(&str, &str)] = &[
     ("udp", "udpsrc"),
 ];
 
-// ── StreamSource ──────────────────────────────────────────────────────────────
-
-/// A network stream, decoded by `uridecodebin3` and kept alive by
-/// `fallbacksrc` (see [`live`]).
+/// A network stream, decoded by `uridecodebin3` and kept alive by `fallbacksrc`.
 pub struct StreamSource {
     id: String,
     name: String,
@@ -104,8 +101,7 @@ impl InputSource for StreamSource {
     }
 }
 
-/// Apply the source's settings to the protocol element `uridecodebin3`
-/// made for it.
+/// Apply the source's settings to the protocol element `uridecodebin3` made.
 fn configure(src: &gst::Element, latency_ms: u32, transport: RtspTransport) {
     let factory = src
         .factory()
@@ -124,9 +120,6 @@ fn configure(src: &gst::Element, latency_ms: u32, transport: RtspTransport) {
     }
 }
 
-// ── URLs ──────────────────────────────────────────────────────────────────────
-
-/// The URL's scheme, lowercased.
 pub fn scheme(url: &str) -> Option<String> {
     let (scheme, rest) = url.split_once("://")?;
     (!scheme.is_empty() && !rest.is_empty()).then(|| scheme.to_ascii_lowercase())
@@ -162,8 +155,7 @@ pub fn listen_port(cfg: &StreamSourceConfig) -> Option<u16> {
     url_listen_port(&cfg.url)
 }
 
-/// The local port `url` binds, if it listens (see [`listen_port`]). Also
-/// used for SRT outputs, which follow the same rules.
+/// The local port `url` binds, if it listens. Also used for SRT outputs.
 pub fn url_listen_port(url: &str) -> Option<u16> {
     let url = url.trim();
     let (host, port) = host_port(url);
@@ -174,9 +166,8 @@ pub fn url_listen_port(url: &str) -> Option<u16> {
     }
 }
 
-/// The URI to hand GStreamer: an SRT URL with no host listens, and UDP's
-/// VLC-style `udp://@:5000` / `udp://@239.1.1.1:5000` become plain
-/// `host:port` (no host binds every interface).
+/// The URI to hand GStreamer: a hostless SRT URL listens, and VLC-style
+/// `udp://@:5000` / `udp://@239.1.1.1:5000` become plain `host:port`.
 pub(crate) fn uri(url: &str) -> Result<String> {
     let url = url.trim();
     let Some(scheme) = scheme(url) else {
@@ -198,8 +189,7 @@ pub(crate) fn uri(url: &str) -> Result<String> {
     Ok(url.to_string())
 }
 
-/// Check a config before it's saved. `available` says whether an element is
-/// installed on this node.
+/// Check a config before it's saved. `available` says whether an element is installed.
 pub fn validate(cfg: &StreamSourceConfig, available: impl Fn(&str) -> bool) -> Result<(), String> {
     let url = cfg.url.trim();
     let scheme = scheme(url).ok_or("enter a URL, like rtsp://camera.local/stream")?;
@@ -285,9 +275,8 @@ mod tests {
     }
 }
 
-/// The whole monitor pipeline, as the app runs it, across a sender dropout:
-/// the producers recordings read from must never stall, or a recording's
-/// input queue drops the burst that follows.
+/// The monitor pipeline across a sender dropout: producers recordings read
+/// from must never stall, or a recording's input queue drops the next burst.
 #[cfg(test)]
 mod monitor_tests {
     use std::sync::{Arc, Mutex};
@@ -297,8 +286,8 @@ mod monitor_tests {
     use crate::api::types::MonitorSettingsDto;
     use crate::pipeline::monitor::MonitorPipeline;
 
-    /// A sending pipeline, stopped when dropped: disposing one that's still
-    /// playing (as a failed assertion would) crashes its streaming threads.
+    /// Stopped when dropped: disposing a playing pipeline (as a failed
+    /// assertion would) crashes its streaming threads.
     struct Sender(gst::Element);
 
     impl Drop for Sender {

@@ -1,5 +1,5 @@
-//! Recording legs. Each output leg runs in its own pipeline, fed raw video and
-//! audio by its source's [`MonitorPipeline`] producers:
+//! Recording legs, each in its own pipeline fed by the source's
+//! [`MonitorPipeline`]:
 //!
 //! ```text
 //! appsrc(video) → [videorate → caps] → [videoscale → caps] → videoconvert → [caps] → venc → [parse] ─┐
@@ -7,10 +7,8 @@
 //! appsrc(audio) → queue → audioconvert → audioresample → [caps] → aenc | audiorate (PCM) ────────┘
 //! ```
 //!
-//! Whatever goes wrong in a leg — a codec the container rejects at runtime, a
-//! full disk — fails only that leg's pipeline. The monitor and the other legs
-//! keep running, and the failure is reported the moment it happens through the
-//! leg's [`OnLegError`] callback.
+//! A failure (a codec the container rejects at runtime, a full disk) fails
+//! only that leg, reported at once through [`OnLegError`].
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,25 +29,18 @@ use super::{
 };
 use crate::api::types::{Container, RateControl};
 
-/// Crash safety for .mov/.mp4 (see where the muxer is configured in
-/// [`RecordingLeg::build_with`]):
+/// Crash safety for .mov/.mp4:
 ///
-/// - Compressed audio: written as fragments while recording, each playable
-///   once complete, and turned into an ordinary file when the leg finishes.
-///   A crash loses at most the fragment being written. Costs nothing.
-/// - PCM: qtmux writes fragments of raw audio that nothing can read back
-///   (tested: ffmpeg and qtdemux both stop at the first one), so these keep
-///   the index at the front of the file instead, rewritten every period.
-///   That space is reserved up front, twice over (qtmux alternates two
-///   copies): 2 × 550 B/s per track for the longest a file runs — about
-///   32 MB for `PCM_MAX_FILE` (4 h), 4 MB for a 30-minute split. If the
-///   space fills, qtmux stops the leg with an error ("Not enough free
-///   reserved header space") rather than falling back, so these legs always
-///   go through splitmuxsink and start a new file by then. 550 B/s is a
-///   worst case: 1080p30 ProRes + PCM used about an eighth of it.
+/// - Compressed audio: written as fragments, finalised into an ordinary file
+///   at the end. A crash loses at most the current fragment.
+/// - PCM: qtmux's PCM fragments can't be read back (ffmpeg and qtdemux stop
+///   at the first), so the index is kept at the front of the file and
+///   rewritten every period. qtmux reserves 2 × ~550 B/s per track for the
+///   longest file (~32 MB for 4 h) and errors when it fills, so these legs
+///   always use splitmuxsink to start a new file in time.
 ///
-/// (qtmux's `moov-recovery-file` with `qtmoovrecover` was tried first: the
-/// files it rebuilt from H.264 + AAC didn't decode.)
+/// `moov-recovery-file` + `qtmoovrecover` doesn't work: rebuilt H.264 + AAC
+/// files didn't decode.
 const CRASH_SAFE_FRAGMENT: gst::ClockTime = gst::ClockTime::from_seconds(2);
 const CRASH_SAFE_PERIOD: gst::ClockTime = gst::ClockTime::from_seconds(10);
 
@@ -57,23 +48,16 @@ const CRASH_SAFE_PERIOD: gst::ClockTime = gst::ClockTime::from_seconds(10);
 /// fails. Runs on a GStreamer streaming thread, so it must not block.
 pub type OnLegError = Arc<dyn Fn(&Path, String) + Send + Sync>;
 
-/// One running output leg.
 pub struct RecordingLeg {
-    /// Its error is why it failed, from the bus: the reason given when it
-    /// won't start.
     consumer: ConsumerPipeline,
     /// The leg's (first) file.
     location: PathBuf,
-    /// Every file written so far: just `location`, unless the leg splits.
     files: Arc<Mutex<Vec<PathBuf>>>,
-    /// The video encoder element the leg was built with.
     encoder: &'static str,
     /// Running time of the first video frame recorded; `u64::MAX` until one.
     first_frame: Arc<AtomicU64>,
-    /// The monitor's base time, shared by the leg.
     base_time: Option<gst::ClockTime>,
-    /// The encoder's output, stamped with timecode for containers that
-    /// keep it (MOV).
+    /// The encoder's src pad, stamped with timecode for MOV.
     timecode_pad: Option<gst::Pad>,
 }
 
@@ -81,18 +65,13 @@ pub struct RecordingLeg {
 /// streaming thread, so it must not block.
 pub type OnLegFile = Arc<dyn Fn() + Send + Sync>;
 
-/// Start one leg per `(path, profile)`, consuming `monitor`'s output. `tag`
-/// names the pipelines in logs; `on_error` hears about any leg that fails.
+/// Start one leg per `(path, profile)` on `monitor`. All legs are built
+/// before any starts, so config errors open no file; if one fails to start,
+/// all are rolled back and their files deleted.
 ///
-/// Every leg is built before any is started, so configuration errors
-/// (missing encoder, a codec the container can't carry) fail without opening
-/// a file. If starting a leg fails, every leg of this attempt is rolled back
-/// and its partial file deleted.
-///
-/// With `start_at` (a time on the monitor's clock), the legs drop frames due
-/// before it, so legs started together on several nodes sharing a clock
-/// begin with the same frame. With `utc_offset_us` (UTC minus the monitor's
-/// clock), MOV files get timecode: each frame's time of day.
+/// `start_at` (monitor clock) drops earlier frames, so nodes sharing a clock
+/// begin on the same frame. `utc_offset_us` (UTC minus the monitor's clock)
+/// gives MOV files time-of-day timecode.
 pub fn start_legs(
     monitor: &MonitorPipeline,
     tag: &str,
@@ -130,9 +109,8 @@ pub fn start_legs(
     Ok(started)
 }
 
-/// Build every leg without starting it, so a codec the container can't carry
-/// or a missing encoder is caught without recording anything. Building opens
-/// no files; the pipelines are dropped in NULL.
+/// Build every leg without starting it, to catch config errors. Opens no
+/// files.
 pub fn check_legs(legs: &[(PathBuf, RecordingProfile)]) -> Result<()> {
     let on_error: OnLegError = Arc::new(|_, _| {});
     let on_file: OnLegFile = Arc::new(|| {});
@@ -149,9 +127,8 @@ pub fn check_legs(legs: &[(PathBuf, RecordingProfile)]) -> Result<()> {
 }
 
 impl RecordingLeg {
-    /// Build and link the leg's pipeline with the first of the profile's
-    /// encoders that this platform has and that links, leaving it in NULL:
-    /// the output file isn't opened until [`Self::start`].
+    /// Build the pipeline with the first of the profile's encoders that
+    /// links, left in NULL: the file isn't opened until [`Self::start`].
     fn build(
         path: &Path,
         profile: &RecordingProfile,
@@ -201,10 +178,9 @@ impl RecordingLeg {
             error,
             ..
         } = &consumer;
-        // Only errors and EOS are ever read from this bus; drop the rest so a
-        // long recording doesn't accumulate messages nobody pops. Errors are
-        // also reported straight away (once per leg) — they still pass, so
-        // `stop` finds them too.
+        // Only errors and EOS are read; drop the rest so a long recording
+        // doesn't pile up messages. Errors are reported at once and still
+        // pass, so `stop` finds them too.
         let first_error = error.clone();
         let error_path = path.to_path_buf();
         pipeline
@@ -222,8 +198,7 @@ impl RecordingLeg {
             });
 
         let mut video = vec![video_src.clone().upcast::<gst::Element>()];
-        // Interlaced sources are deinterlaced before scaling (`mode=auto`
-        // passes progressive video straight through).
+        // Before scaling; `mode=auto` passes progressive video through.
         if profile.deinterlace() {
             video.push(make_el("deinterlace", "deint")?);
         }
@@ -246,8 +221,7 @@ impl RecordingLeg {
         }
         if let Some((width, height)) = profile.resolution {
             video.push(make_el("videoscale", "vscale")?);
-            // Pin the pixel aspect ratio so videoscale actually resizes instead
-            // of satisfying the caps by changing PAR.
+            // Pin PAR so videoscale resizes instead of changing PAR.
             video.push(capsfilter(
                 "vscale-caps",
                 gst::Caps::builder("video/x-raw")
@@ -289,8 +263,6 @@ impl RecordingLeg {
         }
 
         let aq = audio_hold_queue()?;
-        // A channel mix (stereo, picked channels) is audioconvert's matrix,
-        // which has to be set before it negotiates.
         let aconv = make_el("audioconvert", "aconv")?;
         let mix = profile.audio_mix();
         if let Some(rows) = mix.as_ref().and_then(|m| m.matrix.as_ref()) {
@@ -336,8 +308,7 @@ impl RecordingLeg {
             );
         }
         match profile.audio_format() {
-            // AAC and Opus keep a gap in their timestamps, so they don't
-            // need it.
+            // AAC and Opus tolerate timestamp gaps.
             AudioFormat::Pcm24 => audio.push(pcm_audiorate()?),
             AudioFormat::Aac { bitrate } => {
                 let aenc = make_el("avenc_aac", "aenc")?;
@@ -353,13 +324,11 @@ impl RecordingLeg {
 
         let muxer = make_el(profile.muxer_element(), "mux")?;
         match profile.container {
-            // Timestamps arrive as the monitor's running time; qtmux/mp4mux
-            // start the file at zero on their own, matroskamux needs asking.
-            // A cut-off .mkv is readable as it is.
+            // Timestamps are the monitor's running time: qtmux/mp4mux start
+            // the file at zero themselves, matroskamux needs asking. A cut-off
+            // .mkv is readable as is.
             Container::Mkv => set_property(&muxer, "offset-to-zero", "true")?,
-            // .mov/.mp4 need their index to play, and normally write it only
-            // when they finish: make a crash or power cut leave a playable
-            // file. See `CRASH_SAFE_*`.
+            // See `CRASH_SAFE_*`.
             Container::Mov | Container::Mp4 if profile.audio_format() == AudioFormat::Pcm24 => {
                 // Longest file plus slack: the file splits at a keyframe
                 // after the limit.
@@ -410,17 +379,15 @@ impl RecordingLeg {
                 if let Some(bytes) = profile.split_bytes() {
                     split.set_property("max-size-bytes", bytes);
                 }
-                // Ask for a keyframe at the split point; ignored when a size
-                // limit is set too, which then splits at the next one (at most
-                // a keyframe interval late).
+                // Keyframe requests are ignored with a size limit, which
+                // then splits at the next natural keyframe.
                 split.set_property("send-keyframe-requests", profile.split_bytes().is_none());
                 let template = template.clone();
                 let first = path.to_path_buf();
                 let leg_files = Arc::clone(&files);
                 split.connect("format-location", false, move |args| {
                     let index = args[1].get::<u32>().unwrap_or(0);
-                    // The first file is the leg's own path (plain, for a leg
-                    // that only rolls over at `PCM_MAX_FILE`).
+                    // The first file is the leg's own path.
                     let file = match index {
                         0 => first.clone(),
                         _ => PathBuf::from(template.replace("{segment}", &segment_number(index))),
@@ -469,7 +436,6 @@ impl RecordingLeg {
         })
     }
 
-    /// Open the file, start the pipeline and connect it to the producers.
     fn start(
         &mut self,
         monitor: &MonitorPipeline,
@@ -514,14 +480,12 @@ impl RecordingLeg {
         (rt != u64::MAX).then(|| gst::ClockTime::from_nseconds(rt) + base)
     }
 
-    /// See [`ConsumerPipeline::dropped_frames`].
     pub fn dropped_frames(&self) -> u64 {
         self.consumer.dropped_frames()
     }
 
-    /// Stop feeding the leg, let it drain to EOS so the muxer writes its
-    /// index, and wait up to `timeout` for that. An error the leg hit while
-    /// recording, or a timeout, is returned as the stop's error.
+    /// Drain to EOS so the muxer writes its index, waiting up to `timeout`.
+    /// A recording error or a timeout is returned.
     pub async fn stop(mut self, timeout: Duration) -> Result<()> {
         self.consumer.disconnect();
         let _ = self.consumer.video_src.end_of_stream();
@@ -555,9 +519,8 @@ impl RecordingLeg {
             }
         };
         self.consumer.stop();
-        // A leg that never wrote anything (it failed straight away) leaves an
-        // empty file behind. Anything with data is kept: a leg that failed
-        // mid-recording (disk full) may still be recoverable.
+        // Remove empty files only: a leg that failed mid-recording (disk
+        // full) may still be recoverable.
         for file in self.files.lock().unwrap().iter() {
             if std::fs::metadata(file).is_ok_and(|m| m.len() == 0) {
                 remove_file(file);
@@ -566,9 +529,8 @@ impl RecordingLeg {
         result
     }
 
-    /// Tear the leg down without finalizing it and delete its partial file.
-    /// Only for rolling back a start that failed part-way, and for benchmark
-    /// legs, whose files are thrown away.
+    /// Tear down without finalising and delete the files: for rollback and
+    /// benchmark legs.
     pub fn discard(mut self) {
         self.consumer.stop();
         for file in self.files.lock().unwrap().iter() {
@@ -576,7 +538,6 @@ impl RecordingLeg {
         }
     }
 
-    /// Every file the leg has written so far.
     pub fn files(&self) -> Vec<String> {
         self.files
             .lock()
@@ -586,7 +547,6 @@ impl RecordingLeg {
             .collect()
     }
 
-    /// The video encoder element the leg uses.
     pub fn encoder(&self) -> &'static str {
         self.encoder
     }
@@ -626,14 +586,11 @@ fn gate(
     Ok(())
 }
 
-/// Stamp each frame leaving `pad` with its time of day as SMPTE timecode:
-/// `to_utc_us` maps a frame's PTS, in its segment, to UTC (µs since the
-/// Unix epoch), shown in this machine's time zone. For a recording that's
-/// its time on the clock (running time + base) plus the domain's UTC
-/// offset, so files from nodes on one clock domain line up frame for frame.
-/// qtmux writes the first frame's into the file's timecode track (each file's,
-/// when a leg splits). A frame that already has timecode (from its source)
-/// keeps it.
+/// Stamp each frame leaving `pad` with its local time of day as SMPTE
+/// timecode. `to_utc_us` maps a PTS in its segment to UTC µs; using the clock
+/// domain's offset makes files from nodes on one clock line up. qtmux writes
+/// each file's first frame's into its timecode track. Existing timecode is
+/// kept.
 pub(super) fn stamp_timecode(
     pad: &gst::Pad,
     to_utc_us: impl Fn(Option<&gst::FormattedSegment<gst::ClockTime>>, gst::ClockTime) -> Option<i64>
@@ -697,16 +654,12 @@ fn remove_file(location: &Path) {
     }
 }
 
-/// A leg's error message, naming the element that failed.
 fn leg_error(err: &gst::message::Error) -> String {
     let element = err.src().map(|s| s.name().to_string()).unwrap_or_default();
     format!("recording failed in {element}: {}", describe_error(err))
 }
 
-// ── Element builders ──────────────────────────────────────────────────────────
-
-/// Link an encoder to a new muxer input, with an error that names the
-/// combination when the container can't carry the codec.
+/// Link an encoder to a new muxer pad, naming the combination on failure.
 fn link_to_muxer(
     encoder: &gst::Element,
     muxer: &gst::Element,
@@ -732,13 +685,9 @@ fn link_to_muxer(
     Ok(())
 }
 
-/// Create `encoder` with the output's rate control (average bitrate unless
-/// set; Auto sizes the bitrate from the frame size and rate), keyframe
-/// interval, and speed preset — software encoders default fast enough to
-/// keep up live.
-///
-/// Quality 1–100 maps onto each encoder's own scale: x264/x265 CRF 41→11,
-/// VP9 `cq-level` 63→13, VideoToolbox `quality` 0.01→1.
+/// Create `encoder` with the output's rate control, keyframe interval and
+/// speed preset. Quality 1–100 maps to x264/x265 CRF 41→11, VP9 `cq-level`
+/// 63→13, VideoToolbox `quality` 0.01→1.
 fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Result<gst::Element> {
     let venc = make_el(encoder.element(), "venc")?;
     let set = |name: &str, value: &str| set_property(&venc, name, value);
@@ -753,9 +702,8 @@ fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Res
             set("speed-preset", profile.speed_preset())?;
             set("key-int-max", &keyint)?;
             match rc {
-                // `pass=cbr` (the default) is x264's ABR capped at the
-                // bitrate; a 1 s buffer lets it borrow bits for complex
-                // moments.
+                // `pass=cbr` (default) is ABR capped at the bitrate; a 1 s
+                // buffer lets it borrow bits for complex moments.
                 RateControl::Average => set("vbv-buf-capacity", "1000")?,
                 // HRD signalling makes x264 pad to a true constant rate.
                 RateControl::Constant => set("nal-hrd", "cbr")?,
@@ -767,8 +715,7 @@ fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Res
         }
         VideoEncoder::X265 => {
             set("speed-preset", profile.speed_preset())?;
-            // GStreamer defaults to `ssim`, which tunes for a metric rather
-            // than for viewing; 0 is no tuning.
+            // The default `ssim` tunes for a metric, not viewing.
             set("tune", "0")?;
             set("key-int-max", &keyint)?;
             match (rc, bitrate) {

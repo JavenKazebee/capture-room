@@ -39,8 +39,7 @@ const deviceOptions = computed(() => {
     value: d.key,
     label: `${d.kind === 'screen' ? 'Screen: ' : ''}${d.name}${best(d)}`,
   }))
-  // A saved device that's unplugged stays visible, so the form doesn't
-  // silently pick another.
+  // An unplugged saved device stays visible, so the form doesn't silently pick another.
   if (cfg.value.video_device && !current.value) {
     opts.unshift({
       value: cfg.value.video_device,

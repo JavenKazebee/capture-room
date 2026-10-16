@@ -51,8 +51,6 @@ function status(c: CheckDto): { dot: 'ok' | 'warn' | 'error' | 'off' | 'info'; l
   }
 }
 
-// ── Asking macOS ──────────────────────────────────────────────────────────────
-
 const asking = ref<string | null>(null)
 let disposed = false
 onScopeDispose(() => (disposed = true))

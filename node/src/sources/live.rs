@@ -1,14 +1,9 @@
-//! Live external sources (streams, devices, WHIP).
-//!
-//! Each one runs through `fallbacksrc` (gst-plugins-rs), which plays black
-//! and silence while the source is missing or stalled and keeps retrying it.
-//! A dropout therefore never stops the monitor or its recordings: they record
-//! black and silence until the source comes back.
-//!
-//! The fallback frames have their own format, so both streams are normalized
-//! after `fallbacksrc`: video is deinterlaced and held to the source's first
-//! live size, rate, pixel format and colorimetry (or a configured size and rate), audio to 48 kHz at a
-//! fixed channel count. A recording therefore never sees the format change.
+//! Live external sources (streams, devices, WHIP). Each runs through
+//! `fallbacksrc`, which plays black and silence while the source is missing
+//! or stalled and keeps retrying, so a dropout never stops the monitor or its
+//! recordings. Both streams are normalized after it (video held to the first
+//! live format or a configured one, audio to 48 kHz at a fixed channel count)
+//! so a recording never sees the format change.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -27,23 +22,20 @@ use crate::pipeline::{capsfilter, make_el, set_mix_matrix};
 pub const AUDIO_RATE: i32 = 48_000;
 /// Rate used when the source doesn't say (or reports a variable rate).
 const DEFAULT_FPS: (i32, i32) = (30, 1);
-/// How long the source may stall before the fallback (black) takes over.
-/// Meanwhile the compositor repeats the last frame on the clock, so a
-/// recording sees no gap or catch-up burst either way (see `build_bin`).
+/// How long the source may stall before the fallback (black) takes over. The
+/// compositor repeats the last frame meanwhile, so recordings see no gap.
 const SWITCH_TIMEOUT: Duration = Duration::from_millis(2000);
 /// How long a stalled source runs before it's restarted.
 const RESTART_TIMEOUT: Duration = Duration::from_secs(5);
-/// Latency every live source reports, fallback or not. Covers a stream's
-/// jitter buffer (`latency_ms`, 200 by default) plus decoding.
+/// Latency every live source reports, fallback or not: a stream's jitter
+/// buffer (`latency_ms`, 200 by default) plus decoding.
 const MIN_LATENCY: Duration = Duration::from_secs(1);
-/// Without a real frame for this long, the source counts as down. HLS
-/// arrives a segment at a time, so the frames come in bursts.
+/// Without a real frame for this long the source counts as down. HLS arrives
+/// a segment at a time, in bursts.
 const LIVE_WINDOW: Duration = Duration::from_secs(3);
 
-// ── Link state ────────────────────────────────────────────────────────────────
-
-/// Tracks whether a live source is delivering real frames (as opposed to the
-/// fallback's). Read by the 1 Hz `feed.status` emitter.
+/// Whether a live source is delivering real frames, not the fallback's.
+/// Read by the 1 Hz `feed.status` emitter.
 #[derive(Default)]
 pub struct LinkTracker {
     inner: Mutex<Link>,
@@ -80,8 +72,6 @@ impl LinkTracker {
     }
 }
 
-// ── Audio ─────────────────────────────────────────────────────────────────────
-
 /// Where a live source's audio comes from, resolved for building.
 pub enum LiveAudio {
     /// The source's own audio (silence if it has none), at `channels`.
@@ -100,23 +90,18 @@ pub enum LiveAudio {
     },
 }
 
-// ── Bin ───────────────────────────────────────────────────────────────────────
-
-/// What [`build_bin`] wraps.
 pub struct LiveInput<'a> {
     pub id: &'a str,
-    /// An element with raw video (and maybe audio) src pads, static or
-    /// dynamic: a decoding bin for streams, a device's element for devices.
+    /// An element with raw video (and maybe audio) src pads, static or dynamic.
     pub source: gst::Element,
     pub audio: LiveAudio,
     /// Hold video to this size and rate instead of the source's first.
     pub format: Option<&'a LiveVideoFormat>,
     pub tracker: &'a Arc<LinkTracker>,
-    /// Link the source's pads straight in rather than through
-    /// `fallbacksrc`: for a server that comes and goes with its publisher
-    /// (WHIP) and mustn't be restarted. A black background keeps the video
-    /// running while it has no pads, and its end-of-streams are dropped so
-    /// the next publisher's pads link in.
+    /// Link the source's pads straight in, not through `fallbacksrc`: for a
+    /// server that comes and goes with its publisher (WHIP) and mustn't be
+    /// restarted. A black background keeps video running while it has no
+    /// pads; its EOSes are dropped so the next publisher's pads link in.
     pub direct: bool,
 }
 
@@ -129,10 +114,9 @@ pub struct LiveInput<'a> {
 ///                         silence (always) ┴→ audiomixer → 48 kHz F32 → audio
 /// ```
 ///
-/// The compositor and mixer run on the clock: when the source is late or
-/// gone they repeat the last frame or play silence instead of leaving a gap,
-/// so a recording never gets the burst of catch-up data its input queue
-/// would drop (nor, for audio, overlaps from network jitter).
+/// The compositor and mixer run on the clock, repeating the last frame or
+/// playing silence when the source is late, so a recording's input queue
+/// never gets a catch-up burst to drop (nor audio overlaps from jitter).
 pub fn build_bin(input: LiveInput) -> Result<gst::Bin> {
     let LiveInput {
         id,
@@ -164,13 +148,11 @@ pub fn build_bin(input: LiveInput) -> Result<gst::Bin> {
     let numbered = matches!(audio, LiveAudio::Element { .. });
     let audio_inputs = audio_output(&bin, id, channels, numbered)?;
 
-    // ── Inputs ───────────────────────────────────────────────────────────────
     watch_source(&source, tracker.clone(), format.copied(), move |lock| {
         video_format.lock().unwrap().lock(lock);
     });
     if direct {
-        // A black layer under the source keeps the compositor producing
-        // frames while nobody publishes.
+        // Keeps the compositor producing frames while nobody publishes.
         add_background(&bin, id, &compositor)?;
         let own_audio = matches!(audio, LiveAudio::Source { .. });
         link_sessions(&main, video, own_audio.then_some(audio_inputs.clone()));
@@ -208,8 +190,8 @@ pub fn build_bin(input: LiveInput) -> Result<gst::Bin> {
     Ok(bin)
 }
 
-/// The bin's video output: a compositor over black, held to `caps`, on the
-/// `"video"` ghost pad. Inputs are added through the returned [`Inputs`].
+/// The bin's video output: a compositor over black, held to `caps`. Inputs
+/// are added through the returned [`Inputs`].
 pub(crate) fn video_output(
     bin: &gst::Bin,
     id: &str,
@@ -233,8 +215,7 @@ pub(crate) fn video_output(
     Ok((inputs, format))
 }
 
-/// The bin's audio output: a mixer over silence at 48 kHz F32 with
-/// `channels`, on the `"audio"` ghost pad.
+/// The bin's audio output: a mixer over silence at 48 kHz F32 with `channels`.
 pub(crate) fn audio_output(
     bin: &gst::Bin,
     id: &str,
@@ -257,10 +238,9 @@ pub(crate) fn audio_output(
     })
 }
 
-/// Audio at `channels`. Beyond stereo the mixer needs a channel layout:
-/// `numbered` channels have none (picked ones, mixed in by matrix), others
-/// get GStreamer's usual layout for their count (5.1 for 6, 7.1 for 8), so
-/// stereo clips and sources are spread onto it and outputs can mix it down.
+/// Audio at `channels`. Beyond stereo the mixer needs a layout: `numbered`
+/// (picked) channels have none; others get GStreamer's usual layout so stereo
+/// is spread onto it and outputs can mix it down.
 fn audio_caps(channels: u32, numbered: bool) -> gst::Caps {
     let channels = channels.max(1);
     let mut caps = gst::Caps::builder("audio/x-raw")
@@ -279,9 +259,8 @@ fn audio_caps(channels: u32, numbered: bool) -> gst::Caps {
     caps.build()
 }
 
-/// GStreamer's fallback channel mask for `channels` (as
-/// `gst_audio_channel_get_fallback_mask`): front left/right, then centre,
-/// LFE, rears and sides; numbered (0) beyond 8.
+/// GStreamer's fallback channel mask (as `gst_audio_channel_get_fallback_mask`);
+/// numbered (0) beyond 8.
 pub(crate) fn channel_layout(channels: u32) -> u64 {
     const FL: u64 = 1 << 0;
     const FR: u64 = 1 << 1;
@@ -309,16 +288,14 @@ pub(crate) fn channel_layout(channels: u32) -> u64 {
 pub(crate) struct VideoFormat {
     /// Caps for each input's converters (see [`pre_compositor_caps`]).
     pre: gst::Caps,
-    /// The inputs' capsfilters.
     inputs: Vec<glib::WeakRef<gst::Element>>,
     out: glib::WeakRef<gst::Element>,
 }
 
 impl VideoFormat {
     pub(crate) fn lock(&mut self, lock: &gst::Caps) {
-        // Before the compositor, only what the converters can always
-        // produce: stricter caps would reach fallbacksrc's black-frame
-        // source, which then fails to negotiate.
+        // Before the compositor, only what the converters can always produce:
+        // stricter caps reach fallbacksrc's black source, which fails to negotiate.
         self.pre = pre_compositor_caps(lock);
         self.inputs.retain(|w| w.upgrade().is_some());
         for el in self.inputs.iter().filter_map(|w| w.upgrade()) {
@@ -337,8 +314,7 @@ enum Kind {
     Audio(gst::Caps, Option<Vec<Vec<f32>>>),
 }
 
-/// Makes input chains into one of the bin's aggregators (the compositor or
-/// the mixer).
+/// Makes input chains into one of the bin's aggregators.
 #[derive(Clone)]
 pub(crate) struct Inputs {
     bin: glib::WeakRef<gst::Bin>,
@@ -347,7 +323,6 @@ pub(crate) struct Inputs {
     kind: Kind,
 }
 
-/// One input chain, and the aggregator pad it feeds.
 pub(crate) struct Chain {
     elements: Vec<gst::Element>,
     pad: gst::Pad,
@@ -381,8 +356,7 @@ impl Inputs {
         }
     }
 
-    /// Add a chain converting into the aggregator's format, named by `tag`
-    /// (unique per bin).
+    /// Add a chain converting into the aggregator's format; `tag` is unique per bin.
     pub(crate) fn add(&self, tag: &str) -> Result<Chain> {
         let bin = self.bin.upgrade().context("live bin gone")?;
         let aggregator = self.aggregator.upgrade().context("aggregator gone")?;
@@ -434,13 +408,12 @@ impl Inputs {
         Ok(Chain { elements, pad })
     }
 
-    /// Take `chain` out of the bin. On its own thread: it runs from a
-    /// source's signal, whose thread the state changes could wait on.
+    /// Take `chain` out of the bin, on its own thread: it runs from a source's
+    /// signal, whose thread the state changes could wait on.
     pub(crate) fn remove(&self, chain: Chain) {
-        // Whatever the chain still sends goes nowhere from now on. Once its
-        // aggregator pad is gone it would come back not-linked, which fails
-        // a source pushing into it (a channel's lane), and the program with
-        // it.
+        // Drop what the chain still sends: once its aggregator pad is gone it
+        // would get not-linked, failing a source pushing into it (a channel's
+        // lane) and the program with it.
         if let Some(tail) = chain.elements.last().and_then(|e| e.static_pad("src")) {
             tail.add_probe(gst::PadProbeType::DATA_DOWNSTREAM, |_, _| {
                 gst::PadProbeReturn::Drop
@@ -448,9 +421,8 @@ impl Inputs {
         }
         let (bin, aggregator) = (self.bin.clone(), self.aggregator.clone());
         std::thread::spawn(move || {
-            // The aggregator's pad first: it flushes, releasing a source
-            // thread waiting in it to hand over a buffer (one stamped ahead
-            // waits until then), which stopping the source waits for.
+            // The aggregator's pad first: it flushes, releasing a source thread
+            // waiting in it, which stopping the source waits for.
             if let Some(aggregator) = aggregator.upgrade() {
                 aggregator.release_request_pad(&chain.pad);
             }
@@ -473,19 +445,16 @@ fn fallback(name: &str, video: bool, audio: bool) -> Result<gst::Element> {
     fb.set_property("restart-timeout", RESTART_TIMEOUT.as_nanos() as u64);
     fb.set_property("retry-timeout", u64::MAX - 1);
     fb.set_property("restart-on-eos", true);
-    // Report the same latency whether the source or the fallback plays.
-    // Otherwise every switch and retry changes it, the pipeline re-queries
-    // latency (which stalls the stream while it waits on the aggregators),
-    // and recordings drop the frames that pile up.
+    // Same latency whether source or fallback plays; otherwise every switch
+    // re-queries latency, stalling the stream, and recordings drop the pileup.
     fb.set_property("min-latency", MIN_LATENCY.as_nanos() as u64);
-    // Output black right away, so the monitor has frames before the source
-    // connects.
+    // Black right away, so the monitor has frames before the source connects.
     fb.set_property("immediate-fallback", true);
     Ok(fb)
 }
 
-/// Link `src`'s `kind` pad (`"video"` / `"audio"`) to `chain` when it
-/// appears (fallbacksrc's pads appear once it starts).
+/// Link `src`'s `kind` pad to `chain` when it appears (fallbacksrc's pads
+/// appear once it starts).
 fn link_when_added(src: &gst::Element, kind: &'static str, chain: Chain) {
     let Some(sink) = chain.sink() else { return };
     src.connect_pad_added(move |_, pad| {
@@ -497,10 +466,10 @@ fn link_when_added(src: &gst::Element, kind: &'static str, chain: Chain) {
     });
 }
 
-/// A direct source's sessions: each publisher's pads get fresh input
-/// chains, removed when its pads go. Then the source is restarted:
-/// `whipserversrc` doesn't serve a second session's media from the same
-/// element. `audio` is `None` when the audio comes from elsewhere.
+/// A direct source's sessions: each publisher's pads get fresh input chains,
+/// removed with its pads. Then the source restarts: `whipserversrc` won't
+/// serve a second session from the same element. `audio` is `None` when
+/// audio comes from elsewhere.
 fn link_sessions(source: &gst::Element, video: Inputs, audio: Option<Inputs>) {
     let current: Arc<Mutex<HashMap<String, Chain>>> = Arc::default();
     let session = Arc::new(AtomicU32::new(0));
@@ -523,8 +492,7 @@ fn link_sessions(source: &gst::Element, video: Inputs, audio: Option<Inputs>) {
                 return;
             }
         };
-        // A session's end-of-stream would end the aggregator's input; the
-        // chain is removed with the pad instead.
+        // A session's EOS would end the aggregator's input; the chain goes with the pad instead.
         pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, |_, info| {
             match &info.data {
                 Some(gst::PadProbeData::Event(e)) if e.type_() == gst::EventType::Eos => {
@@ -556,8 +524,8 @@ fn link_sessions(source: &gst::Element, video: Inputs, audio: Option<Inputs>) {
     });
 }
 
-/// Restart a direct source after its publisher left. On its own thread:
-/// this runs from the element's own signal.
+/// Restart a direct source after its publisher left, on its own thread: this
+/// runs from the element's own signal.
 fn restart(src: gst::Element) {
     std::thread::spawn(move || {
         let _ = src.set_state(gst::State::Null);
@@ -568,8 +536,7 @@ fn restart(src: gst::Element) {
 }
 
 /// A small live black source at the bottom of `compositor`, so it keeps
-/// producing frames while a direct source has no pads. The compositor's own
-/// (black) background fills the rest of the frame.
+/// producing frames while a direct source has no pads.
 pub(crate) fn add_background(bin: &gst::Bin, id: &str, compositor: &gst::Element) -> Result<()> {
     let src = make_el("videotestsrc", &format!("live-bg-{id}"))?;
     src.set_property("is-live", true);
@@ -594,8 +561,7 @@ pub(crate) fn add_background(bin: &gst::Bin, id: &str, compositor: &gst::Element
     Ok(())
 }
 
-/// Check a live source's configured format before it's saved: a zero rate
-/// or size would fail (or panic) when the caps are built.
+/// Check a configured format: a zero rate or size would fail (or panic) building caps.
 pub fn validate_format(format: Option<&LiveVideoFormat>) -> Result<(), String> {
     match format {
         Some(f) if f.width == 0 || f.height == 0 || f.fps_num == 0 || f.fps_den == 0 => {
@@ -605,9 +571,8 @@ pub fn validate_format(format: Option<&LiveVideoFormat>) -> Result<(), String> {
     }
 }
 
-/// Caps before the source's format is known: the configured format, or
-/// any size at the default rate (the fallback's black frames, until it
-/// locks). The rate has to be set: the compositor would otherwise take the
+/// Caps before the source's format is known: the configured format, or any
+/// size at the default rate. The rate must be set, or the compositor takes the
 /// slowest a branch accepts (the thumbnails' 1 fps).
 fn initial_video_caps(format: Option<&LiveVideoFormat>) -> gst::Caps {
     match format {
@@ -629,10 +594,9 @@ fn initial_video_caps(format: Option<&LiveVideoFormat>) -> gst::Caps {
     }
 }
 
-/// Watch `source`'s video pads: count real frames for the link state, and
-/// lock the output caps to the first video format (a configured size and
-/// rate win). The lock holds for the bin's life, so a source that reconnects
-/// in another format is scaled into the first.
+/// Count real frames for the link state, and lock output caps to the first
+/// video format (a configured one wins). The lock holds for the bin's life;
+/// a source that reconnects in another format is scaled into it.
 fn watch_source(
     source: &gst::Element,
     tracker: Arc<LinkTracker>,
@@ -704,9 +668,8 @@ pub(crate) fn lock_caps(caps: &gst::CapsRef, format: Option<&LiveVideoFormat>) -
     let int = |name: &str| s.and_then(|s| s.get::<i32>(name).ok());
     let frac = |name: &str| s.and_then(|s| s.get::<gst::Fraction>(name).ok());
     let text = |name: &str| s.and_then(|s| s.get::<&str>(name).ok());
-    // Every field the fallback's frames could differ in is fixed, so the
-    // caps never change: an encoder given new caps mid-recording can emit
-    // new codec data, which the muxers refuse.
+    // Fix every field the fallback's frames could differ in: an encoder given
+    // new caps mid-recording can emit new codec data, which muxers refuse.
     let mut caps: gst::Caps = "video/x-raw, interlace-mode=progressive, multiview-mode=mono"
         .parse()
         .expect("valid caps");
@@ -740,8 +703,8 @@ pub(crate) fn lock_caps(caps: &gst::CapsRef, format: Option<&LiveVideoFormat>) -
     caps
 }
 
-/// `multiview-flags` with no flags set and all of them fixed. Built rather
-/// than parsed: GStreamer 1.28 no longer parses flagsets from caps strings.
+/// `multiview-flags` with no flags set and all fixed. Built, not parsed:
+/// GStreamer 1.28 no longer parses flagsets from caps strings.
 fn no_multiview_flags() -> glib::SendValue {
     use glib::translate::{from_glib, ToGlibPtrMut, UnsafeFrom};
     // SAFETY: the type getter registers the flagset type; the value is
@@ -783,7 +746,7 @@ mod tests {
     }
 
     /// Locked caps are fixed, with mono multiview and every flag pinned, so
-    /// they accept a source's (unflagged) frames.
+    /// they accept a source's unflagged frames.
     #[test]
     fn lock_caps_pins_multiview() {
         gst::init().unwrap();
@@ -799,7 +762,6 @@ mod tests {
         assert_eq!(s.get::<&str>("multiview-mode").unwrap(), "mono");
     }
 
-    /// What a test sink saw.
     #[derive(Default)]
     struct Sink {
         frames: AtomicU64,
@@ -808,8 +770,8 @@ mod tests {
         last: Mutex<Option<(gst::ClockTime, Instant)>>,
         /// Timestamps that went backwards, or jumped over 100 ms.
         bad_pts: Mutex<Vec<String>>,
-        /// Wall-clock waits over 250 ms between buffers: a recording's
-        /// input queue (500 ms) would drop the burst that follows.
+        /// Waits over 250 ms between buffers: a recording's 500 ms input
+        /// queue would drop the burst that follows.
         stalls: Mutex<Vec<Duration>>,
     }
 
@@ -847,9 +809,8 @@ mod tests {
         sink.upcast()
     }
 
-    /// A sender dropping out gives fallback frames in the same format and
-    /// without a gap, then the source comes back; the link state follows.
-    /// Needs `srtsrc`.
+    /// A sender dropout gives same-format fallback frames without a gap, then
+    /// the source comes back; the link state follows. Needs `srtsrc`.
     #[test]
     #[ignore = "real-time (~30 s); run with --ignored"]
     fn srt_dropout_keeps_format_and_recovers() {
@@ -967,8 +928,7 @@ mod tests {
 
         println!("bus: {:?}", counts.lock().unwrap());
         println!("events: {:?}", events.lock().unwrap());
-        // Continuous on both streams, in timestamps and in time, dropout
-        // included.
+        // Continuous on both streams, in timestamps and in time, dropout included.
         for (name, sink) in [("video", &v), ("audio", &a)] {
             assert_eq!(
                 *sink.bad_pts.lock().unwrap(),

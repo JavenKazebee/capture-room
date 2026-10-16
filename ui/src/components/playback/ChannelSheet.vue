@@ -20,11 +20,7 @@ import EditSheet from '@/components/common/EditSheet.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import ChannelFields from '@/components/sources/ChannelFields.vue'
 
-/**
- * Create a playout channel, or edit one: its name, format and outputs. A
- * channel counts against its node's benchmarked capacity, so saving one warns
- * (never blocks) when that runs short.
- */
+/** Create or edit a playout channel. Saving warns (never blocks) when the node's benchmarked capacity runs short. */
 const props = defineProps<{
   /** The channel to edit; a new one when unset. */
   editing?: { nodeId: string; id: string } | null

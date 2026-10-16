@@ -16,6 +16,5 @@ export type PresetOutputInput = { name: string, codec: VideoCodec, container: Co
 preview?: boolean, 
 /**
  * Fine-tuning; every field defaults to the recording defaults.
- * Stored as JSON.
  */
 advanced: OutputAdvanced, };

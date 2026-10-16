@@ -16,24 +16,19 @@ use super::{
     FirstError, ThumbnailStore,
 };
 
-// ── MonitorPipeline ───────────────────────────────────────────────────────────
-
 /// The always-on pipeline for one source: thumbnails, audio levels, and the
-/// raw video/audio producers that recordings consume. Recordings run in their
-/// own pipelines (see [`super::recording`]), so a failing recording can never
-/// stall the source or the other recordings.
+/// raw producers that consumers take. Consumers run in their own pipelines so
+/// a failing one can't stall the source or the others.
 pub struct MonitorPipeline {
     pipeline: gst::Pipeline,
-    /// The clock it was built on (the node clock at the time).
     clock: gst::Clock,
     pub thumbnail: ThumbnailStore,
     pub audio_meter: AudioMeter,
     pub video: StreamProducer,
     pub audio: StreamProducer,
-    /// Video frames the source has delivered since the monitor started.
     video_frames: Arc<FrameCount>,
-    /// The first error the pipeline posted. An errored pipeline has stopped
-    /// producing, so this is shown on the source until its monitor restarts.
+    /// Shown on the source until the monitor restarts: an errored pipeline
+    /// has stopped producing.
     error: FirstError,
     /// Reads the bus until aborted on drop: the bus stream never ends by
     /// itself, since the stream keeps the bus alive.
@@ -44,18 +39,16 @@ pub struct MonitorPipeline {
     level_el: gst::Element,
 }
 
-/// Frames a source has delivered, for telling whether it keeps up. Between
-/// two readings, the frames counted against the time their timestamps span
-/// (less any gaps the source marked) shows a source falling behind — without
-/// the jitter of comparing against the wall clock, since frames arrive in
-/// bursts.
+/// Frames a source has delivered. Frames counted against the span of their
+/// timestamps (less marked gaps) shows a source falling behind, without the
+/// jitter of comparing to the wall clock, since frames arrive in bursts.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VideoProgress {
     pub frames: u64,
-    /// The last frame's timestamp (running time).
+    /// Running time.
     pub last_pts: Option<gst::ClockTime>,
-    /// Total length of the gaps before frames marked `DISCONT` — a looping
-    /// file's restart, not a frame lost.
+    /// Total gaps before `DISCONT` frames (e.g. a looping file's restart),
+    /// which aren't lost frames.
     pub skipped: gst::ClockTime,
 }
 
@@ -67,16 +60,12 @@ pub struct SourceFormat {
     /// (numerator, denominator)
     pub rate: Option<(u32, u32)>,
     /// Channel count, and whether the channels have positions (a channel
-    /// mask) rather than being plain numbered channels.
+    /// mask) rather than being plain numbered.
     pub audio: Option<(u32, bool)>,
 }
 
 impl MonitorPipeline {
-    /// Build and start an always-on monitor pipeline for `source`.
-    ///
-    /// The pipeline runs immediately on `clock`: thumbnail frames are
-    /// produced at the configured rate and audio levels are metered
-    /// continuously.
+    /// Build and start the monitor for `source` on `clock`.
     pub fn new(
         source: &dyn InputSource,
         config: &MonitorSettingsDto,
@@ -93,7 +82,6 @@ impl MonitorPipeline {
         let src_bin = source.build_bin()?;
         pipeline.add(&src_bin).context("add source bin")?;
 
-        // ── Tees ──────────────────────────────────────────────────────────────
         let vtee = make_el("tee", "vtee")?;
         let atee = make_el("tee", "atee")?;
         pipeline.add_many([&vtee, &atee]).context("add tees")?;
@@ -105,7 +93,6 @@ impl MonitorPipeline {
                 .with_context(|| format!("link source {kind} → tee"))?;
         }
 
-        // ── Always-on branches ────────────────────────────────────────────────
         let (thumb_rate_caps, thumb_scale_caps) =
             add_thumbnail_branch(&pipeline, &vtee, thumbnail.clone(), config)?;
         let level_el = add_level_branch(&pipeline, &atee, config)?;
@@ -113,7 +100,6 @@ impl MonitorPipeline {
         let audio = add_producer_branch(&pipeline, &atee, "audio")?;
         let video_frames = count_buffers(&video)?;
 
-        // ── Bus task ──────────────────────────────────────────────────────────
         let bus = pipeline.bus().context("pipeline has no bus")?;
         let audio_meter_ref = audio_meter.clone();
         let error = FirstError::default();
@@ -144,10 +130,9 @@ impl MonitorPipeline {
             }
         });
 
-        // set_state kicks off the async GStreamer state machine in its own
-        // threads. We deliberately do NOT wait on pipeline.state(): that
-        // blocks, and new() runs under the SourceManager write lock — blocking
-        // would starve the WS emitter. Later errors are reported by the bus task.
+        // Don't wait on pipeline.state(): new() runs under the SourceManager
+        // write lock, and blocking starves the WS emitter. The bus task
+        // reports later errors.
         set_state(&pipeline, gst::State::Playing).map_err(|e| anyhow!("set PLAYING: {e:?}"))?;
 
         Ok(Self {
@@ -170,7 +155,6 @@ impl MonitorPipeline {
         self.error.get()
     }
 
-    /// Video frames the source has delivered so far.
     pub fn video_frames(&self) -> u64 {
         self.video_frames.frames()
     }
@@ -186,7 +170,6 @@ impl MonitorPipeline {
             .map_err(|e| anyhow!("set NULL: {e:?}"))
     }
 
-    /// The clock the monitor was built on.
     pub fn clock(&self) -> &gst::Clock {
         &self.clock
     }
@@ -221,7 +204,6 @@ impl MonitorPipeline {
         ])
     }
 
-    /// The format the source is currently producing.
     pub fn source_format(&self) -> SourceFormat {
         let current = |p: &StreamProducer| {
             p.appsink()
@@ -254,9 +236,7 @@ impl MonitorPipeline {
         SourceFormat { size, rate, audio }
     }
 
-    /// Apply a new config to the running pipeline without restarting it.
-    /// The level interval and thumbnail caps are updated in-place; GStreamer
-    /// re-negotiates the affected branches within the current pipeline run.
+    /// Apply a new config in place, without restarting the pipeline.
     pub fn reconfigure(&self, config: &MonitorSettingsDto) {
         self.level_el
             .set_property("interval", level_interval_ns(config));
@@ -274,12 +254,10 @@ impl Drop for MonitorPipeline {
     }
 }
 
-// ── Always-on branch builders ─────────────────────────────────────────────────
-
 /// vtee → queue → videorate → capsfilter(fps) → videoscale
 ///       → capsfilter(WxH) → videoconvert → jpegenc → appsink
 ///
-/// Returns (fps_capsfilter, scale_capsfilter) for live reconfiguration.
+/// Returns the two capsfilters for live reconfiguration.
 fn add_thumbnail_branch(
     pipeline: &gst::Pipeline,
     vtee: &gst::Element,
@@ -365,9 +343,8 @@ fn add_level_branch(
     Ok(level)
 }
 
-/// tee → queue → appsink, wrapped in a [`StreamProducer`] that fans buffers
-/// out to recording pipelines. A consumer's errors are only logged by the
-/// producer — they never travel back up to the tee.
+/// tee → queue → appsink, wrapped in a [`StreamProducer`] that fans out to
+/// consumer pipelines. A consumer's errors never travel back to the tee.
 fn add_producer_branch(
     pipeline: &gst::Pipeline,
     tee: &gst::Element,
@@ -378,11 +355,10 @@ fn add_producer_branch(
         .name(format!("{kind}-producer"))
         // Forward as soon as buffers arrive; recordings don't render.
         .sync(false)
-        // Nor wait to start. An async sink holds its first buffer until
-        // every sink has one and the pipeline goes to PLAYING; meanwhile its
-        // queue can't drain, so an allocation query the compositor sends
-        // through the tee waits forever, the thumbnail sink never gets its
-        // first frame (videorate needs two), and the monitor never starts.
+        // Nor wait to start: an async sink holds its first buffer until
+        // PLAYING, so its queue can't drain, a compositor's allocation query
+        // through the tee waits forever, the thumbnail sink (videorate needs
+        // two frames) never prerolls, and the monitor never starts.
         .async_(false)
         .build();
     pipeline
@@ -395,9 +371,7 @@ fn add_producer_branch(
     Ok(StreamProducer::from(&appsink))
 }
 
-/// Video frames counted as they go by, from a streaming thread, for
-/// [`VideoProgress`]: a monitor's reaching its producer, or a channel clip's
-/// reaching the program.
+/// Counts video frames from a streaming thread, for [`VideoProgress`].
 pub struct FrameCount {
     frames: AtomicU64,
     /// Nanoseconds; `u64::MAX` until a timestamped frame arrives.
@@ -432,7 +406,6 @@ impl FrameCount {
         self.frames.load(Ordering::Relaxed)
     }
 
-    /// The last frame's timestamp.
     fn last_pts(&self) -> Option<gst::ClockTime> {
         let pts = self.last_pts.load(Ordering::Acquire);
         (pts != u64::MAX).then(|| gst::ClockTime::from_nseconds(pts))
@@ -452,7 +425,6 @@ impl FrameCount {
     }
 }
 
-/// Count the buffers reaching `producer`'s appsink.
 fn count_buffers(producer: &StreamProducer) -> Result<Arc<FrameCount>> {
     let count = Arc::new(FrameCount::default());
     let counter = Arc::clone(&count);

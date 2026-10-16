@@ -5,11 +5,7 @@ import { Plus } from '@lucide/vue'
 import { cn } from '@/lib/utils'
 import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select'
 
-/**
- * A preset picker: the given presets, then a "New preset…" item that opens the
- * presets page with a fresh draft instead of selecting anything. Once saved,
- * that preset is applied to the `feeds` (source keys) this picker is for.
- */
+/** "New preset…" opens a draft on the presets page; once saved it's applied to `feeds` (source keys). */
 const props = defineProps<{
   options: readonly { value: string; label: string }[]
   feeds: string[]

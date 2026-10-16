@@ -5,10 +5,7 @@ import StatusDot from '@/components/common/StatusDot.vue'
 import { held } from './held'
 import type { Angle } from './useReplayControl'
 
-/**
- * Every angle with a buffer. Those on the channel's node are numbered (the
- * 1–9 keys) and can be picked; the others play on their own node's channels.
- */
+/** Every angle with a buffer; only those on the channel's node are numbered (1–9) and pickable. */
 const props = defineProps<{
   angles: Angle[]
   usableAngles: Angle[]

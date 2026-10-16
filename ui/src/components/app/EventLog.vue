@@ -42,8 +42,6 @@ function time(e: LogEntry) {
   return clockTimeFine(e.at, 3)
 }
 
-// ── Follow tail ───────────────────────────────────────────────────────────────
-
 const scroller = ref<HTMLElement | null>(null)
 
 function scrollToEnd() {

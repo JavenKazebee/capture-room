@@ -9,8 +9,6 @@ use super::{add_ghost_pad, InputSource};
 use crate::api::types::{SourceCapabilitiesDto, SourceType};
 use crate::pipeline::make_el;
 
-// ── NdiSource ──────────────────────────────────────────────────────────────────
-
 pub struct NdiSource {
     id: String,
     ndi_name: String,
@@ -20,8 +18,7 @@ pub struct NdiSource {
     receiver: String,
 }
 
-/// The name a node receives NDI under, so senders and NDI Access Manager can
-/// tell nodes apart.
+/// The name a node receives NDI under, so senders and Access Manager can tell nodes apart.
 pub fn receiver_name(node_name: &str) -> String {
     format!("capture-room ({node_name})")
 }
@@ -35,9 +32,8 @@ fn build_bin(id: &str, ndi_name: &str, url_address: &str, receiver: &str) -> Res
     src.set_property("receiver-ndi-name", receiver);
     let demux = make_el("ndisrcdemux", &format!("ndisrcdemux-{id}"))?;
 
-    // Intermediate converters. Their static src pads anchor the ghost pads at
-    // construction time; the demux links its dynamic video/audio pads to their
-    // sinks once the stream starts flowing.
+    // Their static src pads anchor the ghost pads; the demux links its dynamic
+    // pads to their sinks once the stream flows.
     let vconv = make_el("videoconvert", &format!("ndi-vconv-{id}"))?;
     let aconv = make_el("audioconvert", &format!("ndi-aconv-{id}"))?;
 
@@ -72,16 +68,9 @@ fn build_bin(id: &str, ndi_name: &str, url_address: &str, receiver: &str) -> Res
     Ok(bin)
 }
 
-// ── Persistent device monitor ─────────────────────────────────────────────────
-
-/// Wraps a GStreamer DeviceMonitor that stays running for the lifetime of the
-/// app. Querying `current_sources()` is instant — no wait required after the
-/// initial startup delay.
-///
-/// The NDI device provider is a GStreamer singleton. Starting and stopping the
-/// monitor on every scan leaves the provider's internal FindInstance in a
-/// stale state, causing subsequent starts to silently do nothing. Keeping the
-/// monitor alive avoids that entirely.
+/// A DeviceMonitor kept running for the app's lifetime. The NDI provider is a
+/// singleton: stopping and restarting it leaves its FindInstance stale and
+/// later starts silently find nothing.
 pub struct NdiMonitor {
     monitor: gst::DeviceMonitor,
     /// The NDI library loaded. The plugin tries once per process, so a
@@ -92,15 +81,14 @@ pub struct NdiMonitor {
 }
 
 impl NdiMonitor {
-    /// Blocking. Starts the monitor and waits for the NDI device provider's
-    /// first poll (up to 1 s per the NDI SDK). Call once via `spawn_blocking`.
+    /// Blocking: waits for the provider's first poll (up to 1 s). Call once via `spawn_blocking`.
     pub fn start() -> Self {
         let monitor = gst::DeviceMonitor::new();
         monitor.add_filter(Some("Source/Audio/Video/Network"), None);
         if let Err(e) = monitor.start() {
             warn!("NDI device monitor failed to start: {e}");
         } else {
-            // NDI SDK blocks up to 1 s on first poll; 1.5 s gives a safe margin.
+            // The SDK blocks up to 1 s on first poll; 1.5 s gives margin.
             std::thread::sleep(Duration::from_millis(1500));
         }
         // A provider that fails to start (no NDI library) is dropped.
@@ -124,7 +112,6 @@ impl NdiMonitor {
         self.runtime_loaded
     }
 
-    /// Returns all NDI sources currently visible on the network.
     pub fn current_sources(&self) -> Vec<NdiSource> {
         self.monitor
             .devices()
@@ -203,8 +190,6 @@ impl OwnSenders {
             })
     }
 }
-
-// ── InputSource impl ──────────────────────────────────────────────────────────
 
 impl InputSource for NdiSource {
     fn id(&self) -> &str {

@@ -1,6 +1,5 @@
-//! Pieces shared by the sources that decode in a *player* pipeline of their
-//! own and push into appsrcs in the monitor's bin: file sources and playout
-//! channels.
+//! Shared pieces for sources that decode in their own player pipeline and
+//! push into appsrcs in the monitor's bin: file sources and playout channels.
 
 use anyhow::{Context, Result};
 use gstreamer::{self as gst, glib, prelude::*};
@@ -9,7 +8,6 @@ use tracing::{debug, warn};
 
 use crate::pipeline::make_el;
 
-/// Which of a player's branches.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Video,
@@ -33,7 +31,6 @@ impl Kind {
     }
 }
 
-/// `path` as a `file://` URI.
 pub fn uri(path: &str) -> Result<String> {
     Ok(glib::filename_to_uri(path, None)
         .with_context(|| format!("make a URI for {path}"))?
@@ -69,9 +66,8 @@ pub fn live_appsrc(name: &str, min_latency: gst::ClockTime, limit: QueueLimit) -
     src
 }
 
-/// Add the branch for `kind` to `player`: converters → appsink, paced by
-/// the clock, its buffers handed to `callbacks`. Elements are named after
-/// `prefix`. Returns the first element, for the decoder to link to.
+/// Add `kind`'s branch to `player`: converters → clock-paced appsink feeding
+/// `callbacks`. Returns the first element, for the decoder to link to.
 pub fn add_branch(
     player: &gst::Pipeline,
     prefix: &str,
@@ -100,9 +96,8 @@ pub fn add_branch(
     Ok(chain.swap_remove(0))
 }
 
-/// Link the streams `decode` exposes in `player`: each video or audio one to
-/// the sink pad `branch` gives for it, if any; drain any other into a
-/// fakesink, so the demuxer doesn't stop on an unlinked pad.
+/// Link each video or audio stream `decode` exposes to `branch`'s sink pad;
+/// drain others into a fakesink so the demuxer doesn't stop on an unlinked pad.
 pub fn route_streams(
     player: &gst::Pipeline,
     decode: &gst::Element,
@@ -157,9 +152,8 @@ pub fn route_streams(
     });
 }
 
-/// `sample`'s buffer stamped `pts` (with no DTS), and marked `DISCONT` if
-/// `discont`, for pushing into `src`, which gets the sample's caps first if
-/// they changed.
+/// `sample`'s buffer stamped `pts` (no DTS), `DISCONT` if `discont`; `src`
+/// gets the sample's caps first if they changed.
 pub fn restamp(
     sample: &gst::Sample,
     src: &gst_app::AppSrc,

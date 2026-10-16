@@ -1,17 +1,11 @@
 //! Blackmagic Decklink cards: SDI capture ([`DecklinkSource`]) and playout
-//! ([`DecklinkOutput`]), through gst-plugins-bad's decklink elements and the
-//! Desktop Video driver.
+//! ([`DecklinkOutput`]) via gst-plugins-bad's decklink elements.
 //!
-//! A card shows up as sub-devices (one per connector, or pair of them when
-//! full duplex), listed by the same device monitor as other capture devices
-//! ([`LocalDevices`]) and kept out of its device list. A card's profile says
-//! how its connectors are split into sub-devices; it's a node setting per
-//! card, set on every element opened on the card.
-//!
-//! The card keeps sending frames while it has no signal (flagged as gaps):
-//! a source is never restarted the way `fallbacksrc` restarts others, so it
-//! goes through [`live::build_bin`] as a direct source and its no-signal
-//! frames are dropped, which leaves the compositor's black (or last frame).
+//! A card appears as sub-devices (one per connector, or pair when full
+//! duplex), split per the card's profile, a per-card node setting applied to
+//! every element opened on it. The card keeps sending frames (flagged as gaps)
+//! with no signal, so a source is never restarted like `fallbacksrc` ones: it's
+//! a direct source in [`live::build_bin`] and no-signal frames are dropped.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,9 +28,7 @@ use crate::pipeline::monitor::MonitorPipeline;
 use crate::pipeline::output::{OutputPipeline, OutputSink, PipelineOutput, Program, RunningOutput};
 use crate::pipeline::{capsfilter, make_el, set_mix_matrix};
 
-/// Elements a Decklink source needs.
 pub const SOURCE_ELEMENTS: &[&str] = &["decklinkvideosrc", "decklinkaudiosrc"];
-/// Elements a Decklink output needs.
 pub const OUTPUT_ELEMENTS: &[&str] = &["decklinkvideosink", "decklinkaudiosink"];
 
 /// Where Desktop Video installs the driver's API on macOS.
@@ -62,9 +54,6 @@ pub fn unavailable(has: impl Fn(&str) -> bool) -> Option<String> {
     None
 }
 
-// ── Modes ─────────────────────────────────────────────────────────────────────
-
-/// A video mode: GStreamer's name for it, and its format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mode {
     pub nick: &'static str,
@@ -99,8 +88,8 @@ const P2398: (u32, u32) = (24000, 1001);
 const P2997: (u32, u32) = (30000, 1001);
 const P5994: (u32, u32) = (60000, 1001);
 
-/// The broadcast modes offered, in the order they're listed. Interlaced
-/// modes' rates are frame rates (1080i59.94 is 29.97 frames a second).
+/// The broadcast modes offered, in list order. Interlaced modes' rates are
+/// frame rates (1080i59.94 is 29.97 frames a second).
 pub const MODES: &[Mode] = &[
     mode("2160p5994", "2160p 59.94", 3840, 2160, P5994, false),
     mode("2160p60", "2160p 60", 3840, 2160, (60, 1), false),
@@ -146,9 +135,8 @@ impl From<&Mode> for DecklinkModeDto {
     }
 }
 
-/// The mode an output plays a `program` in: `pinned`, which has to match
-/// the program's size and rate, or the progressive mode that does.
-/// Interlaced output isn't supported yet (the program is progressive).
+/// The mode an output plays `program` in: `pinned` (which must match its size
+/// and rate) or the matching progressive mode. Interlaced output isn't supported yet.
 pub fn output_mode(
     size: (u32, u32),
     fps: (u32, u32),
@@ -188,10 +176,7 @@ pub fn embedded_channels(channels: u32) -> u32 {
         .unwrap_or(16)
 }
 
-// ── Cards ─────────────────────────────────────────────────────────────────────
-
-/// Profiles set on this node, by card key. Shared by the device list and
-/// every source and output, so a change reaches what's built next.
+/// Profiles set on this node, by card key; shared so a change reaches what's built next.
 #[derive(Default)]
 pub struct Profiles(Mutex<HashMap<String, DecklinkProfile>>);
 
@@ -223,7 +208,6 @@ impl Profiles {
     }
 }
 
-/// A sub-device, as the driver lists it.
 #[derive(Debug, Clone)]
 struct SubDevice {
     key: String,
@@ -238,7 +222,6 @@ struct SubDevice {
 }
 
 impl SubDevice {
-    /// The element `factory` on this sub-device.
     fn element(&self, factory: &str, name: &str, profile: DecklinkProfile) -> Result<gst::Element> {
         let el = make_el(factory, name)?;
         match self.persistent_id {
@@ -277,8 +260,7 @@ pub fn is_decklink(device: &gst::Device) -> bool {
     device.type_().name().to_lowercase().contains("decklink")
 }
 
-/// The sub-devices among `devices`, by key: a capture and a playout entry
-/// for the same sub-device are merged.
+/// The sub-devices among `devices`; capture and playout entries for one sub-device merge.
 fn sub_devices(devices: &[gst::Device]) -> Vec<SubDevice> {
     let mut by_key: BTreeMap<String, SubDevice> = BTreeMap::new();
     for device in devices.iter().filter(|d| is_decklink(d)) {
@@ -346,8 +328,7 @@ fn card_name(name: &str) -> String {
     }
 }
 
-/// The listed modes the driver's caps offer (all of them when it gives
-/// none).
+/// The listed modes the driver's caps offer (all of them if it gives none).
 fn device_modes(caps: Option<gst::Caps>) -> Vec<&'static Mode> {
     let Some(caps) = caps.filter(|c| !c.is_empty() && !c.is_any()) else {
         return MODES.iter().collect();
@@ -378,8 +359,7 @@ impl LocalDevices {
     }
 }
 
-/// Who uses which sub-device, from the node's configured sources: each
-/// source capturing from one, and each channel output playing to one.
+/// Each sub-device's users: sources capturing from it and channel outputs playing to it.
 fn uses(configs: &[ConfiguredSourceDto]) -> Vec<(String, DecklinkUseDto)> {
     let mut uses = Vec::new();
     for c in configs {
@@ -434,10 +414,8 @@ pub fn status(devices: &LocalDevices, configs: &[ConfiguredSourceDto]) -> Deckli
     DecklinkStatusDto { unavailable, cards }
 }
 
-/// Check that `device` can `playout` (or capture) for `source_id`, given
-/// what the node's other sources use: one capture and one playout per
-/// sub-device, and only one of them on a half-duplex profile. Returns the
-/// sub-device's name.
+/// Check `device` can `playout` (or capture) for `source_id`: one capture and
+/// one playout per sub-device, only one on a half-duplex profile. Returns its name.
 fn check_use(
     devices: &LocalDevices,
     device: &str,
@@ -479,8 +457,8 @@ fn check_use(
     Ok(d.name)
 }
 
-/// Check a source config before it's saved, and fill in the sub-device's
-/// name. `configs` are the node's sources; `id` is the one being replaced.
+/// Check a source config before it's saved and fill in the sub-device's name.
+/// `id` is the source being replaced.
 pub fn validate(
     cfg: &mut DecklinkSourceConfig,
     devices: &LocalDevices,
@@ -522,8 +500,6 @@ pub fn validate_outputs(
     Ok(())
 }
 
-// ── Source ────────────────────────────────────────────────────────────────────
-
 pub struct DecklinkSource {
     id: String,
     name: String,
@@ -550,7 +526,6 @@ impl DecklinkSource {
         }
     }
 
-    /// The card's profile, as the source would be built with it.
     fn profile(&self) -> DecklinkProfile {
         self.devices
             .decklink(&self.config.device)
@@ -558,8 +533,8 @@ impl DecklinkSource {
             .unwrap_or_default()
     }
 
-    /// The sub-device's video and audio, on a bin's `video` / `audio`
-    /// pads (added by the caller, once the live bin watches for them).
+    /// The sub-device's video and audio on a bin's pads, which the caller adds
+    /// once the live bin watches for them.
     fn capture(&self, d: &SubDevice) -> Result<(gst::Bin, [gst::Pad; 2])> {
         let cfg = &self.config;
         let id = &self.id;
@@ -604,9 +579,8 @@ impl DecklinkSource {
     }
 }
 
-/// Drop the frames the card sends while it has no signal (it flags them as
-/// gaps), so they don't count as live and the compositor's black (or last
-/// frame) shows instead; and keep each frame's timecode.
+/// Drop no-signal frames (flagged as gaps) so they don't count as live and the
+/// compositor's black or last frame shows; keep each frame's timecode.
 fn watch_video(pad: &gst::Pad, timecode: Arc<Mutex<Option<String>>>) {
     let signal = Arc::new(AtomicBool::new(true));
     pad.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
@@ -649,7 +623,7 @@ impl InputSource for DecklinkSource {
         None
     }
 
-    /// The config and the card's profile: a profile change rebuilds it.
+    /// Includes the card's profile: a profile change rebuilds it.
     fn fingerprint(&self) -> String {
         format!(
             "{}|{:?}",
@@ -698,12 +672,8 @@ impl InputSource for DecklinkSource {
     }
 }
 
-// ── Output ────────────────────────────────────────────────────────────────────
-
-/// SDI out of a sub-device: the program at the mode matching its format,
-/// and its audio embedded. Runs on the node clock like other outputs; the
-/// sink schedules frames on the card's clock, and drops or repeats one when
-/// the two drift apart.
+/// SDI out of a sub-device, audio embedded. Runs on the node clock; the sink
+/// schedules on the card's clock and drops or repeats a frame as they drift.
 pub struct DecklinkOutput {
     pub device: String,
     pub mode: Option<String>,
@@ -759,8 +729,7 @@ impl DecklinkOutput {
                 .field("height", mode.height as i32)
                 .build(),
         )?;
-        // The program's channels first, then silence up to what SDI
-        // carries.
+        // The program's channels first, then silence up to what SDI carries.
         let spread = make_el("audioconvert", "aspread")?;
         set_mix_matrix(&spread, &spread_matrix(channels, embedded));
         let acaps = capsfilter(
@@ -815,8 +784,7 @@ impl RunningOutput for DecklinkRunning {
         Some(self.mode.to_string())
     }
 
-    /// Frames the program queue dropped, plus those the card dropped:
-    /// late, or skipped as its clock drifts from the node's.
+    /// Program-queue drops plus card drops (late, or skipped as its clock drifts).
     fn dropped_frames(&self) -> Option<u64> {
         let card = self
             .vsink

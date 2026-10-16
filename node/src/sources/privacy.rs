@@ -1,14 +1,11 @@
-//! macOS privacy permissions for capture devices. AVFoundation answers a
-//! denied camera or microphone with an error that `fallbacksrc` swallows and
-//! retries forever, so the source would just sit at "connecting"; checking
-//! first lets it fail with a reason instead. Elsewhere nothing is checked.
-//! The Setup checks read the same state.
+//! macOS privacy permissions for capture devices. `fallbacksrc` swallows
+//! AVFoundation's denied error and retries forever, so check first to fail
+//! with a reason. Nothing is checked off macOS.
 
 use anyhow::{bail, Result};
 
 use crate::api::types::DeviceKind;
 
-/// A macOS privacy permission capture needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Permission {
     Camera,
@@ -26,7 +23,6 @@ impl Permission {
         }
     }
 
-    /// A link opening that pane.
     pub fn settings_url(self) -> &'static str {
         match self {
             Self::Camera => {
@@ -66,10 +62,8 @@ pub fn access(permission: Permission) -> Option<Access> {
     imp::access(permission)
 }
 
-/// Ask macOS to show its prompt for camera or microphone access. It only
-/// does the first time; after that the answer is changed in System
-/// Settings. Screen recording isn't offered: macOS can't say whether it
-/// has asked, and only asks once.
+/// Show macOS's camera or microphone prompt; it only appears the first time.
+/// Not offered for screen recording: macOS can't say whether it has asked.
 pub fn request(permission: Permission) {
     imp::request(permission)
 }

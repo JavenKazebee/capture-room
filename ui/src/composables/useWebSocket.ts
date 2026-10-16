@@ -69,11 +69,7 @@ function connect() {
   })
 }
 
-/**
- * Everything the UI holds, after missing events: nodes, sources and
- * recordings, then whatever else registered with `onReconnect` (each store's
- * data, and pages' own). Pages that follow the node list reload with it.
- */
+/** Reload after missed events: nodes, sources and recordings, then every `onReconnect` handler. */
 async function reloadAfterReconnect() {
   await reloadAll()
   await runReconnectReloads()
@@ -303,9 +299,7 @@ function logEvent(event: NodeEvent) {
   }
 }
 
-// The socket and its handlers live in this module: a hot update would leave
-// the old ones running beside a new module that never connects. Reload the
-// page instead.
+// A hot update would leave the old socket running beside a module that never connects.
 if (import.meta.hot) {
   import.meta.hot.accept(() => window.location.reload())
 }

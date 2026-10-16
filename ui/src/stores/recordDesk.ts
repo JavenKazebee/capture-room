@@ -21,19 +21,13 @@ interface Warning {
   text: string
 }
 
-/**
- * State of the Record workspace: which feeds are selected, which one is
- * focused or showing its info popover, each feed's chosen preset, and the
- * multiview filters.
- */
+/** Record workspace state: selection, focus, info popover, per-feed presets and multiview filters. */
 export const useRecordDeskStore = defineStore('recordDesk', () => {
   const sources = useSourcesStore()
   const recordings = useRecordingsStore()
   const presets = usePresetsStore()
   const capacity = useCapacityStore()
   const nodes = useNodesStore()
-
-  // ── Filters ────────────────────────────────────────────────────────────────
 
   const query = ref('')
   const nodeFilter = ref<string>('all')
@@ -62,8 +56,6 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     nodeFilter.value = typeFilter.value = 'all'
     stateFilter.value = 'all'
   }
-
-  // ── Selection ──────────────────────────────────────────────────────────────
 
   /** Selected source keys. */
   const selected = ref(new Set<string>())
@@ -107,8 +99,6 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     selected.value = new Set()
     focusedKey.value = null
   }
-
-  // ── Presets per source ─────────────────────────────────────────────────────
 
   /** Preset id per source key; `default` is the built-in H.264/MOV output. */
   const presetFor = useStorage<Record<string, string>>('cr.record.presets', {})
@@ -154,8 +144,6 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
 
   const presetOptions = computed(() => presets.options)
 
-  // ── Start / stop ───────────────────────────────────────────────────────────
-
   const busy = ref(new Set<string>())
   /** How far ahead a synchronized start is set. */
   const SYNC_LEAD_US = 1_500_000
@@ -165,11 +153,7 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     return recordings.start(s.node_id, s.id, preset, startAt)
   }
 
-  /**
-   * A start time on the shared clock for starting several feeds together,
-   * far enough ahead for every node to get its start and build its legs.
-   * `null` if the clock can't be read: the feeds then start as they land.
-   */
+  /** A shared-clock start far enough ahead for every node to build its legs; `null` if the clock can't be read. */
   async function syncedStartTime(): Promise<ClockTimeDto | null> {
     const now = await api<ClockTimeDto>('/node/clock/now').catch(() => null)
     return now && { ...now, time_us: now.time_us + SYNC_LEAD_US }
@@ -181,10 +165,8 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
   }
 
   /**
-   * What to warn about before starting `list`: a node pushed past (or close
-   * to) its benchmarked capacity, or a volume that would fill within the
-   * hour. Checked before starting, so the new recordings aren't counted
-   * twice. Never blocks recording: a failed check just warns about nothing.
+   * Nodes near or past benchmarked capacity, volumes filling within the hour. Run
+   * before starting so new recordings aren't counted twice; a failed check warns of nothing.
    */
   async function capacityWarnings(list: Source[]): Promise<Warning[]> {
     const groups = new Map<string, { nodeId: string; presetId: string; sourceIds: string[] }>()

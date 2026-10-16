@@ -1,13 +1,9 @@
-//! Checking a channel's config.
-
 use crate::api::types::{ChannelConfig, OutputConfig};
 use crate::pipeline::{output, rtsp, whep};
 use crate::sources::{decklink, stream};
 
-/// Check a config before it's saved. `others` are the node's other
-/// channels, whose NDI names this one mustn't reuse (listening ports are
-/// checked against every source by the caller). `available` says whether
-/// an element is installed on this node.
+/// Check a config before it's saved. `others` are the node's other channels,
+/// whose NDI names this one mustn't reuse (the caller checks listening ports).
 pub fn validate(
     cfg: &ChannelConfig,
     name: &str,
@@ -24,8 +20,8 @@ pub fn validate(
     if f.fps_num == 0 || f.fps_den == 0 || f.fps_num / f.fps_den > 240 {
         return Err("the frame rate must be above 0 and at most 240".into());
     }
-    // Up to 7.1: clips are spread onto (and outputs mix down from) a
-    // channel layout, and GStreamer has none beyond 8.
+    // A channel layout is needed (clips spread onto it, outputs mix down), and
+    // GStreamer has none beyond 8.
     if !(1..=8).contains(&cfg.audio_channels) {
         return Err("audio must have 1 to 8 channels".into());
     }
@@ -121,9 +117,8 @@ pub fn validate(
     Ok(())
 }
 
-/// Check that none of the `keys` of the channel `name` (screens, paths,
-/// names) appears twice in it, or in one of the `others`: `twice` and
-/// `taken` say which went wrong.
+/// Check none of channel `name`'s `keys` (screens, paths, names) appears twice
+/// in it or in `others`; `twice` and `taken` are the errors.
 fn unique(
     cfg: &ChannelConfig,
     name: &str,
@@ -224,7 +219,6 @@ fn validate_srt(
     max_channels("SRT", audio_channels)
 }
 
-/// What `f` picks from each of a channel's outputs.
 fn each<T>(cfg: &ChannelConfig, f: impl FnMut(&OutputConfig) -> Option<T>) -> Vec<T> {
     cfg.outputs.iter().filter_map(f).collect()
 }
@@ -253,8 +247,8 @@ pub fn whep_paths(cfg: &ChannelConfig, name: &str) -> Vec<String> {
     })
 }
 
-/// The local ports a channel's outputs listen on (SRT listeners; RTSP
-/// outputs share the node's RTSP server).
+/// The local ports a channel's outputs listen on (SRT listeners; RTSP shares
+/// the node's server).
 pub fn listen_ports(cfg: &ChannelConfig) -> Vec<u16> {
     each(cfg, |o| match o {
         OutputConfig::Srt { url, .. } => stream::url_listen_port(url),

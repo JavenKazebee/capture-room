@@ -5,11 +5,7 @@ import { formatClock } from '@/lib/format'
 import type { ChannelStatusDto } from '@/types/generated/ChannelStatusDto'
 import { Button } from '@/components/ui/button'
 
-/**
- * Play (idle, the next item), pause, stop and take the next item, the clip's times, and a scrubber
- * over the whole file with the clip's in–out range marked. Dragging
- * previews; release seeks.
- */
+/** Transport buttons, clip times and a scrubber over the whole file. Dragging previews; release seeks. */
 const props = defineProps<{ status?: ChannelStatusDto; busy: boolean; nextName: string | null; canNext: boolean }>()
 const emit = defineEmits<{ play: []; pause: []; stop: []; next: []; seek: [ms: number] }>()
 
@@ -121,7 +117,6 @@ function up() {
         class="absolute inset-y-0 bg-primary/20 border-x border-primary"
         :style="{ left: pct(inMs), width: `calc(${pct(outMs)} - ${pct(inMs)})` }"
       />
-      <!-- Playhead -->
       <div v-if="clip" class="absolute inset-y-0 w-0.5 -ml-px bg-foreground" :style="{ left: pct(position) }" />
       <span class="absolute left-1.5 bottom-0.5 text-[10px] num text-muted-foreground pointer-events-none">
         {{ clip ? formatClock(position) : '' }}

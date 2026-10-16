@@ -14,11 +14,7 @@ import ToolbarSearch from '@/components/common/ToolbarSearch.vue'
 import FileBrowseDialog from '@/components/sources/FileBrowseDialog.vue'
 import { MEDIA_DRAG } from './transport'
 
-/**
- * A node's media library. Click picks a clip; double-click (or Enter) adds
- * it to the channel's playlist, as does dragging it there. Removing an entry
- * leaves its file on disk (and takes it out of playlists).
- */
+/** A node's media library. Removing an entry leaves its file on disk and takes it out of playlists. */
 const props = defineProps<{
   nodeId: string
   /** The clip on the channel now, marked in the list. */

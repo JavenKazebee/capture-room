@@ -1,20 +1,15 @@
-//! The node's screens, for display outputs: a channel's program shown
-//! fullscreen on a screen attached to the node (a monitor, a projector, an
-//! HDMI→SDI converter).
+//! The node's screens, for display outputs: a channel's program fullscreen
+//! on an attached screen (monitor, projector, HDMI→SDI converter).
 //!
-//! Windows have to live on the process's main thread on macOS (AppKit) and
-//! are best kept there everywhere, so `main` runs a winit event loop on it
-//! and the node's runtime on another thread (see [`run`]). Everything else
-//! talks to the loop through [`Displays`], which sends it commands and waits
-//! for the answer. Where there's no window system (Linux without a desktop),
-//! [`Displays::none`] lists nothing and display outputs can't open.
+//! Windows must live on the main thread on macOS (AppKit), so `main` runs a
+//! winit loop there and the node's runtime on another thread (see [`run`]);
+//! everything else talks to it through [`Displays`]. Without a window system,
+//! [`Displays::none`] lists nothing.
 //!
-//! An output window is borderless, on top, with the cursor hidden. When the
-//! screen offers the channel's exact format, the window goes exclusive
-//! fullscreen in that mode, which sets the screen to it (what an HDMI→SDI
-//! converter needs); a channel at 29.97 can also use a 59.94 mode, each
-//! frame shown twice. Otherwise it fills the screen at its current mode and
-//! the video is scaled.
+//! Output windows are borderless, on top, cursor hidden. If the screen offers
+//! the channel's exact format (or double the rate for 29.97), the window goes
+//! exclusive in that mode, which sets the screen to it (what an HDMI→SDI
+//! converter needs); otherwise it fills the screen and the video is scaled.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,7 +29,6 @@ use winit::window::{Window, WindowId};
 
 use crate::api::types::{DisplayDto, DisplayModeDto};
 
-/// How long to wait for the window loop to answer.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A program format a window should show, to pick the screen mode by.
@@ -46,22 +40,18 @@ pub struct WantedFormat {
     pub fps_den: u32,
 }
 
-/// An output window, open until dropped.
 pub struct DisplayWindow {
     proxy: EventLoopProxy<Command>,
     id: WindowId,
-    /// The native handle a video sink draws into (an `NSView` on macOS, an
-    /// `HWND` on Windows, an X11 window id).
+    /// The native handle a video sink draws into (`NSView`, `HWND`, or X11 window id).
     pub handle: usize,
-    /// The screen's mode, as shown on the channel: `1920×1080 at 59.94 Hz`,
-    /// with a note when it isn't the channel's format.
+    /// The screen's mode as shown on the channel, noted when it isn't the channel's format.
     pub mode: String,
     /// Whether its screen is plugged in (the window hides while it isn't).
     connected: Arc<AtomicBool>,
 }
 
 impl DisplayWindow {
-    /// Whether the screen is plugged in.
     pub fn connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)
     }
@@ -78,8 +68,7 @@ impl Drop for DisplayWindow {
     }
 }
 
-/// An opened window: its id, native handle, mode description, and whether
-/// its screen is connected.
+/// An opened window: id, native handle, mode description, screen connected.
 type Opened = (WindowId, usize, String, Arc<AtomicBool>);
 
 enum Command {
@@ -100,7 +89,6 @@ enum Command {
     Quit,
 }
 
-/// The node's screens, through the window loop on the main thread.
 #[derive(Clone)]
 pub struct Displays {
     proxy: Option<EventLoopProxy<Command>>,
@@ -119,7 +107,6 @@ impl Displays {
         }
     }
 
-    /// Whether this node can open windows.
     pub fn available(&self) -> bool {
         self.proxy.is_some()
     }
@@ -137,8 +124,8 @@ impl Displays {
         rx.recv_timeout(REPLY_TIMEOUT).unwrap_or_default()
     }
 
-    /// Open an output window on `display` (a [`DisplayDto::id`]), in the
-    /// screen mode that best fits `format`; shown straight away if `visible`.
+    /// Open an output window on `display` (a [`DisplayDto::id`]) in the mode
+    /// that best fits `format`; shown at once if `visible`.
     pub fn open(
         &self,
         display: &str,
@@ -173,8 +160,8 @@ impl Displays {
     }
 }
 
-/// Run `node` (the node itself) with a window loop on this, the main
-/// thread, when there's a window system; otherwise just run it here.
+/// Run `node` with a window loop on this (main) thread when there's a window
+/// system; otherwise just run it here.
 pub fn run<T: Send + 'static>(
     tray: Option<crate::tray::Config>,
     node: impl FnOnce(Displays) -> T + Send + 'static,
@@ -229,17 +216,14 @@ fn build_event_loop() -> Result<EventLoop<Command>, winit::error::EventLoopError
 struct OutputWindow {
     // Dropped first: the window closes before the screen's mode changes back.
     window: Window,
-    /// The native view or window the sink draws into.
     handle: usize,
-    /// Whether it should show (it hides while its channel is idle, for
-    /// some outputs).
+    /// Whether it should show (some outputs hide while their channel is idle).
     visible: bool,
     /// Whether its screen is plugged in, shared with its [`DisplayWindow`].
     connected: Arc<AtomicBool>,
     #[cfg(target_os = "macos")]
     display: u32,
-    /// The mode the screen is set to (pixels and refresh in mHz), to set
-    /// again when it's plugged back in.
+    /// The screen's mode (pixels, refresh in mHz), to set again when replugged.
     #[cfg(target_os = "macos")]
     wanted_mode: Option<(u32, u32, u32)>,
     #[cfg(target_os = "macos")]
@@ -339,10 +323,9 @@ impl ApplicationHandler<Command> for WindowLoop {
         }
     }
 
-    // Output windows close when their output stops, not when asked. When
-    // a screen is unplugged the OS moves its windows to another screen:
-    // check at once rather than cover the operator's screen until the next
-    // tick.
+    // Output windows close when their output stops, not when asked. An
+    // unplugged screen's windows get moved by the OS onto another screen, so
+    // check at once rather than cover the operator's screen until the next tick.
     fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         if matches!(
             event,
@@ -368,7 +351,6 @@ impl ApplicationHandler<Command> for WindowLoop {
     }
 }
 
-/// How often open windows' screens are checked for being unplugged.
 const SCREEN_CHECK: Duration = Duration::from_millis(500);
 
 impl WindowLoop {
@@ -464,15 +446,11 @@ impl WindowLoop {
     }
 }
 
-/// Put the screen in `mode` (when there is one) and open a window covering
-/// it. Whether the mode was set.
-///
-/// macOS doesn't use winit's fullscreen: its exclusive mode captures the
-/// display, whose black shield ends up over the window (winit only works
-/// around that going from borderless to exclusive), and native fullscreen
-/// moves the window to its own Space with an animation. Instead the mode is
-/// set for this process only, and a plain borderless window covers the
-/// screen above the menu bar, on every Space.
+/// Put the screen in `mode` (if any) and open a window covering it; returns
+/// whether the mode was set. Not winit's fullscreen: macOS exclusive mode
+/// captures the display, whose black shield covers the window, and native
+/// fullscreen animates into its own Space. Instead the mode is set for this
+/// process only and a borderless window covers the screen on every Space.
 #[cfg(target_os = "macos")]
 fn place(
     event_loop: &ActiveEventLoop,
@@ -520,8 +498,8 @@ fn place(
     ))
 }
 
-/// Elsewhere winit's fullscreen does it: exclusive in the mode, which sets
-/// the screen to it, or borderless at the screen's own mode.
+/// Elsewhere winit's fullscreen does it: exclusive in the mode, or borderless
+/// at the screen's own mode.
 #[cfg(not(target_os = "macos"))]
 fn place(
     event_loop: &ActiveEventLoop,
@@ -554,8 +532,7 @@ fn place(
     ))
 }
 
-/// Show or hide an output window without taking focus from the operator's
-/// app.
+/// Show or hide an output window without taking focus from the operator's app.
 fn show(output: &OutputWindow, visible: bool) {
     #[cfg(target_os = "macos")]
     mac::show(output.handle, visible);
@@ -578,14 +555,14 @@ fn native_handle(window: &Window) -> Result<usize, String> {
     }
 }
 
-/// A screen's id: its name, which is stable while it's connected (and
-/// across reconnects on most systems).
+/// A screen's id: its name, stable while connected (and across reconnects on
+/// most systems).
 fn display_id(monitor: &MonitorHandle) -> String {
     monitor.name().unwrap_or_else(|| "display".into())
 }
 
-/// The name the OS shows for a screen, where winit doesn't give it (on
-/// macOS its name is `Monitor #<display id>`).
+/// The name the OS shows for a screen, where winit doesn't (on macOS it gives
+/// `Monitor #<display id>`).
 fn screen_name(monitor: &MonitorHandle) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
@@ -632,15 +609,14 @@ fn list(event_loop: &ActiveEventLoop) -> Vec<DisplayDto> {
         .collect()
 }
 
-/// The screen refresh rates that show `format` without judder, best first:
-/// its own rate, then double (each frame shown twice).
+/// Refresh rates that show `format` without judder, best first: its own, then double.
 pub fn refresh_rates(format: WantedFormat) -> [u32; 2] {
     let mhz = (u64::from(format.fps_num) * 1000 / u64::from(format.fps_den.max(1))) as u32;
     [mhz, mhz * 2]
 }
 
-/// Whether a mode's refresh rate (in mHz) is `wanted`: screens report
-/// 59.94 Hz as 59940 or a few mHz either side.
+/// Whether a mode's refresh (mHz) is `wanted`: screens report 59.94 Hz as
+/// 59940 or a few mHz either side.
 fn same_rate(mode: u32, wanted: u32) -> bool {
     mode.abs_diff(wanted) <= 10
 }
@@ -742,8 +718,8 @@ mod mac {
         }
     }
 
-    /// Switch `display` to a mode with these pixels and rate, for this
-    /// process. `None` when it's already in one; otherwise how to put it back.
+    /// Switch `display` to a mode with these pixels and rate, for this process.
+    /// `None` if it's already in one; otherwise how to put it back.
     pub fn set_mode(
         display: u32,
         width: u32,
@@ -782,8 +758,7 @@ mod mac {
                         continue;
                     }
                     // One pixel per point: a HiDPI mode of the same pixels
-                    // would draw the desktop at half size, and no different
-                    // signal.
+                    // draws the desktop at half size with no different signal.
                     let native = CGDisplayModeGetWidth(mode) == width as usize;
                     if found.is_null() || native {
                         found = mode;
@@ -950,9 +925,9 @@ mod mac {
         }
     }
 
-    /// Make the window holding `ns_view` cover `display`, above the menu bar
-    /// and the Dock, on every Space. (Placing it with winit lands it on the
-    /// wrong screen when the screens' scale factors differ.)
+    /// Make the window holding `ns_view` cover `display` above the menu bar and
+    /// Dock on every Space. (winit places it on the wrong screen when scale
+    /// factors differ.)
     pub fn cover(ns_view: usize, display: u32, visible: bool) -> Result<(), String> {
         let screen = screen(display);
         if screen.is_null() {
@@ -967,9 +942,9 @@ mod mac {
             }
             let _: () = msg_send![window, setLevel: LEVEL];
             let _: () = msg_send![window, setCollectionBehavior: BEHAVIOR];
-            // CoreGraphics has the screen's new size straight after a mode
-            // change (the NSScreen catches up later). Its origin is the top
-            // left of the main screen, AppKit's the bottom left.
+            // CoreGraphics has the new size right after a mode change (NSScreen
+            // catches up later). Its origin is the main screen's top left,
+            // AppKit's the bottom left.
             let bounds = CGDisplayBounds(display);
             let main = CGDisplayBounds(CGMainDisplayID());
             let frame = Rect {
@@ -985,8 +960,8 @@ mod mac {
         Ok(())
     }
 
-    /// Show (in front, without activating the app or taking key focus) or
-    /// hide the window holding `ns_view`.
+    /// Show (in front, without activating the app or taking key focus) or hide
+    /// the window holding `ns_view`.
     pub fn show(ns_view: usize, visible: bool) {
         // SAFETY: a live NSView from winit, on the main thread.
         unsafe {
@@ -1004,9 +979,9 @@ mod mac {
     }
 }
 
-/// Screen sleep. A sleeping screen drops out of the list of screens (and an
-/// output on it goes dark), so screens are woken before they're listed or
-/// opened, and kept awake while an output shows on one.
+/// Screen sleep. A sleeping screen drops out of the screen list (and its
+/// output goes dark), so screens are woken before listing or opening, and
+/// kept awake while an output shows.
 #[cfg(target_os = "macos")]
 mod power {
     use std::ffi::{c_char, c_void, CString};
@@ -1048,7 +1023,6 @@ mod power {
         fn CGGetOnlineDisplayList(max: u32, ids: *mut u32, count: *mut u32) -> i32;
     }
 
-    /// A CFString, released when dropped.
     struct CfString(CFStringRef);
 
     impl CfString {
@@ -1082,8 +1056,7 @@ mod power {
         }
     }
 
-    /// Wake sleeping screens (as a key press would), waiting briefly for
-    /// them to come up.
+    /// Wake sleeping screens (as a key press would), waiting briefly for them.
     pub fn wake_screens() {
         let online = display_count(CGGetOnlineDisplayList);
         if display_count(CGGetActiveDisplayList) >= online {

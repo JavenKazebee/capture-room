@@ -1,22 +1,13 @@
-//! Playout channels.
+//! Playout channels. A channel's *program* is an ordinary source bin (a
+//! compositor over black and a mixer over silence at the channel's fixed
+//! format), so it never goes dark or changes format. A loaded clip plays in
+//! its own clock-paced *player* pipeline pushing into appsrcs (*lanes*) in the
+//! program bin; a bad file fails its player, never the program.
 //!
-//! A channel's *program* is a source like any other: a bin with `"video"` and
-//! `"audio"` pads, run by an ordinary monitor pipeline (so it has thumbnails
-//! and meters, and can be recorded). The bin is a compositor over black and a
-//! mixer over silence at the channel's fixed format (see
-//! [`live::video_output`]), so the program never goes dark or changes format.
-//!
-//! A loaded clip plays in its own *player* pipeline, paced by the clock, whose
-//! appsinks push into appsrcs added to the program bin for that clip (its
-//! *lanes*). Removing the lanes leaves black and silence. A bad file fails
-//! its player, never the program.
-//!
-//! Timestamps: a player buffer at running time `rt` is rendered when the clock
-//! reads `player base time + rt`. It's restamped to that moment in the
-//! program's running time, plus [`LEAD`] so it reaches the compositor ahead
-//! of its slot. The same mapping applies to video and audio, so they stay in
-//! sync, and since a paused pipeline moves its base time on resume, across
-//! pauses too.
+//! A player buffer at running time `rt` renders when the clock reads `player
+//! base time + rt`; it's restamped to that moment in program running time plus
+//! [`LEAD`]. Video and audio share the mapping, and a paused pipeline moves its
+//! base time on resume, so they stay in sync across pauses.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,15 +31,13 @@ pub use lanes::PlayedProgress;
 pub use playout::{check_rate, ClipRequest, PlaylistItem, Playout, PlayoutStatus, ReplayClip};
 pub use validate::{listen_ports, validate};
 
-/// How far ahead of its slot a clip's buffer is stamped. Covers the
-/// program-side conversion, so frames are never late at the compositor.
+/// How far ahead of its slot a clip's buffer is stamped, covering program-side
+/// conversion so frames are never late at the compositor.
 const LEAD: gst::ClockTime = gst::ClockTime::from_mseconds(100);
 /// How long a clip may take to load (open, decode and preroll).
 const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a frame step may take to show its frame.
 const STEP_TIMEOUT: Duration = Duration::from_millis(300);
-
-// ── ChannelSource ─────────────────────────────────────────────────────────────
 
 pub struct ChannelSource {
     id: String,
@@ -97,7 +86,7 @@ impl InputSource for ChannelSource {
     }
 
     /// Outputs are left out: changing them restarts the outputs, not the
-    /// program (and the clip playing on it).
+    /// program and its clip.
     fn fingerprint(&self) -> String {
         format!("{:?}|{}", self.config.format, self.config.audio_channels)
     }

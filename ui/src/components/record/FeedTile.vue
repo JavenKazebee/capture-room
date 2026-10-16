@@ -93,7 +93,6 @@ watch(session, (now, prev) => {
         ]"
         @click="onClick"
       >
-        <!-- Picture + meters -->
         <div class="relative flex bg-black aspect-video">
           <div class="flex-1 relative overflow-hidden">
             <div
@@ -120,7 +119,6 @@ watch(session, (now, prev) => {
               <span v-if="session" class="text-zinc-400">Recording black and silence</span>
             </div>
 
-            <!-- Selection checkbox (top-left) -->
             <button
               class="absolute top-1.5 left-1.5 size-5 rounded-[4px] border grid place-items-center transition-opacity"
               :class="
@@ -134,7 +132,6 @@ watch(session, (now, prev) => {
               <Check class="size-3.5" />
             </button>
 
-            <!-- Live (top-right) -->
             <div v-if="session || noSignal" class="absolute top-1.5 right-1.5 flex flex-col items-end gap-1">
               <TallyBadge v-if="session" :duration="duration" />
               <span
@@ -173,7 +170,6 @@ watch(session, (now, prev) => {
           </div>
         </div>
 
-        <!-- Name + controls -->
         <div class="px-2.5 py-2 flex flex-col gap-1.5">
           <div class="flex items-center justify-between gap-2 min-w-0">
             <span class="text-sm font-medium truncate">{{ source.display_name }}</span>

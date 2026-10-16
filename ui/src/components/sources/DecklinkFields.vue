@@ -27,8 +27,7 @@ const picked = computed(() => findSubDevice(props.status, cfg.value.device))
 
 const deviceOptions = computed(() => {
   const opts = subDeviceOptions(props.status, false, props.sourceId)
-  // A saved sub-device that's missing stays visible, so the form doesn't
-  // silently pick another.
+  // A missing saved sub-device stays visible, so the form doesn't silently pick another.
   if (cfg.value.device && !picked.value) {
     opts.unshift({ value: cfg.value.device, label: `${cfg.value.device_name || cfg.value.device} (not connected)` })
   }

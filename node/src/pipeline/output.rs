@@ -1,7 +1,6 @@
-//! Output legs: where a channel's program is sent. Like a recording leg, each
-//! runs in its own pipeline fed by the channel's [`MonitorPipeline`]
-//! producers, so a failing output (no NDI Runtime, say) fails alone. Each
-//! output type is an [`OutputSink`], the counterpart of an input source:
+//! Output legs: where a channel's program is sent. Each runs in its own
+//! pipeline fed by the channel's [`MonitorPipeline`], so a failing output
+//! fails alone, for as long as the monitor runs:
 //!
 //! ```text
 //! NDI: appsrc(video) → videoconvert ─────────────────┐
@@ -12,8 +11,6 @@
 //!                                                         mpegtsmux → srtsink
 //!      appsrc(audio) → audioconvert → audioresample → AAC ┘
 //! ```
-//!
-//! Outputs run for as long as the channel's monitor does.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -34,10 +31,9 @@ use crate::sources::decklink::DecklinkOutput;
 use crate::sources::device::LocalDevices;
 use crate::sources::stream;
 
-/// One type of output: how a channel's program leaves the node. The
-/// counterpart of an [`InputSource`](crate::sources::InputSource). Most run
-/// a pipeline of their own for as long as the channel's monitor does (see
-/// [`PipelineOutput`]); an RTSP mount builds one per viewer group instead.
+/// One type of output, the counterpart of an
+/// [`InputSource`](crate::sources::InputSource). Most run a
+/// [`PipelineOutput`]; an RTSP mount builds one per viewer group instead.
 pub trait OutputSink {
     /// What the output is called on the channel, like `NDI Studio A`.
     fn label(&self) -> String;
@@ -46,12 +42,10 @@ pub trait OutputSink {
     fn start(&self, monitor: &Arc<MonitorPipeline>) -> Result<Box<dyn RunningOutput>>;
 }
 
-/// An output that's sending.
 pub trait RunningOutput: Send + Sync {
     /// Why it stopped sending, if it did.
     fn error(&self) -> Option<String>;
 
-    /// How many receivers are connected, for outputs that can count them.
     fn receivers(&self) -> Option<u32> {
         None
     }
@@ -65,8 +59,7 @@ pub trait RunningOutput: Send + Sync {
     /// while it doesn't). Called often; only changes matter.
     fn set_on_air(&self, _on_air: bool) {}
 
-    /// Video frames dropped so far because it couldn't keep up, for outputs
-    /// that take the program at a leaky queue (as a recording leg does).
+    /// Frames dropped at a leaky input queue, for outputs that have one.
     fn dropped_frames(&self) -> Option<u64> {
         None
     }
@@ -246,7 +239,6 @@ impl OutputLeg {
         self.running.error()
     }
 
-    /// How many receivers are connected, if the output counts them.
     pub fn receivers(&self) -> Option<u32> {
         self.running.receivers()
     }
@@ -259,7 +251,6 @@ impl OutputLeg {
         self.running.set_on_air(on_air);
     }
 
-    /// See [`RunningOutput::dropped_frames`].
     pub fn dropped_frames(&self) -> Option<u64> {
         self.running.dropped_frames()
     }
@@ -277,8 +268,7 @@ impl Drop for OutputLeg {
     }
 }
 
-/// An [`OutputPipeline`] running, fed by the monitor's producers like a
-/// recording leg, on the monitor's clock and base time.
+/// An [`OutputPipeline`] running on the monitor's clock and base time.
 pub struct PipelineOutput {
     /// It stops sending after its first error.
     consumer: ConsumerPipeline,
@@ -330,13 +320,10 @@ impl RunningOutput for PipelineOutput {
         self.receivers.as_ref().map(|n| n.load(Ordering::Relaxed))
     }
 
-    /// Like a recording leg's: see [`ConsumerPipeline::dropped_frames`].
     fn dropped_frames(&self) -> Option<u64> {
         Some(self.consumer.dropped_frames())
     }
 }
-
-// ── NDI ───────────────────────────────────────────────────────────────────────
 
 /// An NDI sender called `ndi_name` (NDI shows it as `HOST (ndi_name)`).
 struct NdiOutput {
@@ -381,14 +368,12 @@ impl NdiOutput {
     }
 }
 
-// ── Display ───────────────────────────────────────────────────────────────────
-
 /// The video sink display outputs draw into their window with.
 pub const DISPLAY_SINK: &str = "glimagesink";
 
-/// The program fullscreen on a screen attached to the node (see
-/// [`crate::display`]), its audio to an audio output: usually the screen's
-/// own HDMI audio, so an HDMI→SDI converter embeds it.
+/// The program fullscreen on an attached screen, its audio to an audio
+/// output: usually the screen's own HDMI audio, so an HDMI→SDI converter
+/// embeds it.
 struct DisplayOutput {
     display: String,
     audio_device: Option<String>,
@@ -496,16 +481,13 @@ impl RunningOutput for DisplayRunning {
     }
 }
 
-// ── SRT ───────────────────────────────────────────────────────────────────────
-
 /// Most audio channels an SRT output carries: AAC's limit.
 pub const SRT_MAX_AUDIO_CHANNELS: u32 = 8;
 
 /// Elements an SRT output needs (and one of the H.264 encoders).
 pub const SRT_ELEMENTS: &[&str] = &["srtsink", "mpegtsmux", "h264parse", "avenc_aac"];
 
-/// H.264 encoders for a live stream, best first; the first this node has is
-/// used.
+/// H.264 encoders for a live stream, best first.
 pub const LIVE_H264: &[&str] = &["vtenc_h264", "x264enc"];
 
 /// The first live H.264 encoder this node has, and its properties for
@@ -545,10 +527,8 @@ pub(crate) fn aac_bitrate(channels: u32) -> u32 {
     64_000 * channels.max(2)
 }
 
-/// An SRT stream: H.264 and AAC in MPEG-TS, with fixed live settings (a
-/// keyframe every second, so a receiver joining mid-stream waits at most
-/// that long). Listening (no host in the URL) or calling; a caller retries
-/// on its own until the other end answers.
+/// An SRT stream: H.264 and AAC in MPEG-TS. Listens when the URL has no
+/// host, otherwise calls, retrying until the other end answers.
 struct SrtOutput {
     url: String,
     latency_ms: u32,
@@ -562,7 +542,6 @@ impl SrtOutput {
         stream::url_listen_port(&self.url).is_some()
     }
 
-    /// The first live H.264 encoder this node has, set for streaming.
     fn video_encoder(&self) -> Result<gst::Element> {
         let (factory, props) = live_h264(self.bitrate_kbps, self.program)?;
         let venc = make_el(factory, "venc")?;
@@ -574,11 +553,10 @@ impl SrtOutput {
 }
 
 /// Drop the encoders' output until both have caps, then start video at a
-/// keyframe. `mpegtsmux` writes its first program table (PMT) with the
-/// streams that have caps, then another when the second gets them; which
-/// is first depends on the encoders' start-up. `srtsink` replays that first
-/// table to every receiver that connects, so each would see the program
-/// change, and many drop a stream when it does.
+/// keyframe. `mpegtsmux` writes a PMT with only the streams that have caps,
+/// then another when the second arrives, and `srtsink` replays that first
+/// PMT to every new receiver: they'd see the program change, and many drop a
+/// stream when it does.
 fn start_together(video: &gst::Element, audio: &gst::Element) -> Result<()> {
     let caps = Arc::new([AtomicBool::new(false), AtomicBool::new(false)]);
     for (i, el) in [video, audio].into_iter().enumerate() {

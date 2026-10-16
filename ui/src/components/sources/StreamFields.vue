@@ -14,12 +14,7 @@ import AudioPlanField from './AudioPlanField.vue'
 import LiveFormatField from './LiveFormatField.vue'
 import { hostPort, param, scheme as schemeOf, srtListens, withParam } from '@/lib/streamUrl'
 
-/**
- * A network stream, URL first: the fields that matter for its protocol
- * appear under it. Mirrors the node's URL rules (`sources/stream.rs`): SRT
- * listens when the URL has no host or says `mode=listener`; UDP always
- * listens.
- */
+/** A network stream, URL first, with protocol fields under it. UDP always listens; SRT rules are in `streamUrl.ts`. */
 const props = defineProps<{
   /** URL schemes the node can open. */
   protocols: string[]
@@ -49,8 +44,6 @@ const unsupported = computed(() =>
     : null,
 )
 
-// ── SRT ───────────────────────────────────────────────────────────────────────
-
 const srtListener = computed(() => srtListens(url.value))
 /** The caller's host, kept while toggling to listener and back. */
 const lastHost = ref('')
@@ -77,8 +70,6 @@ const passphrase = computed({
   get: () => param(url.value, 'passphrase') ?? '',
   set: (v: string) => (cfg.value = { ...cfg.value, url: withParam(url.value, 'passphrase', v || null) }),
 })
-
-// ── Listener address ──────────────────────────────────────────────────────────
 
 /** Where to send to, for a stream the node listens for. */
 const pushTo = computed(() => {

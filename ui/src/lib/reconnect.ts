@@ -5,10 +5,8 @@ type Reload = () => unknown
 const reloads = new Set<Reload>()
 
 /**
- * Fetch `reload` again whenever the UI reconnects to the server: events sent
- * while it was away are lost, so whatever was loaded may be stale. Call it
- * where the data is first loaded, a store or a component; a component's
- * registration ends when it unmounts.
+ * Run `reload` on reconnect, since events sent while away are lost. Call it where the data is
+ * first loaded; a component's registration ends when it unmounts.
  */
 export function onReconnect(reload: Reload) {
   reloads.add(reload)

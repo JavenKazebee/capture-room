@@ -23,8 +23,6 @@ import type { UpdateNodeSettingsRequest } from '@/types/generated/UpdateNodeSett
 const { colorMode, density } = usePreferences()
 const nodes = useNodesStore()
 
-// ── Monitoring (one setting for every node) ──────────────────────────────────
-
 /** Each reachable node's current settings; `null` = couldn't read them. */
 const nodeMonitors = reactive(new Map<string, MonitorSettingsDto | null>())
 
@@ -142,8 +140,6 @@ const meterRates = computed(() =>
   withValue([50, 100, 200, 500].map((v) => ({ value: v, label: msLabel(v) })), draft.value?.level_interval_ms, msLabel),
 )
 
-// ── Clock sync (controllers) ─────────────────────────────────────────────────
-
 /** `null` until loaded, or while this instance isn't a controller. */
 const clockSettings = ref<ControllerClockDto | null>(null)
 const ptpDomain = ref(0)
@@ -178,8 +174,6 @@ function commitDomain() {
   const mode = clockSettings.value?.mode
   if (mode?.kind === 'ptp' && mode.domain !== domain) setClockMode({ kind: 'ptp', domain })
 }
-
-// ── About ─────────────────────────────────────────────────────────────────────
 
 const selfNode = computed(() => nodes.nodes.find((n) => n.is_self))
 const peerCount = computed(() => nodes.nodes.length - 1)

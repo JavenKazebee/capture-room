@@ -17,10 +17,7 @@ function isLoopback(host: string) {
   return host === 'localhost' || host === '[::1]' || host === '::1' || host.startsWith('127.')
 }
 
-/**
- * Whether this browser runs on `node`'s machine, so a System Settings link or
- * a permission prompt would open in front of the person clicking it.
- */
+/** Whether this browser runs on `node`'s machine, so a permission prompt would open in front of the clicker. */
 export function browserIsOn(node: NodeDto) {
   if (!isLoopback(window.location.hostname)) return false
   if (node.is_self) return true
@@ -31,10 +28,7 @@ export function browserIsOn(node: NodeDto) {
   }
 }
 
-/**
- * Setup checks per node, read live from each node (nothing is stored), plus
- * the controller's probes of each node's ports.
- */
+/** Setup checks read live from each node (nothing is stored), plus the controller's port probes. */
 export const useChecksStore = defineStore('checks', () => {
   const nodes = useNodesStore()
   /** `undefined` while loading, `null` if it failed. */

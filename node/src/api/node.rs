@@ -1,6 +1,5 @@
-//! The node API: everything this machine has — sources, storage, recordings,
-//! thumbnails, settings. Local only: it never forwards and never knows about
-//! other nodes. Mounted at `/api/v1/node`; controllers reach a peer's copy
+//! The node API at `/api/v1/node`: this machine's sources, storage,
+//! recordings and settings. Local only; controllers reach a peer's copy
 //! through `/api/v1/nodes/{id}/…`.
 
 use std::net::SocketAddr;
@@ -99,8 +98,6 @@ pub fn router() -> Router<Arc<AppState>> {
         .merge(super::playout::router())
 }
 
-// ── /status ───────────────────────────────────────────────────────────────────
-
 async fn get_status(State(state): State<Arc<AppState>>) -> Json<NodeStatus> {
     Json(local_status(&state).await)
 }
@@ -122,13 +119,10 @@ pub async fn local_status(state: &AppState) -> NodeStatus {
     }
 }
 
-// ── /update ───────────────────────────────────────────────────────────────────
-
 async fn get_update(State(state): State<Arc<AppState>>) -> Json<UpdateStatusDto> {
     Json(crate::update::status(&state).await)
 }
 
-/// Look for a newer release now.
 async fn post_update_check(State(state): State<Arc<AppState>>) -> Json<UpdateStatusDto> {
     crate::update::check(&state).await;
     Json(crate::update::status(&state).await)
@@ -140,8 +134,6 @@ async fn post_update(State(state): State<Arc<AppState>>) -> ApiResult<Json<Updat
     crate::update::start(&state).await.map_err(ApiError::bad)?;
     Ok(Json(crate::update::status(&state).await))
 }
-
-// ── /clock ────────────────────────────────────────────────────────────────────
 
 async fn get_clock(State(state): State<Arc<AppState>>) -> Json<ClockStatusDto> {
     Json(state.clock_status().await)
@@ -162,8 +154,6 @@ async fn post_clock_claim(
     state.clock.claim(&claim, peer.ip());
     Json(state.clock_status().await)
 }
-
-// ── /settings ─────────────────────────────────────────────────────────────────
 
 async fn settings_dto(state: &AppState) -> NodeSettingsDto {
     NodeSettingsDto {
@@ -204,8 +194,6 @@ async fn put_settings(
     Ok(Json(settings_dto(&state).await))
 }
 
-// ── /storage ──────────────────────────────────────────────────────────────────
-
 /// Volumes, with what this node's active recordings write to each and the
 /// recording time that leaves.
 async fn get_storage(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<StorageVolumeDto>>> {
@@ -218,8 +206,6 @@ async fn get_storage(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<S
     .await?;
     Ok(Json(volumes))
 }
-
-// ── /sources ──────────────────────────────────────────────────────────────────
 
 fn sources_list(mgr: &SourceManager) -> Vec<SourceDto> {
     mgr.sources()
@@ -248,8 +234,6 @@ async fn post_scan(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<Sou
     Ok(Json(sources_list(&*state.source_manager.read().await)))
 }
 
-// ── /ndi ──────────────────────────────────────────────────────────────────────
-
 async fn get_ndi(State(state): State<Arc<AppState>>) -> Json<NdiSubscriptionsDto> {
     Json(state.source_manager.read().await.ndi_subscriptions())
 }
@@ -274,8 +258,6 @@ async fn put_ndi(
     rescan_after(&state, "NDI subscriptions change").await;
     Ok(Json(state.source_manager.read().await.ndi_subscriptions()))
 }
-
-// ── /configured-sources ───────────────────────────────────────────────────────
 
 async fn get_configured_sources(
     State(state): State<Arc<AppState>>,
@@ -467,15 +449,11 @@ fn serves_rtsp(config: &SourceConfig) -> bool {
         if cfg.outputs.iter().any(|o| matches!(o, OutputConfig::Rtsp { .. })))
 }
 
-// ── /devices ──────────────────────────────────────────────────────────────────
-
 /// Capture devices on the node, for picking one in a device source.
 async fn get_devices(State(state): State<Arc<AppState>>) -> Json<Vec<DeviceDto>> {
     let devices = state.source_manager.read().await.devices().clone();
     Json(devices.list())
 }
-
-// ── /decklink ─────────────────────────────────────────────────────────────────
 
 /// The node's Decklink cards, their sub-devices and what uses them.
 async fn get_decklink(State(state): State<Arc<AppState>>) -> ApiResult<Json<DecklinkStatusDto>> {
@@ -508,8 +486,6 @@ async fn put_decklink_profile(
     Ok(Json(crate::sources::decklink::status(&devices, &configs)))
 }
 
-// ── /displays ─────────────────────────────────────────────────────────────────
-
 /// The node's screens, for display outputs.
 async fn get_displays(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<DisplayDto>>> {
     let displays = state.source_manager.read().await.displays().clone();
@@ -518,8 +494,6 @@ async fn get_displays(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<
         tokio::task::spawn_blocking(move || displays.list()).await?,
     ))
 }
-
-// ── /checks ───────────────────────────────────────────────────────────────────
 
 /// What each feature needs from this machine, and whether it has it.
 async fn get_checks(State(state): State<Arc<AppState>>) -> ApiResult<Json<NodeChecksDto>> {
@@ -541,8 +515,6 @@ async fn post_check_request(Json(req): Json<CheckRequest>) -> ApiResult<StatusCo
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ── /files ────────────────────────────────────────────────────────────────────
-
 #[derive(serde::Deserialize)]
 struct FilesQuery {
     path: Option<String>,
@@ -555,8 +527,6 @@ async fn get_files(Query(q): Query<FilesQuery>) -> ApiResult<Json<DirListingDto>
         .map_err(ApiError::bad)?;
     Ok(Json(listing))
 }
-
-// ── /recordings ───────────────────────────────────────────────────────────────
 
 const SESSION_NOT_FOUND: ApiError = ApiError::NotFound("session not found");
 
@@ -617,8 +587,7 @@ struct DeleteRecordingQuery {
 }
 
 /// Remove a finished session from history; with `?files`, delete its files
-/// from disk first. If any can't be deleted the session stays, listing just
-/// the files still on disk, so none drop out of sight.
+/// first. If any can't be deleted the session stays, listing those left.
 async fn delete_recording(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<String>,
@@ -721,9 +690,8 @@ pub(super) struct FileQuery {
     pub download: Option<String>,
 }
 
-/// One of a finished session's files, by output and file index (a split
-/// output has several), with range requests so browsers can seek. Only the
-/// files a session recorded can be read here.
+/// One of a finished session's files by output and file index, with range
+/// requests. Only files the session recorded can be read here.
 async fn get_recording_file(
     State(state): State<Arc<AppState>>,
     AxumPath((id, output, file)): AxumPath<(String, usize, usize)>,
@@ -786,9 +754,8 @@ pub(super) async fn serve_file(
     Ok(resp)
 }
 
-/// Each output's files: those it recorded, or its one planned path for
-/// sessions from before files were kept. An output can have none: a leg that
-/// never opened a file, or one whose files were all deleted.
+/// Each output's files, or its one planned path for sessions from before files
+/// were kept. Can be empty: a leg that never opened a file, or all deleted.
 pub(super) fn session_files(session: &RecordingSessionDto) -> Vec<Vec<String>> {
     if session.files.is_empty() {
         session
@@ -910,9 +877,8 @@ async fn post_stop_recording(
     let session = match outcome {
         StopOutcome::Start(job) => {
             let rx = job.tx.subscribe();
-            // Spawned independently: if the caller's connection drops while
-            // we're awaiting below, only this request's response is affected
-            // — the stop keeps running to completion regardless.
+            // Spawned so the stop completes even if this request's connection
+            // drops while awaiting below.
             tokio::spawn(session::run_stop(Arc::clone(&state), *job, None));
             await_stop_result(rx).await
         }
@@ -924,9 +890,8 @@ async fn post_stop_recording(
         .ok_or(ApiError::NotFound("session not found"))
 }
 
-/// A session with no in-memory record, e.g. left `active` by a crash: mark it
-/// stopped in the DB — but only if it isn't already, so a stray retry landing
-/// here after everything settled doesn't stomp `stopped_at`.
+/// A session with no in-memory record (e.g. left `active` by a crash): mark it
+/// stopped, unless it already is, so a stray retry doesn't stomp `stopped_at`.
 async fn stop_orphaned(state: &AppState, id: &str) -> anyhow::Result<Option<RecordingSessionDto>> {
     let Some(mut session) = db::session_get(&state.db, id).await? else {
         return Ok(None);
@@ -939,8 +904,6 @@ async fn stop_orphaned(state: &AppState, id: &str) -> anyhow::Result<Option<Reco
     }
     Ok(Some(session))
 }
-
-// ── /benchmarks ───────────────────────────────────────────────────────────────
 
 async fn get_benchmarks(
     State(state): State<Arc<AppState>>,
@@ -994,8 +957,6 @@ async fn delete_benchmark(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ── /capacity ─────────────────────────────────────────────────────────────────
-
 async fn get_capacity(State(state): State<Arc<AppState>>) -> ApiResult<Json<NodeCapacityDto>> {
     let runs = db::benchmarks_list(&state.db).await?;
     let capacity = Capacity::from_runs(&runs);
@@ -1015,9 +976,8 @@ async fn get_capacity(State(state): State<Arc<AppState>>) -> ApiResult<Json<Node
 }
 
 /// Would recording these sources with these outputs (or giving them replay
-/// buffers) fit on this node — its benchmarked capacity, on top of the
-/// recordings, buffers and playout channels running, and the space on the
-/// volumes they'd write to?
+/// buffers) fit in benchmarked capacity on top of what runs, and in the free
+/// space of the volumes they'd write to?
 async fn post_capacity_check(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CapacityCheckRequest>,
@@ -1139,8 +1099,6 @@ fn capacity_check(before: Load, after: Load, volumes: Vec<VolumeCheckDto>) -> Ca
     }
 }
 
-// ── /thumbnails/{source_id} ───────────────────────────────────────────────────
-
 async fn get_thumbnail(
     State(state): State<Arc<AppState>>,
     AxumPath(source_id): AxumPath<String>,
@@ -1164,14 +1122,10 @@ async fn get_thumbnail(
     }
 }
 
-// ── /ws (this node's events only) ─────────────────────────────────────────────
-
 async fn ws_handler(State(state): State<Arc<AppState>>, upgrade: WebSocketUpgrade) -> Response {
     let rx = state.node_tx.subscribe();
     upgrade.on_upgrade(move |socket| ws::handle(socket, rx))
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn source_to_dto(mgr: &SourceManager, s: &dyn InputSource) -> SourceDto {
     SourceDto {
@@ -1196,10 +1150,9 @@ async fn rescan_after(state: &Arc<AppState>, change: &str) {
     state.emit(&WsEvent::SourcesChanged);
 }
 
-/// Build `(resolved_path, RecordingProfile)` for every requested output leg.
-/// Never picks a file that already exists: a template with `{take}` gets the
-/// first take number none of whose files exist yet, any other gets the first
-/// `_2`, `_3`, … suffix that doesn't.
+/// Build `(resolved_path, RecordingProfile)` for every requested leg. Never
+/// picks an existing file: `{take}` templates get the first free take number,
+/// others the first free `_2`, `_3`, … suffix.
 async fn build_legs(
     state: &AppState,
     req: &StartRecordingRequest,

@@ -208,9 +208,8 @@ fn offsets(pushed: &[Pushed], kind: Kind) -> BTreeSet<i128> {
         .collect()
 }
 
-/// The whole transport on a running program: cue, play, pause, resume,
-/// stop, loop and end, checking what the program shows and that the
-/// producers recordings read from never stall.
+/// The whole transport on a running program (cue, play, pause, resume, stop,
+/// loop, end): what the program shows, and producers never stall.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "real-time (~15 s); run with --ignored"]
 async fn transport_on_a_running_program() {
@@ -252,7 +251,7 @@ async fn transport_on_a_running_program() {
     assert!(black(luma()), "idle is black: {}", luma());
     assert_eq!(playout.status().state, TransportState::Idle);
 
-    // ── Cue: the first frame shows, and holds ────────────────────────────
+    // Cue: the first frame shows, and holds.
     playout
         .load(clip(&file, 0.0, None, ClipEnd::Hold), false)
         .await
@@ -262,7 +261,7 @@ async fn transport_on_a_running_program() {
     assert!(!black(luma()), "cued frame shows: {}", luma());
     assert!(pos() < 40, "cued at the start: {}", pos());
 
-    // ── Play, pause, resume ──────────────────────────────────────────────
+    // Play, pause, resume.
     playout.play().await.unwrap();
     sleep(1500).await;
     let p1 = pos();
@@ -280,18 +279,18 @@ async fn transport_on_a_running_program() {
     println!("video offsets {v:?}\naudio offsets {a:?}");
     assert_eq!(v.len(), 2, "one offset per play stretch: {v:?}");
     assert_eq!(a.len(), 2, "one offset per play stretch: {a:?}");
-    // Offsets are in file timestamps, which can differ between streams
-    // (an edit list): what must hold is that a pause moves both alike.
+    // File timestamps can differ between streams (an edit list): a pause must
+    // move both alike.
     let drift: Vec<i128> = v.iter().zip(&a).map(|(v, a)| v - a).collect();
     assert_eq!(drift[0], drift[1], "A/V drift across the pause");
 
-    // ── Stop: back to black ──────────────────────────────────────────────
+    // Stop: back to black.
     playout.stop().await;
     sleep(500).await;
     assert!(black(luma()), "stop goes to black: {}", luma());
     assert_eq!(playout.status().state, TransportState::Idle);
 
-    // ── Loop 1 s..2 s: accurate and gapless ──────────────────────────────
+    // Loop 1 s..2 s: accurate and gapless.
     playout
         .load(clip(&file, 1.0, Some(2.0), ClipEnd::Loop), false)
         .await
@@ -324,7 +323,7 @@ async fn transport_on_a_running_program() {
         );
     }
 
-    // ── End to black ─────────────────────────────────────────────────────
+    // End to black.
     playout
         .load(clip(&file, 4.0, None, ClipEnd::Black), false)
         .await
@@ -386,9 +385,8 @@ fn played(pushed: &[Pushed], kind: Kind) -> Vec<Pushed> {
         .collect()
 }
 
-/// A playlist plays through without a gap: every handover lands on the
-/// next frame, at the next item's in point, audio included; and taking
-/// the next item by hand cuts to it cleanly.
+/// A playlist plays through gaplessly: each handover lands on the next frame
+/// at the next item's in point, audio included; taking the next item cuts cleanly.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "real-time (~10 s); run with --ignored"]
 async fn playlist_hands_over_without_a_gap() {
@@ -410,7 +408,7 @@ async fn playlist_hands_over_without_a_gap() {
     let sleep = |ms| tokio::time::sleep(Duration::from_millis(ms));
     sleep(500).await;
 
-    // ── Auto-advance: 0–1 s, 0.5–1.5 s, 3–4 s, then hold ─────────────────
+    // Auto-advance: 0–1 s, 0.5–1.5 s, 3–4 s, then hold.
     playout
         .set_playlist(
             vec![
@@ -467,7 +465,7 @@ async fn playlist_hands_over_without_a_gap() {
         assert!(gap <= 25, "audio gap {gap} ms at clip {}", w[1].clip);
     }
 
-    // ── Take: cut from a loop to the next item ───────────────────────────
+    // Take: cut from a loop to the next item.
     playout
         .set_playlist(
             vec![
@@ -506,9 +504,8 @@ async fn playlist_hands_over_without_a_gap() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The next item is cued while the channel is idle, so Play starts it at
-/// once; an item can be played directly, and cueing one over a clip
-/// playing shows its first frame.
+/// The next item is cued while idle so Play starts it at once; an item plays
+/// directly; cueing over a playing clip shows its first frame.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "real-time (~8 s); run with --ignored"]
 async fn plays_without_cueing() {
@@ -556,7 +553,7 @@ async fn plays_without_cueing() {
     );
     assert!(take_pushed(&playout).is_empty(), "standby shows nothing");
 
-    // ── Play from idle: the next item ────────────────────────────────────
+    // Play from idle: the next item.
     playout.play().await.unwrap();
     sleep(500).await;
     let status = playout.status();
@@ -565,7 +562,7 @@ async fn plays_without_cueing() {
     let video = played(&take_pushed(&playout), Kind::Video);
     assert!(video[0].clip.mseconds() < 34, "from its in point");
 
-    // ── Play an item that isn't next: straight on, no gap ────────────────
+    // Play an item that isn't next: straight on, no gap.
     playout.play_item("c").await.unwrap();
     sleep(500).await;
     let status = playout.status();
@@ -578,7 +575,7 @@ async fn plays_without_cueing() {
         assert!((30..=40).contains(&gap), "gap {gap} ms at the cut");
     }
 
-    // ── Cue over a clip playing: its first frame shows ───────────────────
+    // Cue over a clip playing: its first frame shows.
     playout.cue_item("b").await.unwrap();
     sleep(300).await;
     let status = playout.status();
@@ -592,7 +589,7 @@ async fn plays_without_cueing() {
         "b's first frame shows"
     );
 
-    // ── Stopped, what's next is the item after the last one ──────────────
+    // Stopped, what's next is the item after the last one.
     playout.stop().await;
     sleep(500).await;
     let status = playout.status();
@@ -612,8 +609,8 @@ async fn plays_without_cueing() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A clip cued at a start shows that frame, not its in point, and plays on
-/// from it; played again after it ends, it starts from its in point.
+/// A clip cued at a start shows and plays on from that frame; replayed after
+/// it ends, it starts from its in point.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "real-time (~4 s); run with --ignored"]
 async fn cues_at_a_start() {
@@ -673,8 +670,7 @@ async fn cues_at_a_start() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A 5.1 program runs, laid out as 5.1, and a stereo clip plays into
-/// it.
+/// A 5.1 program runs, laid out as 5.1, and a stereo clip plays into it.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "real-time (~3 s); run with --ignored"]
 async fn surround_program_takes_stereo_clips() {
@@ -732,9 +728,8 @@ async fn surround_program_takes_stereo_clips() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A replay buffer played through a running channel: forwards with
-/// sound, at half speed and backwards without, and stepped a frame at a
-/// time either way.
+/// A replay buffer through a running channel: forwards with sound, half speed
+/// and backwards without, and stepped a frame each way.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "real-time (~12 s); run with --ignored"]
 async fn replay_plays_at_any_speed() {

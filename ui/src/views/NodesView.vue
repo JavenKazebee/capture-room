@@ -34,8 +34,6 @@ async function refresh() {
   await Promise.all([storage.load(), checks.load()])
 }
 
-// ── Controller ────────────────────────────────────────────────────────────────
-
 const toggling = ref(false)
 const confirmDisable = ref(false)
 /** Peer names when the confirm opened, so its text doesn't change as they disappear. */
@@ -62,8 +60,6 @@ async function setController(on: boolean) {
     toggling.value = false
   }
 }
-
-// ── Add by address ────────────────────────────────────────────────────────────
 
 const addOpen = ref(false)
 const addUrl = ref('')
@@ -105,8 +101,6 @@ async function addNode() {
     adding.value = false
   }
 }
-
-// ── Remove ────────────────────────────────────────────────────────────────────
 
 // Kept after the dialog closes so its title doesn't change mid-animation.
 const removing = ref<NodeDto | null>(null)

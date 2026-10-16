@@ -21,10 +21,8 @@ import OptionSelect from '@/components/OptionSelect.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 
 /**
- * Which sources keep a replay buffer, in what codec, and for how long.
- * Changes apply at once; a new codec starts the buffer afresh. A buffer
- * counts against its node's benchmarked capacity, so starting one warns
- * (never blocks) when that runs short.
+ * Which sources keep a replay buffer, codec and length. Changes apply at once; a new codec
+ * restarts the buffer. Starting one warns (never blocks) when capacity runs short.
  */
 const emit = defineEmits<{ close: [] }>()
 

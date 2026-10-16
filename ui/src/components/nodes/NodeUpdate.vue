@@ -8,10 +8,8 @@ import type { UpdateStatusDto } from '@/types/generated/UpdateStatusDto'
 import { Button } from '@/components/ui/button'
 
 /**
- * A node's software update, in its card's footer: Update to the newest release when one is
- * out, its progress while it installs. Only the installed app updates itself, so nodes run
- * from a shell show nothing. Polled: slowly while idle, every second while updating (the
- * node goes away while it restarts, and comes back on the new version).
+ * A node's software update. Only the installed app updates itself, so nodes run from a shell
+ * show nothing. Polled slowly while idle, every second while updating (the node restarts).
  */
 const props = defineProps<{ node: NodeDto }>()
 

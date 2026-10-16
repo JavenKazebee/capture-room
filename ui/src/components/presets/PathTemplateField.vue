@@ -24,10 +24,8 @@ import { FIELD_HELP } from '@/lib/fieldHelp'
 import TokenInput from '@/components/presets/TokenInput.vue'
 
 /**
- * Where an output's files go, edited as a folder and a file name; the
- * extension always comes from the container. Stored as one `path_template`.
- * A template that doesn't end in `.{ext}` opens as one field, as does any
- * template after "Edit as one path".
+ * One `path_template` edited as folder and file name, the extension from the container.
+ * A template not ending in `.{ext}` (or after "Edit as one path") is one field.
  */
 const props = defineProps<{
   /** Another output would write the same file. */

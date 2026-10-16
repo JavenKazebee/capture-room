@@ -1,18 +1,14 @@
-//! RTSP outputs: the node serves each one as a mount on its RTSP server,
-//! `rtsp://<node>:8554/<path>`.
-//!
-//! A mount builds its pipeline when the first viewer connects and drops it
-//! when the last one leaves, so a channel nobody watches costs nothing; every
-//! viewer of a mount shares one encode:
+//! RTSP outputs, each a mount at `rtsp://<node>:8554/<path>`. A mount builds
+//! one shared encode when the first viewer connects and drops it when the
+//! last leaves:
 //!
 //! ```text
 //! appsrc(video) → videoconvert → H.264 → h264parse → rtph264pay (pay0)
 //! appsrc(audio) → audioconvert → audioresample → AAC → rtpmp4gpay (pay1)
 //! ```
 //!
-//! The appsrcs are fed from the channel's monitor like any output, on its
-//! clock and base time. The server runs on its own GLib main loop, started
-//! with the first RTSP output and kept for the life of the process.
+//! The server runs on its own GLib main loop, started with the first RTSP
+//! output and kept for the life of the process.
 
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -27,17 +23,14 @@ use tracing::{info, warn};
 use super::monitor::MonitorPipeline;
 use super::output::{self, OutputSink, Program, RunningOutput};
 
-/// The port the node's RTSP server listens on.
 pub const RTSP_PORT: u16 = 8554;
 
 /// Elements an RTSP output needs, beyond the server library (and one of the
 /// H.264 encoders).
 pub const RTSP_ELEMENTS: &[&str] = &["h264parse", "rtph264pay", "avenc_aac", "rtpmp4gpay"];
 
-/// The node's RTSP server, once started.
 static SERVER: Mutex<Option<rtsp::RTSPServer>> = Mutex::new(None);
 
-/// The node's RTSP server, started on [`RTSP_PORT`] if it isn't yet.
 fn server() -> Result<rtsp::RTSPServer> {
     let mut slot = SERVER.lock().unwrap();
     if let Some(server) = slot.as_ref() {
@@ -72,9 +65,8 @@ fn server() -> Result<rtsp::RTSPServer> {
     Ok(server)
 }
 
-/// The mount path for an output: `path`, or the channel's name, made
-/// URL-safe (lowercase letters, digits, `-`, `_` and `.`, with `/` between
-/// segments).
+/// `path`, or the channel's name, made URL-safe (lowercase alphanumerics,
+/// `-`, `_`, `.`, and `/` between segments).
 pub fn mount_path(path: Option<&str>, channel_name: &str) -> String {
     let wanted = path
         .map(str::trim)
@@ -102,7 +94,6 @@ pub fn mount_path(path: Option<&str>, channel_name: &str) -> String {
     }
 }
 
-/// An RTSP mount serving a channel's program.
 pub struct RtspOutput {
     pub path: String,
     pub bitrate_kbps: u32,
@@ -110,8 +101,7 @@ pub struct RtspOutput {
 }
 
 impl RtspOutput {
-    /// The pipeline the server builds for each group of viewers. The appsrcs
-    /// are connected to the monitor in `media-configure`.
+    /// The appsrcs are connected to the monitor in `media-configure`.
     fn launch(&self) -> Result<String> {
         let (encoder, props) = output::live_h264(self.bitrate_kbps, self.program)?;
         let props: Vec<String> = props.iter().map(|(k, v)| format!("{k}={v}")).collect();
@@ -164,7 +154,7 @@ impl OutputSink for RtspOutput {
 }
 
 /// Feed a new media's appsrcs from the monitor, on its clock and base time,
-/// until the media is torn down (its last viewer left).
+/// until the media is unprepared.
 fn connect_media(media: &rtsp::RTSPMedia, monitor: &Weak<MonitorPipeline>) -> Result<()> {
     let monitor = monitor.upgrade().context("the channel stopped")?;
     let bin = media
@@ -196,8 +186,7 @@ fn connect_media(media: &rtsp::RTSPMedia, monitor: &Weak<MonitorPipeline>) -> Re
     Ok(())
 }
 
-/// A mounted RTSP output. Dropping it unmounts it and stops its viewers'
-/// streams.
+/// Dropping it unmounts and stops its viewers' streams.
 struct RtspMount {
     server: rtsp::RTSPServer,
     path: String,
@@ -209,7 +198,6 @@ impl RunningOutput for RtspMount {
         None
     }
 
-    /// Sessions playing this mount.
     fn receivers(&self) -> Option<u32> {
         let pool = self.server.session_pool()?;
         let sessions = pool.filter(None);

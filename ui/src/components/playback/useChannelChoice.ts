@@ -2,10 +2,7 @@ import { computed } from 'vue'
 import { useStorage } from '@vueuse/core'
 import { usePlayoutStore } from '@/stores/playout'
 
-/**
- * The channel a page works on, remembered under `storageKey`: the one
- * picked while it exists, else the first.
- */
+/** The channel a page works on, remembered under `storageKey`; the first if it's gone. */
 export function useChannelChoice(storageKey: string) {
   const playout = usePlayoutStore()
   const channelKey = useStorage(storageKey, '')

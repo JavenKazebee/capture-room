@@ -4,11 +4,7 @@ import { formatBytes, formatRate, formatTimeLeft } from '@/lib/format'
 import { LOW_TIME_SECS } from '@/stores/capacity'
 import type { StorageVolumeDto } from '@/types/generated/StorageVolumeDto'
 
-/**
- * One volume: mount point, free space and a fill bar (warning past 75%,
- * destructive past 90%). While recordings write to it, also the rate and the
- * recording time that leaves (warning under an hour).
- */
+/** One volume's fill bar (warning past 75%, destructive past 90%), and while recording, rate and time left. */
 const props = defineProps<{ volume: StorageVolumeDto }>()
 
 const usedPct = computed(() => {

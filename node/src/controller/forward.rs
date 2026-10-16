@@ -1,11 +1,7 @@
-//! `/api/v1/nodes/{node_id}/{*path}` → that node's `/api/v1/node/{path}`.
-//!
-//! This is the only way the UI talks to a node's local API. Requests for this
-//! instance are served in-process by the node router; requests for a peer are
-//! forwarded over HTTP (controller only). Nothing here knows about individual
-//! endpoints — the method, query and body pass through untouched, and peer
-//! responses are streamed (recordings can be gigabytes) with range and caching
-//! headers passed both ways, so a browser can seek in a peer's file.
+//! `/api/v1/nodes/{node_id}/{*path}` → that node's `/api/v1/node/{path}`: the
+//! only way the UI reaches a node's API. This instance is served in-process,
+//! peers over HTTP. Bodies stream through untouched with range and caching
+//! headers, so a browser can seek in a peer's file.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,9 +16,8 @@ use tower::ServiceExt;
 
 use crate::state::AppState;
 
-/// How long a peer may take to answer (with headers), long enough for a
-/// recording stop, which waits for the EOS drain. The body after that isn't
-/// timed: a file download takes as long as it takes.
+/// Time to response headers: enough for a recording stop's EOS drain. The
+/// body isn't timed (downloads take as long as they take).
 const PEER_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_BODY: usize = 16 * 1024 * 1024;
 

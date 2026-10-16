@@ -86,8 +86,6 @@ export const CHROMA_OPTIONS: { value: ChromaSubsampling; label: string }[] = [
   { value: '444', label: '4:4:4' },
 ]
 
-// ── Resolution / frame rate ───────────────────────────────────────────────────
-
 /** Common output sizes; anything else is entered as a custom WIDTHxHEIGHT. */
 export const RESOLUTION_PRESETS = [
   { value: '3840x2160', label: '3840 × 2160 (UHD)' },
@@ -115,10 +113,7 @@ export function parseResolution(s: string): [number, number] | null {
 
 const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a)
 
-/**
- * "30" → [30, 1]; "30000/1001" → [30000, 1001]; "29.97" → [30000, 1001].
- * Mirrors `parse_framerate` in `node/src/pipeline/profile.rs`.
- */
+/** "30" → [30, 1]; "29.97" or "30000/1001" → [30000, 1001]. Mirrors `parse_framerate` in `profile.rs`. */
 export function parseFramerate(input: string): [number, number] | null {
   const s = input.trim()
   if (s.includes('.') && !s.includes('/')) {
@@ -153,8 +148,6 @@ export function framerateChoice(value: string) {
   const f = parseFramerate(value)
   return f ? FRAMERATE_PRESETS.find((p) => { const q = parseFramerate(p.value)!; return q[0] * f[1] === f[0] * q[1] })?.value : undefined
 }
-
-// ── Path templates ────────────────────────────────────────────────────────────
 
 /** Tokens a path template can use, grouped for the editor; expanded on the recording node (see `plan_legs`). */
 export const PATH_TOKEN_GROUPS = [
@@ -210,11 +203,7 @@ export function unknownToken(template: string) {
 /** Where a template splits into the editor's two fields, and the extension it always ends with. */
 export const EXT_SUFFIX = '.{ext}'
 
-/**
- * A template as a folder and a file name. Token values never contain `/`, so
- * the last `/` always separates them. `name` is null when the template
- * doesn't end in `.{ext}`, which the split editor can't show.
- */
+/** A template split at its last `/` (token values never contain one); `name` is null unless it ends in `.{ext}`. */
 export function splitTemplate(t: string) {
   const slash = t.lastIndexOf('/')
   const folder = slash === 0 ? '/' : t.slice(0, Math.max(slash, 0))
@@ -233,11 +222,7 @@ export function withExtToken(t: string) {
   return name !== null ? t : joinTemplate(folder, file.replace(/\.[A-Za-z0-9]{1,5}$/, ''))
 }
 
-/**
- * Common layouts, written below the template's root: the leading folders
- * without tokens (`~/capture-room`, `/Volumes/RAID/shoots`), which a pattern
- * keeps so picking one doesn't move recordings to another drive.
- */
+/** Common layouts, applied below the template's token-free leading folders so picking one keeps the drive. */
 export const PATH_PATTERNS = [
   { label: 'By date', path: '{date}/{source}_{time}' },
   { label: 'By date, then source', path: '{date}/{source_name}/{source}_{time}' },
@@ -275,11 +260,7 @@ export function splits(leg: Pick<PresetOutputInput, 'advanced'>) {
   return leg.advanced.split_minutes != null || leg.advanced.split_gb != null
 }
 
-/**
- * Whether browsers play this output's files: H.264 4:2:0 with AAC audio
- * (Auto picks AAC here) in .mp4 or .mov. Mirrors
- * `RecordingProfile::browser_playable` in `profile.rs`.
- */
+/** Browsers play H.264 4:2:0 + AAC in .mp4/.mov. Mirrors `RecordingProfile::browser_playable`. */
 export function browserPlayable(leg: Pick<PresetOutputInput, 'codec' | 'container' | 'chroma' | 'advanced'>) {
   return (
     leg.codec === 'h264' &&
@@ -289,10 +270,7 @@ export function browserPlayable(leg: Pick<PresetOutputInput, 'codec' | 'containe
   )
 }
 
-/**
- * A leg's template as recorded: a splitting leg without `{segment}` gets it
- * before the file name's extension. Mirrors `with_segment` in `profile.rs`.
- */
+/** A splitting leg without `{segment}` gets it before the extension. Mirrors `with_segment` in `profile.rs`. */
 function segmentedTemplate(leg: Pick<PresetOutputInput, 'path_template' | 'advanced'>) {
   const t = leg.path_template
   if (!splits(leg) || t.includes('{segment}')) return t

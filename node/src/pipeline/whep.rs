@@ -1,12 +1,8 @@
-//! WHEP output: a channel's program over WebRTC, to browsers and other WHEP
-//! players.
-//!
-//! Each output runs a `whepserversink` (gst-plugins-rs `webrtcsink` with the
-//! WHEP server signaller), whose HTTP server listens on localhost only, on
-//! a port of its own. The node's API proxies `/whep/<path>` to it (see
-//! `api::whep`), so viewers use one address and port for every channel, and
-//! browser pages on other origins can connect. Media goes over ICE (UDP)
-//! between the node and each viewer, encoded for each one.
+//! WHEP output: a channel's program over WebRTC. Each output runs a
+//! `whepserversink` whose signaller listens on its own localhost port; the
+//! API proxies `/whep/<path>` to it (`api::whep`), so every channel shares
+//! one address and cross-origin pages can connect. Media is encoded per
+//! viewer and goes over ICE.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -18,26 +14,21 @@ use super::make_el;
 use super::monitor::MonitorPipeline;
 use super::output::{count_receivers, OutputPipeline, OutputSink, PipelineOutput, RunningOutput};
 
-/// Elements a WHEP output needs (the libnice plugin for ICE, an Opus
-/// encoder for audio).
+/// Elements a WHEP output needs.
 pub const WHEP_ELEMENTS: &[&str] = &["whepserversink", "webrtcbin", "nicesink", "opusenc"];
 
 /// Mount path → the local port its signaller serves.
 static MOUNTS: LazyLock<Mutex<HashMap<String, u16>>> = LazyLock::new(Mutex::default);
 
-/// The local port serving `path` (a mount path, like `/main`), if an output
-/// has it.
+/// The local port serving mount path `path` (like `/main`).
 pub fn port(path: &str) -> Option<u16> {
     MOUNTS.lock().unwrap().get(path).copied()
 }
 
-/// Keep `webrtcsink` (which takes the first encoder it finds for a codec)
-/// from picking encoders it can't drive: VideoToolbox fails its
-/// negotiation, and its bitrate can't be adapted to each viewer. Lowered to
-/// no rank, they're left out of its list (and any other autoplugging); the
-/// node's recordings and other outputs create them by name, as before. Call
-/// before registering the WebRTC plugin: its elements list the encoders
-/// once, then.
+/// Rank VideoToolbox encoders NONE so `webrtcsink` doesn't pick them: they
+/// fail its negotiation and can't adapt bitrate per viewer. Others create
+/// them by name. Call before registering the WebRTC plugin, which lists
+/// encoders once.
 pub fn hide_unsupported_encoders() {
     for name in ["vtenc_h264", "vtenc_h264_hw", "vtenc_h265", "vtenc_h265_hw"] {
         if let Some(factory) = gst::ElementFactory::find(name) {
@@ -46,13 +37,12 @@ pub fn hide_unsupported_encoders() {
     }
 }
 
-/// A free port on localhost, for a signaller to listen on.
 fn free_port() -> Result<u16> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).context("find a port for WHEP")?;
     Ok(listener.local_addr()?.port())
 }
 
-/// A WHEP endpoint at `/whep<path>` on the node's API port.
+/// Served at `/whep<path>` on the node's API port.
 pub struct WhepOutput {
     pub path: String,
     pub bitrate_kbps: u32,
@@ -89,8 +79,7 @@ impl WhepOutput {
                 .build(),
         )?;
         let sink = make_el("whepserversink", "whep")?;
-        // H.264 first (hardware encoders, and every browser has it), VP8
-        // for players without it.
+        // H.264 first (every browser has it), VP8 for players without it.
         let video_caps: gst::Caps = "video/x-h264; video/x-vp8"
             .parse()
             .context("WHEP video caps")?;
@@ -133,7 +122,6 @@ impl WhepOutput {
     }
 }
 
-/// A running WHEP output, reachable through the API while it runs.
 struct WhepMount {
     output: PipelineOutput,
     path: String,

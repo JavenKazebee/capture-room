@@ -88,8 +88,6 @@ function remove(i: number) {
   cfg.value = { ...cfg.value, outputs: cfg.value.outputs.filter((_, j) => j !== i) }
 }
 
-// ── SRT ───────────────────────────────────────────────────────────────────────
-
 function srtMode(o: SrtOutput) {
   return srtListens(o.url) ? 'listener' : 'caller'
 }
@@ -100,8 +98,6 @@ function setSrtMode(i: number, o: SrtOutput, mode: unknown) {
   update(i, { url: mode === 'listener' ? `srt://:${port || 9000}` : `srt://10.0.0.20:${port || 9000}` })
 }
 
-// ── RTSP ──────────────────────────────────────────────────────────────────────
-
 function rtspUrl(path: string | null) {
   return `rtsp://${props.host}:${RTSP_PORT}${mountPath(path, props.name)}`
 }
@@ -111,8 +107,6 @@ function receiveAt(o: SrtOutput) {
   const { port } = hostPort(o.url)
   return srtListens(o.url) && port ? `srt://${props.host}:${port}` : null
 }
-
-// ── Display ───────────────────────────────────────────────────────────────────
 
 /** Rates in mHz that show the channel without judder: its own, then double. */
 const wantedRates = computed(() => {
@@ -174,8 +168,6 @@ function addDisplay() {
   const audio = screen && audioOutputs.value.find((a) => a.name.toLowerCase().includes(screen.name.toLowerCase()))
   add({ type: 'display', display: screen?.id ?? '', audio_device: audio?.key ?? null, idle: 'black' })
 }
-
-// ── SDI ───────────────────────────────────────────────────────────────────────
 
 const sdiOptions = computed(() => subDeviceOptions(props.decklink, true, props.channelId))
 

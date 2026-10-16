@@ -7,10 +7,7 @@ import type { AddNodeRequest } from '@/types/generated/AddNodeRequest'
 import type { ControllerToggleRequest } from '@/types/generated/ControllerToggleRequest'
 import type { UpdateNodeSettingsRequest } from '@/types/generated/UpdateNodeSettingsRequest'
 
-/**
- * Where a node is on the network, as other machines reach it: its `url`, or
- * the UI's own address when it has none (or one that won't parse).
- */
+/** A node's address as other machines reach it: its `url`, else the UI's own address. */
 export function nodeAddress(url: string | null | undefined): { hostname: string; origin: string } {
   if (url) {
     try {
@@ -64,9 +61,8 @@ export const useNodesStore = defineStore('nodes', () => {
   }
 
   /**
-   * Rename a node. Applied locally at once: a controller only picks up a
-   * peer's new name on its next health check (~5s), and the peer's
-   * `node.updated` reload would otherwise show the old one until then.
+   * Applied locally at once: a controller only picks up a peer's new name on its next
+   * health check (~5s), so a `node.updated` reload would show the old one until then.
    */
   async function rename(id: string, name: string) {
     const settings = await nodeApi(id)<NodeSettingsDto>('/settings', {

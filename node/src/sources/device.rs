@@ -15,9 +15,8 @@ use crate::api::types::{
 use crate::pipeline::{capsfilter, make_el};
 
 /// Device classes the monitor watches. Screens are `Source/Monitor` on
-/// Windows; macOS lists them as video sources. Audio sinks are where display
-/// outputs play their sound. Decklink cards' playout sub-devices are
-/// hardware video sinks (see [`super::decklink`]).
+/// Windows and video sources on macOS. Audio sinks play display outputs'
+/// sound; Decklink playout sub-devices are hardware video sinks.
 const CLASSES: &[&str] = &[
     "Video/Source",
     "Audio/Source",
@@ -29,17 +28,11 @@ const CLASSES: &[&str] = &[
 /// Modes listed per video device, at most.
 const MAX_MODES: usize = 32;
 
-// ── Device monitor ────────────────────────────────────────────────────────────
-
-/// The node's capture devices, from a `GstDeviceMonitor` that runs for the
-/// app's lifetime (like [`super::ndi::NdiMonitor`]). Each platform's device
-/// providers make the right element (`v4l2src` / `pipewiresrc` on Linux,
-/// `avfvideosrc` on macOS, `mfvideosrc` / `wasapi2src` on Windows), so
-/// nothing here is platform-specific except how a device's stable key is
-/// found.
+/// The node's capture devices, from a `GstDeviceMonitor` kept running for the
+/// app's lifetime. Providers make the right element per platform; only how a
+/// device's stable key is found is platform-specific.
 pub struct LocalDevices {
     monitor: gst::DeviceMonitor,
-    /// Decklink cards' profiles, set on this node.
     pub decklink_profiles: Profiles,
 }
 
@@ -62,7 +55,6 @@ impl LocalDevices {
         }
     }
 
-    /// Everything the monitor sees, Decklink sub-devices included.
     pub(super) fn all(&self) -> Vec<gst::Device> {
         self.monitor.devices().into_iter().collect()
     }
@@ -97,7 +89,6 @@ impl LocalDevices {
             .find(|d| device_key(d) == key)
     }
 
-    /// An element capturing from the device, and its description.
     fn element(&self, key: &str, name: &str) -> Result<(gst::Element, DeviceDto)> {
         let device = self
             .find(key)
@@ -113,7 +104,6 @@ impl LocalDevices {
         Ok((element, dto.channels.unwrap_or(2)))
     }
 
-    /// Whether an audio output is connected.
     pub fn has_output(&self, key: &str) -> bool {
         self.find(key)
             .is_some_and(|d| kind(&d) == DeviceKind::Output)
@@ -149,9 +139,8 @@ impl Drop for LocalDevices {
     }
 }
 
-/// An element capturing from `device`, made to find it again after it's
-/// replugged: PipeWire targets the node's serial, which changes, so it
-/// targets the (stable) node name instead.
+/// An element capturing from `device` that finds it again after a replug:
+/// PipeWire targets the stable node name, not the serial, which changes.
 fn open(device: &gst::Device) -> Result<gst::Element> {
     let element = device
         .create_element(None)
@@ -167,11 +156,9 @@ fn open(device: &gst::Device) -> Result<gst::Element> {
     Ok(element)
 }
 
-/// Whether to offer `device`. PipeWire's devices are skipped: its
-/// `pipewiresrc` fails to find its target on some systems (seen with
-/// PipeWire 1.6 / GStreamer 1.28), and the same cameras and audio inputs
-/// are listed by the v4l2 and PulseAudio providers, whose elements are the
-/// long-established ones (PipeWire serves PulseAudio clients itself).
+/// Whether to offer `device`. PipeWire's are skipped: `pipewiresrc` fails to
+/// find its target on some systems (PipeWire 1.6 / GStreamer 1.28), and the
+/// v4l2 and PulseAudio providers list the same devices.
 fn usable(device: &gst::Device) -> bool {
     !device.type_().name().starts_with("GstPipeWire")
 }
@@ -184,9 +171,8 @@ fn display(key: &str, name: &str) -> String {
     }
 }
 
-/// A key for `device` that survives restarts and replugging where the
-/// platform gives one: PipeWire's node name, a v4l2 path, AVFoundation's
-/// unique id, a Windows device path. The display name is the last resort.
+/// A key for `device` that survives restarts and replugs where the platform
+/// gives one; the display name is the last resort.
 fn device_key(device: &gst::Device) -> String {
     const STABLE: &[&str] = &[
         "node.name",
@@ -229,13 +215,13 @@ fn is_pulse(device: &gst::Device) -> bool {
     device.type_().name().starts_with("GstPulse")
 }
 
-/// ALSA's raw devices duplicate PulseAudio's, and opening one directly
-/// would fight the sound server for the card.
+/// ALSA's raw devices duplicate PulseAudio's, and opening one would fight the
+/// sound server for the card.
 fn is_alsa(device: &gst::Device) -> bool {
     device.type_().name().starts_with("GstAlsa")
 }
 
-/// A monitor of an audio output: the sound the machine plays.
+/// A monitor of an audio output: what the machine plays.
 fn is_monitor(device: &gst::Device) -> bool {
     device
         .properties()
@@ -355,8 +341,7 @@ fn max_int(s: &gst::StructureRef, name: &str) -> Option<u32> {
     None
 }
 
-/// The frame rates a caps structure offers: each of a list, or the top of
-/// a range.
+/// A caps structure's frame rates: each of a list, or the top of a range.
 fn rates(s: &gst::StructureRef) -> Vec<(u32, u32)> {
     let Ok(v) = s.value("framerate") else {
         return Vec::new();
@@ -378,11 +363,8 @@ fn rates(s: &gst::StructureRef) -> Vec<(u32, u32)> {
     Vec::new()
 }
 
-// ── Capture element ───────────────────────────────────────────────────────────
-
-/// Wrap a video device's element so it always outputs raw video from a
-/// static pad (what `fallbacksrc` needs): raw if the device offers it in the
-/// requested format, else MJPEG decoded (webcams often offer high
+/// Wrap a video device's element to output raw video from a static pad, as
+/// `fallbacksrc` needs: MJPEG is decoded (webcams often offer high
 /// resolutions only as MJPEG).
 fn capture_bin(
     id: &str,
@@ -426,8 +408,6 @@ fn capture_bin(
     bin.add_pad(&ghost).context("add device ghost pad")?;
     Ok(bin.upcast())
 }
-
-// ── DeviceSource ──────────────────────────────────────────────────────────────
 
 pub struct DeviceSource {
     id: String,
@@ -475,10 +455,9 @@ impl InputSource for DeviceSource {
         None
     }
 
-    /// Not whether the devices are connected: a device unplugged while
-    /// recording plays black until it's back (a rebuild would stop the
-    /// recording). One missing when the source is built fails it, and the
-    /// failed-monitor rescan retries.
+    /// Not whether the devices are connected: an unplugged device plays black
+    /// until it's back (a rebuild would stop recording). One missing at build
+    /// fails the source, and the failed-monitor rescan retries.
     fn fingerprint(&self) -> String {
         serde_json::to_string(&self.config).unwrap_or_default()
     }

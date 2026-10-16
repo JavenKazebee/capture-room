@@ -19,11 +19,9 @@ pub const MEDIA_EXTENSIONS: &[&str] = &[
     "wmv",
 ];
 
-/// Channels of the silence played for a file without audio.
 const SILENCE_CHANNELS: u32 = 2;
 
-/// The audio channels a file source delivers: the footage's, or
-/// [`SILENCE_CHANNELS`] for footage without audio.
+/// The footage's audio channels, or [`SILENCE_CHANNELS`] if it has none.
 pub fn audio_channels(media: &MediaInfo) -> u32 {
     if media.audio_channels > 0 {
         media.audio_channels
@@ -32,15 +30,10 @@ pub fn audio_channels(media: &MediaInfo) -> u32 {
     }
 }
 
-// ── FileSource ────────────────────────────────────────────────────────────────
-
-/// A media file on the node, played in a loop as a live feed.
-///
-/// The file plays in its own *player* pipeline, paced by the clock, whose
-/// appsinks push into appsrcs in the monitor's bin. The appsrcs are live and
-/// restamp every buffer with the monitor's running time, so the monitor sees
-/// one continuous live feed like any other source, and the player can loop
-/// with a flushing seek without disturbing it.
+/// A media file played in a loop as a live feed. It plays in its own
+/// clock-paced player pipeline whose appsinks push into live appsrcs in the
+/// monitor's bin, restamped with the monitor's running time, so the player can
+/// loop with a flushing seek without disturbing the monitor.
 pub struct FileSource {
     id: String,
     name: String,
@@ -98,8 +91,6 @@ impl InputSource for FileSource {
     }
 }
 
-// ── Probe ─────────────────────────────────────────────────────────────────────
-
 /// Blocking: read `path`'s streams. Fails unless it's a decodable file with a
 /// video stream that isn't a still image.
 pub fn probe(path: &str) -> Result<MediaInfo> {
@@ -137,8 +128,6 @@ pub fn probe(path: &str) -> Result<MediaInfo> {
     })
 }
 
-// ── Monitor side ──────────────────────────────────────────────────────────────
-
 fn build_bin(id: &str, path: &str, media: &MediaInfo) -> Result<gst::Bin> {
     let bin = gst::Bin::with_name(&format!("filesrc-bin-{id}"));
     let latency = (media.fps_num > 0)
@@ -146,12 +135,11 @@ fn build_bin(id: &str, path: &str, media: &MediaInfo) -> Result<gst::Bin> {
         .flatten()
         .unwrap_or(gst::ClockTime::ZERO);
 
-    // ── Video: appsrc → videoconvert ──────────────────────────────────────────
     let vsrc = live_appsrc(&format!("file-vsrc-{id}"), latency);
     let vconv = make_el("videoconvert", &format!("file-vconv-{id}"))?;
     add_chain(&bin, &[vsrc.upcast_ref(), &vconv], "video")?;
 
-    // ── Audio: appsrc → audioconvert, or silence if the file has none ─────────
+    // Silence if the file has no audio.
     let asrc = if media.audio_channels > 0 {
         let asrc = live_appsrc(&format!("file-asrc-{id}"), latency);
         let aconv = make_el("audioconvert", &format!("file-aconv-{id}"))?;
@@ -174,8 +162,7 @@ fn build_bin(id: &str, path: &str, media: &MediaInfo) -> Result<gst::Bin> {
 
     let player = build_player(id, path, &vsrc, asrc.as_ref())?;
 
-    // Start the player once the monitor wants frames; until the appsrcs are
-    // playing they would refuse them.
+    // Start the player once the monitor wants frames; appsrcs refuse them until playing.
     let started = AtomicBool::new(false);
     let player_weak = player.downgrade();
     vsrc.set_callbacks(
@@ -193,7 +180,6 @@ fn build_bin(id: &str, path: &str, media: &MediaInfo) -> Result<gst::Bin> {
             .build(),
     );
 
-    // Report the player's errors on the monitor, and loop it at the end.
     let bus = player.bus().context("player has no bus")?;
     let bus_task = tokio::spawn(watch_player(
         bus,
@@ -202,8 +188,7 @@ fn build_bin(id: &str, path: &str, media: &MediaInfo) -> Result<gst::Bin> {
         path.to_string(),
     ));
 
-    // The player lives as long as the bin: the monitor drops the bin when it
-    // stops, which stops the player.
+    // The monitor drops the bin when it stops, which stops the player.
     let _ = bin.add_weak_ref_notify(move || {
         bus_task.abort();
         let _ = player.set_state(gst::State::Null);
@@ -213,12 +198,9 @@ fn build_bin(id: &str, path: &str, media: &MediaInfo) -> Result<gst::Bin> {
 }
 
 fn live_appsrc(name: &str, latency: gst::ClockTime) -> gst_app::AppSrc {
-    // Never queue more than a few buffers: drop the oldest if the monitor
-    // falls behind, as a live source would.
+    // Drop the oldest buffers if the monitor falls behind, as a live source would.
     player::live_appsrc(name, latency, QueueLimit::Buffers(4))
 }
-
-// ── Player ────────────────────────────────────────────────────────────────────
 
 /// uridecodebin ─┬→ queue → videoconvert → appsink ⇢ `vsrc`
 ///               ├→ queue → audioconvert → audioresample → appsink ⇢ `asrc`
@@ -254,7 +236,6 @@ fn build_player(
     Ok(player)
 }
 
-/// An appsink's callbacks forwarding into `target`.
 fn forward_to(target: &gst_app::AppSrc) -> gst_app::AppSinkCallbacks {
     let target = target.downgrade();
     let last_pts = AtomicU64::new(u64::MAX);
@@ -270,11 +251,10 @@ fn forward_to(target: &gst_app::AppSrc) -> gst_app::AppSinkCallbacks {
         .build()
 }
 
-/// Push `sample` into `target`, stamped with `target`'s running time: the
-/// file's own timestamps restart at every loop. The first buffer of each loop
-/// is marked `DISCONT`, since a stream shorter than the file's longest one
-/// leaves a gap there: counters can then tell a loop's gap from a feed
-/// falling behind. `last_pts` is the file timestamp of the previous buffer.
+/// Push `sample` into `target` stamped with its running time (file timestamps
+/// restart every loop). Each loop's first buffer is `DISCONT` so counters can
+/// tell a loop's gap from a feed falling behind. `last_pts` is the previous
+/// buffer's file timestamp.
 fn forward(sample: &gst::Sample, target: &gst_app::AppSrc, last_pts: &AtomicU64) {
     // Not playing yet, or stopping.
     let Some(now) = target.current_running_time() else {
@@ -291,19 +271,17 @@ fn forward(sample: &gst::Sample, target: &gst_app::AppSrc, last_pts: &AtomicU64)
     let _ = target.push_buffer(buffer);
 }
 
-/// Loop the player at the end of the file, and post its errors on the
-/// monitor (through `report_to`, an element in the monitor's bin) so they
-/// show on the source. Runs until the player is dropped.
+/// Loop the player at the end of the file and post its errors on the monitor
+/// via `report_to`. Runs until the player is dropped.
 async fn watch_player(
     bus: gst::Bus,
     player: glib::WeakRef<gst::Pipeline>,
     report_to: glib::WeakRef<gst_app::AppSrc>,
     path: String,
 ) {
-    // Loops with segment seeks: a segment seek ends in SEGMENT_DONE instead
-    // of EOS, and the next (non-flushing) one continues straight on without a
-    // gap. The first has to flush, so it's made as soon as the player has
-    // prerolled.
+    // Segment seeks end in SEGMENT_DONE instead of EOS, and the next
+    // non-flushing one continues without a gap. The first must flush, so it's
+    // made once the player prerolls.
     let segment_seek = |player: &gst::Pipeline, flags: gst::SeekFlags| {
         player.seek(
             1.0,

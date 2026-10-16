@@ -12,11 +12,7 @@ export const SPEEDS = [0.25, 0.5, 0.75, 1] as const
 
 export type Angle = { source: Source; buffer: ReplayBuffer }
 
-/**
- * Replay's commands on a channel: replays, transport, marks and clips.
- * They run one after another in the order given, each deciding what to do
- * when its turn comes from the state the ones before it left.
- */
+/** Replay's commands on a channel. Each decides what to do when its turn comes, from the state earlier ones left. */
 export function useReplayControl(opts: {
   channel: Ref<Source | null>
   /** Every angle with a buffer, and the ones that play on the channel. */
@@ -51,12 +47,7 @@ export function useReplayControl(opts: {
   const inUs = ref<number | null>(null)
   const outUs = ref<number | null>(null)
 
-  // ── The queue ───────────────────────────────────────────────────────────────
-
-  /**
-   * Commands run one after another, in the order given: a key pressed while
-   * one is in flight (a step, a cue) waits its turn rather than being lost.
-   */
+  /** Commands run in order: a key pressed while one is in flight waits rather than being lost. */
   let queue: Promise<unknown> = Promise.resolve()
   /** Commands queued or running. */
   const queued = ref(0)
@@ -93,8 +84,6 @@ export function useReplayControl(opts: {
     const c = channel.value
     return c ? playout.transport(c.node_id, c.id, action, args) : Promise.resolve()
   }
-
-  // ── Commands ────────────────────────────────────────────────────────────────
 
   /** Show a moment of the current angle, paused. */
   function pick(us: number) {
@@ -133,11 +122,7 @@ export function useReplayControl(opts: {
     return clips.value.find((x) => x.group_id === on.group_id && x.source_id === sourceId && !x.missing) ?? null
   }
 
-  /**
-   * Switch angle; a replay on air carries on from the same moment on the new
-   * one: from the angle's clip in the same group if a grouped clip is on
-   * air, else from its buffer.
-   */
+  /** Switch angle; a replay on air continues at the same moment (from the group's clip if one is on air, else the buffer). */
   function selectAngle(source: Source) {
     if (!usableAngles.value.some((a) => a.source.key === source.key)) return
     angleKey.value = source.key
@@ -239,10 +224,7 @@ export function useReplayControl(opts: {
     })
   }
 
-  /**
-   * Cue a saved clip on its first frame; one of the group on air takes over
-   * at the same moment instead, playing on if it was.
-   */
+  /** Cue a saved clip on its first frame, or, if its group is on air, take over at the same moment. */
   function cueClip(clip: ReplayClip) {
     const c = channel.value
     if (!c) return

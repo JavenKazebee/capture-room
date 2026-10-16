@@ -11,10 +11,7 @@ export interface TileOverlays {
   format: boolean
 }
 
-/**
- * Per-viewer UI preferences, kept in localStorage. Each is surfaced in the
- * view it affects (and on the Settings page) rather than hidden away.
- */
+/** Per-viewer UI preferences in localStorage, each surfaced in the view it affects and in Settings. */
 const colorMode = useColorMode({ initialValue: 'dark', storageKey: 'cr.theme' })
 const density = useStorage<Density>('cr.density', 'default')
 const tileSize = useStorage('cr.multiview.tileSize', 320)

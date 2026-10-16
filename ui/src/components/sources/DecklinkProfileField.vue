@@ -9,10 +9,7 @@ import type { DecklinkProfile } from '@/types/generated/DecklinkProfile'
 import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
 
-/**
- * A Decklink card's profile: how its connectors are split into sub-devices.
- * A node setting, saved as soon as it's changed, not with the form.
- */
+/** How a Decklink card's connectors split into sub-devices. A node setting, saved on change, not with the form. */
 const props = defineProps<{ nodeId: string; card: DecklinkCardDto }>()
 const emit = defineEmits<{ changed: [] }>()
 

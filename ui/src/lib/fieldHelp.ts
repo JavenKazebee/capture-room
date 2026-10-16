@@ -1,8 +1,4 @@
-/**
- * Explanations behind the `?` beside each preset field. Kept together so the
- * wording stays consistent; each entry says what the field does, what the
- * options mean when that isn't obvious, and what the default is and why.
- */
+/** Help text for each preset field's `?`: what it does, non-obvious options, and the default and why. */
 export type FieldHelp = {
   title: string
   body: string
@@ -100,8 +96,6 @@ export const FIELD_HELP = {
       { label: '{segment}', text: 'The file number when an output splits (Advanced). Added before the extension if the template leaves it out.' },
     ],
   },
-
-  // ── Advanced ──────────────────────────────────────────────────────────────
 
   encoder: {
     title: 'Encoder',

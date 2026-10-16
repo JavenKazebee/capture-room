@@ -10,10 +10,7 @@ import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import FormField from '@/components/FormField.vue'
 
-/**
- * A playlist item's in and out points and what happens at its out point,
- * edited here and applied to the playlist; and cueing or playing it.
- */
+/** A playlist item's in/out points and end action, applied to the playlist; and cueing or playing it. */
 const props = defineProps<{
   item: PlaylistItemDto
   status: ChannelStatusDto | undefined

@@ -12,11 +12,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import BenchmarkRunsDialog from './BenchmarkRunsDialog.vue'
 import BenchmarkDialog from './BenchmarkDialog.vue'
 
-/**
- * A node card's Capacity section: how many feeds each benchmarked setup
- * sustains, how much of that the node's recordings, replay buffers and
- * playout channels use, and the benchmark running now.
- */
+/** A node card's Capacity section: what each benchmarked setup sustains, current load and the running benchmark. */
 const props = defineProps<{ node: NodeDto; recording: number }>()
 
 const store = useCapacityStore()
@@ -33,12 +29,8 @@ watch(
   { immediate: true },
 )
 
-// ── Load ────────────────────────────────────────────────────────────────────
-
 const loadPct = computed(() => Math.round((cap.value?.load ?? 0) * 100))
 const loadClass = computed(() => (loadPct.value > 100 ? 'bg-destructive' : loadPct.value > 80 ? 'bg-warning' : 'bg-primary'))
-
-// ── Profiles ────────────────────────────────────────────────────────────────
 
 const SHOWN = 3
 const profiles = computed(() => cap.value?.profiles ?? [])
@@ -57,8 +49,6 @@ function profileTitle(p: ProfileCapacityDto) {
   if (p.at_limit) lines.push('Every step kept up: run again with a higher feed limit to find the maximum.')
   return lines.join('\n')
 }
-
-// ── Running ─────────────────────────────────────────────────────────────────
 
 /** Recordings, replay buffers and channels counted in the load. */
 const active = computed(() =>
@@ -93,8 +83,6 @@ async function cancel() {
     cancelling.value = false
   }
 }
-
-// ── Start / history ─────────────────────────────────────────────────────────
 
 const starting = ref(false)
 const history = ref<{ selectId?: string } | null>(null)
@@ -144,7 +132,6 @@ const startBlocked = computed(() => {
     <p v-else-if="cap === undefined" class="text-xs text-muted-foreground">Loading…</p>
     <p v-else-if="cap === null" class="text-xs text-destructive">Couldn't read capacity.</p>
     <template v-else>
-      <!-- Running benchmark -->
       <div v-if="running" class="rounded-md border border-primary/30 bg-primary/5 p-2.5 space-y-1.5 text-xs">
         <div class="flex items-center gap-2">
           <Loader2 class="size-3.5 animate-spin text-primary" />
@@ -171,7 +158,6 @@ const startBlocked = computed(() => {
         </p>
       </div>
 
-      <!-- Load from active recordings, replay buffers and channels -->
       <div v-if="active" class="text-xs">
         <div class="flex justify-between gap-2 mb-1">
           <span>
@@ -190,7 +176,6 @@ const startBlocked = computed(() => {
         </div>
       </div>
 
-      <!-- Benchmarked setups -->
       <ul v-if="profiles.length" class="space-y-1">
         <li v-for="p in profiles.slice(0, SHOWN)" :key="p.run_id">
           <button

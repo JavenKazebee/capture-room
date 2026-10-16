@@ -10,11 +10,7 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 
-/**
- * A create/edit form in a right-side sheet, keeping the list visible behind
- * it: title, form body, error line, Cancel/Save. Mount it with `v-if`.
- * `#footer-start` puts an action (e.g. Delete) at the footer's left.
- */
+/** A create/edit form in a right-side sheet. Mount with `v-if`; `#footer-start` holds e.g. Delete. */
 defineProps<{
   title: string
   description?: string

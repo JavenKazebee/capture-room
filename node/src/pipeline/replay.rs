@@ -1,6 +1,5 @@
-//! Replay buffers. A replay-enabled source records continuously, like a
-//! recording leg fed by its monitor, into one-second segments of an
-//! all-intra codec; the oldest are deleted past the buffer's length.
+//! Replay buffers: a source records continuously into one-second segments of
+//! an all-intra codec, deleting the oldest past the buffer's length.
 //!
 //! ```text
 //! appsrc(video) → videoconvert → [caps] → venc → [caps | parse] ──────────┐
@@ -8,13 +7,10 @@
 //! appsrc(audio) → queue → audioconvert → audioresample → S24LE → audiorate ┘
 //! ```
 //!
-//! The [`Index`] knows each finished segment's span on the monitor's clock,
+//! The [`Index`] tracks each finished segment's span on the monitor's clock
 //! from splitmuxsink's fragment messages. It outlives the leg: a monitor
-//! restart starts a new leg on the same index, leaving a gap. A channel
-//! plays part of it through `splitmuxsrc`, given the finished files that
-//! cover it (see [`Index::clip`]); a [`Hold`] keeps them from being deleted
-//! meanwhile. Design and the prototype's findings in ARCHITECTURE.md
-//! (Instant Replay).
+//! restart continues on the same index, leaving a gap. A channel plays a
+//! [`Index::clip`] through `splitmuxsrc`; a [`Hold`] keeps its files meanwhile.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -32,15 +28,14 @@ use super::{
 };
 use crate::api::types::ReplayCodec;
 
-/// How long each segment runs. Replay reaches to within this of live: the
-/// segment being written can't be read.
+/// Segment length. Replay reaches only this close to live: the open segment
+/// can't be read.
 pub const SEGMENT: gst::ClockTime = gst::ClockTime::SECOND;
 
 /// Neighbouring segments further apart than this have a gap between them.
 const GAP: gst::ClockTime = gst::ClockTime::from_mseconds(100);
 
 impl ReplayCodec {
-    /// Encoder elements to try, in order.
     pub fn encoders(self) -> &'static [&'static str] {
         match self {
             Self::ProresProxy => &["vtenc_prores"],
@@ -49,8 +44,8 @@ impl ReplayCodec {
         }
     }
 
-    /// The elements that decode it for playback. Software: VideoToolbox's
-    /// decoder drops a frame now and then playing backwards.
+    /// Playback decoders. Software: VideoToolbox's decoder drops frames
+    /// playing backwards.
     pub fn decoder(self) -> &'static [&'static str] {
         match self {
             Self::ProresProxy => &["avdec_prores"],
@@ -59,13 +54,11 @@ impl ReplayCodec {
         }
     }
 
-    /// Whether this node can record it and play it back.
     pub fn available(self) -> bool {
         self.missing().is_empty()
     }
 
-    /// The elements this node lacks to record it and play it back: any
-    /// decoder element, and every encoder when it has none of them.
+    /// Missing decoder elements, plus every encoder when none is present.
     pub fn missing(self) -> Vec<&'static str> {
         let mut list = crate::plugins::missing(self.decoder());
         let encoders = crate::plugins::missing(self.encoders());
@@ -85,8 +78,6 @@ impl ReplayCodec {
     }
 }
 
-// ── Index ─────────────────────────────────────────────────────────────────────
-
 /// A finished segment: its file and the span of its frames on the clock.
 #[derive(Debug, Clone)]
 pub struct Segment {
@@ -96,24 +87,21 @@ pub struct Segment {
     bytes: u64,
 }
 
-/// What a replay buffer holds. Shared between its leg's streaming thread,
-/// the manager and the clips holding parts of it.
+/// Shared by the leg's streaming thread, the manager and clips.
 pub type ReplayIndex = Arc<Mutex<Index>>;
 
 pub struct Index {
     dir: PathBuf,
-    /// What the segments are in, and the clock their times are on: a
-    /// different one on a new leg clears them.
+    /// A new leg with a different codec or clock clears the segments.
     codec: Option<ReplayCodec>,
     clock: Option<gst::Clock>,
     segments: VecDeque<Segment>,
     /// The file being written, and when its first frame was due.
     open: Option<(PathBuf, gst::ClockTime)>,
-    /// Numbers the files, across legs.
+    /// File numbering, across legs.
     next_number: u64,
     /// Bytes of every segment finished, deleted ones included.
     written: u64,
-    /// How long a span it keeps.
     keep: gst::ClockTime,
     /// Clips playing from it, with the earliest time each needs.
     holds: Vec<(u64, gst::ClockTime)>,
@@ -121,8 +109,7 @@ pub struct Index {
 }
 
 impl Index {
-    /// A new, empty index over `dir`, whose old contents are deleted: what a
-    /// previous run left has no index.
+    /// A new index over `dir`, deleting what a previous run left there.
     pub fn create(dir: &Path, keep: gst::ClockTime) -> ReplayIndex {
         if dir.exists() {
             if let Err(e) = std::fs::remove_dir_all(dir) {
@@ -167,19 +154,17 @@ impl Index {
         self.segments.iter().map(|s| s.bytes).sum()
     }
 
-    /// Bytes written so far, including segments since deleted.
     pub fn written(&self) -> u64 {
         self.written
     }
 
-    /// The clock the segments' times are on.
     pub fn clock(&self) -> Option<&gst::Clock> {
         self.clock.as_ref()
     }
 
-    /// Delete everything, for a new codec or clock: only while no leg
-    /// records into it. The whole folder, since a leg stopped just after
-    /// naming a file leaves one the index never heard of.
+    /// Delete everything; only while no leg records. Removes the whole
+    /// folder, since a leg stopped just after naming a file leaves an
+    /// unindexed one.
     fn clear(&mut self) {
         self.segments.clear();
         self.open = None;
@@ -192,8 +177,7 @@ impl Index {
         }
     }
 
-    /// Delete the oldest segments past the length kept, except what a clip
-    /// is holding (and everything after it).
+    /// Delete segments past `keep`, except from the oldest hold on.
     fn trim(&mut self) {
         let Some(newest) = self.segments.back().map(|s| s.end) else {
             return;
@@ -235,9 +219,9 @@ impl Index {
         self.trim();
     }
 
-    /// The finished files covering `from` → `to` (clamped into the span),
-    /// all from one stretch without gaps: the one `from` falls in, else the
-    /// next one. Positions in a clip count from its first file's start.
+    /// The files covering `from` → `to`, within one gapless stretch: the one
+    /// `from` falls in, else the next. Positions count from the first file's
+    /// start.
     pub fn clip(
         index: &ReplayIndex,
         from: gst::ClockTime,
@@ -246,7 +230,6 @@ impl Index {
         let mut this = index.lock().unwrap();
         let codec = this.codec.context("the replay buffer is empty")?;
         let segments = &this.segments;
-        // The stretch: segments [first, last].
         let mut first = segments
             .iter()
             .position(|s| s.end > from)
@@ -294,8 +277,6 @@ impl Index {
     }
 }
 
-/// Part of a replay buffer to play: its files, and where the clip starts
-/// and ends in them.
 #[derive(Debug, Clone)]
 pub struct ReplaySpan {
     pub files: Vec<String>,
@@ -304,8 +285,8 @@ pub struct ReplaySpan {
     pub base: gst::ClockTime,
     pub from: gst::ClockTime,
     pub to: gst::ClockTime,
-    /// Never read: kept for as long as the clip lives. `None` for a saved
-    /// clip, whose files are its own.
+    /// Held for the clip's life. `None` for a saved clip, which owns its
+    /// files.
     #[allow(dead_code)]
     pub hold: Option<Arc<Hold>>,
 }
@@ -328,8 +309,8 @@ impl Drop for Hold {
 }
 
 impl Drop for Index {
-    /// A clip still holding segments only has a weak reference: the files
-    /// it has open stay readable until it closes them.
+    /// Clips only hold a weak reference; files they have open stay readable
+    /// until closed.
     fn drop(&mut self) {
         self.clear();
     }
@@ -343,9 +324,6 @@ fn remove(path: &Path) {
     }
 }
 
-// ── Leg ───────────────────────────────────────────────────────────────────────
-
-/// A replay buffer recording from a monitor.
 pub struct ReplayLeg {
     /// Dropping it loses the segment being written (it has no index yet).
     consumer: ConsumerPipeline,
@@ -354,7 +332,7 @@ pub struct ReplayLeg {
 
 impl ReplayLeg {
     /// Record `monitor` into `index` with the first of `codec`'s encoders
-    /// that works here.
+    /// that works.
     pub fn start(
         monitor: &MonitorPipeline,
         codec: ReplayCodec,
@@ -420,9 +398,8 @@ impl ReplayLeg {
                 set("realtime", "true")?;
                 set("allow-frame-reordering", "false")?;
                 set("max-keyframe-interval", "1")?;
-                // Matches ProRes Proxy's picture (VMAF) at about 60% of its
-                // size; 0.85 was ProRes's size for little gain. A bitrate
-                // instead is ignored with every frame a keyframe.
+                // Matches ProRes Proxy's VMAF at ~60% of its size. A bitrate
+                // is ignored when every frame is a keyframe.
                 set("quality", "0.75")?;
             }
             "x264enc" => {
@@ -435,9 +412,9 @@ impl ReplayLeg {
                 set("bitrate", "2048000")?;
             }
             "jpegenc" => {
-                // JPEG is full-range BT.601, and jpegdec reads it as that:
-                // handed limited-range BT.709, the replay showed lifted
-                // blacks and shifted colours.
+                // jpegdec reads JPEG as full-range BT.601; limited-range
+                // BT.709 input comes back with lifted blacks and shifted
+                // colours.
                 video.push(capsfilter(
                     "venc-caps",
                     gst::Caps::builder("video/x-raw")
@@ -493,8 +470,8 @@ impl ReplayLeg {
             Some(file.to_string_lossy().into_owned().to_value())
         });
 
-        // Each file's span, from splitmuxsink's messages (running time,
-        // shared with the monitor). Errors are kept to show.
+        // Each file's span from splitmuxsink's messages, in running time
+        // shared with the monitor.
         let messages = Arc::downgrade(index);
         let error_ref = error.clone();
         let leg_name = name.to_string();
@@ -560,23 +537,17 @@ impl ReplayLeg {
         self.encoder
     }
 
-    /// See [`ConsumerPipeline::dropped_frames`].
     pub fn dropped_frames(&self) -> u64 {
         self.consumer.dropped_frames()
     }
 
-    /// Why it stopped recording, if it has.
     pub fn error(&self) -> Option<String> {
         self.consumer.error.get()
     }
 }
 
-// ── Saved clips and export ─────────────────────────────────────────────────
-
-/// Keep a span's files as a saved clip's own, in `dir`: hard links, so
-/// saving takes no time or room and the buffer can still delete its names
-/// for them as it rolls on. A copy where a link can't be made (another
-/// volume). Answers with the clip's files, in order.
+/// Keep a span's files in `dir` as a saved clip: hard links, so saving is free
+/// and the buffer can still delete its own names; copies across volumes.
 pub fn save(span: &ReplaySpan, dir: &Path) -> Result<Vec<String>> {
     let saved = (|| {
         std::fs::create_dir_all(dir).with_context(|| format!("can't create {}", dir.display()))?;
@@ -597,14 +568,10 @@ pub fn save(span: &ReplaySpan, dir: &Path) -> Result<Vec<String>> {
 }
 
 /// Remux `from` → `to` of `files` (positions as in a [`ReplaySpan`]) into
-/// one .mov at `out`, without re-encoding: every frame is a keyframe, so
-/// the cut can fall on any of them. The same frames a channel plays between
-/// those points. Blocks until the file is written.
-///
-/// With `timecode` (the clock time position 0 shows, and the UTC offset of
-/// that clock's domain) the file gets the time of day of its first frame as
-/// timecode, as a recording of that source would: exports of a group's
-/// angles line up in an NLE.
+/// one .mov at `out` without re-encoding; all-intra, so any frame can be the
+/// cut. Blocks. With `timecode` (position 0's clock time, the domain's UTC
+/// offset) the file gets time-of-day timecode, so a group's angles line up
+/// in an NLE.
 ///
 /// ```text
 /// splitmuxsrc ─┬→ [gate] → qtmux → filesink
@@ -649,9 +616,8 @@ pub fn export(
         gate(pad, from);
         match mux.request_pad_simple(template) {
             Some(sink) => {
-                // On the muxer's side of the gate: the segment it sees is
-                // the seek's, whose stream time is the position. The frame
-                // on the cut can start just before it.
+                // After the gate the segment is the seek's, whose stream
+                // time is the position. The cut frame can start just before.
                 if let (true, Some((base, offset))) = (video, timecode) {
                     stamp_timecode(&sink, move |segment, pts| {
                         let position = match segment?.to_stream_time_full(pts)? {
@@ -706,18 +672,14 @@ pub fn export(
     result
 }
 
-/// Hold back everything flowing through `pad` until the segment of the
-/// seek to `from`: buffers and segments before it, and flushes always. A
-/// flushing seek through a muxer spoils its file, so the muxer only ever
-/// sees what the seek asked for.
-///
-/// Sound is trimmed to start where the segment does: qtdemux hands out PCM
-/// in chunks of half a second or so, starting on the sample before the cut,
-/// and qtmux would drop a chunk that starts before it whole.
+/// Drop everything on `pad` before the seek's segment to `from`, and all
+/// flushes: a flushing seek through a muxer spoils its file. Audio is trimmed
+/// to the segment start: qtdemux hands out ~0.5 s PCM chunks starting before
+/// the cut, and qtmux would drop such a chunk whole.
 fn gate(pad: &gst::Pad, from: gst::ClockTime) {
     // An accurate seek's segment starts where it was asked to.
     const NEAR: gst::ClockTime = gst::ClockTime::from_mseconds(1);
-    // The segment's start, once it's been let through.
+    // The segment's start, once let through.
     let start = Mutex::new(None::<gst::ClockTime>);
     pad.add_probe(gst::PadProbeType::DATA_DOWNSTREAM, move |pad, info| {
         let open = *start.lock().unwrap();
@@ -727,7 +689,7 @@ fn gate(pad: &gst::Pad, from: gst::ClockTime) {
                     gst::PadProbeReturn::Drop
                 }
                 gst::EventView::Segment(seg) => {
-                    // In stream time: splitmuxsrc's segments start at 1000 s
+                    // Stream time: splitmuxsrc's segments start at 1000 s
                     // plus the position.
                     let segment = seg.segment().downcast_ref::<gst::ClockTime>();
                     let at = segment.and_then(|s| s.to_stream_time(s.start()?));

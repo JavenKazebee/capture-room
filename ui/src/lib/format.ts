@@ -119,10 +119,7 @@ export function formatClock(ms: number): string {
   return h > 0 ? `${h}:${pad(m)}:${rest}` : `${m}:${rest}`
 }
 
-/**
- * Parse a position typed as seconds (`12.5`), `M:SS(.d)` or `H:MM:SS(.d)`.
- * Null if it isn't one.
- */
+/** Parse `12.5`, `M:SS(.d)` or `H:MM:SS(.d)` as a position; null if it isn't one. */
 export function parseClock(text: string): number | null {
   const parts = text.trim().split(':')
   if (!parts.length || parts.length > 3 || parts.some((p) => !/^\d+(\.\d*)?$/.test(p))) return null

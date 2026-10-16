@@ -11,14 +11,9 @@ import { Input } from '@/components/ui/input'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 
 /**
- * Saved replay clips on the channel's node, newest first. Click cues a clip
- * on its first frame, double-click plays it at the chosen speed. Export
- * writes it to one file (no re-encoding) in the node's Replay clips folder
- * and adds it to the media library.
- *
- * Clips saved on every angle at once are one row: a group. The row cues and
- * plays the selected angle's clip; its angles below pick another, and while
- * one of the group is on air, picking another takes over at the same moment.
+ * Saved replay clips on the channel's node. Click cues, double-click plays; export remuxes
+ * into the media library. A group (saved on every angle) is one row playing the selected
+ * angle's clip; picking another angle while the group is on air takes over at the same moment.
  */
 const props = defineProps<{
   clips: ReplayClip[]
@@ -80,8 +75,6 @@ function play(e: Entry) {
 const entryName = (e: Entry) => (e.kind === 'clip' ? e.clip.name : e.group.name)
 const entryMissing = (e: Entry) => (e.kind === 'clip' ? e.clip.missing : !lead(e.group))
 
-// ── Rename ────────────────────────────────────────────────────────────────────
-
 const editing = ref<string | null>(null)
 const draft = ref('')
 async function startRename(e: Entry) {
@@ -104,8 +97,6 @@ async function commitRename(e: Entry) {
     notifyError(`Could not rename the ${e.kind === 'clip' ? 'clip' : 'group'}`, err, e.kind === 'clip' ? e.clip.node_id : e.group.node_id)
   }
 }
-
-// ── Export and delete ─────────────────────────────────────────────────────────
 
 const exporting = ref(new Set<string>())
 async function exportEntry(e: Entry) {

@@ -14,11 +14,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
-/**
- * A text field for path templates. Tokens are coloured as you type (unknown
- * ones underlined in red), typing `{` suggests tokens, and the `{}` button
- * lists them all. The value stays plain text, so copy and paste just work.
- */
+/** A path template field with coloured tokens and `{` suggestions; the value stays plain text so copy/paste work. */
 const props = defineProps<{
   groups: readonly { label: string; tokens: readonly PathToken[] }[]
   invalid?: boolean
@@ -31,8 +27,6 @@ const model = defineModel<string>({ required: true })
 
 const input = ref<HTMLInputElement | null>(null)
 const mirror = ref<HTMLDivElement | null>(null)
-
-// ── Highlighting ──────────────────────────────────────────────────────────────
 
 const parts = computed(() =>
   model.value
@@ -47,8 +41,6 @@ const parts = computed(() =>
 function syncScroll() {
   if (mirror.value && input.value) mirror.value.scrollLeft = input.value.scrollLeft
 }
-
-// ── Inserting ─────────────────────────────────────────────────────────────────
 
 /** The selection when the field last had focus, so the menu inserts where the cursor was. */
 let selection: [number, number] | null = null
@@ -71,8 +63,6 @@ function insert(token: string) {
   const [start, end] = selection ?? [model.value.length, model.value.length]
   replaceRange(start, end, token)
 }
-
-// ── Suggestions after `{` ─────────────────────────────────────────────────────
 
 const allTokens = computed(() => props.groups.flatMap((g) => g.tokens))
 const query = ref<{ start: number; text: string } | null>(null)

@@ -3,10 +3,9 @@ use gstreamer::{self as gst, prelude::*};
 
 use crate::api::types::{SourceType, SourceTypeSupport};
 
-/// Every GStreamer element the application may need, grouped by the system
-/// package that provides it so the error message can say exactly what to
-/// install. Includes every encoder a preset can select, so a missing one is
-/// caught at startup rather than when someone presses record.
+/// Every GStreamer element the app may need, grouped by the package that
+/// provides it. Includes every preset encoder, so a missing one fails at
+/// startup rather than on Record.
 const REQUIRED: &[Package] = &[
     Package {
         name: "gst-plugins-base",
@@ -62,7 +61,6 @@ const REQUIRED: &[Package] = &[
     },
 ];
 
-/// Whether this node has GStreamer element `name`.
 pub fn has(name: &str) -> bool {
     gst::ElementFactory::find(name).is_some()
 }
@@ -73,9 +71,8 @@ pub fn missing<'a>(names: &[&'a str]) -> Vec<&'a str> {
 }
 
 /// Source types that need more than the required plugins, and whether this
-/// node can run them. A type missing an element is unavailable rather than
-/// stopping the node. `can_display`: the node has a window system, so
-/// channels can show on its screens.
+/// node can run them; a missing element makes a type unavailable rather than
+/// stopping the node. `can_display`: the node has a window system.
 pub fn source_types(can_display: bool) -> Vec<SourceTypeSupport> {
     let stream_protocols: Vec<String> = crate::sources::stream::PROTOCOLS
         .iter()
@@ -152,10 +149,9 @@ struct Package {
     elements: &'static [&'static str],
 }
 
-/// Folders that may hold the NDI library, most official first. The NDI
-/// plugin only looks in `NDI_RUNTIME_DIR_V6` / `_V5` and the default library
-/// path, but on macOS nothing installs it there: the SDK goes to its own
-/// folder, and NDI Tools bundles a private copy in each of its components.
+/// Folders that may hold the NDI library, most official first. The plugin only
+/// looks in `NDI_RUNTIME_DIR_V6`/`_V5` and the default library path, but on
+/// macOS the SDK has its own folder and NDI Tools bundles private copies.
 #[cfg(target_os = "macos")]
 const NDI_DIRS: &[&str] = &[
     "/Library/NDI SDK for Apple/lib/macOS",
@@ -167,9 +163,8 @@ const NDI_DIRS: &[&str] = &[
 #[cfg(not(target_os = "macos"))]
 const NDI_DIRS: &[&str] = &[];
 
-/// Point the NDI plugin at an installed NDI library it wouldn't find by
-/// itself, unless one is set already. Returns the folder chosen. Call before
-/// any threads start: it sets an environment variable.
+/// Point the NDI plugin at an installed library it wouldn't find, unless one
+/// is set already. Call before any threads start: it sets an env var.
 pub fn locate_ndi_runtime() -> Option<&'static str> {
     if ["NDI_RUNTIME_DIR_V6", "NDI_RUNTIME_DIR_V5"]
         .iter()
@@ -184,11 +179,9 @@ pub fn locate_ndi_runtime() -> Option<&'static str> {
     Some(dir)
 }
 
-/// When the node runs from the macOS app bundle, point GStreamer at the
-/// framework inside it (`Contents/Frameworks/GStreamer.framework`), so no
-/// GStreamer elsewhere on the machine is mixed in, and give it a registry of
-/// its own. Returns the framework's folder. Call before any threads start: it
-/// sets environment variables.
+/// From the macOS app bundle, use its own `GStreamer.framework` (so no other
+/// GStreamer on the machine is mixed in) and a registry of its own. Call
+/// before any threads start: it sets environment variables.
 #[cfg(target_os = "macos")]
 pub fn use_bundled_gstreamer() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
@@ -219,10 +212,8 @@ pub fn use_bundled_gstreamer() -> Option<std::path::PathBuf> {
     Some(root)
 }
 
-/// Check that every required GStreamer element is registered on this machine.
-///
-/// Returns an error listing all missing elements and the packages that provide
-/// them, so the user (or installer) knows exactly what to install.
+/// Check every required element is registered; the error lists what's missing
+/// and the packages that provide it.
 pub fn check_required_plugins() -> Result<()> {
     let mut msg = String::new();
     for package in REQUIRED {

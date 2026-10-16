@@ -50,10 +50,7 @@ const hasProblem = computed(
   () => props.clash || Object.keys(problems.value).length > 0 || Object.keys(advancedProblems(leg.value)).length > 0,
 )
 
-/**
- * Apply a change; Advanced choices it made impossible fall back to Auto, and
- * an output that no longer plays in a browser stops being the preview.
- */
+/** Apply a change; Advanced choices it made impossible fall back to Auto, and an unplayable output loses the preview. */
 function patch(p: Partial<PresetOutputInput>) {
   const next = { ...leg.value, ...p }
   const advanced = fitAdvanced(next)
@@ -61,8 +58,6 @@ function patch(p: Partial<PresetOutputInput>) {
 }
 
 const playable = computed(() => browserPlayable(leg.value))
-
-// ── Codec / container ─────────────────────────────────────────────────────────
 
 /** Set when changing codec moved the output to another container, saying why. */
 const containerNote = ref<string | null>(null)
@@ -95,10 +90,8 @@ const bitrate = computed({
   set: (v: string | number) => patch({ bitrate_kbps: v === '' ? null : Number(v) }),
 })
 
-// ── Resolution / frame rate ───────────────────────────────────────────────────
-// A select of common values plus "Match source" (stored as null) and
-// "Custom…", which reveals free entry. A stored value that isn't one of the
-// presets opens in Custom.
+// Common values plus "Match source" (null) and "Custom…" (free entry); a stored value
+// that isn't a preset opens in Custom.
 
 const SOURCE = 'source'
 const CUSTOM = 'custom'
@@ -158,7 +151,6 @@ const framerate = computed({
 
 <template>
   <Collapsible v-model:open="open" class="rounded-lg border bg-card" :class="hasProblem ? 'border-destructive/50' : 'border-border'">
-    <!-- Header -->
     <div class="flex items-center gap-2 pl-2 pr-1.5 h-10">
       <CollapsibleTrigger class="flex items-center gap-2 flex-1 min-w-0 text-left h-full">
         <ChevronRight class="size-4 shrink-0 text-muted-foreground transition-transform" :class="open && 'rotate-90'" />

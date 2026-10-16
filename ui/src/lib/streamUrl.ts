@@ -1,8 +1,4 @@
-/**
- * Stream URL rules, mirroring the node's (`sources/stream.rs`): SRT listens
- * when the URL has no host or says `mode=listener`. Shared by stream
- * sources and a channel's SRT outputs.
- */
+/** Stream URL rules mirroring `sources/stream.rs`: SRT listens when the URL has no host or says `mode=listener`. */
 
 export function scheme(u: string): string {
   return u.trim().match(/^([a-z][a-z0-9+.-]*):\/\//i)?.[1]?.toLowerCase() ?? ''
@@ -38,10 +34,7 @@ export function srtListens(u: string): boolean {
 /** The node's RTSP server port (`pipeline/rtsp.rs`). */
 export const RTSP_PORT = 8554
 
-/**
- * Where an RTSP output is served: `path`, or the channel's name, made
- * URL-safe the way the node does it (`rtsp::mount_path`).
- */
+/** An RTSP output's mount: `path` or the channel name, made URL-safe like `rtsp::mount_path`. */
 export function mountPath(path: string | null, channelName: string): string {
   const wanted = path && path.trim().replace(/^\/+|\/+$/g, '') ? path.trim() : channelName
   const segments = wanted
@@ -58,10 +51,7 @@ export function mountPath(path: string | null, channelName: string): string {
   return segments.length ? `/${segments.join('/')}` : '/channel'
 }
 
-/**
- * Where viewers open a WHEP output: on the node's API port (`origin`, like
- * `http://10.0.0.5:8080`), at its mount path (`api/whep.rs`).
- */
+/** A WHEP output's URL: on the node's API `origin`, at its mount path (`api/whep.rs`). */
 export function whepUrl(origin: string, path: string | null, channelName: string): string {
   return `${origin}/whep${mountPath(path, channelName)}`
 }

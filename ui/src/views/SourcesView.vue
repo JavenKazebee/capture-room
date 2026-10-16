@@ -38,8 +38,6 @@ const ndiOpen = ref(false)
 const filter = ref('')
 const groupByNode = useStorage('cr.sources.groupByNode', true)
 
-// ── Table ─────────────────────────────────────────────────────────────────────
-
 type Status = {
   key: 'live' | 'failed' | 'signal' | 'ok' | 'off'
   label: string
@@ -82,8 +80,6 @@ function openInRecord(s: Source) {
   router.push('/record')
 }
 
-// ── Source form ───────────────────────────────────────────────────────────────
-
 const formOpen = ref(false)
 /** The source being edited; null when adding one. */
 const editing = ref<Source | null>(null)
@@ -103,8 +99,6 @@ function openEdit(src: Source) {
   formOpen.value = true
 }
 
-// ── Delete ────────────────────────────────────────────────────────────────────
-
 const deleting = ref<Source | null>(null)
 
 async function destroy(src: Source) {
@@ -115,8 +109,6 @@ async function destroy(src: Source) {
     notifyError(`Delete failed: ${src.display_name}`, e, src.node_id)
   }
 }
-
-// ── Scan ──────────────────────────────────────────────────────────────────────
 
 async function scan() {
   scanning.value = true

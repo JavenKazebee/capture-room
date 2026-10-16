@@ -28,8 +28,6 @@ use super::ndi::{NdiMonitor, NdiSource, OwnSenders};
 use super::{configured, InputSource};
 use crate::display::Displays;
 
-// ── Stop / teardown handoff ───────────────────────────────────────────────────
-
 /// Resolves to a stopping session's final DTO once its legs have finished.
 pub type StopResult = watch::Receiver<Option<RecordingSessionDto>>;
 
@@ -38,8 +36,7 @@ struct ActiveSession {
     dto: RecordingSessionDto,
     /// Legs that have failed while recording (each reports only once).
     failed_legs: usize,
-    /// What the outputs encode (see [`crate::capacity::outputs_key`]), to
-    /// count the session against the node's benchmarked capacity.
+    /// What the outputs encode, to count the session against the node's capacity.
     outputs_key: String,
     started: Instant,
 }
@@ -73,8 +70,7 @@ impl ActiveSession {
 const MAX_START_LEAD: Duration = Duration::from_secs(10);
 
 /// A session taken out of the active set whose legs still have to drain and
-/// close their files. The caller runs it — see
-/// [`SourceManager::begin_stop_recording`].
+/// close their files. The caller runs it on a spawned task.
 pub struct StopJob {
     pub legs: Vec<RecordingLeg>,
     pub dto: RecordingSessionDto,
@@ -83,17 +79,15 @@ pub struct StopJob {
 }
 
 /// A monitor removed from the manager. The caller stops its recordings, then
-/// its pipeline — on a spawned task, like a [`StopJob`].
+/// its pipeline, on a spawned task.
 pub struct Teardown {
     pub source_id: String,
     pub pipeline: Arc<MonitorPipeline>,
     pub stops: Vec<StopJob>,
 }
 
-/// What runs on a node, each as its capacity key and its source's format
-/// (see [`SourceManager::running_load`]).
+/// What runs on a node, each as its capacity key and source format.
 pub struct RunningLoad {
-    /// Recording sessions.
     pub feeds: Vec<(String, SourceFormat)>,
     /// Replay buffers that record.
     pub buffers: Vec<(String, SourceFormat)>,
@@ -102,7 +96,6 @@ pub struct RunningLoad {
 }
 
 impl RunningLoad {
-    /// All of it, to pass to [`crate::capacity::Capacity::load`].
     pub fn iter(&self) -> impl Iterator<Item = (&str, SourceFormat)> + '_ {
         self.feeds
             .iter()
@@ -112,18 +105,15 @@ impl RunningLoad {
     }
 }
 
-/// A recording leg that failed while its session was running. Sent the moment
-/// it happens; the receiver applies it with [`SourceManager::note_leg_failure`].
+/// A leg that failed while its session ran; applied with [`SourceManager::note_leg_failure`].
 pub struct LegFailure {
     pub session_id: String,
     pub path: PathBuf,
     pub error: String,
 }
 
-/// A leg failure applied to its running session.
 pub struct NotedFailure {
     pub source_id: String,
-    /// The session's accumulated error message.
     pub error: String,
     /// Every leg has now failed, so nothing is being recorded.
     pub all_failed: bool,
@@ -132,8 +122,7 @@ pub struct NotedFailure {
 pub enum StopOutcome {
     /// This call gets to do the work.
     Start(Box<StopJob>),
-    /// A stop for this session is already in flight (started by another
-    /// request or a teardown); wait on its result instead.
+    /// A stop for this session is already in flight; wait on its result.
     Join(StopResult),
     /// Not active and not stopping. The caller falls back to the DB for an
     /// orphaned row (e.g. after a crash).
@@ -143,17 +132,15 @@ pub enum StopOutcome {
 /// A channel's output, sending, or its label and why it couldn't start.
 type Leg = Result<OutputLeg, (String, String)>;
 
-/// A playout channel's running outputs.
 struct ChannelOutputs {
     /// Each output's [`output::identity`], with its leg.
     legs: Vec<(OutputConfig, Leg)>,
 }
 
-/// A source's replay buffer. Kept while its source comes and goes (an NDI
+/// A source's replay buffer. Outlives its source coming and going (an NDI
 /// sender restarting), so what it recorded stays playable.
 struct Replay {
-    /// Recording, from this monitor. Dropped before the index: it writes
-    /// into it.
+    /// Dropped before the index: it writes into it.
     leg: Option<(ReplayLeg, Arc<MonitorPipeline>)>,
     config: ReplayConfigInput,
     index: ReplayIndex,
@@ -165,17 +152,12 @@ fn keep(config: &ReplayConfigInput) -> gst::ClockTime {
     gst::ClockTime::from_seconds(u64::from(config.minutes) * 60)
 }
 
-// ── SourceManager ─────────────────────────────────────────────────────────────
-
-/// Owns the sources, their monitor pipelines, and active recording sessions.
-/// The single point of truth for all capture state on a node.
-///
-/// Nothing here awaits: the manager lives behind an `RwLock` that every API
-/// call and the WS emitter share. Work that has to wait on GStreamer (draining
-/// a recording to EOS) is handed back as a [`StopJob`] or [`Teardown`].
+/// Owns the sources, their monitor pipelines and active recording sessions.
+/// Nothing here awaits: it lives behind an `RwLock` shared by every API call
+/// and the WS emitter, so GStreamer waits are handed back as a [`StopJob`] or [`Teardown`].
 pub struct SourceManager {
     config: MonitorSettingsDto,
-    /// The node clock: new monitors run on it.
+    /// The node clock new monitors run on.
     clock: gst::Clock,
     /// Its domain (see `ClockStatusDto::domain`), for synchronized starts.
     clock_domain: String,
@@ -188,18 +170,15 @@ pub struct SourceManager {
     /// Playout channels' outputs, by source id: their config, and each
     /// output's leg (or why it couldn't start).
     outputs: HashMap<String, ChannelOutputs>,
-    /// Sessions whose legs are draining. Lets a duplicate/retried
-    /// stop join the in-flight result instead of reporting "already stopped".
+    /// Sessions whose legs are draining, so a retried stop joins the in-flight
+    /// result instead of reporting "already stopped".
     stopping: HashMap<String, StopResult>,
     ndi_monitor: NdiMonitor,
-    /// Which NDI senders to connect to.
     ndi: NdiSubscriptionsInput,
     devices: Arc<LocalDevices>,
-    /// The node's screens, for display outputs.
     displays: Displays,
     leg_failures: mpsc::UnboundedSender<LegFailure>,
-    /// Session ids whose legs opened a new file (a split), so the file list
-    /// can be saved.
+    /// Session ids whose legs opened a new file (a split), so the file list is saved.
     leg_files: mpsc::UnboundedSender<String>,
     /// Replay buffers, by source id, and the folder they're kept in.
     replays: HashMap<String, Replay>,
@@ -244,32 +223,24 @@ impl SourceManager {
         }
     }
 
-    /// Where replay buffers and saved clips are kept (temporary folders
-    /// until set). Set before any buffer is. Buffers are cleared on start;
-    /// clips stay.
+    /// Set before any buffer is. Buffers are cleared on start; clips stay.
     pub fn set_replay_root(&mut self, buffers: PathBuf, clips: PathBuf) {
         self.replay_root = buffers;
         self.clip_root = clips;
     }
 
-    /// The node's name, for NDI senders to see it by.
     pub fn set_node_name(&mut self, name: &str) {
         self.ndi_monitor.set_node_name(name);
     }
 
-    /// Where replay buffers are kept.
     pub fn replay_root(&self) -> &Path {
         &self.replay_root
     }
 
-    /// The folder a saved replay clip's files are in.
     pub fn replay_clip_dir(&self, clip_id: &str) -> PathBuf {
         self.clip_root.join(clip_id)
     }
 
-    // ── Source access ─────────────────────────────────────────────────────────
-
-    /// The node's capture devices.
     pub fn devices(&self) -> &Arc<LocalDevices> {
         &self.devices
     }
@@ -279,7 +250,6 @@ impl SourceManager {
         self.ndi_monitor.runtime_loaded()
     }
 
-    /// The node's screens.
     pub fn displays(&self) -> &Displays {
         &self.displays
     }
@@ -321,9 +291,8 @@ impl SourceManager {
             .is_some_and(|m| m.error().is_none())
     }
 
-    /// Whether any source lacks a healthy monitor — it failed, or never
-    /// started — or is idle on an old clock, and is waiting for a rescan to
-    /// (re)start it.
+    /// Whether any source lacks a healthy monitor (failed or never started) or
+    /// is idle on an old clock, and needs a rescan.
     pub fn needs_rescan(&self) -> bool {
         self.sources
             .iter()
@@ -334,10 +303,8 @@ impl SourceManager {
                 .any(|(id, r)| self.monitors.contains_key(id) && !Self::recording(r))
     }
 
-    // ── Clock ─────────────────────────────────────────────────────────────────
-
-    /// The node clock changed: monitors started from now on use `clock`, and
-    /// running ones move to it as they become idle (see [`Self::scan`]).
+    /// Monitors started from now on use `clock`; running ones move to it as
+    /// they become idle (see [`Self::scan`]).
     pub fn set_clock(&mut self, (clock, domain): (gst::Clock, String)) {
         self.clock = clock;
         self.clock_domain = domain;
@@ -352,7 +319,7 @@ impl SourceManager {
     }
 
     /// Whether `source`'s monitor is on an old clock and can be rebuilt now:
-    /// nothing is recording it and, for a channel, nothing is playing.
+    /// nothing records it and, for a channel, nothing plays.
     fn should_migrate(&self, source: &dyn InputSource) -> bool {
         let id = source.id();
         let stale = self
@@ -366,15 +333,11 @@ impl SourceManager {
         stale && !recording && !playing
     }
 
-    // ── Scan ──────────────────────────────────────────────────────────────────
-
-    /// Rebuild the source list from configured sources and the NDI sources currently
-    /// on the network. A source whose id and fingerprint are unchanged is kept
-    /// as-is, monitor and recordings included — unless its monitor has failed
-    /// or never started, or is idle on an old clock. Removed, changed or failed sources are torn down
-    /// (returned for the caller to run); everything else gets a fresh monitor.
-    /// Candidates are only descriptions, so a scan that changes nothing builds
-    /// no GStreamer elements.
+    /// Rebuild the source list from configs and visible NDI senders. A source
+    /// with unchanged id and fingerprint keeps its monitor and recordings unless
+    /// the monitor failed, never started, or is idle on an old clock. Torn-down
+    /// sources are returned for the caller to run. Candidates are only
+    /// descriptions, so a no-op scan builds no GStreamer elements.
     pub fn scan(&mut self, configs: &[ConfiguredSourceDto]) -> Vec<Teardown> {
         let mut candidates: Vec<Box<dyn InputSource>> = configs
             .iter()
@@ -389,8 +352,8 @@ impl SourceManager {
                 .map(|s| Box::new(s) as Box<dyn InputSource>),
         );
 
-        // Outputs are left out of a channel's fingerprint, so a kept source
-        // has its old config: take the wanted outputs from the candidates.
+        // Outputs aren't in a channel's fingerprint, so a kept source has its
+        // old config: take the wanted outputs from the candidates.
         let wanted_outputs: HashMap<String, (String, Vec<OutputConfig>, Program)> = candidates
             .iter()
             .filter(|c| c.playout().is_some())
@@ -466,8 +429,6 @@ impl SourceManager {
         teardowns
     }
 
-    // ── NDI subscriptions ─────────────────────────────────────────────────────
-
     /// Connect to these NDI senders from the next scan.
     pub fn set_ndi_subscriptions(&mut self, subs: NdiSubscriptionsInput) {
         self.ndi = subs;
@@ -495,7 +456,6 @@ impl SourceManager {
         }
     }
 
-    /// This node's NDI outputs, as senders on the network.
     fn own_senders(&self) -> OwnSenders {
         OwnSenders {
             host: crate::controller::discovery::local_hostname().unwrap_or_default(),
@@ -511,8 +471,8 @@ impl SourceManager {
         }
     }
 
-    /// Whether to connect to `sender`: never one of this node's own outputs;
-    /// otherwise every sender, or the chosen ones and those in use.
+    /// Never one of this node's own outputs; otherwise every sender, or the
+    /// chosen ones and those in use.
     fn wants_ndi(&self, sender: &NdiSource, own: &OwnSenders) -> bool {
         !own.contains(sender.ndi_name())
             && match self.ndi.connect {
@@ -533,10 +493,8 @@ impl SourceManager {
         self.sessions.values().any(|s| s.dto.source_id == id)
     }
 
-    // ── Replay buffers ────────────────────────────────────────────────────────
-
-    /// Give a source a replay buffer, change it, or with `None` remove it
-    /// (deleting what it recorded). A new codec starts it afresh.
+    /// Add, change, or with `None` remove a source's replay buffer (deleting
+    /// what it recorded). A new codec starts it afresh.
     pub fn set_replay(&mut self, source_id: &str, config: Option<ReplayConfigInput>) {
         let Some(config) = config else {
             if self.replays.remove(source_id).is_some() {
@@ -575,8 +533,8 @@ impl SourceManager {
             .is_some_and(|(leg, _)| leg.error().is_none())
     }
 
-    /// Start each replay buffer on its source's current monitor, unless it
-    /// records from it already; stop the ones whose source has none.
+    /// Start each replay buffer on its source's current monitor unless it
+    /// already records from it; stop those whose source has none.
     fn sync_replays(&mut self) {
         for (id, replay) in &mut self.replays {
             let Some(monitor) = self.monitors.get(id) else {
@@ -605,8 +563,7 @@ impl SourceManager {
         }
     }
 
-    /// Every replay buffer and what it holds. `utc_offset_us` maps the node
-    /// clock to UTC.
+    /// `utc_offset_us` maps the node clock to UTC.
     pub fn replay_buffers(&self, utc_offset_us: Option<i64>) -> Vec<ReplayBufferDto> {
         let now = self.clock.time().unwrap_or(gst::ClockTime::ZERO);
         let mut list: Vec<ReplayBufferDto> = self
@@ -653,8 +610,7 @@ impl SourceManager {
         list
     }
 
-    /// Part of a source's replay buffer, from `from` to `to` (node clock),
-    /// to play on a channel.
+    /// Part of a source's replay buffer, `from` to `to` (node clock), to play on a channel.
     pub fn replay_clip(
         &self,
         source_id: &str,
@@ -677,11 +633,9 @@ impl SourceManager {
         })
     }
 
-    /// Start a channel's outputs that changed or aren't running (a new
-    /// monitor), on its current monitor, and stop the ones no longer wanted.
-    /// Outputs whose identity is unchanged keep running, so renaming a
-    /// channel only restarts the outputs named after it. A changed `program`
-    /// restarts the monitor, so it's a new one then.
+    /// Start a channel's changed or not-running outputs on its current monitor
+    /// and stop unwanted ones. Unchanged identities keep running, so a rename
+    /// only restarts outputs named after the channel.
     fn reconcile_outputs(
         &mut self,
         id: &str,
@@ -696,9 +650,8 @@ impl SourceManager {
                 .insert(id.to_string(), ChannelOutputs { legs: old });
             return;
         }
-        // Keep the running legs still wanted (one per wanted output); stop
-        // the rest before starting new ones: an NDI name can only be sent
-        // once, and an SRT port bound once.
+        // Stop unwanted legs before starting new ones: an NDI name can only be
+        // sent once, and an SRT port bound once.
         let mut kept: Vec<Option<OutputLeg>> = wanted
             .iter()
             .map(|w| {
@@ -736,8 +689,7 @@ impl SourceManager {
         self.outputs.insert(id.to_string(), ChannelOutputs { legs });
     }
 
-    /// Stop the channels that have Decklink outputs from keeping them, so
-    /// the next scan starts them again (with a card's new profile).
+    /// Drop channels' Decklink outputs so the next scan restarts them (with a card's new profile).
     pub fn reset_decklink_outputs(&mut self) {
         self.outputs.retain(|_, o| {
             !o.legs
@@ -781,13 +733,10 @@ impl SourceManager {
             .collect()
     }
 
-    // ── Thumbnail / audio access ──────────────────────────────────────────────
-
     pub fn thumbnail_bytes(&self, source_id: &str) -> Option<Vec<u8>> {
         self.monitors.get(source_id)?.thumbnail.get()
     }
 
-    /// Every monitored source's latest audio levels.
     pub fn all_audio_levels(&self) -> Vec<(String, Vec<ChannelLevelDto>)> {
         self.monitors
             .iter()
@@ -803,14 +752,10 @@ impl SourceManager {
             .unwrap_or_default()
     }
 
-    // ── Recording ─────────────────────────────────────────────────────────────
-
-    /// Start recording `req.source_id` with `legs`, one per entry of
-    /// `req.outputs` (which supplies each leg's name and preview flag for the
-    /// session). With `req.start_at` on this node's clock domain, the legs
-    /// begin at the first frame due at or after it; on another domain they
-    /// start now. `utc_offset_us` is the domain's mapping to UTC (see
-    /// [`crate::clock::NodeClock::utc_offset_us`]), for timecode.
+    /// Start recording `req.source_id` with `legs`, one per `req.outputs`.
+    /// With `req.start_at` on this node's clock domain, legs begin at the first
+    /// frame due at or after it; otherwise now. `utc_offset_us` maps the domain
+    /// to UTC, for timecode.
     pub fn start_recording(
         &mut self,
         req: &StartRecordingRequest,
@@ -826,10 +771,9 @@ impl SourceManager {
             .monitors
             .get(source_id)
             .ok_or_else(|| anyhow::anyhow!("no monitor running for source {source_id}"))?;
-        // Paths were picked to be free, but another start may have taken one
-        // since (a template without `{source}`, two sources at once). Starting
-        // under this lock opens the files, so the check can't be raced.
-        // Recording into a file would truncate it; a failed start deletes it.
+        // Another start may have taken a path since it was picked. Starting
+        // under this lock opens the files, so the check can't race. Recording
+        // into a file truncates it; a failed start deletes it.
         for (path, _) in legs {
             let active = self
                 .sessions
@@ -840,8 +784,8 @@ impl SourceManager {
             }
         }
 
-        // A source still on a previous clock (it was busy when the clock
-        // changed) can't be placed on the shared one.
+        // A source still on a previous clock (busy when it changed) can't be
+        // placed on the shared one.
         let on_node_clock = monitor.clock() == &self.clock;
         let start_at = match req.start_at.as_ref() {
             Some(at) if on_node_clock && at.domain == self.clock_domain => {
@@ -959,8 +903,7 @@ impl SourceManager {
             .collect()
     }
 
-    /// Every active leg's files, with how long its session has recorded —
-    /// for measuring what recordings write.
+    /// Every active leg's files and how long its session has recorded.
     pub fn active_leg_files(&self) -> Vec<(Vec<String>, Duration)> {
         self.sessions
             .values()
@@ -968,10 +911,8 @@ impl SourceManager {
             .collect()
     }
 
-    /// What runs on this node, to add up against its benchmarked capacity:
-    /// the recording sessions, the replay buffers that record but those of
-    /// the sources `skip_buffers`, and the playout channels but
-    /// `skip_channels`.
+    /// What runs on this node, against its benchmarked capacity: sessions,
+    /// recording replay buffers but `skip_buffers`, and channels but `skip_channels`.
     pub fn running_load(&self, skip_buffers: &[String], skip_channels: &[String]) -> RunningLoad {
         let feeds = self
             .sessions
@@ -989,8 +930,7 @@ impl SourceManager {
                 )
             })
             .collect();
-        // Idle or playing alike: a channel's program and outputs run either
-        // way, and it can start playing at any moment.
+        // Idle or playing alike: a channel's program and outputs run either way.
         let channels = self
             .sources
             .iter()
@@ -1015,19 +955,11 @@ impl SourceManager {
 
     /// Take a session out of the active set and hand back the detach work.
     ///
-    /// The caller must run the returned job — and the persist/notify that
-    /// follows it — on a task spawned independently of the triggering HTTP
-    /// request (e.g. via `tokio::spawn`), NOT inline in the request handler.
-    /// If the handler awaits it inline, dropping the handler's future (which
-    /// happens if the client disconnects — a page refresh, a retried request)
-    /// silently cancels whatever branch detach was still in flight, orphaning
-    /// that branch: still linked to the tee, still recording, and — since the
-    /// session was already removed here — unreachable by any future stop call.
-    ///
-    /// A second call for the same `session_id` while the first is still
-    /// running returns `StopOutcome::Join` with a receiver for the same
-    /// result, instead of falling through to a DB-only path that would
-    /// report "stopped" without the pipeline actually having stopped.
+    /// Run the job (and the persist/notify after it) on a spawned task, not
+    /// inline in the HTTP handler: a dropped handler future (client disconnect)
+    /// cancels detach mid-flight, orphaning a branch that keeps recording and
+    /// that no later stop can reach. A second call while the first runs gets
+    /// `StopOutcome::Join` on the same result.
     pub fn begin_stop_recording(&mut self, session_id: &str) -> StopOutcome {
         if let Some(job) = self.take_session(session_id) {
             StopOutcome::Start(Box::new(job))
@@ -1038,9 +970,8 @@ impl SourceManager {
         }
     }
 
-    /// Record a leg failure on its still-running session (the session's other
-    /// legs keep recording). Returns `None` if the session is no longer active
-    /// — a failed start or a stop already in progress reports the error itself.
+    /// Record a leg failure on its running session; its other legs keep
+    /// recording. `None` if the session is no longer active.
     pub fn note_leg_failure(&mut self, failure: &LegFailure) -> Option<NotedFailure> {
         let session = self.sessions.get_mut(&failure.session_id)?;
         session.failed_legs += 1;
@@ -1062,23 +993,18 @@ impl SourceManager {
         self.stopping.remove(session_id);
     }
 
-    // ── Monitor config ────────────────────────────────────────────────────────
-
     pub fn monitor_config(&self) -> &MonitorSettingsDto {
         &self.config
     }
 
-    /// Apply a new global monitor config to all running monitors without
-    /// restarting any pipelines. GStreamer re-negotiates the affected branches
-    /// in place, so audio and thumbnails remain uninterrupted.
+    /// Apply a monitor config to all running monitors without restarting
+    /// them; GStreamer renegotiates the affected branches in place.
     pub fn apply_monitor_config(&mut self, config: MonitorSettingsDto) {
         self.config = config;
         for pipeline in self.monitors.values() {
             pipeline.reconfigure(&self.config);
         }
     }
-
-    // ── Internal helpers ──────────────────────────────────────────────────────
 
     fn start_monitor(&mut self, source_id: &str) -> Result<()> {
         let source = self
@@ -1105,7 +1031,6 @@ impl SourceManager {
         Some(StopJob { legs, dto, tx })
     }
 
-    /// Remove the monitor (and any active recordings) for a source.
     fn disconnect(&mut self, source_id: &str) -> Option<Teardown> {
         self.outputs.remove(source_id);
         if let Some(replay) = self.replays.get_mut(source_id) {

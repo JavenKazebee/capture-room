@@ -5,11 +5,7 @@ import { FRAMERATES, FRAMERATE_OPTIONS, RESOLUTIONS, RESOLUTION_OPTIONS } from '
 import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
 
-/**
- * A live source's output format: by default it takes the source's first
- * format and holds it (a source that comes back in another one is scaled);
- * a fixed format is set from the start, so the feed never changes size.
- */
+/** By default the source's first format is held (a later change is scaled); a fixed one never changes size. */
 const format = defineModel<LiveVideoFormat | null>({ required: true })
 
 const AUTO = 'auto'

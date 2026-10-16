@@ -1,9 +1,6 @@
-//! Running the node as a service in the user's login session: it starts at
-//! login (unless turned off), restarts if it crashes, and stays stopped
-//! after a clean quit. `capture-room service install` sets it up, and the
-//! installer scripts and the updater go through it, so there's one way the
-//! node is set up on each OS. macOS only so far (a LaunchAgent); see
-//! ARCHITECTURE.md (Deployment).
+//! Running the node as a service in the user's login session: starts at login
+//! (unless turned off), restarts on a crash, stays stopped after a clean quit.
+//! The installer scripts and updater go through this too. macOS only so far.
 
 use std::path::PathBuf;
 
@@ -93,7 +90,6 @@ pub fn run_command(command: Command) -> Result<()> {
     Ok(())
 }
 
-/// Whether this process was started by the service manager.
 pub fn running_as_service() -> bool {
     std::env::var_os(SERVICE_ENV).is_some()
 }
@@ -114,7 +110,6 @@ pub fn app_path() -> Option<PathBuf> {
     platform::app_path()
 }
 
-/// The service's database and other state.
 pub fn data_dir() -> PathBuf {
     platform::data_dir()
 }
@@ -137,7 +132,6 @@ pub fn launched_from_desktop() -> Result<bool> {
     Ok(true)
 }
 
-/// Open a URL in the default browser.
 pub fn open_url(url: &str) {
     #[cfg(target_os = "macos")]
     let opener = "open";
@@ -150,7 +144,6 @@ pub fn open_url(url: &str) {
     }
 }
 
-/// What `install` set up.
 pub struct Installed {
     pub port: u16,
     pub log: PathBuf,

@@ -20,12 +20,8 @@ use crate::api::types::{
     ConfiguredSourceDto, LinkState, OutputConfig, SourceCapabilitiesDto, SourceConfig, SourceType,
 };
 
-/// Every input source implements this trait.
-///
-/// A source is a cheap description of where media comes from: a rescan builds
-/// one for everything it finds and keeps the old one if nothing changed. The
-/// GStreamer side is built by [`InputSource::build_bin`] each time a monitor
-/// starts, so every monitor owns a fresh bin.
+/// Every input source. A source is a cheap description a rescan can rebuild;
+/// [`InputSource::build_bin`] makes a fresh bin each time a monitor starts.
 pub trait InputSource: Send + Sync {
     fn id(&self) -> &str;
     fn display_name(&self) -> &str;
@@ -36,15 +32,12 @@ pub trait InputSource: Send + Sync {
     /// The source's format, if known before it starts producing.
     fn capabilities(&self) -> Option<SourceCapabilitiesDto>;
 
-    /// Identifies the configuration the bin was built from. A rescan keeps a
-    /// source (and its running monitor) only if the id and fingerprint match;
-    /// otherwise the source is rebuilt and its monitor restarted. Leaves out
-    /// the name (see [`InputSource::set_name`]).
+    /// A rescan keeps a source and its monitor only if id and fingerprint
+    /// match. Leaves out the name.
     fn fingerprint(&self) -> String;
 
-    /// Build a new GStreamer bin for this source: a `gst::Bin` with two
-    /// named src ghost pads, `"video"` and `"audio"`. The monitor pipeline
-    /// that adds it drives its state.
+    /// A new `gst::Bin` with src ghost pads `"video"` and `"audio"`; the
+    /// monitor pipeline drives its state.
     fn build_bin(&self) -> Result<gst::Element>;
 
     /// Current timecode as `HH:MM:SS:FF`, if the source has one.
@@ -58,12 +51,10 @@ pub trait InputSource: Send + Sync {
         None
     }
 
-    /// A playout channel's transport.
     fn playout(&self) -> Option<&Arc<channel::Playout>> {
         None
     }
 
-    /// Where a playout channel's program is sent.
     fn outputs(&self) -> &[OutputConfig] {
         &[]
     }
@@ -73,8 +64,7 @@ pub trait InputSource: Send + Sync {
     fn adopt(&mut self, _old: &dyn InputSource) {}
 }
 
-/// The source a stored config describes. `devices` resolves capture and
-/// audio devices.
+/// The source a stored config describes; `devices` resolves capture and audio devices.
 pub fn configured(
     dto: &ConfiguredSourceDto,
     devices: &Arc<device::LocalDevices>,
@@ -111,8 +101,7 @@ pub fn configured(
     }
 }
 
-/// Add `chain` to `bin`, link it in order, and expose its last element as
-/// the ghost pad `name` (see [`add_ghost_pad`]).
+/// Add `chain` to `bin`, link it in order, and ghost its last element as `name`.
 fn add_chain(bin: &gst::Bin, chain: &[&gst::Element], name: &str) -> Result<()> {
     bin.add_many(chain.iter().copied())
         .with_context(|| format!("add {name} elements to {}", bin.name()))?;
@@ -121,8 +110,7 @@ fn add_chain(bin: &gst::Bin, chain: &[&gst::Element], name: &str) -> Result<()> 
     add_ghost_pad(bin, chain.last().context("empty chain")?, name)
 }
 
-/// Expose `element`'s static src pad on `bin` as the ghost pad `name`
-/// (`"video"` or `"audio"`, per the [`InputSource`] contract).
+/// Expose `element`'s src pad on `bin` as the ghost pad `name`.
 fn add_ghost_pad(bin: &gst::Bin, element: &gst::Element, name: &str) -> Result<()> {
     let target = element
         .static_pad("src")

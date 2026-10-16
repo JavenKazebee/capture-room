@@ -86,7 +86,6 @@ function startedAt(r: RecordingSession) {
     </div>
     <p v-if="source.error" class="text-destructive break-words">{{ source.error }}</p>
 
-    <!-- Live: what's being written right now -->
     <section v-if="session" class="space-y-1.5">
       <h3 class="section-title">Writing</h3>
       <div v-for="(p, i) in session.output_paths" :key="p" class="flex items-center gap-1 min-w-0">

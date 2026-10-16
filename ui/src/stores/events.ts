@@ -15,11 +15,7 @@ export interface LogEntry {
 
 const MAX_ENTRIES = 1000
 
-/**
- * The workbench event log: notable server events (recordings, failures, nodes
- * coming and going) and failed UI actions. High-rate events (levels,
- * thumbnails, timecode) are left out. Kept in memory for this page load.
- */
+/** Notable server events and failed UI actions, in memory for this page load. High-rate events are left out. */
 export const useEventsStore = defineStore('events', () => {
   // A shallow ref over a mutated array — cheaper than deep reactivity for a log.
   const entries = shallowRef<LogEntry[]>([])

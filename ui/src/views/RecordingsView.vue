@@ -59,8 +59,6 @@ const rows = computed(() =>
 
 const key = (s: RecordingSession) => `${s.node_id}/${s.id}`
 
-// ── Selection ─────────────────────────────────────────────────────────────────
-
 const selectedKey = ref<string | null>(null)
 const selected = computed(() => recordings.sessions.find((s) => key(s) === selectedKey.value) ?? null)
 
@@ -98,8 +96,6 @@ useViewKeys((e) => {
   } else if (e.key === 'Escape') selectedKey.value = null
 }, { alsoIgnore: 'video, button, a, [role="button"], [role="listbox"]' })
 
-// ── Columns ───────────────────────────────────────────────────────────────────
-
 const STATUS = {
   active: { label: 'Recording', dot: 'tally', order: 0 },
   error: { label: 'Failed', dot: 'error', order: 1 },
@@ -129,8 +125,6 @@ const columns = computed<Column<RecordingSession>[]>(() => [
   { id: 'dropped', label: 'Dropped', value: (s) => totalDropped(s), align: 'right', hiddenByDefault: true, class: 'num' },
   { id: 'id', label: 'Session ID', value: (s) => s.id, hiddenByDefault: true, class: 'num' },
 ])
-
-// ── Load older ────────────────────────────────────────────────────────────────
 
 async function loadOlder() {
   try {

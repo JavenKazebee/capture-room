@@ -9,14 +9,8 @@ use tracing::warn;
 use crate::api::types::{TransportState, WsEvent};
 use crate::state::AppState;
 
-/// Capacity of the broadcast channel.  Old messages are dropped when the
-/// channel is full and no receiver is fast enough.
-///
-/// On a controller this single channel carries the local emitter's output
-/// plus every relayed peer event. Peak rate ≈ (total sources × 1/s) +
-/// (active recordings × ~11/s). 1024 slots buys ~2s of burst tolerance at a
-/// few hundred events/sec; the ring holds one copy of each message regardless
-/// of receiver count, so the memory cost is ~1024 × message size (trivial).
+/// Slow receivers lose the oldest messages. On a controller this also carries
+/// every relayed peer event: ~2s of burst at a few hundred events/s.
 const CHANNEL_CAPACITY: usize = 1024;
 
 pub fn channel() -> (broadcast::Sender<String>, broadcast::Receiver<String>) {

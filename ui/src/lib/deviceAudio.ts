@@ -10,11 +10,7 @@ function core(name: string) {
     .trim()
 }
 
-/**
- * The audio input that belongs to a video device, if one looks like it:
- * a capture dongle's HDMI audio is listed as its own device, usually under
- * the same name ("Cam Link 4K") or the name plus "Audio".
- */
+/** A capture dongle's HDMI audio is its own device, usually its video's name or that plus "Audio". */
 export function pairedAudioInput(video: DeviceDto, devices: DeviceDto[]): DeviceDto | null {
   const v = core(video.name)
   if (v.length < 4) return null
@@ -29,10 +25,7 @@ export function pairedAudioInput(video: DeviceDto, devices: DeviceDto[]): Device
   )
 }
 
-/**
- * `audio` with a video device's own audio paired, when the audio hasn't been
- * chosen yet (still silence) and the device has one.
- */
+/** `audio` with the device's paired audio, if audio is still unchosen (silence). */
 export function withPairedAudio(audio: AudioPlan, video: DeviceDto | undefined, devices: DeviceDto[]): AudioPlan {
   if (audio.from !== 'silence' || !video) return audio
   const input = pairedAudioInput(video, devices)

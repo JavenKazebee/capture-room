@@ -39,10 +39,7 @@ import { Slider } from '@/components/ui/slider'
 import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
 
-/**
- * An output's Advanced settings: collapsed while everything is default, with
- * a summary of whatever isn't, so a changed setting is never hidden.
- */
+/** Collapsed while everything is default, with a summary of what isn't, so a changed setting is never hidden. */
 const leg = defineModel<PresetOutputInput>({ required: true })
 const nodes = useNodesStore()
 
@@ -68,8 +65,6 @@ const changed = computed(() => {
 
 const bitrated = computed(() => hasBitrate(leg.value.codec))
 const prores = computed(() => isProRes(leg.value))
-
-// ── Video ─────────────────────────────────────────────────────────────────────
 
 const encoderOptions = computed(() =>
   (['auto', 'hardware', 'software'] as const).map((value) => {
@@ -103,8 +98,6 @@ const numberField = (key: 'keyframe_secs' | 'audio_bitrate_kbps') =>
 const keyframes = numberField('keyframe_secs')
 const audioBitrate = numberField('audio_bitrate_kbps')
 
-// ── Audio ─────────────────────────────────────────────────────────────────────
-
 const CHANNEL_OPTIONS: { value: AudioChannels; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'stereo', label: 'Stereo mix' },
@@ -117,8 +110,6 @@ const channelTextBad = computed(() => channelText.value.trim() !== '' && !parseC
 watch(channelText, (text) => set('channel_pick', parseChannels(text) ?? []))
 
 const audio = computed(() => resolvedAudio(leg.value))
-
-// ── Files ─────────────────────────────────────────────────────────────────────
 
 const OFF = 'off'
 const CUSTOM = 'custom'
@@ -168,7 +159,6 @@ const splitGb = computed({
 
     <CollapsibleContent>
       <div class="px-3 pb-3 pt-1 space-y-3 border-t border-border/70">
-        <!-- Video -->
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 [&>*]:min-w-0">
           <h4 class="group-title">Video</h4>
 
@@ -251,7 +241,6 @@ const splitGb = computed({
           </FormField>
         </div>
 
-        <!-- Audio -->
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 [&>*]:min-w-0">
           <h4 class="group-title">Audio</h4>
 
@@ -305,7 +294,6 @@ const splitGb = computed({
           </FormField>
         </div>
 
-        <!-- Files -->
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 [&>*]:min-w-0">
           <h4 class="group-title">Files</h4>
 

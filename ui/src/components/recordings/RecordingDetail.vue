@@ -32,12 +32,7 @@ const clipboard = useClipboard({ legacy: true })
 const s = computed(() => props.session)
 const live = computed(() => s.value.status === 'active')
 
-// ── Player ────────────────────────────────────────────────────────────────────
-
-/**
- * The file playing: an output and one of its files (a split output has
- * several), by path, since deleting a file shifts the indexes after it.
- */
+/** The file playing, by path, since deleting a file shifts the indexes after it. */
 const playing = ref<{ output: number; path: string } | null>(initialPlaying())
 function initialPlaying() {
   const output = previewOutput(props.session)
@@ -103,8 +98,6 @@ function togglePlay() {
 }
 defineExpose({ togglePlay })
 
-// ── Share ─────────────────────────────────────────────────────────────────────
-
 const playout = usePlayoutStore()
 const router = useRouter()
 
@@ -145,8 +138,6 @@ const noPreview = computed(() => {
     return "None of this session's outputs play in a browser. Add an H.264 output with AAC audio in .mp4 or .mov to its preset to preview recordings."
   return null
 })
-
-// ── Details ───────────────────────────────────────────────────────────────────
 
 function when(iso: string | null) {
   return iso ? dateTime(iso, { year: true }) : null
@@ -214,8 +205,6 @@ const outputs = computed(() =>
 
 const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path
 
-// ── Remove / delete ───────────────────────────────────────────────────────────
-
 const confirmRemove = ref(false)
 const confirmDeleteAll = ref(false)
 
@@ -264,7 +253,6 @@ async function deleteFile() {
 
 <template>
   <section class="h-full min-h-0 flex bg-card">
-    <!-- Player -->
     <div class="w-[40%] max-w-[560px] min-w-56 shrink-0 flex flex-col border-r border-border">
       <div class="bg-black aspect-video grid place-items-center">
         <video
@@ -295,7 +283,6 @@ async function deleteFile() {
     </div>
 
     <div class="flex-1 min-w-0 flex flex-col">
-      <!-- Summary: what, state, when, where, and what you can do with it -->
       <div class="shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 min-h-10 px-3 py-1.5 border-b border-border">
         <h2 class="text-sm font-semibold truncate">{{ recordings.sourceNameOf(s) }}</h2>
         <span class="flex items-center gap-1.5 text-xs" :class="live ? 'text-tally font-medium' : 'text-muted-foreground'">

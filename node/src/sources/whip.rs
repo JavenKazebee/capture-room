@@ -9,9 +9,8 @@ use super::InputSource;
 use crate::api::types::{LinkState, SourceCapabilitiesDto, SourceType, WhipSourceConfig};
 use crate::pipeline::make_el;
 
-/// A WHIP ingest: `whipserversrc` (gst-plugins-rs, statically linked)
-/// serves `http://<node>:<port>/whip/endpoint` and decodes what's published. While nobody
-/// publishes, the feed plays black and silence.
+/// A WHIP ingest: `whipserversrc` serves `http://<node>:<port>/whip/endpoint`.
+/// Plays black and silence while nobody publishes.
 pub struct WhipSource {
     id: String,
     name: String,
@@ -85,7 +84,6 @@ impl InputSource for WhipSource {
     }
 }
 
-/// Check a config before it's saved.
 pub fn validate(cfg: &WhipSourceConfig) -> Result<(), String> {
     if cfg.port < 1024 {
         return Err("use a port from 1024 up".into());
@@ -124,8 +122,7 @@ mod tests {
         });
     }
 
-    /// Publish with `whipclientsink` (the same plugin), stop, and publish
-    /// again: the source goes live, waits, and goes live again.
+    /// Publish, stop, and publish again: the source goes live, waits, and goes live again.
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "real-time (~25 s); run with --ignored"]
     async fn publish_stop_publish() {

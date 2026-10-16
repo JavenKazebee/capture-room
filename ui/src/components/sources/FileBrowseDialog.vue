@@ -17,10 +17,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 
-/**
- * Pick a media file on a node's disk. Lists folders and media files only.
- * Mount it with `v-if`; it starts in `start`'s folder, or the node's home.
- */
+/** Pick a media file on a node's disk. Mount with `v-if`; starts in `start`'s folder, or home. */
 const props = defineProps<{ nodeId: string; start?: string }>()
 const emit = defineEmits<{ close: []; select: [path: string] }>()
 

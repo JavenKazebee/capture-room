@@ -4,11 +4,7 @@ import { CircleHelp } from '@lucide/vue'
 import type { FieldHelp } from '@/lib/fieldHelp'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 
-/**
- * A `?` beside a field label that explains the field. Opens on hover, and on
- * click or tap; a click keeps it open until something else is clicked, so it
- * works on touch screens and from the keyboard.
- */
+/** Opens on hover and on click; a click keeps it open, so it works on touch and from the keyboard. */
 const props = defineProps<{
   help: FieldHelp
   /** What this field resolves to right now, e.g. "Auto uses VideoToolbox on this node". */

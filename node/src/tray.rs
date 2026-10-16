@@ -1,8 +1,6 @@
-//! The menu bar icon (system tray on Windows) of a node running as a
-//! service: what it's doing at a glance, and Open, Update, Start at Login
-//! and Quit. It lives on the window loop's thread (see [`crate::display`]),
-//! which gets the node's [`Status`] and hands the node the [`Action`]s that
-//! need it.
+//! The menu bar icon (system tray on Windows) of a node running as a service.
+//! It lives on the window loop's thread (see [`crate::display`]), which gets
+//! the node's [`Status`] and hands the node the [`Action`]s that need it.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,21 +15,17 @@ use crate::state::AppState;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Status {
     pub recordings: usize,
-    /// Channels playing a clip.
     pub playing: usize,
     pub update: UpdateState,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum UpdateState {
-    /// Not checked yet, or up to date.
     #[default]
     None,
-    /// This version is out.
     Available(String),
     /// Updating: what it's doing (`Downloading 0.2.0 (40%)`).
     Running(String),
-    /// The last check or update failed.
     Failed(String),
 }
 
@@ -43,7 +37,6 @@ pub enum Action {
     CheckForUpdates,
 }
 
-/// What the tray needs from the node to start.
 pub struct Config {
     pub port: u16,
     pub actions: UnboundedSender<Action>,

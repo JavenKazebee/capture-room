@@ -36,8 +36,6 @@ async fn delete_one(pool: &SqlitePool, sql: &str, id: &str) -> Result<bool> {
     Ok(res.rows_affected() > 0)
 }
 
-// ── node_config ───────────────────────────────────────────────────────────────
-
 pub async fn config_get(pool: &SqlitePool, key: &str) -> Result<Option<String>> {
     let row = sqlx::query_scalar::<_, String>("SELECT value FROM node_config WHERE key = ?")
         .bind(key)
@@ -57,8 +55,6 @@ pub async fn config_set(pool: &SqlitePool, key: &str, value: &str) -> Result<()>
     .await?;
     Ok(())
 }
-
-// ── monitor settings (node_config keys) ──────────────────────────────────────
 
 /// Stored settings, with defaults for anything missing or unparsable.
 pub async fn monitor_settings_get(pool: &SqlitePool) -> Result<MonitorSettingsDto> {
@@ -91,8 +87,6 @@ pub async fn monitor_settings_set(pool: &SqlitePool, m: &MonitorSettingsDto) -> 
     config_set(pool, "monitor_level_ms", &m.level_interval_ms.to_string()).await?;
     Ok(())
 }
-
-// ── recording_sessions ────────────────────────────────────────────────────────
 
 const SESSION_SELECT: &str = "SELECT id, source_id, preset_id, source_name, preset_name, started_at, stopped_at,
                                      outputs, output_paths, dropped_frames, files, status, error_message,
@@ -138,8 +132,8 @@ pub async fn session_insert(pool: &SqlitePool, s: &RecordingSessionDto) -> Resul
     Ok(())
 }
 
-/// Save how a session finished: its stop time, status and error, and its
-/// final dropped frames, files and clock.
+/// Save how a session finished: stop time, status, error, dropped frames,
+/// files and clock.
 pub async fn session_update_stop(pool: &SqlitePool, s: &RecordingSessionDto) -> Result<()> {
     sqlx::query(
         "UPDATE recording_sessions
@@ -159,7 +153,6 @@ pub async fn session_update_stop(pool: &SqlitePool, s: &RecordingSessionDto) -> 
     Ok(())
 }
 
-/// Record the files a running session's legs have written so far.
 pub async fn session_update_files(
     pool: &SqlitePool,
     id: &str,
@@ -205,9 +198,6 @@ pub async fn session_get(pool: &SqlitePool, id: &str) -> Result<Option<Recording
     Ok(row)
 }
 
-// ── presets ───────────────────────────────────────────────────────────────────
-
-/// Every preset with its output legs, ordered by name.
 pub async fn presets_list(pool: &SqlitePool) -> Result<Vec<PresetDto>> {
     let mut presets = sqlx::query_as::<_, PresetDto>(
         "SELECT id, name, created_at, updated_at, version FROM presets ORDER BY name",
@@ -236,7 +226,6 @@ pub async fn presets_list(pool: &SqlitePool) -> Result<Vec<PresetDto>> {
     Ok(presets)
 }
 
-/// Insert a preset and its output legs atomically.
 pub async fn preset_insert(pool: &SqlitePool, p: &PresetDto) -> Result<()> {
     let mut tx = pool.begin().await?;
     sqlx::query(
@@ -288,7 +277,6 @@ pub async fn preset_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
     delete_one(pool, "DELETE FROM presets WHERE id = ?", id).await
 }
 
-/// Replace all output legs for a preset, inside the caller's transaction.
 async fn preset_outputs_replace(
     tx: &mut Transaction<'_, Sqlite>,
     preset_id: &str,
@@ -324,8 +312,6 @@ async fn preset_outputs_replace(
     Ok(())
 }
 
-// ── nodes (manual registrations on a controller) ─────────────────────────────
-
 #[derive(Debug, Clone, FromRow)]
 pub struct NodeRow {
     pub id: String,
@@ -359,8 +345,6 @@ pub async fn node_delete(pool: &SqlitePool, id: &str) -> Result<()> {
     delete_one(pool, "DELETE FROM nodes WHERE id = ?", id).await?;
     Ok(())
 }
-
-// ── configured_sources ────────────────────────────────────────────────────────
 
 const CONFIGURED_SOURCE_SELECT: &str =
     "SELECT id, name, config, created_at FROM configured_sources";
@@ -435,8 +419,6 @@ pub async fn configured_source_delete(pool: &SqlitePool, id: &str) -> Result<boo
     Ok(true)
 }
 
-// ── media ─────────────────────────────────────────────────────────────────────
-
 const MEDIA_SELECT: &str = "SELECT id, path, name, info, origin, session_id, added_at FROM media";
 
 pub async fn media_list(pool: &SqlitePool) -> Result<Vec<MediaItemDto>> {
@@ -477,8 +459,6 @@ pub async fn media_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
     delete_one(pool, "DELETE FROM media WHERE id = ?", id).await
 }
 
-// ── NDI subscriptions ─────────────────────────────────────────────────────────
-
 const NDI_CONNECT: &str = "ndi_connect";
 
 pub async fn ndi_subscriptions_get(pool: &SqlitePool) -> Result<NdiSubscriptionsInput> {
@@ -493,7 +473,6 @@ pub async fn ndi_subscriptions_get(pool: &SqlitePool) -> Result<NdiSubscriptions
     Ok(NdiSubscriptionsInput { connect, chosen })
 }
 
-/// Replace the subscriptions, atomically.
 pub async fn ndi_subscriptions_set(pool: &SqlitePool, subs: &NdiSubscriptionsInput) -> Result<()> {
     let connect = match subs.connect {
         NdiConnect::All => "all",
@@ -521,8 +500,6 @@ pub async fn ndi_subscriptions_set(pool: &SqlitePool, subs: &NdiSubscriptionsInp
     Ok(())
 }
 
-// ── Decklink profiles ─────────────────────────────────────────────────────────
-
 const DECKLINK_PROFILES: &str = "decklink_profiles";
 
 /// Each Decklink card's profile, by card key (cards left at the default
@@ -540,8 +517,6 @@ pub async fn decklink_profiles_set(
 ) -> Result<()> {
     config_set(pool, DECKLINK_PROFILES, &serde_json::to_string(profiles)?).await
 }
-
-// ── replay buffers ────────────────────────────────────────────────────────────
 
 /// Each source with a replay buffer, and its config.
 pub async fn replay_buffers_list(pool: &SqlitePool) -> Result<Vec<(String, ReplayConfigInput)>> {
@@ -584,8 +559,6 @@ pub async fn replay_buffer_delete(pool: &SqlitePool, source_id: &str) -> Result<
     )
     .await
 }
-
-// ── replay clips ──────────────────────────────────────────────────────────────
 
 /// A saved replay clip as stored. Positions (µs) count from its first
 /// file's start, which was at `base_us` on the node clock.
@@ -745,8 +718,6 @@ pub async fn replay_clip_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
     Ok(true)
 }
 
-// ── playlists ─────────────────────────────────────────────────────────────────
-
 /// A playlist item with its media entry.
 #[derive(Debug, Clone, FromRow)]
 pub struct PlaylistRow {
@@ -828,9 +799,6 @@ pub async fn playlists_using(pool: &SqlitePool, media_id: &str) -> Result<Vec<St
     Ok(rows)
 }
 
-// ── benchmark_results ─────────────────────────────────────────────────────────
-
-/// Insert or replace a benchmark run.
 pub async fn benchmark_save(pool: &SqlitePool, run: &BenchmarkRunDto) -> Result<()> {
     sqlx::query(
         "INSERT INTO benchmark_results (id, started_at, status, run) VALUES (?, ?, ?, ?)
@@ -845,7 +813,6 @@ pub async fn benchmark_save(pool: &SqlitePool, run: &BenchmarkRunDto) -> Result<
     Ok(())
 }
 
-/// The latest runs, newest first.
 pub async fn benchmarks_list(pool: &SqlitePool) -> Result<Vec<BenchmarkRunDto>> {
     let rows = sqlx::query_scalar::<_, Json<BenchmarkRunDto>>(
         "SELECT run FROM benchmark_results ORDER BY started_at DESC LIMIT 200",

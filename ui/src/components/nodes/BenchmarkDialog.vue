@@ -43,10 +43,7 @@ const measureOptions = [
   { value: 'channel' as const, label: 'Playout channels' },
 ]
 
-/**
- * A channel's outputs that encode all the time. RTSP and WHEP encode only for
- * viewers and a display only draws, so a channel is measured without them.
- */
+/** Outputs that always encode; RTSP/WHEP encode only for viewers and a display only draws, so they're left out. */
 const channelOutputs = ref<'none' | 'ndi' | 'srt' | 'ndi_srt'>('ndi')
 const channelOutputOptions = [
   { value: 'ndi' as const, label: 'NDI' },
@@ -98,11 +95,7 @@ onMounted(async () => {
   if (!mediaPath.value && fileSources.value[0]) mediaPath.value = fileSources.value[0].path
 })
 
-/**
- * Rough length of a run that finds its answer below the limit: a quick check
- * per doubling, then about as many full-length steps to narrow down, plus
- * warm-ups and starting feeds.
- */
+/** Rough run length: a quick check per doubling, about as many full steps to narrow down, plus warm-ups. */
 const minutes = computed(() => {
   const doublings = Math.ceil(Math.log2(Math.max(2, maxFeeds.value))) + 1
   const secs = doublings * (5 + 8) + doublings * (stepSecs.value + 8)
