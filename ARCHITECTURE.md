@@ -154,8 +154,13 @@ Codecs: ProRes (4444…Proxy), uncompressed, H.264, H.265, VP9; containers MOV, 
 (`incompatible()` in `pipeline/profile.rs`). MXF isn't supported (`mxfmux` rejected every
 codec).
 
-**Thumbnails** are JPEGs at 1–10 fps (node setting), held in memory, served by
-`GET /thumbnails/{id}`, announced by `thumbnail.updated`.
+**Thumbnails** are JPEGs at 1–30 fps (node setting), held in memory (`thumbnails.rs`).
+The UI opens one `/ws/thumbnails` socket and sends the sources it shows on screen and an
+optional fps cap as JSON. Each new frame comes back as a binary message: key length (u16
+BE), `node/source` key, then the JPEG. A controller serves peers' sources through one
+upstream socket per peer, open only while one of that peer's sources is watched. Frames
+are numbered so unchanged ones aren't sent again. `GET /thumbnails/{id}` still returns
+the latest one.
 
 ## Clock and timecode
 
@@ -291,7 +296,7 @@ Local only; ids are local to the node.
 | `/channels/{id}[/playlist \| /play \| /cue \| /transport \| /replay \| /replay-clip]` | playout |
 | `/replay[/{source_id}]`, `/replay/clips…`, `/replay/clip-groups…` | buffers, clips, export |
 | `/benchmarks…`, `/capacity`, `/capacity/check` | benchmark runs, load, pre-start checks |
-| `/thumbnails/{id}`, `/ws` | latest JPEG, this node's events |
+| `/thumbnails/{id}`, `/ws`, `/ws/thumbnails` | latest JPEG, this node's events, its thumbnails |
 
 ### Controller — `/api/v1/…`
 
@@ -303,12 +308,12 @@ Local only; ids are local to the node.
 | `/presets` | presets |
 | `/access-token` | set the token here and on every registered node |
 | `/auth`, `/auth/sign-in`, `/auth/sign-out` | open: whether a token is needed, browser sign-in |
-| `/ws` | own events + every peer's |
+| `/ws`, `/ws/thumbnails` | own events + every peer's; thumbnails from any node |
 
 ### Events
 
 JSON with `type` and `node_id`: `recording.started|stopped|error|leg_failed|stats|removed`,
-`feed.status`, `channel.state`, `media.updated`, `audio.levels`, `thumbnail.updated`,
+`feed.status`, `channel.state`, `media.updated`, `audio.levels`,
 `benchmark.updated`, `node.updated`, `node.online|offline`. The relay subscribes to each
 peer's local-only `/api/v1/node/ws`, so controllers never echo each other.
 

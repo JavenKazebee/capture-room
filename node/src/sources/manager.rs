@@ -733,7 +733,7 @@ impl SourceManager {
             .collect()
     }
 
-    pub fn thumbnail_bytes(&self, source_id: &str) -> Option<Vec<u8>> {
+    pub fn thumbnail(&self, source_id: &str) -> Option<crate::pipeline::Thumbnail> {
         self.monitors.get(source_id)?.thumbnail.get()
     }
 

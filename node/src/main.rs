@@ -14,6 +14,7 @@ mod session;
 mod sources;
 mod state;
 mod storage;
+mod thumbnails;
 mod tray;
 mod update;
 mod ws;

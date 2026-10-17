@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import { useSourcesStore, audioLevels, thumbnailSeqs } from '@/stores/sources'
+import { useSourcesStore, audioLevels } from '@/stores/sources'
 import { totalDropped, useRecordingsStore } from '@/stores/recordings'
 import { useNodesStore } from '@/stores/nodes'
 import { sourceKey } from '@/composables/useApi'
@@ -162,12 +162,6 @@ function handleEvent(event: NodeEvent) {
     case 'audio.levels':
       audioLevels.set(sourceKey(nodeId, event.source_id), event.channels)
       break
-
-    case 'thumbnail.updated': {
-      const key = sourceKey(nodeId, event.source_id)
-      thumbnailSeqs.set(key, (thumbnailSeqs.get(key) ?? 0) + 1)
-      break
-    }
 
     case 'benchmark.updated':
       useCapacityStore().applyRun(nodeId, event.run)

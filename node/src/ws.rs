@@ -73,7 +73,8 @@ pub async fn handle(
 }
 
 /// Emit this node's periodic events: audio levels every tick (~10 fps),
-/// timecode and recording stats at 1 Hz, and thumbnail notifications at the configured fps.
+/// timecode and recording stats at 1 Hz. Thumbnails have their own
+/// sockets (see [`crate::thumbnails`]).
 pub fn spawn_emitter(state: Arc<AppState>) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(100));
@@ -127,18 +128,6 @@ pub fn spawn_emitter(state: Arc<AppState>) {
                             mgr.output_status(source.id()),
                         )),
                     });
-                }
-            }
-
-            // 10 ticks = 1 s: fps=1 → every 10 ticks, fps=2 → every 5, fps=10 → every 1.
-            let fps = mgr.monitor_config().thumb_fps.max(1) as u32;
-            if tick.is_multiple_of((10 / fps).max(1)) {
-                for source in mgr.sources() {
-                    if mgr.is_monitored(source.id()) {
-                        state.emit(&WsEvent::ThumbnailUpdated {
-                            source_id: source.id().to_string(),
-                        });
-                    }
                 }
             }
         }

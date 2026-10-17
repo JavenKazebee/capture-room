@@ -1552,8 +1552,6 @@ pub enum WsEvent {
         source_id: String,
         channels: Vec<ChannelLevelDto>,
     },
-    #[serde(rename = "thumbnail.updated")]
-    ThumbnailUpdated { source_id: String },
     /// A benchmark started, began a step, finished a step, or ended.
     #[serde(rename = "benchmark.updated")]
     BenchmarkUpdated { run: Box<BenchmarkRunDto> },
@@ -1572,6 +1570,24 @@ pub enum WsEvent {
     /// staying unreachable.
     #[serde(rename = "node.removed")]
     NodeRemoved { peer_id: String },
+}
+
+/// The sources a thumbnail socket's client shows, and the most frames per
+/// second it wants of each. Sent as a text message; each replaces the last.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct ThumbnailSubscription {
+    pub sources: Vec<ThumbnailSource>,
+    /// `None`: as fast as the monitors make them.
+    #[serde(default)]
+    pub fps: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct ThumbnailSource {
+    pub node_id: String,
+    pub source_id: String,
 }
 
 /// How each source's monitor pipeline samples thumbnails and audio levels.
@@ -1597,11 +1613,10 @@ impl Default for MonitorSettingsDto {
 }
 
 impl MonitorSettingsDto {
-    /// Limit every field to a range the pipelines handle well. Thumbnails go
-    /// out on the emitter's 100 ms tick, so 10 fps is the most a client sees.
+    /// Limit every field to a range the pipelines handle well.
     pub fn clamped(self) -> Self {
         Self {
-            thumb_fps: self.thumb_fps.clamp(1, 10),
+            thumb_fps: self.thumb_fps.clamp(1, crate::thumbnails::MAX_FPS as i32),
             thumb_width: self.thumb_width.clamp(160, 1920),
             thumb_height: self.thumb_height.clamp(90, 1080),
             level_interval_ms: self.level_interval_ms.clamp(50, 1000),

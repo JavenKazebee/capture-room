@@ -25,11 +25,8 @@ export type Source = SourceDto & {
 }
 
 // Audio levels updated ~10fps — shallow to avoid deep reactivity overhead.
-// Both maps are keyed by sourceKey(node_id, source_id).
+// Keyed by sourceKey(node_id, source_id).
 export const audioLevels = shallowReactive(new Map<string, ChannelLevelDto[]>())
-
-// Thumbnail cache-bust counter incremented on each thumbnail.updated event
-export const thumbnailSeqs = shallowReactive(new Map<string, number>())
 
 /** Source types a node is configured with, rather than discovering them. */
 export type ConfiguredKind = Exclude<SourceType, 'ndi'>

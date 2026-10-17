@@ -287,7 +287,7 @@ fn add_thumbnail_branch(
                 let sample = sink.pull_sample().map_err(|_| gst::FlowError::Error)?;
                 let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
                 let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                store.set(map.to_vec());
+                store.store(&map);
                 Ok(gst::FlowSuccess::Ok)
             })
             .build(),

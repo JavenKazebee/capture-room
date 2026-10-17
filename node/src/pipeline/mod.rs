@@ -6,12 +6,14 @@ pub mod replay;
 pub mod rtsp;
 pub mod whep;
 
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use anyhow::{Context, Result};
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app as gst_app;
 use gstreamer_utils::{ConsumptionLink, StreamProducer};
+use tokio::sync::watch;
 
 use monitor::MonitorPipeline;
 
@@ -48,7 +50,35 @@ impl<T: Clone> Latest<T> {
 /// Latest per-channel audio levels from the `level` element.
 pub type AudioMeter = Latest<Vec<ChannelLevelDto>>;
 /// Latest thumbnail JPEG.
-pub type ThumbnailStore = Latest<Vec<u8>>;
+pub type ThumbnailStore = Latest<Thumbnail>;
+
+/// A thumbnail JPEG, numbered so a client can tell a new one from one it has.
+/// Numbers are unique across monitors, so a restarted one never repeats one.
+#[derive(Debug, Clone)]
+pub struct Thumbnail {
+    pub seq: u64,
+    pub jpeg: axum::body::Bytes,
+}
+
+static NEXT_THUMBNAIL: AtomicU64 = AtomicU64::new(1);
+/// Marked whenever any monitor stores a thumbnail, so thumbnail sockets wake
+/// for new frames rather than poll.
+static THUMBNAILS_CHANGED: LazyLock<watch::Sender<()>> = LazyLock::new(|| watch::channel(()).0);
+
+impl ThumbnailStore {
+    fn store(&self, jpeg: &[u8]) {
+        self.set(Thumbnail {
+            seq: NEXT_THUMBNAIL.fetch_add(1, Ordering::Relaxed),
+            jpeg: axum::body::Bytes::copy_from_slice(jpeg),
+        });
+        THUMBNAILS_CHANGED.send_replace(());
+    }
+}
+
+/// Changes whenever any monitor has a new thumbnail.
+pub fn thumbnails_changed() -> watch::Receiver<()> {
+    THUMBNAILS_CHANGED.subscribe()
+}
 
 /// The first error a pipeline posted, kept to show: a pipeline stops after
 /// one, so later errors only follow from it. Clones share storage.

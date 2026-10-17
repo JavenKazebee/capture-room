@@ -41,6 +41,7 @@ pub fn router() -> Router<Arc<AppState>> {
             put(put_preset).delete(delete_preset),
         )
         .route("/ws", get(ws_handler))
+        .route("/ws/thumbnails", get(thumbnails_ws_handler))
 }
 
 const NOT_CONTROLLER: ApiError = ApiError::Conflict("this node is not acting as a controller");
@@ -270,4 +271,12 @@ async fn ws_handler(State(state): State<Arc<AppState>>, upgrade: WebSocketUpgrad
     let rx = state.ws_tx.subscribe();
     let token_changed = state.access_token.subscribe();
     upgrade.on_upgrade(move |socket| ws::handle(socket, rx, token_changed))
+}
+
+/// This node's thumbnails and, while a controller, its peers'.
+async fn thumbnails_ws_handler(
+    State(state): State<Arc<AppState>>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    upgrade.on_upgrade(move |socket| crate::thumbnails::serve(socket, state, true))
 }

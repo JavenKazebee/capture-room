@@ -18,10 +18,6 @@ export function sourceKey(nodeId: string, sourceId: string) {
   return `${nodeId}/${sourceId}`
 }
 
-export function thumbnailUrl(nodeId: string, sourceId: string) {
-  return `/api/v1/nodes/${encodeURIComponent(nodeId)}/thumbnails/${encodeURIComponent(sourceId)}`
-}
-
 /** A finished session's file, served with range requests so a `<video>` can seek. */
 export function recordingFileUrl(nodeId: string, sessionId: string, output: number, file: number, download = false) {
   const url = `/api/v1/nodes/${encodeURIComponent(nodeId)}/recordings/${encodeURIComponent(sessionId)}/outputs/${output}/files/${file}`

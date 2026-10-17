@@ -93,6 +93,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/capacity/check", post(post_capacity_check))
         .route("/thumbnails/{source_id}", get(get_thumbnail))
         .route("/ws", get(ws_handler))
+        .route("/ws/thumbnails", get(thumbnails_ws_handler))
         .route("/update", get(get_update).post(post_update))
         .route("/update/check", post(post_update_check))
         .merge(super::playout::router())
@@ -1104,16 +1105,12 @@ async fn get_thumbnail(
     State(state): State<Arc<AppState>>,
     AxumPath(source_id): AxumPath<String>,
 ) -> Response {
-    let bytes = state
-        .source_manager
-        .read()
-        .await
-        .thumbnail_bytes(&source_id);
-    match bytes {
-        Some(jpeg) => Response::builder()
+    let thumbnail = state.source_manager.read().await.thumbnail(&source_id);
+    match thumbnail {
+        Some(t) => Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "image/jpeg")
-            .body(Body::from(jpeg))
+            .body(Body::from(t.jpeg))
             .unwrap(),
         None => Response::builder()
             .status(StatusCode::NOT_FOUND)
@@ -1127,6 +1124,14 @@ async fn ws_handler(State(state): State<Arc<AppState>>, upgrade: WebSocketUpgrad
     let rx = state.node_tx.subscribe();
     let token_changed = state.access_token.subscribe();
     upgrade.on_upgrade(move |socket| ws::handle(socket, rx, token_changed))
+}
+
+/// This node's thumbnails only (see [`crate::thumbnails`]).
+async fn thumbnails_ws_handler(
+    State(state): State<Arc<AppState>>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    upgrade.on_upgrade(move |socket| crate::thumbnails::serve(socket, state, false))
 }
 
 fn source_to_dto(mgr: &SourceManager, s: &dyn InputSource) -> SourceDto {

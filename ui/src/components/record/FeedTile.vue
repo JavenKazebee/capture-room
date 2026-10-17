@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, toRef, watch } from 'vue'
+import { computed, ref, toRef, watch } from 'vue'
 import { useSecondClock } from '@/composables/useSecondClock'
 import { Check, Info } from '@lucide/vue'
 import { audioLevels, type Source } from '@/stores/sources'
@@ -30,7 +30,8 @@ const session = computed(() => recordings.activeForSource(props.source.node_id, 
 const selected = computed(() => desk.selected.has(props.source.key))
 const busy = computed(() => desk.busy.has(props.source.key))
 const channels = computed(() => audioLevels.get(props.source.key) ?? [])
-const thumb = useThumbnail(toRef(props, 'source'))
+const picture = ref<HTMLElement | null>(null)
+const thumb = useThumbnail(toRef(props, 'source'), picture)
 
 const infoOpen = computed({
   get: () => desk.infoKey === props.source.key,
@@ -93,7 +94,7 @@ watch(session, (now, prev) => {
         ]"
         @click="onClick"
       >
-        <div class="relative flex bg-black aspect-video">
+        <div ref="picture" class="relative flex bg-black aspect-video">
           <div class="flex-1 relative overflow-hidden">
             <div
               v-if="source.error"

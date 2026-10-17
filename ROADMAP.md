@@ -11,7 +11,7 @@ Test, file, NDI, stream, device, WHIP and Decklink sources; multi-leg recording 
 crash-safe files and splitting; benchmark and capacity estimates; Recordings view with
 browser preview; playout channels with gapless playlists and NDI, SRT, RTSP, WHEP,
 display and Decklink outputs; shared node clock, synchronized start and MOV timecode;
-Setup › Checks; instant replay (buffers, clips, groups, export); macOS installer,
+Setup › Checks; pushed thumbnails up to 30 fps; instant replay (buffers, clips, groups, export); macOS installer,
 login service, menu bar icon and signed self-updates; a shared access token.
 
 ## Now: Mac Pro (Intel, two Decklink 8K Pro G2s)
@@ -45,11 +45,6 @@ login service, menu bar icon and signed self-updates; a shared access token.
   that has timecode keeps it.
 - **Scheduler** — on the controller, sending ordinary start/stop commands. Adds a
   Schedules view.
-- **Subscription thumbnail WebSocket** — request-per-frame thumbnails don't scale past
-  ~10–15 fps with many feeds. The client subscribes to visible sources and an fps; frames
-  are pushed as binary messages, relayed by a controller only for watched sources.
-  Removes `thumbnail.updated`. Not MJPEG: each stream holds one of the browser's 6
-  connections.
 - **Replay** — jog wheels / Stream Deck via WebHID or MIDI.
 - **Playback** — AJA outputs, interlaced SDI out, slates.
 - **Path tokens** — `{source_name}` (filename-safe), `{preset}`.
