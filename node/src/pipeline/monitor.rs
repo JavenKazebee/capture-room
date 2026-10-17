@@ -457,13 +457,66 @@ fn thumb_rate_caps(config: &MonitorSettingsDto) -> gst::Caps {
         .build()
 }
 
+/// Square pixels, which a JPEG assumes: given a free pixel aspect ratio,
+/// `videoscale` would stretch other shapes to fill WxH. Fixed, it keeps the
+/// source's shape and adds black borders.
 fn thumb_scale_caps(config: &MonitorSettingsDto) -> gst::Caps {
     gst::Caps::builder("video/x-raw")
         .field("width", config.thumb_width)
         .field("height", config.thumb_height)
+        .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
         .build()
 }
 
 fn level_interval_ns(config: &MonitorSettingsDto) -> u64 {
     config.level_interval_ms * 1_000_000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::types::{AudioTestSignal, TestSourceConfig, VideoTestPattern};
+    use crate::sources::test::TestSource;
+    use std::time::Duration;
+
+    /// A 4:3 source's thumbnail is the configured size with square pixels:
+    /// pillarboxed, not stretched to 16:9.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn thumbnails_keep_the_source_aspect_ratio() {
+        gst::init().unwrap();
+        let source = TestSource::new(
+            "t".into(),
+            "t".into(),
+            TestSourceConfig {
+                pattern: VideoTestPattern::Smpte,
+                width: 640,
+                height: 480,
+                fps_num: 30,
+                fps_den: 1,
+                audio_signal: AudioTestSignal::Tone,
+                frequency: 440.0,
+                channels: 2,
+            },
+        );
+        let clock = gst::SystemClock::obtain();
+        let monitor =
+            MonitorPipeline::new(&source, &MonitorSettingsDto::default(), &clock).unwrap();
+        while monitor.thumbnail.get().is_none() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let caps = monitor
+            .thumb_scale_caps
+            .static_pad("src")
+            .unwrap()
+            .current_caps()
+            .unwrap();
+        let s = caps.structure(0).unwrap();
+        assert_eq!(s.get::<i32>("width").unwrap(), 320);
+        assert_eq!(s.get::<i32>("height").unwrap(), 180);
+        assert_eq!(
+            s.get::<gst::Fraction>("pixel-aspect-ratio").unwrap(),
+            gst::Fraction::new(1, 1)
+        );
+    }
 }
