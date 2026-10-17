@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { nodeApi } from '@/composables/useApi'
+import { errorMessage, nodeApi } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
 import { useSourcesStore } from '@/stores/sources'
 import { notifyError } from '@/lib/notify'
@@ -42,7 +42,7 @@ async function load(nodeId: string) {
     subs.value.set(nodeId, await nodeApi(nodeId)<NdiSubscriptionsDto>('/ndi'))
     errors.value.delete(nodeId)
   } catch (e) {
-    errors.value.set(nodeId, e instanceof Error ? e.message : String(e))
+    errors.value.set(nodeId, errorMessage(e, "Couldn't load NDI senders"))
   }
 }
 

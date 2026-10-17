@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { toast } from 'vue-sonner'
 import { useSourcesStore } from '@/stores/sources'
-import { errorMessage } from '@/composables/useApi'
+import { notifyError } from '@/lib/notify'
 import { PROFILE_OPTIONS } from '@/lib/decklink'
 import type { DecklinkCardDto } from '@/types/generated/DecklinkCardDto'
 import type { DecklinkProfile } from '@/types/generated/DecklinkProfile'
@@ -25,7 +25,7 @@ async function set(v: unknown) {
     toast.success(`${props.card.name} profile changed`)
     emit('changed')
   } catch (e) {
-    toast.error(errorMessage(e, "Couldn't change the card's profile."))
+    notifyError(`Couldn't change ${props.card.name}'s profile`, e, props.nodeId)
   } finally {
     saving.value = false
   }

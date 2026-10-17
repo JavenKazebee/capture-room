@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { LiveVideoFormat } from '@/types/generated/LiveVideoFormat'
-import { FRAMERATES, FRAMERATE_OPTIONS, RESOLUTIONS, RESOLUTION_OPTIONS } from '@/lib/videoPresets'
+import { findFramerate, findResolution, FRAMERATE_OPTIONS, RESOLUTION_OPTIONS } from '@/lib/videoPresets'
 import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
 
@@ -12,7 +12,7 @@ const AUTO = 'auto'
 const size = computed({
   get: () => (format.value ? `${format.value.width}x${format.value.height}` : AUTO),
   set: (v: string) => {
-    const r = RESOLUTIONS.find((r) => `${r.w}x${r.h}` === v)
+    const r = findResolution(v)
     if (!r) {
       format.value = null
       return
@@ -24,7 +24,7 @@ const size = computed({
 const rate = computed({
   get: () => (format.value ? `${format.value.fps_num}/${format.value.fps_den}` : '30/1'),
   set: (v: string) => {
-    const r = FRAMERATES.find((r) => `${r.n}/${r.d}` === v)
+    const r = findFramerate(v)
     if (r && format.value) format.value = { ...format.value, fps_num: r.n, fps_den: r.d }
   },
 })

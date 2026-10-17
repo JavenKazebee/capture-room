@@ -15,7 +15,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
-import { FRAMERATES, FRAMERATE_OPTIONS, RESOLUTIONS, RESOLUTION_OPTIONS } from '@/lib/videoPresets'
+import { AUDIO_CHANNEL_OPTIONS, findFramerate, findResolution, FRAMERATE_OPTIONS, RESOLUTION_OPTIONS } from '@/lib/videoPresets'
 import { RTSP_PORT, hostPort, mountPath, srtListens, whepUrl } from '@/lib/streamUrl'
 
 /** A playout channel: its fixed program format, and where it's sent. */
@@ -44,17 +44,10 @@ const cfg = defineModel<ChannelConfig>({ required: true })
 
 type SrtOutput = Extract<OutputConfig, { type: 'srt' }>
 
-const CHANNEL_OPTIONS = [
-  { value: 1, label: 'Mono' },
-  { value: 2, label: 'Stereo' },
-  { value: 6, label: '5.1' },
-  { value: 8, label: '7.1' },
-]
-
 const resolution = computed({
   get: () => `${cfg.value.format.width}x${cfg.value.format.height}`,
   set: (v: string) => {
-    const r = RESOLUTIONS.find((r) => `${r.w}x${r.h}` === v)
+    const r = findResolution(v)
     if (r) cfg.value = { ...cfg.value, format: { ...cfg.value.format, width: r.w, height: r.h } }
   },
 })
@@ -62,7 +55,7 @@ const resolution = computed({
 const framerate = computed({
   get: () => `${cfg.value.format.fps_num}/${cfg.value.format.fps_den}`,
   set: (v: string) => {
-    const r = FRAMERATES.find((r) => `${r.n}/${r.d}` === v)
+    const r = findFramerate(v)
     if (r) cfg.value = { ...cfg.value, format: { ...cfg.value.format, fps_num: r.n, fps_den: r.d } }
   },
 })
@@ -207,7 +200,7 @@ const TYPE_LABELS: Record<string, string> = { ndi: 'NDI', srt: 'SRT', rtsp: 'RTS
       <OptionSelect v-model="framerate" :options="FRAMERATE_OPTIONS" />
     </FormField>
     <FormField label="Audio">
-      <OptionSelect v-model="cfg.audio_channels" :options="CHANNEL_OPTIONS" />
+      <OptionSelect v-model="cfg.audio_channels" :options="AUDIO_CHANNEL_OPTIONS" />
     </FormField>
     <p class="col-span-2 -mt-1 text-xs text-muted-foreground">
       Every clip is scaled and converted to this format, so outputs never change format between clips.

@@ -354,7 +354,7 @@ initiates every connection; the only push is the clock claim.
 
 **Access token** (`auth.rs`): one shared secret per cluster, stored in each node's config.
 With none set the API is open (Setup › Checks warns). Once set, every `/api` route and
-`/ws` need it; the UI assets, `/api/v1/auth/…` and `/whep` stay open, and WHIP has its own
+`/ws/…` need it; the UI assets, `/api/v1/auth/…` and `/whep` stay open, and WHIP has its own
 port.
 
 - Browsers sign in once and get an HttpOnly, `SameSite=Strict` cookie named per port, so
@@ -367,7 +367,8 @@ port.
 - Setting it on a controller sets it on each registered node first (with the old one),
   then itself. Unreachable nodes keep their old token and are listed.
 - **Limits:** plain HTTP, so anyone sniffing the LAN can read it; and a controller sends it
-  to whatever answers an mDNS announcement. A lost token is recovered by deleting
+  to whatever answers an mDNS announcement. An announcement can't move a known node to a
+  new URL unless it was found by mDNS and is failing health checks. A lost token is recovered by deleting
   `access_token` from `node_config` in the node's database.
 
 ## Deployment (macOS)

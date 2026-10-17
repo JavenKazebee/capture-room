@@ -24,3 +24,21 @@ export const FRAMERATES = [
 ]
 
 export const FRAMERATE_OPTIONS = FRAMERATES.map((r) => ({ value: `${r.n}/${r.d}`, label: r.label }))
+
+/** The listed resolution for a `WxH` option value. */
+export function findResolution(key: string) {
+  return RESOLUTIONS.find((r) => `${r.w}x${r.h}` === key)
+}
+
+/** The listed frame rate for an `N/D` option value. */
+export function findFramerate(key: string) {
+  return FRAMERATES.find((r) => `${r.n}/${r.d}` === key)
+}
+
+/** Audio channel counts offered for generated and mixed audio. */
+export const AUDIO_CHANNEL_OPTIONS = [
+  { value: 1, label: 'Mono' },
+  { value: 2, label: 'Stereo' },
+  { value: 6, label: '5.1' },
+  { value: 8, label: '7.1' },
+]

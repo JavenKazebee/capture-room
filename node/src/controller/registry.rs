@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 use crate::api::types::{ClockStatusDto, NodeDto, NodeStatus};
 
@@ -52,9 +53,24 @@ impl NodeRegistry {
     /// case the caller starts a relay for `entry.relay`. An update refreshes
     /// the URL (e.g. after an IP change) and clears the failure state, keeps
     /// the running relay, and never downgrades a manual entry to mDNS.
+    ///
+    /// An mDNS announcement only claims the ID it reports, so it may not move
+    /// a node to a new URL unless that node is mDNS-found and currently
+    /// failing: otherwise any host on the LAN could take over a node, and the
+    /// access token sent with every forwarded request.
     pub fn upsert(&mut self, mut entry: NodeEntry) -> bool {
         match self.entries.get(&entry.id) {
             Some(existing) => {
+                let moved = existing.url != entry.url;
+                if moved && !entry.manual && (existing.manual || existing.healthy) {
+                    warn!(
+                        id = %entry.id,
+                        url = %existing.url,
+                        announced = %entry.url,
+                        "ignoring an mDNS announcement for a known node at another URL"
+                    );
+                    return false;
+                }
                 entry.manual |= existing.manual;
                 entry.relay = existing.relay.clone();
                 self.entries.insert(entry.id.clone(), entry);
@@ -119,5 +135,60 @@ impl NodeRegistry {
             }
             None => (0, false),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(url: &str, manual: bool, healthy: bool) -> NodeEntry {
+        NodeEntry {
+            id: "node".into(),
+            name: "Node".into(),
+            url: url.into(),
+            healthy,
+            fail_count: 0,
+            access_denied: false,
+            manual,
+            status: None,
+            relay: CancellationToken::new(),
+        }
+    }
+
+    fn url_after(existing: NodeEntry, update: NodeEntry) -> String {
+        let mut r = NodeRegistry::default();
+        assert!(r.upsert(existing));
+        assert!(!r.upsert(update));
+        r.url_of("node").unwrap()
+    }
+
+    #[test]
+    fn mdns_never_moves_a_manual_node() {
+        let url = url_after(
+            entry("http://a", true, false),
+            entry("http://b", false, true),
+        );
+        assert_eq!(url, "http://a");
+    }
+
+    #[test]
+    fn mdns_moves_an_mdns_node_only_while_it_fails() {
+        let url = url_after(
+            entry("http://a", false, true),
+            entry("http://b", false, true),
+        );
+        assert_eq!(url, "http://a");
+        let url = url_after(
+            entry("http://a", false, false),
+            entry("http://b", false, true),
+        );
+        assert_eq!(url, "http://b");
+    }
+
+    #[test]
+    fn adding_by_hand_moves_a_node() {
+        let url = url_after(entry("http://a", true, true), entry("http://b", true, true));
+        assert_eq!(url, "http://b");
     }
 }

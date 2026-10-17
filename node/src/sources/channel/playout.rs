@@ -754,8 +754,10 @@ impl Playout {
         };
         if end == ClipEnd::Next {
             if let Some(item) = self.following(&mut deck) {
-                if self.take(&mut deck, item, true).await.is_ok() {
-                    return;
+                let path = item.clip.path.clone();
+                match self.take(&mut deck, item, true).await {
+                    Ok(()) => return,
+                    Err(e) => warn!(%path, error = %e, "can't take the next item"),
                 }
             }
         }
@@ -764,7 +766,9 @@ impl Playout {
         let Some(clip) = deck.current.as_ref().filter(|c| c.serial == serial) else {
             return;
         };
-        let _ = clip.run(ClipMode::Cued, gst::State::Paused);
+        if let Err(e) = clip.run(ClipMode::Cued, gst::State::Paused) {
+            warn!(path = %clip.request.path, error = %e, "can't hold the last frame");
+        }
         if end == ClipEnd::Black {
             self.lanes.close();
         }

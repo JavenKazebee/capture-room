@@ -38,6 +38,8 @@ const progress = computed(() => {
   }
 })
 
+let disposed = false
+
 async function poll() {
   clearTimeout(timer)
   if (props.node.healthy) {
@@ -47,6 +49,8 @@ async function poll() {
       // Unreachable, or restarting into the new version: try again.
     }
   }
+  // Unmounted while the request was out: don't start another round.
+  if (disposed) return
   timer = setTimeout(poll, updating.value || status.value?.phase === 'restarting' ? BUSY_POLL_MS : IDLE_POLL_MS)
 }
 
@@ -63,7 +67,10 @@ async function update() {
 }
 
 onMounted(poll)
-onBeforeUnmount(() => clearTimeout(timer))
+onBeforeUnmount(() => {
+  disposed = true
+  clearTimeout(timer)
+})
 // Back from a restart: look again at once.
 watch(
   () => [props.node.healthy, props.node.version],

@@ -1,5 +1,5 @@
 //! Access token: one shared secret for a whole cluster. With none set the API
-//! is open (as before); once set, every `/api` route and `/ws` needs it.
+//! is open (as before); once set, every `/api` route and `/ws/…` needs it.
 //!
 //! Browsers sign in once and carry it in an HttpOnly cookie, so `<img>`,
 //! `<video>`, downloads and the WebSocket work without code of their own.
@@ -129,12 +129,24 @@ pub fn node_router() -> Router<Arc<AppState>> {
     Router::new().route("/access-token", put(put_node_access_token))
 }
 
+/// The routes under `/api` that work without the token.
+const OPEN_PATHS: [&str; 3] = [
+    "/api/v1/auth",
+    "/api/v1/auth/sign-in",
+    "/api/v1/auth/sign-out",
+];
+
+/// Whether `path` needs the token: all of `/api` and `/ws` but the open routes.
+fn guarded(path: &str) -> bool {
+    (path.starts_with("/api/") && !OPEN_PATHS.contains(&path))
+        || path == "/ws"
+        || path.starts_with("/ws/")
+}
+
 /// Middleware: refuse `/api` and `/ws` without the token, except the open
 /// routes. Page loads stay open so the UI can show its sign-in.
 pub async fn require(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
-    let path = req.uri().path();
-    let guarded = (path.starts_with("/api/") && !path.starts_with("/api/v1/auth")) || path == "/ws";
-    if guarded
+    if guarded(req.uri().path())
         && !state
             .access_token
             .accepts(presented(&state, req.headers()).as_deref())
@@ -349,6 +361,27 @@ mod tests {
         assert!(!t.accepts(Some("abcdefghijklmnoq")));
         assert!(!t.accepts(Some("abcdefghijklmno")));
         assert!(!t.accepts(None));
+    }
+
+    #[test]
+    fn guards_api_and_sockets() {
+        for path in [
+            "/api/v1/nodes",
+            "/api/v1/node/sources",
+            "/api/v1/access-token",
+            "/api/v1/auth-anything",
+            "/api/v1/auth/other",
+            "/ws",
+            "/ws/thumbnails",
+        ] {
+            assert!(guarded(path), "{path} must need the token");
+        }
+        for path in OPEN_PATHS
+            .into_iter()
+            .chain(["/", "/index.html", "/whep/program", "/wsx"])
+        {
+            assert!(!guarded(path), "{path} must stay open");
+        }
     }
 
     #[test]

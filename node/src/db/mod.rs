@@ -21,13 +21,62 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
         .await
         .context("open sqlite")?;
 
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .context("run migrations")?;
+    let migrator = sqlx::migrate!("./migrations");
+    adopt_squashed_schema(&pool, &migrator).await?;
+    migrator.run(&pool).await.context("run migrations")?;
 
     info!(path = db_path, "database ready");
     Ok(pool)
+}
+
+/// The last of the development migrations squashed into `0001_schema.sql`.
+const SQUASHED_LAST: (i64, &str) = (20, "replay clip groups");
+
+/// A database from before the squash has all 20 development migrations
+/// applied, and the same schema `0001_schema.sql` creates: record it as that
+/// one migration instead, so sqlx doesn't refuse it. Remove once no node
+/// predates the squash.
+async fn adopt_squashed_schema(
+    pool: &SqlitePool,
+    migrator: &sqlx::migrate::Migrator,
+) -> Result<()> {
+    let applied: Vec<(i64, String)> = match sqlx::query_as(
+        "SELECT version, description FROM _sqlx_migrations WHERE success ORDER BY version",
+    )
+    .fetch_all(pool)
+    .await
+    {
+        Ok(rows) => rows,
+        // A new database: no migrations table yet.
+        Err(_) => return Ok(()),
+    };
+    if !matches!(applied.first(), Some((1, d)) if d == "baseline") {
+        return Ok(());
+    }
+    if applied.last().map(|(v, d)| (*v, d.as_str())) != Some(SQUASHED_LAST)
+        || applied.len() as i64 != SQUASHED_LAST.0
+    {
+        anyhow::bail!(
+            "this database is from a development build older than its last schema change; \
+             start that build once to bring it up to date, or delete the database"
+        );
+    }
+    let schema = migrator
+        .iter()
+        .find(|m| m.version == 1)
+        .context("no 0001 migration")?;
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version > 1")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE _sqlx_migrations SET description = ?, checksum = ? WHERE version = 1")
+        .bind(schema.description.as_ref())
+        .bind(schema.checksum.as_ref())
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    info!("recorded the development migrations as the squashed schema");
+    Ok(())
 }
 
 /// Run a `DELETE ... WHERE <key> = ?` for `id`: whether it removed a row.
@@ -866,6 +915,55 @@ mod tests {
         .fetch_one(pool)
         .await
         .unwrap()
+    }
+
+    /// Make `pool` look like a database from before the squash: the same
+    /// schema, with `upto` development migrations recorded.
+    async fn record_old_migrations(pool: &SqlitePool, upto: i64) {
+        sqlx::query("DELETE FROM _sqlx_migrations")
+            .execute(pool)
+            .await
+            .unwrap();
+        for v in 1..=upto {
+            let description = match v {
+                1 => "baseline",
+                20 => "replay clip groups",
+                _ => "old",
+            };
+            sqlx::query(
+                "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) \
+                 VALUES (?, ?, 1, x'00', 0)",
+            )
+            .bind(v)
+            .bind(description)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn adopts_a_database_from_before_the_squash() {
+        let path =
+            std::env::temp_dir().join(format!("capture-room-squash-{}.db", std::process::id()));
+        let url = format!("sqlite://{}", path.display());
+        let pool = init(&url).await.unwrap();
+        record_old_migrations(&pool, 20).await;
+        pool.close().await;
+
+        let pool = init(&url).await.unwrap();
+        let rows: Vec<(i64, String)> =
+            sqlx::query_as("SELECT version, description FROM _sqlx_migrations")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(rows, [(1, "schema".to_string())]);
+
+        // Short of the last development migration it can't be adopted.
+        record_old_migrations(&pool, 19).await;
+        pool.close().await;
+        assert!(init(&url).await.is_err());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]

@@ -5,6 +5,7 @@ import type { DeviceDto } from '@/types/generated/DeviceDto'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
+import { AUDIO_CHANNEL_OPTIONS } from '@/lib/videoPresets'
 
 /** A live source's audio: its own (`sourceLabel`), an audio device's picked channels, or silence. */
 const props = defineProps<{
@@ -15,13 +16,6 @@ const props = defineProps<{
 }>()
 
 const plan = defineModel<AudioPlan>({ required: true })
-
-const CHANNEL_OPTIONS = [
-  { value: 1, label: 'Mono' },
-  { value: 2, label: 'Stereo' },
-  { value: 6, label: '5.1' },
-  { value: 8, label: '7.1' },
-]
 
 const inputs = computed(() => props.devices.filter((d) => d.kind === 'audio'))
 const inputOptions = computed(() =>
@@ -125,7 +119,7 @@ const pickedLabel = computed(() => {
     </template>
     <template v-else>
       <FormField :label="plan.from === 'source' ? 'Channels (mixed to)' : 'Channels'">
-        <OptionSelect v-model="channelCount" :options="CHANNEL_OPTIONS" />
+        <OptionSelect v-model="channelCount" :options="AUDIO_CHANNEL_OPTIONS" />
       </FormField>
       <p v-if="plan.from === 'source'" class="text-xs text-muted-foreground">
         Plays silence while the source has no audio.

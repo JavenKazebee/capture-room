@@ -6,7 +6,7 @@ import type { VideoTestPattern } from '@/types/generated/VideoTestPattern'
 import { Input } from '@/components/ui/input'
 import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
-import { FRAMERATES, FRAMERATE_OPTIONS, RESOLUTIONS, RESOLUTION_OPTIONS } from '@/lib/videoPresets'
+import { AUDIO_CHANNEL_OPTIONS, findFramerate, findResolution, FRAMERATE_OPTIONS, RESOLUTION_OPTIONS } from '@/lib/videoPresets'
 
 /** A synthetic feed: a video pattern plus a test audio signal. */
 const cfg = defineModel<TestSourceConfig>({ required: true })
@@ -27,17 +27,10 @@ const AUDIO_SIGNALS: { value: AudioTestSignal; label: string }[] = [
   { value: 'pink-noise', label: 'Pink noise' },
 ]
 
-const CHANNEL_OPTIONS = [
-  { value: 1, label: 'Mono' },
-  { value: 2, label: 'Stereo' },
-  { value: 6, label: '5.1' },
-  { value: 8, label: '7.1' },
-]
-
 const resolutionKey = computed({
   get: () => `${cfg.value.width}x${cfg.value.height}`,
   set: (v: string) => {
-    const found = RESOLUTIONS.find((r) => `${r.w}x${r.h}` === v)
+    const found = findResolution(v)
     if (found) { cfg.value.width = found.w; cfg.value.height = found.h }
   },
 })
@@ -45,7 +38,7 @@ const resolutionKey = computed({
 const framerateKey = computed({
   get: () => `${cfg.value.fps_num}/${cfg.value.fps_den}`,
   set: (v: string) => {
-    const found = FRAMERATES.find((r) => `${r.n}/${r.d}` === v)
+    const found = findFramerate(v)
     if (found) { cfg.value.fps_num = found.n; cfg.value.fps_den = found.d }
   },
 })
@@ -85,7 +78,7 @@ const framerateKey = computed({
     </FormField>
 
     <FormField label="Audio channels">
-      <OptionSelect v-model="cfg.channels" :options="CHANNEL_OPTIONS" />
+      <OptionSelect v-model="cfg.channels" :options="AUDIO_CHANNEL_OPTIONS" />
     </FormField>
   </div>
 </template>
