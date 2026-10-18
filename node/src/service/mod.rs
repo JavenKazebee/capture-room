@@ -108,6 +108,11 @@ pub fn running_as_service() -> bool {
     std::env::var_os(SERVICE_ENV).is_some()
 }
 
+/// Where the service writes this node's output, if it runs as the service.
+pub fn log_file() -> Option<PathBuf> {
+    running_as_service().then(platform::log_file).flatten()
+}
+
 /// Whether the service starts the node when the user logs in.
 pub fn start_at_login() -> bool {
     platform::start_at_login()

@@ -3,7 +3,7 @@
 Open work, roughly in priority order. [ARCHITECTURE.md](ARCHITECTURE.md) owns design;
 shipped history is in git.
 
-_Last updated: 2026-10-17_
+_Last updated: 2026-10-18_
 
 ## Shipped
 
@@ -13,7 +13,8 @@ browser preview; playout channels with gapless playlists and NDI, SRT, RTSP, WHE
 display and Decklink outputs; shared node clock, synchronized start and MOV timecode;
 Setup › Checks; pushed thumbnails up to 30 fps; instant replay (buffers, clips, groups, export); macOS installer,
 login service, menu bar icon and signed self-updates; a shared access token over TLS, with
-pinned node keys, approval of found nodes, and lost-token recovery (menu bar, CLI).
+pinned node keys, approval of found nodes, and lost-token recovery (menu bar, CLI); a Logs
+view of every node's log lines.
 
 ## Now: Mac Pro (Intel, two Decklink 8K Pro G2s)
 
@@ -53,7 +54,6 @@ pinned node keys, approval of found nodes, and lost-token recovery (menu bar, CL
 - **Playback** — AJA outputs, interlaced SDI out, slates.
 - **Path tokens** — `{source_name}` (filename-safe), `{preset}`.
 - **Recordings** — previews of growing files.
-- **Logs view** — aggregated, filtered by node and level.
 - **Sources** — AJA (`ajasrc`); web page (`wpesrc`, Linux only, niche).
 
 ## Deferred: Linux and Windows

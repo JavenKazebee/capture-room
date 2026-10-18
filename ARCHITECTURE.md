@@ -279,6 +279,15 @@ a playout channel; `capacity.rs` turns results into load estimates.
   `channel_key`) and format; other formats scale by pixels/s. Load is the sum of 1/N shares;
   fits ≤ 80%, tight ≤ 100%. Checks warn, never block. Starts are refused under 1 GB free.
 
+## Logs
+
+`logs.rs` is a `tracing` layer beside the formatter: it keeps the last 10,000 lines in
+memory, numbered, and broadcasts each new one. `/api/v1/node/logs` pages back through them;
+`/api/v1/node/ws/logs` streams them from a level up. The controller's `/ws/logs` relays the
+nodes a subscription names, one peer socket each (like thumbnails). Lines from `logs.rs`
+itself are never kept, so streaming can't log itself. Everything is still in the service's
+log file.
+
 ## API
 
 ### Node — `/api/v1/node/…`
@@ -297,6 +306,7 @@ Local only; ids are local to the node.
 | `/replay[/{source_id}]`, `/replay/clips…`, `/replay/clip-groups…` | buffers, clips, export |
 | `/benchmarks…`, `/capacity`, `/capacity/check` | benchmark runs, load, pre-start checks |
 | `/thumbnails/{id}`, `/ws`, `/ws/thumbnails` | latest JPEG, this node's events, its thumbnails |
+| `/logs`, `/ws/logs` | kept log lines, live log lines |
 
 ### Controller — `/api/v1/…`
 
@@ -308,7 +318,7 @@ Local only; ids are local to the node.
 | `/presets` | presets |
 | `/access-token` | set the token here and on every registered node |
 | `/auth`, `/auth/sign-in`, `/auth/sign-out` | open: whether a token is needed, browser sign-in |
-| `/ws`, `/ws/thumbnails` | own events + every peer's; thumbnails from any node |
+| `/ws`, `/ws/thumbnails`, `/ws/logs` | own events + every peer's; thumbnails and log lines from any node |
 
 ### Events
 
@@ -336,9 +346,9 @@ otherwise a `_2` suffix; paths held by another active recording are refused.
 Vue 3, TypeScript, Vite, Pinia, Vue Router, `ofetch`, shadcn-vue, `vue-sonner`, an
 in-house `DataTable`. Dev: Vite proxies `/api` and `/ws` to :7700.
 
-- **Shell:** workspaces (Record, Playback, Replay, Recordings, Setup) with a shared bottom
-  panel (Log / Recordings / Storage, Ctrl+J) and ⌘K palette. Views join only once the
-  backend supports them.
+- **Shell:** workspaces (Record, Playback, Replay, Recordings, Setup) and a ⌘K
+  palette. Setup › Logs merges nodes' log lines with the page's activity events (⌘J).
+  Views join only once the backend supports them.
 - **Tokens:** dark-first OKLCH in `ui/src/style.css`. `--primary` sky-cyan; solid red means
   live: `--tally` is recording only, `--destructive` sits behind a confirm, `--brand` is the
   logo.

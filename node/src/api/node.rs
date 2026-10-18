@@ -93,6 +93,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/thumbnails/{source_id}", get(get_thumbnail))
         .route("/ws", get(ws_handler))
         .route("/ws/thumbnails", get(thumbnails_ws_handler))
+        .route("/logs", get(crate::logs::get_logs))
+        .route("/ws/logs", get(crate::logs::local_ws))
         .route("/update", get(get_update).post(post_update))
         .route("/update/check", post(post_update_check))
         .merge(super::playout::router())

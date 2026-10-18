@@ -45,6 +45,7 @@ pub fn router() -> Router<Arc<AppState>> {
         )
         .route("/ws", get(ws_handler))
         .route("/ws/thumbnails", get(thumbnails_ws_handler))
+        .route("/ws/logs", get(crate::logs::relay_ws))
 }
 
 const NOT_CONTROLLER: ApiError = ApiError::Conflict("this node is not acting as a controller");

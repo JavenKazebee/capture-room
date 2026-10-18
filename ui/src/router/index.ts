@@ -33,6 +33,7 @@ export const router = createRouter({
         { path: 'presets', name: 'presets', component: () => import('@/views/PresetsView.vue') },
         { path: 'nodes', name: 'nodes', component: () => import('@/views/NodesView.vue') },
         { path: 'checks', name: 'checks', component: () => import('@/views/ChecksView.vue') },
+        { path: 'logs', name: 'logs', component: () => import('@/views/LogsView.vue') },
         { path: 'settings', name: 'settings', component: () => import('@/views/SettingsView.vue') },
       ],
     },

@@ -1591,6 +1591,57 @@ pub struct ThumbnailSource {
     pub source_id: String,
 }
 
+/// Most severe first, so `a <= b` reads "`a` is at least as severe as `b`".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+/// One of a node's log lines (see [`crate::logs`]).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct LogLine {
+    /// Numbers the node's lines since it started; 0 for a stand-in line.
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub seq: u64,
+    /// RFC 3339, UTC, to the millisecond.
+    pub at: String,
+    pub level: LogLevel,
+    /// The Rust module (or crate) that logged it.
+    pub target: String,
+    pub message: String,
+    /// The line's other fields, as `key=value` pairs.
+    pub fields: String,
+    /// The node it came from; set on every line a node serves.
+    #[serde(default)]
+    pub node_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct LogPage {
+    /// Oldest first.
+    pub lines: Vec<LogLine>,
+    /// Where the node writes every line, when it runs as the service.
+    pub log_file: Option<String>,
+}
+
+/// What a log socket's client wants: lines from `nodes` (ignored by a node's
+/// own socket) at `level` or more severe. Each replaces the last.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct LogSubscription {
+    #[serde(default)]
+    pub nodes: Vec<String>,
+    pub level: LogLevel,
+}
+
 /// How each source's monitor pipeline samples thumbnails and audio levels.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]

@@ -7,6 +7,7 @@ mod clock;
 mod controller;
 mod db;
 mod display;
+mod logs;
 mod pipeline;
 mod plugins;
 mod service;
@@ -117,14 +118,23 @@ async fn run(
     displays: display::Displays,
     tray_actions: Option<tokio::sync::mpsc::UnboundedReceiver<tray::Action>>,
 ) -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "capture_room=debug,info".into()),
-        )
-        // No colour codes in a service's log file.
-        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
-        .init();
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "capture_room=debug,info".into()),
+            )
+            .with(
+                tracing_subscriber::fmt::layer()
+                    // No colour codes in a service's log file.
+                    .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout())),
+            )
+            // Kept for the Logs view.
+            .with(logs::layer())
+            .init();
+    }
 
     if let Some(dir) = bundled_gst {
         info!(dir = %dir.display(), "using the GStreamer bundled in");
@@ -151,9 +161,11 @@ async fn run(
         }
     };
     let hostname = controller::discovery::local_hostname();
-    let node_name = db::config_get(&pool, "name")
-        .await?
-        .unwrap_or_else(|| hostname.clone().unwrap_or_else(|| "capture-room-node".to_string()));
+    let node_name = db::config_get(&pool, "name").await?.unwrap_or_else(|| {
+        hostname
+            .clone()
+            .unwrap_or_else(|| "capture-room-node".to_string())
+    });
     let identity = tls::load_identity(&pool, hostname.as_deref()).await?;
     let tls_config = tls::server_config(&identity)?;
 

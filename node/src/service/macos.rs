@@ -33,6 +33,10 @@ fn log_dir() -> PathBuf {
     home().join("Library/Logs/Capture Room")
 }
 
+pub fn log_file() -> Option<PathBuf> {
+    Some(log_dir().join("capture-room.log"))
+}
+
 fn plist_path() -> PathBuf {
     data_dir().join(format!("{LABEL}.plist"))
 }

@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { RouterLink, RouterView } from 'vue-router'
 import { setupPages } from '@/components/app/workspaces'
+import { useEventsStore } from '@/stores/events'
+
+const events = useEventsStore()
 </script>
 
 <template>
@@ -15,6 +18,10 @@ import { setupPages } from '@/components/app/workspaces'
       >
         <component :is="p.icon" class="size-4" />
         {{ p.label }}
+        <span
+          v-if="p.to === '/setup/logs' && events.unseenErrors"
+          class="ml-auto num rounded-sm px-1 text-[10px] font-semibold bg-destructive/20 text-destructive"
+        >{{ events.unseenErrors }}</span>
       </RouterLink>
     </nav>
     <div class="flex-1 min-w-0 overflow-y-auto">

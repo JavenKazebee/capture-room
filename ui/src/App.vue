@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { RouterView } from 'vue-router'
-import { useIntervalFn } from '@vueuse/core'
+import { RouterView, useRouter } from 'vue-router'
+import { useEventListener, useIntervalFn } from '@vueuse/core'
 import { startWebSocket } from '@/composables/useWebSocket'
 import { usePreferences } from '@/composables/usePreferences'
 import { usePresetsStore } from '@/stores/presets'
@@ -13,12 +13,12 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import AppHeader from '@/components/app/AppHeader.vue'
 import SignIn from '@/components/auth/SignIn.vue'
 import { authStatus, checkAuth, needsSignIn } from '@/composables/useAuth'
-import BottomPanel from '@/components/app/BottomPanel.vue'
 import CommandPalette from '@/components/app/CommandPalette.vue'
 
 const { colorMode } = usePreferences()
 const storage = useStorageStore()
 const commandOpen = ref(false)
+const router = useRouter()
 
 onMounted(async () => {
   await checkAuth()
@@ -31,8 +31,15 @@ onMounted(async () => {
   storage.load()
 })
 
-// Free space changes slowly and isn't evented; poll it for the header and Storage tab.
+// Free space changes slowly and isn't evented; poll it for the header and node cards.
 useIntervalFn(() => storage.load(), 30_000)
+
+useEventListener('keydown', (e: KeyboardEvent) => {
+  if (e.key.toLowerCase() === 'j' && (e.metaKey || e.ctrlKey)) {
+    e.preventDefault()
+    router.push('/setup/logs')
+  }
+})
 </script>
 
 <template>
@@ -44,11 +51,10 @@ useIntervalFn(() => storage.load(), 30_000)
         <main class="flex-1 min-h-0 overflow-hidden">
           <RouterView />
         </main>
-        <BottomPanel />
       </div>
 
       <CommandPalette v-model:open="commandOpen" />
     </template>
-    <Toaster :theme="colorMode === 'light' ? 'light' : 'dark'" position="bottom-right" :offset="44" rich-colors close-button />
+    <Toaster :theme="colorMode === 'light' ? 'light' : 'dark'" position="bottom-right" rich-colors close-button />
   </TooltipProvider>
 </template>

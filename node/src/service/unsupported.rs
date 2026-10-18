@@ -15,6 +15,10 @@ pub fn app_path() -> Option<PathBuf> {
     None
 }
 
+pub fn log_file() -> Option<PathBuf> {
+    None
+}
+
 pub fn install(_controller: bool, _port: Option<u16>) -> Result<Installed> {
     bail!("installing as a service isn't supported on this OS yet")
 }
