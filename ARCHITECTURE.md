@@ -185,6 +185,10 @@ Every pipeline on a node runs on its **node clock** (`clock.rs`).
 - **Timecode:** MOV legs stamp each frame's capture time (running time + base time, mapped
   to UTC, in local time-of-day, drop-frame at 29.97/59.94); qtmux writes the first as the
   `tmcd` track. MP4 and MKV get none. Keep a venue's machines in one time zone.
+- **Source timecode:** a frame's own timecode (Decklink RP188) wins over the time of day.
+  A live bin's compositor makes new frames, so it notes each input frame's timecode and
+  stamps its output with the newest, counted on by the frames since (it repeats a late
+  frame) and scaled to another output rate; after 1 s without one, frames get none.
 
 ## Playback
 

@@ -19,8 +19,8 @@ view of every node's log lines; schedules that record and play out once or weekl
 ## Now: Mac Pro (Intel, two Decklink 8K Pro G2s)
 
 - **Decklink sources and outputs** — built, untested on hardware. Deliver through the
-  updater and test. RP188 timecode isn't written to recordings yet (the compositor drops
-  the meta).
+  updater and test. Check that MOV recordings carry the input's RP188 timecode, including
+  from an interlaced input (1080i59.94).
 - **Display output** — try an HDMI→SDI converter.
 - **Device capture on real hardware** — so far only OBS Virtual Camera. A camera is now
   found again by unique ID on each restart (it used to reopen by index, so unplugging
@@ -46,8 +46,8 @@ view of every node's log lines; schedules that record and play out once or weekl
 - **Hardware encoders** — NVENC, QSV and VA-API in `RecordingProfile::encoders` with the
   same fallback. Only VA-API is testable today (AMD). Re-run benchmarks after. Encode
   sharing between identical legs: decided against for now.
-- **Timecode from sources** — LTC from an audio channel, VITC, Decklink RP188; a frame
-  that has timecode keeps it.
+- **Timecode from sources** — LTC from an audio channel, VITC. (A frame's own timecode,
+  such as Decklink RP188, already reaches recordings.)
 - **Replay** — jog wheels / Stream Deck via WebHID or MIDI.
 - **Playback** — AJA outputs, interlaced SDI out, slates.
 - **Path tokens** — `{source_name}` (filename-safe), `{preset}`.

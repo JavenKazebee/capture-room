@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use gstreamer::{self as gst, glib, prelude::*};
+use gstreamer_video as gst_video;
 use tracing::{info, warn};
 
 use super::add_chain;
@@ -30,6 +31,10 @@ const RESTART_TIMEOUT: Duration = Duration::from_secs(5);
 /// Latency every live source reports, fallback or not: a stream's jitter
 /// buffer (`latency_ms`, 200 by default) plus decoding.
 const MIN_LATENCY: Duration = Duration::from_secs(1);
+/// A source's timecode is carried this far past its last frame that had one,
+/// counting on; after that the output gets none (a recording falls back to
+/// time of day).
+const TIMECODE_HOLD: Duration = Duration::from_secs(1);
 /// Without a real frame for this long the source counts as down. HLS arrives
 /// a segment at a time, in bursts.
 const LIVE_WINDOW: Duration = Duration::from_secs(3);
@@ -199,6 +204,11 @@ pub(crate) fn video_output(
 ) -> Result<(Inputs, Arc<Mutex<VideoFormat>>)> {
     let compositor = make_el("compositor", &format!("live-vsync-{id}"))?;
     compositor.set_property_from_str("background", "black");
+    let timecode = LastTimecode::default();
+    stamp_timecode(
+        &compositor.static_pad("src").context("compositor src pad")?,
+        timecode.clone(),
+    );
     let out_vcaps = capsfilter(&format!("live-outvcaps-{id}"), caps.clone())?;
     add_chain(bin, &[&compositor, &out_vcaps], "video")?;
     let format = Arc::new(Mutex::new(VideoFormat {
@@ -210,7 +220,7 @@ pub(crate) fn video_output(
         bin: bin.downgrade(),
         id: id.to_string(),
         aggregator: compositor.downgrade(),
-        kind: Kind::Video(format.clone()),
+        kind: Kind::Video(format.clone(), timecode),
     };
     Ok((inputs, format))
 }
@@ -307,9 +317,13 @@ impl VideoFormat {
     }
 }
 
+/// The newest input frame's timecode, at its running time.
+type LastTimecode = Arc<Mutex<Option<(gst::ClockTime, gst_video::ValidVideoTimeCode)>>>;
+
 #[derive(Clone)]
 enum Kind {
-    Video(Arc<Mutex<VideoFormat>>),
+    /// The format inputs are converted to, and their timecode.
+    Video(Arc<Mutex<VideoFormat>>, LastTimecode),
     /// The mixer's caps, and a channel-picking matrix.
     Audio(gst::Caps, Option<Vec<Vec<f32>>>),
 }
@@ -352,7 +366,7 @@ impl Inputs {
     pub(crate) fn audio_caps(&self) -> gst::Caps {
         match &self.kind {
             Kind::Audio(caps, _) => caps.clone(),
-            Kind::Video(_) => gst::Caps::new_empty_simple("audio/x-raw"),
+            Kind::Video(..) => gst::Caps::new_empty_simple("audio/x-raw"),
         }
     }
 
@@ -363,17 +377,18 @@ impl Inputs {
         let id = &self.id;
         let name = |el: &str| format!("live-{tag}-{el}-{id}");
         let elements = match &self.kind {
-            Kind::Video(format) => {
+            Kind::Video(format, timecode) => {
                 let caps = capsfilter(&name("vcaps"), format.lock().unwrap().pre.clone())?;
                 format.lock().unwrap().inputs.push(caps.downgrade());
                 let scale = make_el("videoscale", &name("vscale"))?;
                 scale.set_property("add-borders", true);
-                vec![
-                    make_el("deinterlace", &name("deint"))?,
-                    make_el("videoconvert", &name("vconv"))?,
-                    scale,
-                    caps,
-                ]
+                let deint = make_el("deinterlace", &name("deint"))?;
+                // Before deinterlacing, which may make new frames.
+                note_timecode(
+                    &deint.static_pad("sink").context("deinterlace sink pad")?,
+                    timecode.clone(),
+                );
+                vec![deint, make_el("videoconvert", &name("vconv"))?, scale, caps]
             }
             Kind::Audio(caps, matrix) => {
                 let conv = make_el("audioconvert", &name("aconv"))?;
@@ -398,7 +413,7 @@ impl Inputs {
             .context("input src pad")?
             .link(&pad)
             .context("link input to aggregator")?;
-        if matches!(self.kind, Kind::Video(_)) {
+        if matches!(self.kind, Kind::Video(..)) {
             // Above the background.
             pad.set_property("zorder", 1u32);
         }
@@ -434,6 +449,98 @@ impl Inputs {
             }
         });
     }
+}
+
+/// The running time of `pts` in `pad`'s segment.
+fn running_time(pad: &gst::Pad, pts: Option<gst::ClockTime>) -> Option<gst::ClockTime> {
+    let segment = pad.sticky_event::<gst::event::Segment>(0)?;
+    let segment = segment.segment().downcast_ref::<gst::ClockTime>()?;
+    segment.to_running_time(pts?)
+}
+
+/// Keep the timecode (e.g. a Decklink's RP188) of each frame entering an
+/// input chain; a frame without one clears it.
+fn note_timecode(pad: &gst::Pad, last: LastTimecode) {
+    pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
+        let Some(buffer) = info.buffer() else {
+            return gst::PadProbeReturn::Ok;
+        };
+        let tc = buffer
+            .meta::<gst_video::VideoTimeCodeMeta>()
+            .map(|m| m.tc());
+        let rt = tc.as_ref().and(running_time(pad, buffer.pts()));
+        *last.lock().unwrap() = rt.zip(tc);
+        gst::PadProbeReturn::Ok
+    });
+}
+
+/// The compositor makes new frames, dropping their timecode: give each the
+/// newest input frame's, counted on by the frames between them (it repeats a
+/// late input's frame). Recordings keep it instead of the time of day.
+fn stamp_timecode(pad: &gst::Pad, last: LastTimecode) {
+    pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
+        let Some((at, tc)) = last.lock().unwrap().clone() else {
+            return gst::PadProbeReturn::Ok;
+        };
+        let rt = running_time(pad, info.buffer().and_then(|b| b.pts()));
+        let fps = pad
+            .current_caps()
+            .and_then(|c| c.structure(0)?.get::<gst::Fraction>("framerate").ok());
+        let tc = rt
+            .zip(fps)
+            .and_then(|(rt, fps)| timecode_at(&tc, at, rt, fps));
+        if let (Some(tc), Some(buffer)) = (tc, info.buffer_mut()) {
+            gst_video::VideoTimeCodeMeta::add(buffer.make_mut(), &tc);
+        }
+        gst::PadProbeReturn::Ok
+    });
+}
+
+/// `tc` (a frame at running time `at`) carried to a frame at `rt` and `fps`;
+/// `None` past [`TIMECODE_HOLD`] or if it can't be had at `fps`.
+fn timecode_at(
+    tc: &gst_video::ValidVideoTimeCode,
+    at: gst::ClockTime,
+    rt: gst::ClockTime,
+    fps: gst::Fraction,
+) -> Option<gst_video::ValidVideoTimeCode> {
+    if fps.numer() <= 0 || fps.denom() <= 0 {
+        return None;
+    }
+    let since = rt.nseconds() as i128 - at.nseconds() as i128;
+    if since.unsigned_abs() > TIMECODE_HOLD.as_nanos() {
+        return None;
+    }
+    let mut tc = if tc.fps() == fps {
+        tc.clone()
+    } else {
+        // Another rate (an interlaced source at a configured progressive
+        // one): the same second, its frame scaled.
+        let from = tc.fps();
+        let frames = tc.frames() as i64 * fps.numer() as i64 * from.denom() as i64
+            / (fps.denom() as i64 * from.numer() as i64);
+        let flags = if fps.denom() == 1001 && fps.numer() % 30000 == 0 {
+            gst_video::VideoTimeCodeFlags::DROP_FRAME
+        } else {
+            gst_video::VideoTimeCodeFlags::empty()
+        };
+        gst_video::ValidVideoTimeCode::new(
+            fps,
+            None,
+            flags,
+            tc.hours(),
+            tc.minutes(),
+            tc.seconds(),
+            frames as u32,
+            0,
+        )
+        .ok()?
+    };
+    // Rounded: the compositor's grid and the source's differ by under a frame.
+    let ns_per_frame = 1_000_000_000 * fps.denom() as i128;
+    let frames = (2 * since * fps.numer() as i128 + ns_per_frame).div_euclid(2 * ns_per_frame);
+    tc.add_frames(frames as i64);
+    Some(tc)
 }
 
 /// A `fallbacksrc` that keeps retrying forever.
@@ -743,6 +850,137 @@ mod tests {
             pick_matrix(4, &[3, 1]),
             vec![vec![0.0, 0.0, 1.0, 0.0], vec![1.0, 0.0, 0.0, 0.0]]
         );
+    }
+
+    fn tc(
+        fps: (i32, i32),
+        flags: gst_video::VideoTimeCodeFlags,
+        at: [u32; 4],
+    ) -> gst_video::ValidVideoTimeCode {
+        let fps = gst::Fraction::new(fps.0, fps.1);
+        gst_video::ValidVideoTimeCode::new(fps, None, flags, at[0], at[1], at[2], at[3], 0).unwrap()
+    }
+
+    /// A source's timecode counts on by the frames since it, rounded, for
+    /// up to [`TIMECODE_HOLD`]; at another rate the frame is scaled.
+    #[test]
+    fn timecode_counts_on_from_the_source() {
+        gst::init().unwrap();
+        let none = gst_video::VideoTimeCodeFlags::empty();
+        let drop = gst_video::VideoTimeCodeFlags::DROP_FRAME;
+        let ms = gst::ClockTime::from_mseconds;
+        let src = tc((25, 1), none, [10, 0, 0, 24]);
+        let fps = gst::Fraction::new(25, 1);
+        let at = |rt| timecode_at(&src, ms(1000), rt, fps).map(|t| t.to_string());
+
+        assert_eq!(at(ms(1000)).as_deref(), Some("10:00:00:24"));
+        // Off the source's grid by under half a frame.
+        assert_eq!(at(ms(1015)).as_deref(), Some("10:00:00:24"));
+        assert_eq!(at(ms(1080)).as_deref(), Some("10:00:01:01"));
+        // The compositor can be a frame behind its newest input.
+        assert_eq!(at(ms(960)).as_deref(), Some("10:00:00:23"));
+        assert_eq!(at(ms(2500)), None, "held too long");
+
+        // 1080i59.94 (29.97 frames) shown at a configured 59.94p.
+        let src = tc((30000, 1001), drop, [10, 0, 0, 12]);
+        let to = gst::Fraction::new(60000, 1001);
+        let got = timecode_at(&src, ms(1000), ms(1000), to).unwrap();
+        assert_eq!(got.to_string(), "10:00:00;24");
+        assert_eq!(got.fps(), to);
+    }
+
+    /// A frame's timecode comes out of the compositor, and counts frames.
+    #[test]
+    fn source_timecode_survives_the_compositor() {
+        gst::init().unwrap();
+        gstfallbackswitch::plugin_register_static().unwrap();
+        let capture = gst::parse::bin_from_description(
+            "videotestsrc is-live=1 ! video/x-raw,width=320,height=180,framerate=25/1 \
+             ! timecodestamper name=tc set=always",
+            false,
+        )
+        .unwrap();
+        let start = gst_video::VideoTimeCode::new(
+            gst::Fraction::new(25, 1),
+            None,
+            gst_video::VideoTimeCodeFlags::empty(),
+            10,
+            0,
+            0,
+            0,
+            0,
+        );
+        capture
+            .by_name("tc")
+            .unwrap()
+            .set_property("set-internal-timecode", &start);
+        let tracker = Arc::new(LinkTracker::default());
+        let bin = build_bin(LiveInput {
+            id: "t",
+            source: capture.clone().upcast(),
+            audio: LiveAudio::Silence { channels: 2 },
+            format: None,
+            tracker: &tracker,
+            direct: true,
+        })
+        .unwrap();
+        let tc_src = capture.by_name("tc").unwrap().static_pad("src").unwrap();
+        let ghost = gst::GhostPad::builder_with_target(&tc_src)
+            .unwrap()
+            .name("video")
+            .build();
+        capture.add_pad(&ghost).unwrap();
+
+        let pipeline = gst::Pipeline::new();
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen_ = seen.clone();
+        let vsink = gst_app::AppSink::builder()
+            .sync(false)
+            .callbacks(
+                gst_app::AppSinkCallbacks::builder()
+                    .new_sample(move |s| {
+                        let sample = s.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                        let tc = sample
+                            .buffer()
+                            .and_then(|b| b.meta::<gst_video::VideoTimeCodeMeta>())
+                            .map_or("-".into(), |m| m.tc().to_string());
+                        seen_.lock().unwrap().push(tc);
+                        Ok(gst::FlowSuccess::Ok)
+                    })
+                    .build(),
+            )
+            .build();
+        let asink = make_el("fakesink", "asink").unwrap();
+        pipeline
+            .add_many([bin.upcast_ref(), vsink.upcast_ref(), &asink])
+            .unwrap();
+        bin.link_pads(Some("video"), &vsink, None).unwrap();
+        bin.link_pads(Some("audio"), &asink, None).unwrap();
+        pipeline.set_state(gst::State::Playing).unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        pipeline.set_state(gst::State::Null).unwrap();
+
+        let seen = seen.lock().unwrap();
+        // The first frames may be the background's, before the source links.
+        let stamped: Vec<_> = seen.iter().skip_while(|t| *t == "-").collect();
+        println!(
+            "{} frames, {} stamped: {:?}…",
+            seen.len(),
+            stamped.len(),
+            &stamped[..stamped.len().min(5)]
+        );
+        assert!(stamped.len() >= 20, "{seen:?}");
+        assert!(
+            stamped.iter().all(|t| t.starts_with("10:00:0")),
+            "{stamped:?}"
+        );
+        let frame = |t: &str| {
+            let n: Vec<u32> = t.split([':', ';']).map(|p| p.parse().unwrap()).collect();
+            n[2] * 25 + n[3]
+        };
+        for pair in stamped.windows(2) {
+            assert_eq!(frame(pair[1]), frame(pair[0]) + 1, "{stamped:?}");
+        }
     }
 
     /// Locked caps are fixed, with mono multiview and every flag pinned, so
