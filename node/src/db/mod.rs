@@ -7,7 +7,8 @@ use tracing::info;
 use crate::api::types::{
     BenchmarkRunDto, BenchmarkStatus, ClipEnd, ConfiguredSourceDto, DecklinkProfile, MediaItemDto,
     MonitorSettingsDto, NdiConnect, NdiSubscriptionsInput, PresetDto, PresetOutputInput,
-    RecordingSessionDto, ReplayCodec, ReplayConfigInput,
+    RecordingSessionDto, ReplayCodec, ReplayConfigInput, ScheduleDto, ScheduleRunDto,
+    ScheduleRunStatus,
 };
 
 pub async fn init(db_path: &str) -> Result<SqlitePool> {
@@ -381,8 +382,8 @@ pub struct NodeRow {
 pub async fn nodes_list(pool: &SqlitePool) -> Result<Vec<NodeRow>> {
     let rows =
         sqlx::query_as::<_, NodeRow>("SELECT id, name, url, fingerprint, added_at FROM nodes")
-        .fetch_all(pool)
-        .await?;
+            .fetch_all(pool)
+            .await?;
     Ok(rows)
 }
 
@@ -908,6 +909,137 @@ pub async fn benchmarks_running(pool: &SqlitePool) -> Result<Vec<BenchmarkRunDto
     Ok(rows.into_iter().map(|r| r.0).collect())
 }
 
+const SCHEDULE_SELECT: &str = "SELECT id, name, enabled, kind, date, weekdays, start_time, \
+     duration_s, actions, created_at, updated_at FROM schedules";
+
+pub async fn schedules_list(pool: &SqlitePool) -> Result<Vec<ScheduleDto>> {
+    Ok(
+        sqlx::query_as::<_, ScheduleDto>(&format!("{SCHEDULE_SELECT} ORDER BY name"))
+            .fetch_all(pool)
+            .await?,
+    )
+}
+
+pub async fn schedule_get(pool: &SqlitePool, id: &str) -> Result<Option<ScheduleDto>> {
+    Ok(
+        sqlx::query_as::<_, ScheduleDto>(&format!("{SCHEDULE_SELECT} WHERE id = ?"))
+            .bind(id)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+/// Insert or replace a schedule (its runs stay).
+pub async fn schedule_save(pool: &SqlitePool, s: &ScheduleDto) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO schedules (id, name, enabled, kind, date, weekdays, start_time, duration_s,
+                                actions, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET
+             name = excluded.name, enabled = excluded.enabled, kind = excluded.kind,
+             date = excluded.date, weekdays = excluded.weekdays,
+             start_time = excluded.start_time, duration_s = excluded.duration_s,
+             actions = excluded.actions, updated_at = excluded.updated_at",
+    )
+    .bind(&s.id)
+    .bind(&s.name)
+    .bind(s.enabled)
+    .bind(s.kind)
+    .bind(&s.date)
+    .bind(s.weekdays)
+    .bind(&s.start_time)
+    .bind(s.duration_s)
+    .bind(Json(&s.actions))
+    .bind(&s.created_at)
+    .bind(&s.updated_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Delete a schedule; its runs go with it (`ON DELETE CASCADE`).
+pub async fn schedule_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
+    delete_one(pool, "DELETE FROM schedules WHERE id = ?", id).await
+}
+
+const RUN_SELECT: &str = "SELECT id, schedule_id, planned_start, planned_end, started_at, \
+     stopped_at, status, targets FROM schedule_runs";
+
+/// Record a run that came due. `false` if that occurrence already has one.
+pub async fn schedule_run_insert(pool: &SqlitePool, r: &ScheduleRunDto) -> Result<bool> {
+    let res = sqlx::query(
+        "INSERT OR IGNORE INTO schedule_runs (id, schedule_id, planned_start, planned_end,
+                                              started_at, stopped_at, status, targets)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&r.id)
+    .bind(&r.schedule_id)
+    .bind(&r.planned_start)
+    .bind(&r.planned_end)
+    .bind(&r.started_at)
+    .bind(&r.stopped_at)
+    .bind(r.status)
+    .bind(Json(&r.targets))
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+pub async fn schedule_run_update(pool: &SqlitePool, r: &ScheduleRunDto) -> Result<()> {
+    sqlx::query(
+        "UPDATE schedule_runs SET started_at = ?, stopped_at = ?, status = ?, targets = ?
+         WHERE id = ?",
+    )
+    .bind(&r.started_at)
+    .bind(&r.stopped_at)
+    .bind(r.status)
+    .bind(Json(&r.targets))
+    .bind(&r.id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Whether an occurrence already came due.
+pub async fn schedule_run_exists(
+    pool: &SqlitePool,
+    schedule_id: &str,
+    planned_start: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM schedule_runs WHERE schedule_id = ? AND planned_start = ?",
+    )
+    .bind(schedule_id)
+    .bind(planned_start)
+    .fetch_one(pool)
+    .await?
+        > 0)
+}
+
+pub async fn schedule_runs_running(pool: &SqlitePool) -> Result<Vec<ScheduleRunDto>> {
+    Ok(
+        sqlx::query_as::<_, ScheduleRunDto>(&format!("{RUN_SELECT} WHERE status = ?"))
+            .bind(ScheduleRunStatus::Running)
+            .fetch_all(pool)
+            .await?,
+    )
+}
+
+/// A schedule's runs, newest first.
+pub async fn schedule_runs(
+    pool: &SqlitePool,
+    schedule_id: &str,
+    limit: u32,
+) -> Result<Vec<ScheduleRunDto>> {
+    Ok(sqlx::query_as::<_, ScheduleRunDto>(&format!(
+        "{RUN_SELECT} WHERE schedule_id = ? ORDER BY planned_start DESC LIMIT ?"
+    ))
+    .bind(schedule_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -933,6 +1065,13 @@ mod tests {
         let _ = sqlx::query("ALTER TABLE nodes DROP COLUMN fingerprint")
             .execute(pool)
             .await;
+        // And 0003.
+        for table in ["schedule_runs", "schedules"] {
+            sqlx::query(&format!("DROP TABLE IF EXISTS {table}"))
+                .execute(pool)
+                .await
+                .unwrap();
+        }
         for v in 1..=upto {
             let description = match v {
                 1 => "baseline",
@@ -970,7 +1109,8 @@ mod tests {
             rows,
             [
                 (1, "schema".to_string()),
-                (2, "node fingerprints".to_string())
+                (2, "node fingerprints".to_string()),
+                (3, "schedules".to_string())
             ]
         );
 

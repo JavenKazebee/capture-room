@@ -7,6 +7,8 @@ import { useEventsStore } from '@/stores/events'
 import { useCapacityStore } from '@/stores/capacity'
 import { usePlayoutStore } from '@/stores/playout'
 import { useReplayStore } from '@/stores/replay'
+import { useSchedulesStore } from '@/stores/schedules'
+import { toast } from 'vue-sonner'
 import { DEFAULT_PRESET } from '@/stores/presets'
 import { runReconnectReloads } from '@/lib/reconnect'
 import { checkAuth, needsSignIn } from '@/composables/useAuth'
@@ -182,6 +184,10 @@ function handleEvent(event: NodeEvent) {
       if (replay.clips.has(nodeId)) replay.loadClips(nodeId)
       break
     }
+
+    case 'schedule.updated':
+      useSchedulesStore().refresh(event.schedule_id)
+      break
   }
 }
 
@@ -203,6 +209,30 @@ function logEvent(event: NodeEvent) {
     useSourcesStore().sources.find((s) => s.key === sourceKey(node_id, id))?.display_name ?? id
 
   switch (event.type) {
+    case 'schedule.updated': {
+      const run = event.run
+      if (!run) break
+      const name = `Schedule “${event.name}”`
+      const failures = run.targets.filter((t) => t.error)
+      const targetName = (t: (typeof failures)[number]) =>
+        useSourcesStore().sources.find((x) => x.key === sourceKey(t.node_id, t.id))?.display_name ?? t.id
+      const detail = failures.map((t) => `${targetName(t)}: ${t.error}`).join('; ') || undefined
+      if (run.status === 'skipped') {
+        log('warn', `${name} skipped: its time passed while the controller was off`, { node_id })
+        toast.warning(`${name} skipped`)
+      } else if (run.status === 'failed') {
+        log('error', `${name} couldn't start anything`, { node_id, detail })
+        toast.error(`${name} couldn't start`, { description: detail })
+      } else if (run.stopped_at) {
+        log('info', `${name} ended`, { node_id })
+      } else {
+        const partial = failures.length > 0
+        log(partial ? 'warn' : 'rec', `${name} started${partial ? `, ${plural(failures.length, 'target')} failed` : ''}`, { node_id, detail })
+        if (partial) toast.warning(`${name} started, but not everything`, { description: detail })
+        else toast.success(`${name} started`)
+      }
+      break
+    }
     case 'node.online':
       log('info', `Node online: ${nodes.nameOf(event.peer_id)}`, { node_id: event.peer_id })
       break

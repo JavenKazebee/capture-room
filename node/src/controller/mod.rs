@@ -7,6 +7,7 @@ pub mod discovery;
 pub mod forward;
 pub mod registry;
 pub mod relay;
+pub mod scheduler;
 
 use std::sync::Arc;
 
@@ -27,7 +28,8 @@ pub const CLOCK_MODE_KEY: &str = "clock_mode";
 
 pub struct Controller {
     pub registry: Arc<RwLock<NodeRegistry>>,
-    /// Cancels the health poller, WS relays and discovery handlers.
+    pub scheduler: Arc<scheduler::Scheduler>,
+    /// Cancels the health poller, WS relays, discovery handlers and scheduler.
     cancel: CancellationToken,
     mdns_browser: Option<ServiceDaemon>,
     /// Serves this instance's clock to its nodes. `None` if the port
@@ -96,8 +98,16 @@ impl Controller {
             }
         };
 
+        let scheduler = Arc::new(scheduler::Scheduler::default());
+        scheduler::spawn(
+            Arc::clone(state),
+            Arc::clone(&scheduler),
+            ctx.cancel.clone(),
+        );
+
         *slot = Some(Controller {
             registry: ctx.registry,
+            scheduler,
             cancel: ctx.cancel,
             mdns_browser,
             clock_server,

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
-    body::{to_bytes, Body},
+    body::{to_bytes, Body, Bytes},
     extract::{Path, Request, State},
     http::{header, StatusCode, Uri},
     response::{IntoResponse, Response},
@@ -71,6 +71,51 @@ pub async fn forward(
     match url {
         Some(url) => forward_peer(&state, req, &format!("{url}{local_path}")).await,
         None => (StatusCode::NOT_FOUND, "unknown node").into_response(),
+    }
+}
+
+/// Call a node's API (`path` relative to its `/api/v1/node`) from this
+/// instance, the way [`forward`] does for the UI. The response body on
+/// success, its text as the error otherwise.
+pub async fn call_node(
+    state: &AppState,
+    node_id: &str,
+    method: axum::http::Method,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<Bytes, String> {
+    let mut req = Request::builder().method(method).uri("/");
+    if body.is_some() {
+        req = req.header(header::CONTENT_TYPE, "application/json");
+    }
+    let body = body.map_or_else(Body::empty, |b| Body::from(b.to_string()));
+    let req = req.body(body).map_err(|e| e.to_string())?;
+
+    let resp = if node_id == state.node_id {
+        forward_local(state, req, path).await
+    } else {
+        let url = match state.controller.read().await.as_ref() {
+            Some(c) => c.registry.read().await.url_of(node_id),
+            None => None,
+        };
+        let Some(url) = url else {
+            return Err("unknown node".into());
+        };
+        forward_peer(state, req, &format!("{url}/api/v1/node{path}")).await
+    };
+    let status = resp.status();
+    let bytes = to_bytes(resp.into_body(), MAX_BODY)
+        .await
+        .map_err(|e| e.to_string())?;
+    if status.is_success() {
+        Ok(bytes)
+    } else {
+        let text = String::from_utf8_lossy(&bytes).trim().to_string();
+        Err(if text.is_empty() {
+            status.to_string()
+        } else {
+            text
+        })
     }
 }
 

@@ -12,11 +12,13 @@ use axum::{
     Json, Router,
 };
 
+use super::scheduler::{Rule, Scheduler};
 use super::{clock_mode, discovery, forward, Controller, CLOCK_MODE_KEY, CONFIG_KEY};
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
-    AddNodeRequest, CheckDto, ClockMode, ControllerClockDto, ControllerToggleRequest,
-    FoundNodeDto, NodeChecksDto, NodeDto, PresetCreateRequest, PresetDto, PresetOutputInput, WsEvent,
+    AddNodeRequest, CheckDto, ClockMode, ControllerClockDto, ControllerToggleRequest, FoundNodeDto,
+    NodeChecksDto, NodeDto, PresetCreateRequest, PresetDto, PresetOutputInput, ScheduleAction,
+    ScheduleDto, ScheduleInput, ScheduleRunDto, WsEvent,
 };
 use crate::db;
 use crate::pipeline::profile::{plan_legs, unknown_token};
@@ -43,6 +45,13 @@ pub fn router() -> Router<Arc<AppState>> {
             "/api/v1/presets/{id}",
             put(put_preset).delete(delete_preset),
         )
+        .route("/api/v1/schedules", get(get_schedules).post(post_schedule))
+        .route(
+            "/api/v1/schedules/{id}",
+            get(get_schedule).put(put_schedule).delete(delete_schedule),
+        )
+        .route("/api/v1/schedules/{id}/stop", post(post_schedule_stop))
+        .route("/api/v1/schedules/{id}/runs", get(get_schedule_runs))
         .route("/ws", get(ws_handler))
         .route("/ws/thumbnails", get(thumbnails_ws_handler))
         .route("/ws/logs", get(crate::logs::relay_ws))
@@ -300,6 +309,234 @@ fn validate_outputs(mut outputs: Vec<PresetOutputInput>) -> ApiResult<Vec<Preset
     let legs = plan_legs(&outputs, None).map_err(ApiError::bad)?;
     recording::check_legs(&legs).map_err(ApiError::bad)?;
     Ok(outputs)
+}
+
+// Schedules live on the controller, which runs them (see `scheduler`).
+
+const SCHEDULE_NOT_FOUND: ApiError = ApiError::NotFound("schedule not found");
+
+async fn scheduler(state: &AppState) -> ApiResult<Arc<Scheduler>> {
+    with_controller(state, |c| Arc::clone(&c.scheduler)).await
+}
+
+/// `s` with when it next runs and its latest run.
+async fn decorate(state: &AppState, mut s: ScheduleDto) -> ApiResult<ScheduleDto> {
+    if s.enabled {
+        if let Ok(rule) = Rule::of(&s) {
+            let next = rule.next_after(&chrono::Local, chrono::Utc::now());
+            s.next_start = next.map(|t| t.to_rfc3339());
+            s.next_end = next.zip(rule.duration).map(|(t, d)| (t + d).to_rfc3339());
+        }
+    }
+    s.last_run = db::schedule_runs(&state.db, &s.id, 1)
+        .await?
+        .into_iter()
+        .next();
+    Ok(s)
+}
+
+async fn get_schedules(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<ScheduleDto>>> {
+    scheduler(&state).await?;
+    let mut out = vec![];
+    for s in db::schedules_list(&state.db).await? {
+        out.push(decorate(&state, s).await?);
+    }
+    Ok(Json(out))
+}
+
+async fn get_schedule(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<ScheduleDto>> {
+    scheduler(&state).await?;
+    let s = db::schedule_get(&state.db, &id)
+        .await?
+        .ok_or(SCHEDULE_NOT_FOUND)?;
+    Ok(Json(decorate(&state, s).await?))
+}
+
+async fn post_schedule(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ScheduleInput>,
+) -> ApiResult<(StatusCode, Json<ScheduleDto>)> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let s = save_schedule(&state, uuid::Uuid::new_v4().to_string(), now, req).await?;
+    Ok((StatusCode::CREATED, Json(s)))
+}
+
+async fn put_schedule(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<ScheduleInput>,
+) -> ApiResult<Json<ScheduleDto>> {
+    let old = db::schedule_get(&state.db, &id)
+        .await?
+        .ok_or(SCHEDULE_NOT_FOUND)?;
+    Ok(Json(save_schedule(&state, id, old.created_at, req).await?))
+}
+
+async fn save_schedule(
+    state: &AppState,
+    id: String,
+    created_at: String,
+    req: ScheduleInput,
+) -> ApiResult<ScheduleDto> {
+    let scheduler = scheduler(state).await?;
+    validate_schedule(state, &req).await?;
+    let s = ScheduleDto {
+        id,
+        name: req.name.trim().to_string(),
+        enabled: req.enabled,
+        kind: req.kind,
+        date: req.date,
+        weekdays: req.weekdays,
+        start_time: req.start_time,
+        duration_s: req.duration_s,
+        actions: req.actions,
+        created_at,
+        updated_at: chrono::Utc::now().to_rfc3339(),
+        next_start: None,
+        next_end: None,
+        last_run: None,
+    };
+    db::schedule_save(&state.db, &s).await?;
+    scheduler.wake();
+    state.emit_controller(&WsEvent::ScheduleUpdated {
+        schedule_id: s.id.clone(),
+        name: s.name.clone(),
+        run: None,
+    });
+    decorate(state, s).await
+}
+
+async fn validate_schedule(state: &AppState, req: &ScheduleInput) -> ApiResult<()> {
+    if req.name.trim().is_empty() {
+        return Err(ApiError::bad("a schedule needs a name"));
+    }
+    let rule = Rule::parse(
+        req.kind,
+        req.date.as_deref(),
+        req.weekdays,
+        &req.start_time,
+        req.duration_s,
+    )
+    .map_err(ApiError::bad)?;
+    if req.kind == crate::api::types::ScheduleKind::Once {
+        let now = chrono::Utc::now();
+        // Still worth saving while its window is open: it starts late.
+        let window = rule.duration.unwrap_or(chrono::Duration::minutes(2));
+        if rule
+            .latest_at_or_before(&chrono::Local, now + chrono::Duration::days(400))
+            .is_none_or(|start| start + window <= now)
+        {
+            return Err(ApiError::bad("that time has passed"));
+        }
+    }
+    if req.actions.is_empty() {
+        return Err(ApiError::bad(
+            "add a recording or playout for the schedule to start",
+        ));
+    }
+
+    let known: Vec<String> = match state.controller.read().await.as_ref() {
+        Some(c) => c
+            .registry
+            .read()
+            .await
+            .all()
+            .iter()
+            .map(|n| n.id.clone())
+            .collect(),
+        None => vec![],
+    };
+    let check_node = |id: &str| {
+        if id == state.node_id || known.iter().any(|k| k == id) {
+            Ok(())
+        } else {
+            Err(ApiError::bad(format!(
+                "node {id} isn't one of this controller's"
+            )))
+        }
+    };
+    let presets = db::presets_list(&state.db).await?;
+    for action in &req.actions {
+        match action {
+            ScheduleAction::Record { targets, preset_id } => {
+                if targets.is_empty() {
+                    return Err(ApiError::bad("pick the sources to record"));
+                }
+                if preset_id != super::scheduler::DEFAULT_PRESET_ID
+                    && !presets.iter().any(|p| p.id == *preset_id)
+                {
+                    return Err(ApiError::bad("pick a preset to record with"));
+                }
+                for t in targets {
+                    check_node(&t.node_id)?;
+                }
+            }
+            ScheduleAction::Playout {
+                node_id,
+                channel_id,
+                ..
+            } => {
+                if channel_id.is_empty() {
+                    return Err(ApiError::bad("pick a channel to play"));
+                }
+                check_node(node_id)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Delete a schedule, stopping what its running occurrence started first.
+async fn delete_schedule(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let scheduler = scheduler(&state).await?;
+    let s = db::schedule_get(&state.db, &id)
+        .await?
+        .ok_or(SCHEDULE_NOT_FOUND)?;
+    scheduler.stop_now(&state, &id).await?;
+    db::schedule_delete(&state.db, &id).await?;
+    scheduler.wake();
+    state.emit_controller(&WsEvent::ScheduleUpdated {
+        schedule_id: id,
+        name: s.name,
+        run: None,
+    });
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// End a schedule's running occurrence now.
+async fn post_schedule_stop(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<ScheduleDto>> {
+    let scheduler = scheduler(&state).await?;
+    let s = db::schedule_get(&state.db, &id)
+        .await?
+        .ok_or(SCHEDULE_NOT_FOUND)?;
+    if !scheduler.stop_now(&state, &id).await? {
+        return Err(ApiError::Conflict("the schedule isn't running"));
+    }
+    Ok(Json(decorate(&state, s).await?))
+}
+
+#[derive(serde::Deserialize)]
+struct RunsQuery {
+    limit: Option<u32>,
+}
+
+async fn get_schedule_runs(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<RunsQuery>,
+) -> ApiResult<Json<Vec<ScheduleRunDto>>> {
+    scheduler(&state).await?;
+    let limit = q.limit.unwrap_or(20).min(200);
+    Ok(Json(db::schedule_runs(&state.db, &id, limit).await?))
 }
 
 async fn ws_handler(State(state): State<Arc<AppState>>, upgrade: WebSocketUpgrade) -> Response {

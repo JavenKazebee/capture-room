@@ -279,6 +279,26 @@ a playout channel; `capacity.rs` turns results into load estimates.
   `channel_key`) and format; other formats scale by pixels/s. Load is the sum of 1/N shares;
   fits ≤ 80%, tight ≤ 100%. Checks warn, never block. Starts are refused under 1 GB free.
 
+## Schedules
+
+`controller/scheduler.rs` starts recordings and playout at set times and stops them at the
+end. Only a controller runs schedules, through the same node API the UI uses
+(`forward::call_node`); nodes know nothing of them.
+
+- A schedule runs once (a date) or weekly (weekdays), at an `HH:MM` in the controller's
+  local time, with an optional duration. A time the clocks skip moves to the first minute
+  after; a repeated one is the first.
+- Each occurrence that comes due gets one `schedule_runs` row, inserted before anything
+  starts (unique on schedule and start), so it can't run twice. The row keeps the session
+  ids it started, so the end still stops them after a restart, and only them: a source
+  already recording fails that target alone (`partial`).
+- The loop wakes 2 s before a start, so recordings get a shared-clock `start_at` on the
+  scheduled frame (within a node's 10 s lead); playout has no synchronized start and is
+  called on time.
+- An occurrence whose window is still open when the controller sees it (after a restart,
+  or just created) starts late; one whose window passed while it was off is `skipped`.
+  Windows that closed before the schedule was last saved are ignored.
+
 ## Logs
 
 `logs.rs` is a `tracing` layer beside the formatter: it keeps the last 10,000 lines in
@@ -316,6 +336,7 @@ Local only; ids are local to the node.
 | `/nodes`, `/nodes/{id}`, `/reachability/{id}` | registry, port probes |
 | `/nodes/{id}/{*path}` | forwarded to that node's `/api/v1/node/{path}` |
 | `/presets` | presets |
+| `/schedules[/{id}[/stop \| /runs]]` | schedules (controller only), ending a run, run history |
 | `/access-token` | set the token here and on every registered node |
 | `/auth`, `/auth/sign-in`, `/auth/sign-out` | open: whether a token is needed, browser sign-in |
 | `/ws`, `/ws/thumbnails`, `/ws/logs` | own events + every peer's; thumbnails and log lines from any node |
@@ -324,7 +345,7 @@ Local only; ids are local to the node.
 
 JSON with `type` and `node_id`: `recording.started|stopped|error|leg_failed|stats|removed`,
 `feed.status`, `channel.state`, `media.updated`, `audio.levels`,
-`benchmark.updated`, `node.updated`, `node.online|offline`. The relay subscribes to each
+`benchmark.updated`, `node.updated`, `node.online|offline`, `schedule.updated`. The relay subscribes to each
 peer's local-only `/api/v1/node/ws`, so controllers never echo each other.
 
 Types: `pnpm types` regenerates `ui/src/types/generated/` (committed; CI checks it).
@@ -334,7 +355,8 @@ Types: `pnpm types` regenerates `ui/src/types/generated/` (committed; CI checks 
 SQLite, same schema on every instance (`node/migrations/`): `node_config` (key/value),
 `recording_sessions` (names and formats copied in, so history survives renames),
 `configured_sources`, `media`, `presets` + `preset_outputs`, `nodes`, `benchmark_results`,
-`playlists`, `replay_clips`, `replay_clip_groups`, `ndi_subscriptions`.
+`playlists`, `replay_clips`, `replay_clip_groups`, `ndi_subscriptions`, `schedules` +
+`schedule_runs`.
 
 **Path templates** resolve on the node (`profile::plan_legs`): `~`, `{date}`, `{datetime}`,
 `{node}`, `{source}`, `{output}`, `{ext}`, `{take}`, `{segment}`. Default
@@ -346,7 +368,7 @@ otherwise a `_2` suffix; paths held by another active recording are refused.
 Vue 3, TypeScript, Vite, Pinia, Vue Router, `ofetch`, shadcn-vue, `vue-sonner`, an
 in-house `DataTable`. Dev: Vite proxies `/api` and `/ws` to :7700.
 
-- **Shell:** workspaces (Record, Playback, Replay, Recordings, Setup) and a ⌘K
+- **Shell:** workspaces (Record, Playback, Replay, Recordings, Schedule, Setup) and a ⌘K
   palette. Setup › Logs merges nodes' log lines with the page's activity events (⌘J).
   Views join only once the backend supports them.
 - **Tokens:** dark-first OKLCH in `ui/src/style.css`. `--primary` sky-cyan; solid red means

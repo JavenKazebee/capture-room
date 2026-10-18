@@ -25,6 +25,11 @@ export const router = createRouter({
       component: () => import('@/views/RecordingsView.vue'),
     },
     {
+      path: '/schedule',
+      name: 'schedule',
+      component: () => import('@/views/SchedulesView.vue'),
+    },
+    {
       path: '/setup',
       component: () => import('@/views/SetupLayout.vue'),
       redirect: '/setup/sources',

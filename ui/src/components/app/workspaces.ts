@@ -1,4 +1,4 @@
-import { Circle, Film, History, Monitor, MonitorPlay, ScrollText, Server, Settings, ShieldCheck, SlidersHorizontal, Wrench } from '@lucide/vue'
+import { CalendarClock, Circle, Film, History, Monitor, MonitorPlay, ScrollText, Server, Settings, ShieldCheck, SlidersHorizontal, Wrench } from '@lucide/vue'
 
 /** Top-level workspaces: operating desks plus Setup. */
 export const workspaces = [
@@ -6,6 +6,7 @@ export const workspaces = [
   { to: '/playback', label: 'Playback', icon: MonitorPlay },
   { to: '/replay', label: 'Replay', icon: History },
   { to: '/recordings', label: 'Recordings', icon: Film },
+  { to: '/schedule', label: 'Schedule', icon: CalendarClock },
   { to: '/setup', label: 'Setup', icon: Wrench },
 ]
 

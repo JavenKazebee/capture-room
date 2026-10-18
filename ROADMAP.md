@@ -14,7 +14,7 @@ display and Decklink outputs; shared node clock, synchronized start and MOV time
 Setup › Checks; pushed thumbnails up to 30 fps; instant replay (buffers, clips, groups, export); macOS installer,
 login service, menu bar icon and signed self-updates; a shared access token over TLS, with
 pinned node keys, approval of found nodes, and lost-token recovery (menu bar, CLI); a Logs
-view of every node's log lines.
+view of every node's log lines; schedules that record and play out once or weekly.
 
 ## Now: Mac Pro (Intel, two Decklink 8K Pro G2s)
 
@@ -48,8 +48,6 @@ view of every node's log lines.
   sharing between identical legs: decided against for now.
 - **Timecode from sources** — LTC from an audio channel, VITC, Decklink RP188; a frame
   that has timecode keeps it.
-- **Scheduler** — on the controller, sending ordinary start/stop commands. Adds a
-  Schedules view.
 - **Replay** — jog wheels / Stream Deck via WebHID or MIDI.
 - **Playback** — AJA outputs, interlaced SDI out, slates.
 - **Path tokens** — `{source_name}` (filename-safe), `{preset}`.

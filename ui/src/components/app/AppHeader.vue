@@ -69,11 +69,13 @@ const runningOut = computed(() => {
 
     <div class="flex items-center gap-1.5">
       <button
-        class="chip w-52 text-muted-foreground hover:text-foreground"
+        class="chip xl:w-52 text-muted-foreground hover:text-foreground"
+        aria-label="Search or run"
         @click="$emit('command')"
       >
         <Search class="size-3.5" />
-        <span class="flex-1 text-left">Search or run…</span>
+        <!-- Narrow windows keep just the icon and shortcut, so the tabs fit. -->
+        <span class="flex-1 text-left max-xl:hidden">Search or run…</span>
         <Kbd>{{ shortcut('K') }}</Kbd>
       </button>
 
