@@ -185,7 +185,14 @@ pub async fn add_by_url(ctx: &Ctx, url: &str) -> Result<Option<IdentityDto>> {
 
 /// Approve a found node. `false` if it isn't (or is no longer) found.
 pub async fn approve_found(ctx: &Ctx, id: &str) -> Result<bool> {
-    let Some(found) = ctx.registry.read().await.found.get(id).map(|f| f.dto.clone()) else {
+    let Some(found) = ctx
+        .registry
+        .read()
+        .await
+        .found
+        .get(id)
+        .map(|f| f.dto.clone())
+    else {
         return Ok(false);
     };
     let identity = IdentityDto {

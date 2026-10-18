@@ -65,4 +65,4 @@ macOS first (as of 2026-10-11). When picked up:
 - Linux screen capture: X11 `ximagesrc`; Wayland via an xdg-desktop-portal ScreenCast
   session (`ashpd`, `persist_mode=2`, restore token in the source config) into
   `pipewiresrc`, offered in the device list.
-- macOS and Windows CI jobs (build + clippy) so platform device code can't rot.
+- A Windows CI job (build + clippy) so platform device code can't rot.

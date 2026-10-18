@@ -134,13 +134,8 @@ impl NodeRegistry {
             return false;
         }
         let changed = self.found.get(&dto.id).is_none_or(|f| f.dto != dto);
-        self.found.insert(
-            dto.id.clone(),
-            FoundNode {
-                dto,
-                fail_count: 0,
-            },
-        );
+        self.found
+            .insert(dto.id.clone(), FoundNode { dto, fail_count: 0 });
         changed
     }
 
@@ -263,6 +258,9 @@ mod tests {
         assert!(!r.set_found(found("node", "k2")), "already approved");
 
         r.remove("node");
-        assert!(!r.set_found(found("node", "k2")), "removed: not offered again");
+        assert!(
+            !r.set_found(found("node", "k2")),
+            "removed: not offered again"
+        );
     }
 }

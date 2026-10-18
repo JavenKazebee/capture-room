@@ -9,12 +9,31 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
+env:
+  # Keep in sync with release.yml and scripts/macos/package.sh.
+  GST_VERSION: 1.28.8
+
 jobs:
-  node:
-    name: Node (fmt, clippy, tests, types)
+  # On its own so a formatting slip fails in seconds and doesn't hide the
+  # results of the other jobs.
+  fmt:
+    name: Rust formatting
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  node:
+    name: Node on Linux (clippy, tests, types)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
 
       - name: Install GStreamer
         run: |
@@ -24,18 +43,23 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
 
       # `RustEmbed` needs the folder to exist; the UI build isn't needed here.
       - run: mkdir -p ui/dist
 
-      - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test
+      # Each check runs even if an earlier one failed, so one run reports them all.
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        if: ${{ !cancelled() }}
+        run: cargo test
 
       - name: Generated TS types are up to date
+        if: ${{ !cancelled() }}
         run: |
           cargo test -p capture-room --features export-types
           if [ -n "$(git status --porcelain ui/src/types/generated)" ]; then
@@ -44,17 +68,56 @@ jobs:
             exit 1
           fi
 
+  # The platform the node ships on: lints the macOS-only code Linux never compiles.
+  macos:
+    name: Node on macOS (clippy, tests)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache GStreamer
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/gstreamer
+          key: gstreamer-${{ env.GST_VERSION }}-${{ hashFiles('scripts/macos/gstreamer.sh') }}
+
+      # The same official framework the release bundles, built against in place.
+      - name: GStreamer
+        run: |
+          gst_dir=$RUNNER_TEMP/gstreamer
+          scripts/macos/gstreamer.sh "$GST_VERSION" "$gst_dir"
+          sdk_lib=$gst_dir/sdk/GStreamer.framework/Versions/1.0/lib
+          echo "PKG_CONFIG_PATH=$sdk_lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=-C link-arg=-Wl,-rpath,$sdk_lib" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: mkdir -p ui/dist
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        if: ${{ !cancelled() }}
+        run: cargo test
+
   ui:
-    name: UI (type-check)
+    name: UI (type-check, build)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 11
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter ui type-check
+      # `build` would re-run the type-check above.
+      - run: pnpm --filter ui exec vite build

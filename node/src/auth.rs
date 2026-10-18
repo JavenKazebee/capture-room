@@ -398,9 +398,7 @@ pub fn run_command(command: Command) -> anyhow::Result<()> {
     };
     let installed = crate::service::installed_db();
     let is_service = db.is_none() && installed.is_some();
-    let db = db
-        .or(installed)
-        .unwrap_or_else(|| "capture-room.db".into());
+    let db = db.or(installed).unwrap_or_else(|| "capture-room.db".into());
     // Opening it would create an empty one.
     anyhow::ensure!(db.exists(), "no database at {}", db.display());
 

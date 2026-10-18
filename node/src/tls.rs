@@ -81,7 +81,9 @@ pub async fn load_identity(pool: &SqlitePool, hostname: Option<&str>) -> Result<
         .and_then(|e| DateTime::parse_from_rfc3339(&e).ok())
         .map(|e| e.with_timezone(&Utc));
     let cert_pem = match db::config_get(pool, CERT_CONFIG).await? {
-        Some(pem) if expires.is_some_and(|e| e - Utc::now() > chrono::Duration::days(RENEW_DAYS)) => {
+        Some(pem)
+            if expires.is_some_and(|e| e - Utc::now() > chrono::Duration::days(RENEW_DAYS)) =>
+        {
             pem
         }
         _ => {
@@ -93,7 +95,8 @@ pub async fn load_identity(pool: &SqlitePool, hostname: Option<&str>) -> Result<
         }
     };
 
-    let cert = CertificateDer::from_pem_slice(cert_pem.as_bytes()).context("read the TLS certificate")?;
+    let cert =
+        CertificateDer::from_pem_slice(cert_pem.as_bytes()).context("read the TLS certificate")?;
     let key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes()).context("read the TLS key")?;
     let fingerprint = fingerprint(&cert).context("read this node's TLS certificate")?;
     Ok(Identity {
@@ -489,8 +492,14 @@ mod tests {
     #[test]
     fn plain_http_only_locally_or_for_whep() {
         assert!(plain_allowed(&conn([127, 0, 0, 1], false), "/api/v1/nodes"));
-        assert!(plain_allowed(&conn([192, 168, 1, 5], false), "/whep/program"));
-        assert!(!plain_allowed(&conn([192, 168, 1, 5], false), "/api/v1/nodes"));
+        assert!(plain_allowed(
+            &conn([192, 168, 1, 5], false),
+            "/whep/program"
+        ));
+        assert!(!plain_allowed(
+            &conn([192, 168, 1, 5], false),
+            "/api/v1/nodes"
+        ));
         assert!(!plain_allowed(&conn([192, 168, 1, 5], false), "/"));
         assert!(!plain_allowed(&conn([192, 168, 1, 5], false), "/whepx"));
     }
@@ -503,7 +512,9 @@ mod tests {
         };
         let first = pin(issue(&key, Some("a")).unwrap().0);
         let renewed = pin(issue(&key, Some("b")).unwrap().0);
-        let other = pin(issue(&rcgen::KeyPair::generate().unwrap(), Some("a")).unwrap().0);
+        let other = pin(issue(&rcgen::KeyPair::generate().unwrap(), Some("a"))
+            .unwrap()
+            .0);
         assert_eq!(first, renewed);
         assert_ne!(first, other);
         assert_eq!(first.len(), 64);

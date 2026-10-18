@@ -7,7 +7,9 @@
     "dev:ui": "pnpm --filter ui dev",
     "build": "pnpm build:ui && cargo build --release",
     "build:ui": "pnpm --filter ui build",
-    "types": "cargo test -p capture-room --features export-types"
+    "types": "cargo test -p capture-room --features export-types",
+    "check": "cargo fmt --all --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test && pnpm --filter ui type-check",
+    "prepare": "git config core.hooksPath .githooks"
   },
   "devDependencies": {
     "concurrently": "^9.0.0"

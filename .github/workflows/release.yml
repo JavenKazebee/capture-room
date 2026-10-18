@@ -13,6 +13,7 @@ permissions:
   contents: write
 
 env:
+  # Keep in sync with ci.yml and scripts/macos/package.sh.
   GST_VERSION: 1.28.8
 
 jobs:
@@ -20,7 +21,7 @@ jobs:
     name: macOS apps
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Tag matches the crate version
         if: startsWith(github.ref, 'refs/tags/')
@@ -31,10 +32,10 @@ jobs:
             exit 1
           fi
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -81,7 +82,7 @@ jobs:
 
       - name: Upload build
         if: "!startsWith(github.ref, 'refs/tags/')"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: capture-room-macos
           path: dist/*

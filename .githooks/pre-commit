@@ -1,0 +1,19 @@
+#!/bin/sh
+# Quick checks before a commit; CI runs the full set (`pnpm check` locally).
+# Wired up by `pnpm install` (the root package.json's prepare script).
+set -e
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+
+if echo "$staged" | grep -q '\.rs$'; then
+    if ! cargo fmt --all --check >/dev/null 2>&1; then
+        echo "pre-commit: Rust code isn't formatted. Run 'cargo fmt --all' and stage the result." >&2
+        exit 1
+    fi
+fi
+
+# The TS types are generated from these; regenerating needs a full compile,
+# so this only reminds.
+if echo "$staged" | grep -q '^node/src/api/'; then
+    echo "pre-commit: node/src/api changed; run 'pnpm types' if the API types did." >&2
+fi
