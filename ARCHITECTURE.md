@@ -348,8 +348,8 @@ Local only; ids are local to the node.
 ### Events
 
 JSON with `type` and `node_id`: `recording.started|stopped|error|leg_failed|stats|removed`,
-`feed.status`, `channel.state`, `media.updated`, `audio.levels`,
-`benchmark.updated`, `node.updated`, `node.online|offline`, `schedule.updated`. The relay subscribes to each
+`feed.status`, `channel.state`, `media.updated`, `audio.levels`, `benchmark.updated`,
+`node.updated`, `node.online|offline`, `schedule.updated`. The relay subscribes to each
 peer's local-only `/api/v1/node/ws`, so controllers never echo each other.
 
 Types: `pnpm types` regenerates `ui/src/types/generated/` (committed; CI checks it).
@@ -479,6 +479,8 @@ since a machine can't test its own firewall.
 node/            Rust binary (api/, controller/, pipeline/, sources/, db/, migrations/)
 ui/              Vue 3 UI (views/, components/, stores/, types/generated/)
 scripts/macos/   packaging, install.sh
+.github/         CI (ci.yml: Linux and macOS) and releases (release.yml)
+.githooks/       pre-commit formatting check
 ```
 
-`pnpm dev` runs node and UI; `pnpm build` builds both; `pnpm types` regenerates TS types.
+Commands are in the [README](README.md).

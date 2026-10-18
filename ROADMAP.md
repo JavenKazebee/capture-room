@@ -5,19 +5,12 @@ shipped history is in git.
 
 _Last updated: 2026-10-18_
 
-## Shipped
+## Beta
 
-Test, file, NDI, stream, device, WHIP and Decklink sources; multi-leg recording with
-crash-safe files and splitting; benchmark and capacity estimates; Recordings view with
-browser preview; playout channels with gapless playlists and NDI, SRT, RTSP, WHEP,
-display and Decklink outputs; shared node clock, synchronized start and MOV timecode;
-Setup › Checks; pushed thumbnails up to 30 fps; instant replay (buffers, clips, groups, export); macOS installer,
-login service, menu bar icon and signed self-updates; a shared access token over TLS, with
-pinned node keys, approval of found nodes, lost-token recovery (menu bar, CLI) and node
-cards saying why a node is unreachable (offline, changed key, another node, token); a Logs
-view of every node's log lines, and rotation of the service's log file; schedules that record and play out once or weekly.
+An internal beta for our own venue and team: no new features, only testing, verifying and
+docs. Ad hoc signing is fine for now.
 
-## Now: Mac Pro (Intel, two Decklink 8K Pro G2s)
+### Mac Pro (Intel, two Decklink 8K Pro G2s)
 
 - **Decklink sources and outputs** — built, untested on hardware. Deliver through the
   updater and test. Check that MOV recordings carry the input's RP188 timecode, including
@@ -27,7 +20,7 @@ view of every node's log lines, and rotation of the service's log file; schedule
   found again by unique ID on each restart (it used to reopen by index, so unplugging
   another camera could switch it); check that by unplugging a second camera mid-recording.
 
-## To verify
+### To verify
 
 - PTP against a real grandmaster (a Dante network); the helper's permissions on macOS.
 - NDI timing across two machines (measured on one only).
@@ -36,12 +29,18 @@ view of every node's log lines, and rotation of the service's log file; schedule
   through the controller in Safari and Chrome after accepting the certificate.
 - Re-run intra H.264 and MJPEG replay benchmarks (they predate the codec settings).
 
-## Next
+### Docs
 
+- **Operator guide** — install, first run (permissions, Setup › Checks), adding nodes and
+  the access token, then one walkthrough per workspace: Record, Playback, Replay,
+  Recordings, Schedule. Written for the people running a show, not for developers.
+
+## After beta
+
+- **Packaging** — Developer ID (stable signature so permissions survive updates,
+  notarization, hardened runtime). Needed before anyone outside the team installs it.
 - **Authentication** — optional: trust the controller's certificate in the keychain at
   install, so browsers on that Mac don't warn.
-- **Packaging** — Developer ID (stable signature so permissions survive updates,
-  notarization, hardened runtime).
 - **Hardware encoders** — NVENC, QSV and VA-API in `RecordingProfile::encoders` with the
   same fallback. Only VA-API is testable today (AMD). Re-run benchmarks after. Encode
   sharing between identical legs: decided against for now.
