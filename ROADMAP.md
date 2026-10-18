@@ -29,11 +29,13 @@ docs. Ad hoc signing is fine for now.
   through the controller in Safari and Chrome after accepting the certificate.
 - Re-run intra H.264 and MJPEG replay benchmarks (they predate the codec settings).
 
-### Docs
+### Help in the UI
 
-- **Operator guide** — install, first run (permissions, Setup › Checks), adding nodes and
-  the access token, then one walkthrough per workspace: Record, Playback, Replay,
-  Recordings, Schedule. Written for the people running a show, not for developers.
+- **Operator help** — in the app, not the repo, for the people running a show: a short
+  help panel per workspace (Record, Playback, Replay, Recordings, Schedule) on what it's
+  for and the usual steps; a keyboard shortcut sheet; empty states that say what to do
+  first; and first-run help (permissions, Setup › Checks, adding nodes, the access token).
+  Field-level help already exists (`HelpTip`, `lib/fieldHelp`).
 
 ## After beta
 
