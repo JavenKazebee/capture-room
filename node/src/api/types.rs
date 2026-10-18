@@ -1559,7 +1559,8 @@ pub enum WsEvent {
     /// source list is different.
     #[serde(rename = "sources.changed")]
     SourcesChanged,
-    /// This node's name or monitor settings changed.
+    /// This node's name or monitor settings changed; from a controller, also
+    /// its approved or found nodes.
     #[serde(rename = "node.updated")]
     NodeUpdated,
     #[serde(rename = "node.online")]
@@ -1902,14 +1903,28 @@ pub struct NodeDto {
     pub url: String,
     pub healthy: bool,
     pub is_self: bool,
-    /// Whether this node was added by URL (persisted) rather than via mDNS.
-    pub manual: bool,
+    /// SHA-256 of its TLS key, as pinned. `None` for a node approved before
+    /// TLS, until its key is pinned.
+    pub fingerprint: Option<String>,
     /// Its last health check was refused: it has a different access token.
     pub access_denied: bool,
     /// What the node last reported; see [`NodeStatus::unanswered`] for one
     /// that hasn't answered yet.
     #[serde(flatten)]
     pub status: NodeStatus,
+}
+
+/// A node that announced itself over mDNS, waiting to be approved.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct FoundNodeDto {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub version: String,
+    /// SHA-256 of the TLS key it presented: compare with the one its own
+    /// Setup shows before approving it.
+    pub fingerprint: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2141,6 +2156,18 @@ pub struct CheckRequest {
 pub struct AuthStatusDto {
     pub required: bool,
     pub signed_in: bool,
+}
+
+/// Who a node is, for anyone who asks: what a controller checks before it
+/// approves a node, and what a node's Setup shows to compare against.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct IdentityDto {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    /// SHA-256 of its TLS key, in hex.
+    pub fingerprint: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

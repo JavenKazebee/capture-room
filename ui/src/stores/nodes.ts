@@ -4,23 +4,30 @@ import { api, nodeApi } from '@/composables/useApi'
 import type { NodeDto } from '@/types/generated/NodeDto'
 import type { NodeSettingsDto } from '@/types/generated/NodeSettingsDto'
 import type { AddNodeRequest } from '@/types/generated/AddNodeRequest'
+import type { FoundNodeDto } from '@/types/generated/FoundNodeDto'
 import type { ControllerToggleRequest } from '@/types/generated/ControllerToggleRequest'
 import type { UpdateNodeSettingsRequest } from '@/types/generated/UpdateNodeSettingsRequest'
 
-/** A node's address as other machines reach it: its `url`, else the UI's own address. */
+/**
+ * A node's address as other machines reach its media: its `url`, else the UI's own address.
+ * `origin` is plain HTTP, where players reach `/whep` without trusting the node's certificate.
+ */
 export function nodeAddress(url: string | null | undefined): { hostname: string; origin: string } {
+  let at: { hostname: string; host: string } = window.location
   if (url) {
     try {
-      return new URL(url)
+      at = new URL(url)
     } catch {
-      // Fall through to the UI's own address.
+      // Fall back to the UI's own address.
     }
   }
-  return window.location
+  return { hostname: at.hostname, origin: `http://${at.host}` }
 }
 
 export const useNodesStore = defineStore('nodes', () => {
   const nodes = ref<NodeDto[]>([])
+  /** Nodes that announced themselves and wait for this controller to approve them. */
+  const found = ref<FoundNodeDto[]>([])
   /** Settings of the instance the UI is connected to. */
   const self = ref<NodeSettingsDto | null>(null)
   /** Names just set by `rename`, held over reloads until the controller reports them. */
@@ -31,10 +38,12 @@ export const useNodesStore = defineStore('nodes', () => {
   const reachable = computed(() => nodes.value.filter((n) => n.healthy))
 
   async function load() {
-    const [list, settings] = await Promise.all([
+    const [list, settings, waiting] = await Promise.all([
       api<NodeDto[]>('/nodes').catch(() => [] as NodeDto[]),
       api<NodeSettingsDto>('/node/settings').catch(() => null),
+      api<FoundNodeDto[]>('/found-nodes').catch(() => [] as FoundNodeDto[]),
     ])
+    found.value = waiting
     for (const n of list) {
       const r = renamed.get(n.id)
       if (!r) continue
@@ -52,6 +61,17 @@ export const useNodesStore = defineStore('nodes', () => {
 
   async function add(url: string) {
     await api('/nodes', { method: 'POST', body: { url } satisfies AddNodeRequest })
+    await load()
+  }
+
+  async function approve(id: string) {
+    await api(`/found-nodes/${encodeURIComponent(id)}/approve`, { method: 'POST' })
+    await load()
+  }
+
+  /** Not offered again until the controller restarts. */
+  async function dismiss(id: string) {
+    await api(`/found-nodes/${encodeURIComponent(id)}`, { method: 'DELETE' })
     await load()
   }
 
@@ -85,5 +105,5 @@ export const useNodesStore = defineStore('nodes', () => {
     return id === self.value?.node_id ? `${name} (this node)` : name
   }
 
-  return { nodes, self, isController, reachable, load, setController, add, remove, rename, nameOf, labelOf }
+  return { nodes, found, self, isController, reachable, load, setController, add, approve, dismiss, remove, rename, nameOf, labelOf }
 })

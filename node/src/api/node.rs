@@ -2,7 +2,6 @@
 //! recordings and settings. Local only; controllers reach a peer's copy
 //! through `/api/v1/nodes/{id}/…`.
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -98,6 +97,9 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/update/check", post(post_update_check))
         .merge(super::playout::router())
         .merge(crate::auth::node_router())
+        // `/whep` again, behind the token: the UI reaches it through the
+        // controller, so an HTTPS page never has to reach a node itself.
+        .merge(super::whep::router())
 }
 
 async fn get_status(State(state): State<Arc<AppState>>) -> Json<NodeStatus> {
@@ -150,10 +152,10 @@ async fn get_clock_now(State(state): State<Arc<AppState>>) -> Json<ClockTimeDto>
 /// is served from the address the claim came from.
 async fn post_clock_claim(
     State(state): State<Arc<AppState>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    ConnectInfo(peer): ConnectInfo<crate::tls::Conn>,
     Json(claim): Json<ClockClaim>,
 ) -> Json<ClockStatusDto> {
-    state.clock.claim(&claim, peer.ip());
+    state.clock.claim(&claim, peer.addr.ip());
     Json(state.clock_status().await)
 }
 

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -22,10 +22,12 @@ use tracing::{info, warn};
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
-    AccessTokenFailure, AccessTokenRequest, AccessTokenResultDto, AuthStatusDto, SignInRequest,
+    AccessTokenFailure, AccessTokenRequest, AccessTokenResultDto, AuthStatusDto, IdentityDto,
+    SignInRequest,
 };
 use crate::db;
 use crate::state::AppState;
+use crate::tls::Conn;
 
 const CONFIG_KEY: &str = "access_token";
 const MIN_LEN: usize = 16;
@@ -65,6 +67,11 @@ impl Default for AccessToken {
 impl AccessToken {
     pub fn is_set(&self) -> bool {
         self.token.read().unwrap().is_some()
+    }
+
+    /// The token itself, for the menu bar's Copy Access Token.
+    pub fn get(&self) -> Option<String> {
+        self.token.read().unwrap().clone()
     }
 
     fn set(&self, token: Option<String>) {
@@ -115,6 +122,7 @@ pub async fn load(state: &AppState) -> anyhow::Result<()> {
 pub fn open_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/v1/auth", get(get_auth))
+        .route("/api/v1/auth/identity", get(get_identity))
         .route("/api/v1/auth/sign-in", post(post_sign_in))
         .route("/api/v1/auth/sign-out", post(post_sign_out))
 }
@@ -130,8 +138,9 @@ pub fn node_router() -> Router<Arc<AppState>> {
 }
 
 /// The routes under `/api` that work without the token.
-const OPEN_PATHS: [&str; 3] = [
+const OPEN_PATHS: [&str; 4] = [
     "/api/v1/auth",
+    "/api/v1/auth/identity",
     "/api/v1/auth/sign-in",
     "/api/v1/auth/sign-out",
 ];
@@ -187,15 +196,27 @@ fn cookie_name(state: &AppState) -> String {
 }
 
 /// `Set-Cookie` signing this browser in with `token`, or out with `None`.
-fn cookie(state: &AppState, token: Option<&str>) -> HeaderValue {
+/// Over TLS it's `Secure`, so the browser never sends it in the clear; plain
+/// HTTP is only answered from this machine.
+fn cookie(state: &AppState, conn: Conn, token: Option<&str>) -> HeaderValue {
     let name = cookie_name(state);
+    let secure = if conn.tls { "; Secure" } else { "" };
     let value = match token {
-        Some(t) => {
-            format!("{name}={t}; Path=/; HttpOnly; SameSite=Strict; Max-Age={COOKIE_MAX_AGE}")
-        }
-        None => format!("{name}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"),
+        Some(t) => format!(
+            "{name}={t}; Path=/; HttpOnly; SameSite=Strict; Max-Age={COOKIE_MAX_AGE}{secure}"
+        ),
+        None => format!("{name}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0{secure}"),
     };
     HeaderValue::from_str(&value).expect("token characters are checked")
+}
+
+async fn get_identity(State(state): State<Arc<AppState>>) -> Json<IdentityDto> {
+    Json(IdentityDto {
+        id: state.node_id.clone(),
+        name: state.node_name(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        fingerprint: state.fingerprint.clone(),
+    })
 }
 
 async fn get_auth(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Json<AuthStatusDto> {
@@ -211,6 +232,7 @@ async fn get_auth(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Jso
 
 async fn post_sign_in(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(conn): ConnectInfo<Conn>,
     Json(req): Json<SignInRequest>,
 ) -> Response {
     let token = req.token.trim();
@@ -225,15 +247,18 @@ async fn post_sign_in(
     let mut resp = StatusCode::NO_CONTENT.into_response();
     if state.access_token.is_set() {
         resp.headers_mut()
-            .insert(header::SET_COOKIE, cookie(&state, Some(token)));
+            .insert(header::SET_COOKIE, cookie(&state, conn, Some(token)));
     }
     resp
 }
 
-async fn post_sign_out(State(state): State<Arc<AppState>>) -> Response {
+async fn post_sign_out(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(conn): ConnectInfo<Conn>,
+) -> Response {
     let mut resp = StatusCode::NO_CONTENT.into_response();
     resp.headers_mut()
-        .insert(header::SET_COOKIE, cookie(&state, None));
+        .insert(header::SET_COOKIE, cookie(&state, conn, None));
     resp
 }
 
@@ -285,6 +310,7 @@ async fn put_node_access_token(
 /// listed: they keep their old token until it's set there.
 async fn put_access_token(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(conn): ConnectInfo<Conn>,
     Json(req): Json<AccessTokenRequest>,
 ) -> ApiResult<Response> {
     let token = validate(req.token)?;
@@ -338,8 +364,84 @@ async fn put_access_token(
     store(&state, token.clone()).await?;
     let mut resp = Json(AccessTokenResultDto { failed }).into_response();
     resp.headers_mut()
-        .insert(header::SET_COOKIE, cookie(&state, token.as_deref()));
+        .insert(header::SET_COOKIE, cookie(&state, conn, token.as_deref()));
     Ok(resp)
+}
+
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum Command {
+    /// Print the access token.
+    Show {
+        /// The node's database [default: the installed service's, else
+        /// capture-room.db here].
+        #[arg(long)]
+        db: Option<std::path::PathBuf>,
+    },
+    /// Remove the access token, opening the API to anyone who can reach it.
+    /// Sign in to the UI afterwards and set a new one.
+    Clear {
+        #[arg(long)]
+        db: Option<std::path::PathBuf>,
+        /// Restart the installed service so it takes effect now. Stops any
+        /// recording or playout on it.
+        #[arg(long)]
+        restart: bool,
+    },
+}
+
+/// Run a `capture-room access-token …` command. Whoever can read the node's
+/// database can already do anything this does.
+pub fn run_command(command: Command) -> anyhow::Result<()> {
+    let (db, clear, restart) = match command {
+        Command::Show { db } => (db, false, false),
+        Command::Clear { db, restart } => (db, true, restart),
+    };
+    let installed = crate::service::installed_db();
+    let is_service = db.is_none() && installed.is_some();
+    let db = db
+        .or(installed)
+        .unwrap_or_else(|| "capture-room.db".into());
+    // Opening it would create an empty one.
+    anyhow::ensure!(db.exists(), "no database at {}", db.display());
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let token = runtime.block_on(async {
+        let pool = db::init(&db.display().to_string()).await?;
+        let token = db::config_get(&pool, CONFIG_KEY).await?;
+        if clear && token.is_some() {
+            db::config_delete(&pool, CONFIG_KEY).await?;
+        }
+        pool.close().await;
+        anyhow::Ok(token)
+    })?;
+
+    if !clear {
+        match token {
+            Some(token) => println!("{token}"),
+            None => println!("No access token is set: the API is open."),
+        }
+        return Ok(());
+    }
+    if token.is_some() {
+        println!("Cleared the access token in {}.", db.display());
+    } else {
+        println!("No access token is set in {}.", db.display());
+    }
+    // The running service holds the token it started with.
+    if is_service && crate::service::is_running() {
+        if restart {
+            crate::service::restart()?;
+            println!("Restarted the service: the API is open. Set a new token in Setup.");
+        } else if token.is_some() {
+            println!(
+                "The running service keeps using it until it restarts. To restart it now \
+                 (this stops any recording on it):\n  capture-room access-token clear --restart"
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

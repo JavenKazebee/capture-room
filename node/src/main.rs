@@ -15,6 +15,7 @@ mod sources;
 mod state;
 mod storage;
 mod thumbnails;
+mod tls;
 mod tray;
 mod update;
 mod ws;
@@ -64,6 +65,11 @@ enum Cmd {
         #[command(subcommand)]
         command: service::Command,
     },
+    /// Show or clear a node's access token, when it's been lost.
+    AccessToken {
+        #[command(subcommand)]
+        command: auth::Command,
+    },
 }
 
 /// Replay buffers (`.replay`) and clips (`.replay-clips`), per node, beside
@@ -74,8 +80,10 @@ fn replay_root(folder: &str, node_id: &str) -> std::path::PathBuf {
 
 fn main() -> Result<()> {
     let mut args = Args::parse();
-    if let Some(Cmd::Service { command }) = args.command.take() {
-        return service::run_command(command);
+    match args.command.take() {
+        Some(Cmd::Service { command }) => return service::run_command(command),
+        Some(Cmd::AccessToken { command }) => return auth::run_command(command),
+        None => {}
     }
     if service::launched_from_desktop()? {
         return Ok(());
@@ -142,9 +150,12 @@ async fn run(
             id
         }
     };
-    let node_name = db::config_get(&pool, "name").await?.unwrap_or_else(|| {
-        controller::discovery::local_hostname().unwrap_or_else(|| "capture-room-node".to_string())
-    });
+    let hostname = controller::discovery::local_hostname();
+    let node_name = db::config_get(&pool, "name")
+        .await?
+        .unwrap_or_else(|| hostname.clone().unwrap_or_else(|| "capture-room-node".to_string()));
+    let identity = tls::load_identity(&pool, hostname.as_deref()).await?;
+    let tls_config = tls::server_config(&identity)?;
 
     if args.controller {
         db::config_set(&pool, controller::CONFIG_KEY, "true").await?;
@@ -218,6 +229,8 @@ async fn run(
         clock_port: args.clock_port.unwrap_or(args.port.saturating_add(100)),
         controller: RwLock::new(None),
         http: reqwest::Client::new(),
+        peers: tls::Peers::new()?,
+        fingerprint: identity.fingerprint.clone(),
         node_router: std::sync::OnceLock::new(),
         updater: update::Updater::default(),
         access_token: auth::AccessToken::default(),
@@ -248,13 +261,13 @@ async fn run(
 
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     let router = api::build_router(state);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!(addr = %addr, "listening");
-    // Connect info: a controller's clock is served from the address it
-    // claims a node from.
+    let listener = tls::TlsListener::new(tokio::net::TcpListener::bind(addr).await?, tls_config)?;
+    info!(addr = %addr, fingerprint = %identity.fingerprint, "listening");
+    // Connect info: whether a request came over TLS, and the address a
+    // controller claims a node from (its clock is served from there).
     axum::serve(
         listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
+        router.into_make_service_with_connect_info::<tls::Conn>(),
     )
     .await?;
 

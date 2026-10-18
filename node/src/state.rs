@@ -27,7 +27,12 @@ pub struct AppState {
     pub clock_port: u16,
 
     pub controller: RwLock<Option<Controller>>,
+    /// For the outside world (updates): not other nodes.
     pub http: reqwest::Client,
+    /// For other nodes, over TLS, trusting only approved ones.
+    pub peers: crate::tls::Peers,
+    /// SHA-256 of this node's TLS key: what controllers pin it by.
+    pub fingerprint: String,
     /// The node API router, used to serve `/api/v1/nodes/{self}/…` in-process.
     /// Set once at startup (it holds an `Arc` back to this state).
     pub node_router: std::sync::OnceLock<axum::Router>,
@@ -40,9 +45,9 @@ impl AppState {
         self.node_name.read().unwrap().clone()
     }
 
-    /// A request to a peer node, carrying this node's access token.
+    /// A request to an approved peer node, carrying this node's access token.
     pub fn peer(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {
-        let req = self.http.request(method, url);
+        let req = self.peers.http.request(method, url);
         match self.access_token.bearer() {
             Some(v) => req.header(reqwest::header::AUTHORIZATION, v),
             None => req,

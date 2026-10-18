@@ -9,9 +9,10 @@ export type NodeDto = {
  */
 url: string, healthy: boolean, is_self: boolean, 
 /**
- * Whether this node was added by URL (persisted) rather than via mDNS.
+ * SHA-256 of its TLS key, as pinned. `None` for a node approved before
+ * TLS, until its key is pinned.
  */
-manual: boolean, 
+fingerprint: string | null, 
 /**
  * Its last health check was refused: it has a different access token.
  */

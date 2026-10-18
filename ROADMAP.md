@@ -3,7 +3,7 @@
 Open work, roughly in priority order. [ARCHITECTURE.md](ARCHITECTURE.md) owns design;
 shipped history is in git.
 
-_Last updated: 2026-10-16_
+_Last updated: 2026-10-17_
 
 ## Shipped
 
@@ -12,7 +12,8 @@ crash-safe files and splitting; benchmark and capacity estimates; Recordings vie
 browser preview; playout channels with gapless playlists and NDI, SRT, RTSP, WHEP,
 display and Decklink outputs; shared node clock, synchronized start and MOV timecode;
 Setup › Checks; pushed thumbnails up to 30 fps; instant replay (buffers, clips, groups, export); macOS installer,
-login service, menu bar icon and signed self-updates; a shared access token.
+login service, menu bar icon and signed self-updates; a shared access token over TLS, with
+pinned node keys, approval of found nodes, and lost-token recovery (menu bar, CLI).
 
 ## Now: Mac Pro (Intel, two Decklink 8K Pro G2s)
 
@@ -28,14 +29,17 @@ login service, menu bar icon and signed self-updates; a shared access token.
 
 - PTP against a real grandmaster (a Dante network); the helper's permissions on macOS.
 - NDI timing across two machines (measured on one only).
+- Approving nodes found over mDNS, with two machines (mDNS between processes on one Mac
+  doesn't work, so only adding by address was tested end to end); the HTTPS UI and WHEP
+  through the controller in Safari and Chrome after accepting the certificate.
 - Re-run intra H.264 and MJPEG replay benchmarks (they predate the codec settings).
 
 ## Next
 
-- **Authentication, next steps** — a shared access token is built and off by default.
-  Left: TLS (the token crosses the LAN in the clear); only trust nodes that were added or
-  approved, not anything that announces over mDNS; a way to recover a lost token without
-  editing the database (menu bar or CLI).
+- **Authentication** — the shared token travels over TLS with pinned node keys,
+  and only to approved nodes. Left: a node card saying *why* a node is unreachable
+  (wrong key vs. offline). Also optional: trust the controller's certificate in the
+  keychain at install, so browsers on that Mac don't warn.
 - **Packaging** — Developer ID (stable signature so permissions survive updates,
   notarization, hardened runtime); rolling back an update that won't start; log rotation.
 - **Hardware encoders** — NVENC, QSV and VA-API in `RecordingProfile::encoders` with the

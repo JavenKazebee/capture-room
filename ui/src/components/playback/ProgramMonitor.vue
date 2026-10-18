@@ -2,7 +2,6 @@
 import { computed, ref, toRef } from 'vue'
 import { Eye } from '@lucide/vue'
 import { audioLevels, type Source } from '@/stores/sources'
-import { nodeAddress, useNodesStore } from '@/stores/nodes'
 import { fpsLabel } from '@/lib/sourceFormat'
 import { plural } from '@/lib/format'
 import type { ChannelStatusDto } from '@/types/generated/ChannelStatusDto'
@@ -18,12 +17,13 @@ const props = defineProps<{ source: Source; status?: ChannelStatusDto }>()
 const thumb = useThumbnail(toRef(props, 'source'))
 const channels = computed(() => audioLevels.get(props.source.key) ?? [])
 const state = computed(() => TRANSPORT[props.status?.state ?? 'idle'])
-const nodes = useNodesStore()
-/** The node's API origin, where its WHEP outputs are served. */
-const origin = computed(() => nodeAddress(nodes.nodes.find((n) => n.id === props.source.node_id)?.url).origin)
-/** A WHEP output's endpoint, from its label (`WHEP /path`). */
+/**
+ * A WHEP output's endpoint, from its label (`WHEP /path`): through this instance, so an HTTPS
+ * page never reaches a node itself.
+ */
 function whepEndpoint(label: string) {
-  return label.startsWith('WHEP /') ? `${origin.value}/whep${label.slice(5)}` : null
+  const node = encodeURIComponent(props.source.node_id)
+  return label.startsWith('WHEP /') ? `${window.location.origin}/api/v1/nodes/${node}/whep${label.slice(5)}` : null
 }
 const watching = ref<string | null>(null)
 

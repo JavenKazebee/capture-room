@@ -40,6 +40,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             Arc::clone(&state),
             crate::auth::require,
         ))
+        // Outermost: plain HTTP is redirected before it's refused.
+        .layer(axum::middleware::from_fn(crate::tls::redirect_plain))
         .with_state(state)
 }
 

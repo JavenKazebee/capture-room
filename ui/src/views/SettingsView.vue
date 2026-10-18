@@ -5,7 +5,7 @@ import { toast } from 'vue-sonner'
 import { AlertTriangle, RotateCcw } from '@lucide/vue'
 import { api, nodeApi } from '@/composables/useApi'
 import { usePreferences } from '@/composables/usePreferences'
-import { formatUptime, plural } from '@/lib/format'
+import { formatFingerprint, formatUptime, plural } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
 import type { ClockMode } from '@/types/generated/ClockMode'
@@ -183,6 +183,12 @@ const about = computed(() => [
   { label: 'Version', value: selfNode.value ? `v${selfNode.value.version}` : null, mono: true },
   { label: 'Node name', value: nodes.self?.node_name },
   { label: 'Node ID', value: nodes.self?.node_id, mono: true, copy: true },
+  {
+    label: 'TLS key',
+    value: selfNode.value?.fingerprint ? formatFingerprint(selfNode.value.fingerprint) : null,
+    mono: true,
+    copy: true,
+  },
   { label: 'API', value: `${window.location.origin}/api/v1`, mono: true, copy: true },
   {
     label: 'Controller',

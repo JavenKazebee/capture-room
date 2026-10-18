@@ -90,6 +90,20 @@ pub fn run_command(command: Command) -> Result<()> {
     Ok(())
 }
 
+/// The installed service's database, if it's installed and running from it.
+pub fn installed_db() -> Option<PathBuf> {
+    platform::installed_db()
+}
+
+pub fn is_running() -> bool {
+    platform::is_running()
+}
+
+/// Restart the installed service, which stops its recordings.
+pub fn restart() -> Result<()> {
+    platform::restart()
+}
+
 pub fn running_as_service() -> bool {
     std::env::var_os(SERVICE_ENV).is_some()
 }
@@ -142,6 +156,23 @@ pub fn open_url(url: &str) {
     if let Err(e) = std::process::Command::new(opener).arg(url).spawn() {
         tracing::warn!(error = %e, url, "couldn't open the browser");
     }
+}
+
+/// Put `text` on the clipboard.
+pub fn copy_to_clipboard(text: &str) -> Result<()> {
+    use std::io::Write;
+    #[cfg(target_os = "macos")]
+    let copier = "pbcopy";
+    #[cfg(target_os = "windows")]
+    let copier = "clip";
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let copier = "wl-copy";
+    let mut child = std::process::Command::new(copier)
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+    child.stdin.take().unwrap().write_all(text.as_bytes())?;
+    anyhow::ensure!(child.wait()?.success(), "{copier} failed");
+    Ok(())
 }
 
 pub struct Installed {

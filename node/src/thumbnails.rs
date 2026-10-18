@@ -217,7 +217,9 @@ async fn relay_peer(
     if let Some(bearer) = state.access_token.bearer() {
         request.headers_mut().insert("authorization", bearer);
     }
-    let (socket, _) = tokio_tungstenite::connect_async(request).await?;
+    let connector = Some(state.peers.ws_connector());
+    let (socket, _) =
+        tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector).await?;
     let (mut write, mut read) = socket.split();
     // A new connection needs the subscription, whether or not it changed.
     sub.mark_changed();

@@ -1,24 +1,27 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
 
-use crate::api::types::{ClockStatusDto, NodeDto, NodeStatus};
+use crate::api::types::{ClockStatusDto, FoundNodeDto, NodeDto, NodeStatus};
+use crate::tls::Pins;
 
+/// An approved node: stored in the `nodes` table, its key pinned, sent the
+/// access token.
 #[derive(Clone)]
 pub struct NodeEntry {
     pub id: String,
     /// The name it was stored under, shown until it answers.
     pub name: String,
     pub url: String,
+    /// SHA-256 of its TLS key. `None` only for a node approved before TLS,
+    /// until the key it presents next is pinned.
+    pub fingerprint: Option<String>,
     pub healthy: bool,
     /// Consecutive failed health checks. Reset to 0 on success.
     pub fail_count: u32,
     /// The last check was refused: it has a different access token.
     pub access_denied: bool,
-    /// Added by URL and persisted in the `nodes` table. Manual nodes are never
-    /// pruned for being unreachable; mDNS ones are (they re-announce).
-    pub manual: bool,
     /// What it reported at its last successful health check; `None` until
     /// it has answered once.
     pub status: Option<NodeStatus>,
@@ -33,7 +36,7 @@ impl From<&NodeEntry> for NodeDto {
             url: n.url.clone(),
             healthy: n.healthy,
             is_self: false,
-            manual: n.manual,
+            fingerprint: n.fingerprint.clone(),
             access_denied: n.access_denied,
             status: n
                 .status
@@ -43,35 +46,51 @@ impl From<&NodeEntry> for NodeDto {
     }
 }
 
-#[derive(Default)]
+/// A node that announced itself over mDNS and waits to be approved. It's
+/// asked only who it is, and never sent the token.
+#[derive(Clone)]
+pub struct FoundNode {
+    pub dto: FoundNodeDto,
+    pub fail_count: u32,
+}
+
 pub struct NodeRegistry {
     pub entries: HashMap<String, NodeEntry>,
+    pub found: HashMap<String, FoundNode>,
+    /// Keys of found nodes the operator dismissed (or removed), not offered
+    /// again until the controller restarts.
+    ignored: HashSet<String>,
+    /// The keys of `entries`: what the peer TLS client trusts.
+    pins: Arc<Pins>,
 }
 
 impl NodeRegistry {
-    /// Insert or update. Returns `true` if the node was newly added, in which
-    /// case the caller starts a relay for `entry.relay`. An update refreshes
-    /// the URL (e.g. after an IP change) and clears the failure state, keeps
-    /// the running relay, and never downgrades a manual entry to mDNS.
-    ///
-    /// An mDNS announcement only claims the ID it reports, so it may not move
-    /// a node to a new URL unless that node is mDNS-found and currently
-    /// failing: otherwise any host on the LAN could take over a node, and the
-    /// access token sent with every forwarded request.
+    pub fn new(pins: Arc<Pins>) -> Self {
+        Self {
+            entries: HashMap::new(),
+            found: HashMap::new(),
+            ignored: HashSet::new(),
+            pins,
+        }
+    }
+
+    /// Insert or update an approved node, pinning its key. Returns `true` if
+    /// it's new, in which case the caller starts a relay for `entry.relay`.
+    /// An update keeps the running relay.
     pub fn upsert(&mut self, mut entry: NodeEntry) -> bool {
+        self.found.remove(&entry.id);
+        if let Some(fp) = &entry.fingerprint {
+            self.pins.insert(fp);
+        }
         match self.entries.get(&entry.id) {
             Some(existing) => {
-                let moved = existing.url != entry.url;
-                if moved && !entry.manual && (existing.manual || existing.healthy) {
-                    warn!(
-                        id = %entry.id,
-                        url = %existing.url,
-                        announced = %entry.url,
-                        "ignoring an mDNS announcement for a known node at another URL"
-                    );
-                    return false;
+                if let Some(old) = existing
+                    .fingerprint
+                    .as_ref()
+                    .filter(|old| entry.fingerprint.as_ref() != Some(*old))
+                {
+                    self.pins.remove(old);
                 }
-                entry.manual |= existing.manual;
                 entry.relay = existing.relay.clone();
                 self.entries.insert(entry.id.clone(), entry);
                 false
@@ -83,9 +102,15 @@ impl NodeRegistry {
         }
     }
 
+    /// Remove an approved node and stop trusting its key. It isn't offered
+    /// again as found until the controller restarts.
     pub fn remove(&mut self, id: &str) -> Option<NodeEntry> {
         let entry = self.entries.remove(id)?;
         entry.relay.cancel();
+        if let Some(fp) = &entry.fingerprint {
+            self.pins.remove(fp);
+            self.ignored.insert(fp.clone());
+        }
         Some(entry)
     }
 
@@ -93,9 +118,54 @@ impl NodeRegistry {
         self.entries.values().collect()
     }
 
+    pub fn get(&self, id: &str) -> Option<&NodeEntry> {
+        self.entries.get(id)
+    }
+
     /// Current URL for a node, or `None` if it's no longer registered.
     pub fn url_of(&self, id: &str) -> Option<String> {
         self.entries.get(id).map(|n| n.url.clone())
+    }
+
+    /// Note a node waiting for approval. Returns whether the list changed
+    /// in a way the UI shows.
+    pub fn set_found(&mut self, dto: FoundNodeDto) -> bool {
+        if self.ignored.contains(&dto.fingerprint) || self.entries.contains_key(&dto.id) {
+            return false;
+        }
+        let changed = self.found.get(&dto.id).is_none_or(|f| f.dto != dto);
+        self.found.insert(
+            dto.id.clone(),
+            FoundNode {
+                dto,
+                fail_count: 0,
+            },
+        );
+        changed
+    }
+
+    /// Whether the operator dismissed or removed the node with this key.
+    pub fn is_ignored(&self, fingerprint: &str) -> bool {
+        self.ignored.contains(fingerprint)
+    }
+
+    /// Dismiss a found node until the controller restarts.
+    pub fn ignore(&mut self, id: &str) -> bool {
+        match self.found.remove(id) {
+            Some(f) => {
+                self.ignored.insert(f.dto.fingerprint);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A found node didn't answer. Returns its consecutive failure count.
+    pub fn found_failure(&mut self, id: &str) -> u32 {
+        self.found.get_mut(id).map_or(0, |f| {
+            f.fail_count += 1;
+            f.fail_count
+        })
     }
 
     /// Record a successful health check. Returns whether the node was
@@ -123,17 +193,16 @@ impl NodeRegistry {
     }
 
     /// Record a failed health check, `denied` if it refused this node's
-    /// access token. Returns the new consecutive failure count and whether
-    /// the entry is manual.
-    pub fn record_failure(&mut self, id: &str, denied: bool) -> (u32, bool) {
+    /// access token. Returns the new consecutive failure count.
+    pub fn record_failure(&mut self, id: &str, denied: bool) -> u32 {
         match self.entries.get_mut(id) {
             Some(e) => {
                 e.healthy = false;
                 e.fail_count += 1;
                 e.access_denied = denied;
-                (e.fail_count, e.manual)
+                e.fail_count
             }
-            None => (0, false),
+            None => 0,
         }
     }
 }
@@ -142,53 +211,58 @@ impl NodeRegistry {
 mod tests {
     use super::*;
 
-    fn entry(url: &str, manual: bool, healthy: bool) -> NodeEntry {
+    fn entry(fingerprint: Option<&str>) -> NodeEntry {
         NodeEntry {
             id: "node".into(),
             name: "Node".into(),
-            url: url.into(),
-            healthy,
+            url: "https://a".into(),
+            fingerprint: fingerprint.map(String::from),
+            healthy: false,
             fail_count: 0,
             access_denied: false,
-            manual,
             status: None,
             relay: CancellationToken::new(),
         }
     }
 
-    fn url_after(existing: NodeEntry, update: NodeEntry) -> String {
-        let mut r = NodeRegistry::default();
-        assert!(r.upsert(existing));
-        assert!(!r.upsert(update));
-        r.url_of("node").unwrap()
+    fn found(id: &str, fingerprint: &str) -> FoundNodeDto {
+        FoundNodeDto {
+            id: id.into(),
+            name: "Found".into(),
+            url: "https://b".into(),
+            version: "0.1.0".into(),
+            fingerprint: fingerprint.into(),
+        }
     }
 
     #[test]
-    fn mdns_never_moves_a_manual_node() {
-        let url = url_after(
-            entry("http://a", true, false),
-            entry("http://b", false, true),
-        );
-        assert_eq!(url, "http://a");
+    fn approved_keys_are_pinned_until_removed() {
+        let pins = Arc::new(Pins::default());
+        let mut r = NodeRegistry::new(Arc::clone(&pins));
+        assert!(r.upsert(entry(Some("k1"))));
+        assert!(pins.contains("k1"));
+        // A key pinned on upgrade replaces none; a changed one replaces the old.
+        assert!(!r.upsert(entry(Some("k2"))));
+        assert!(!pins.contains("k1") && pins.contains("k2"));
+        r.remove("node");
+        assert!(!pins.contains("k2"));
     }
 
     #[test]
-    fn mdns_moves_an_mdns_node_only_while_it_fails() {
-        let url = url_after(
-            entry("http://a", false, true),
-            entry("http://b", false, true),
-        );
-        assert_eq!(url, "http://a");
-        let url = url_after(
-            entry("http://a", false, false),
-            entry("http://b", false, true),
-        );
-        assert_eq!(url, "http://b");
-    }
+    fn found_nodes_wait_unless_approved_or_ignored() {
+        let mut r = NodeRegistry::new(Arc::default());
+        assert!(r.set_found(found("n1", "k1")));
+        assert!(!r.set_found(found("n1", "k1")), "unchanged");
+        assert!(r.ignore("n1"));
+        assert!(!r.set_found(found("n1", "k1")), "ignored by key");
+        assert!(r.found.is_empty());
 
-    #[test]
-    fn adding_by_hand_moves_a_node() {
-        let url = url_after(entry("http://a", true, true), entry("http://b", true, true));
-        assert_eq!(url, "http://b");
+        assert!(r.set_found(found("node", "k2")));
+        r.upsert(entry(Some("k2")));
+        assert!(r.found.is_empty(), "approving takes it off the list");
+        assert!(!r.set_found(found("node", "k2")), "already approved");
+
+        r.remove("node");
+        assert!(!r.set_found(found("node", "k2")), "removed: not offered again");
     }
 }

@@ -131,10 +131,20 @@ pub fn uninstall(purge: bool) -> Result<()> {
 
 /// The port the installed service runs on, if it's installed.
 pub fn installed_port() -> Option<u16> {
+    installed_arg("--port")?.parse().ok()
+}
+
+/// The database the installed service uses, if it's installed.
+pub fn installed_db() -> Option<PathBuf> {
+    installed_arg("--db").map(PathBuf::from)
+}
+
+/// The value after `flag` in the installed service's arguments.
+fn installed_arg(flag: &str) -> Option<String> {
     let job = Value::from_file(plist_path()).ok()?;
     let args = job.as_dictionary()?.get("ProgramArguments")?.as_array()?;
-    let at = args.iter().position(|a| a.as_string() == Some("--port"))?;
-    args.get(at + 1)?.as_string()?.parse().ok()
+    let at = args.iter().position(|a| a.as_string() == Some(flag))?;
+    Some(args.get(at + 1)?.as_string()?.to_string())
 }
 
 pub fn is_running() -> bool {
@@ -164,6 +174,12 @@ pub fn start() -> Result<()> {
         launchctl(&["bootstrap", &domain(), &plist_path().display().to_string()])?;
     }
     launchctl(&["kickstart", &target()])
+}
+
+/// Restart the running service (stopping anything it's doing).
+pub fn restart() -> Result<()> {
+    launchctl(&["kickstart", "-k", &target()])?;
+    wait_for_port(installed_port().unwrap_or(DEFAULT_PORT))
 }
 
 fn stop() -> Result<()> {

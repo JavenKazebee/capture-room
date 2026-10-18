@@ -45,7 +45,10 @@ async fn run(ctx: Ctx, node_id: String) {
             request.headers_mut().insert("authorization", bearer);
         }
 
-        match tokio_tungstenite::connect_async(request).await {
+        let connector = Some(ctx.state.peers.ws_connector());
+        match tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector)
+            .await
+        {
             Ok((stream, _)) => {
                 info!(node_id = %node_id, "WS relay connected");
                 let (_, mut read) = stream.split();

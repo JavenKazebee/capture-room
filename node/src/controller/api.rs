@@ -8,7 +8,7 @@ use axum::{
     extract::{ws::WebSocketUpgrade, Path, State},
     http::StatusCode,
     response::Response,
-    routing::{any, delete, get, put},
+    routing::{any, delete, get, post, put},
     Json, Router,
 };
 
@@ -16,7 +16,7 @@ use super::{clock_mode, discovery, forward, Controller, CLOCK_MODE_KEY, CONFIG_K
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     AddNodeRequest, CheckDto, ClockMode, ControllerClockDto, ControllerToggleRequest,
-    NodeChecksDto, NodeDto, PresetCreateRequest, PresetDto, PresetOutputInput, WsEvent,
+    FoundNodeDto, NodeChecksDto, NodeDto, PresetCreateRequest, PresetDto, PresetOutputInput, WsEvent,
 };
 use crate::db;
 use crate::pipeline::profile::{plan_legs, unknown_token};
@@ -34,6 +34,9 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/v1/nodes", get(get_nodes).post(post_node))
         .route("/api/v1/nodes/{id}", delete(delete_node))
         .route("/api/v1/nodes/{id}/{*path}", any(forward::forward))
+        .route("/api/v1/found-nodes", get(get_found_nodes))
+        .route("/api/v1/found-nodes/{id}", delete(delete_found_node))
+        .route("/api/v1/found-nodes/{id}/approve", post(post_approve_found))
         .route("/api/v1/reachability/{id}", get(get_reachability))
         .route("/api/v1/presets", get(get_presets).post(post_preset))
         .route(
@@ -106,7 +109,7 @@ async fn get_nodes(State(state): State<Arc<AppState>>) -> Json<Vec<NodeDto>> {
         url: String::new(),
         healthy: true,
         is_self: true,
-        manual: false,
+        fingerprint: Some(state.fingerprint.clone()),
         access_denied: false,
         status: crate::api::node::local_status(&state).await,
     }];
@@ -162,22 +165,53 @@ async fn post_node(
     Json(req): Json<AddNodeRequest>,
 ) -> ApiResult<StatusCode> {
     let ctx = with_controller(&state, |c| c.ctx(&state)).await?;
-    let mut url = req.url.trim().trim_end_matches('/').to_string();
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        url = format!("http://{url}");
-    }
-
-    let status = discovery::add_node(&ctx, url.clone(), true)
+    discovery::add_by_url(&ctx, &discovery::https_url(&req.url))
         .await
-        .map_err(|e| ApiError::BadGateway(e.to_string()))?
+        .map_err(|e| match e.downcast::<discovery::KeyMismatch>() {
+            Ok(mismatch) => ApiError::bad(mismatch),
+            Err(e) => ApiError::BadGateway(format!("{e:#}")),
+        })?
         .ok_or_else(|| ApiError::bad("that address is this node"))?;
-    let row = db::NodeRow {
-        id: status.id,
-        name: status.name,
-        url,
-        added_at: chrono::Utc::now().to_rfc3339(),
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Nodes that announced themselves and wait to be approved.
+async fn get_found_nodes(State(state): State<Arc<AppState>>) -> Json<Vec<FoundNodeDto>> {
+    let mut found: Vec<FoundNodeDto> = match state.controller.read().await.as_ref() {
+        Some(c) => c
+            .registry
+            .read()
+            .await
+            .found
+            .values()
+            .map(|f| f.dto.clone())
+            .collect(),
+        None => Vec::new(),
     };
-    db::node_upsert(&state.db, &row).await?;
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    Json(found)
+}
+
+async fn post_approve_found(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let ctx = with_controller(&state, |c| c.ctx(&state)).await?;
+    if !discovery::approve_found(&ctx, &id).await? {
+        return Err(ApiError::NotFound("that node isn't waiting to be approved"));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Dismiss a found node until this controller restarts.
+async fn delete_found_node(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let registry = with_controller(&state, |c| Arc::clone(&c.registry)).await?;
+    if registry.write().await.ignore(&id) {
+        state.emit_controller(&WsEvent::NodeUpdated);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

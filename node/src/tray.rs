@@ -17,6 +17,8 @@ pub struct Status {
     pub recordings: usize,
     pub playing: usize,
     pub update: UpdateState,
+    /// Whether the node has an access token to copy.
+    pub token_set: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -35,6 +37,9 @@ pub enum Action {
     Quit,
     Update,
     CheckForUpdates,
+    /// Someone at this machine lost the token: whoever can use the menu bar
+    /// is trusted with it.
+    CopyAccessToken,
 }
 
 pub struct Config {
@@ -72,6 +77,7 @@ pub fn spawn(state: Arc<AppState>, displays: Displays, mut actions: UnboundedRec
                 recordings: activity.recordings,
                 playing: activity.playing,
                 update: (&watched.updater.status()).into(),
+                token_set: watched.access_token.is_set(),
             });
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
@@ -86,6 +92,14 @@ pub fn spawn(state: Arc<AppState>, displays: Displays, mut actions: UnboundedRec
                     }
                 }
                 Action::CheckForUpdates => crate::update::check(&state).await,
+                Action::CopyAccessToken => {
+                    if let Some(token) = state.access_token.get() {
+                        match crate::service::copy_to_clipboard(&token) {
+                            Ok(()) => tracing::info!("access token copied from the menu bar"),
+                            Err(e) => tracing::warn!(error = %e, "couldn't copy the access token"),
+                        }
+                    }
+                }
             }
         }
     });
@@ -109,6 +123,7 @@ mod imp {
         status_item: MenuItem,
         open: MenuItem,
         update: MenuItem,
+        copy_token: MenuItem,
         at_login: CheckMenuItem,
         quit: MenuItem,
         status: Status,
@@ -129,6 +144,7 @@ mod imp {
             let status_item = MenuItem::new("Idle", false, None);
             let open = MenuItem::new("Open Capture Room", true, None);
             let update = MenuItem::new("Check for Updates", true, None);
+            let copy_token = MenuItem::new("Copy Access Token", false, None);
             let at_login =
                 CheckMenuItem::new("Start at Login", true, service::start_at_login(), None);
             let quit = MenuItem::new("Quit Capture Room", true, None);
@@ -138,6 +154,7 @@ mod imp {
                 &PredefinedMenuItem::separator(),
                 &open,
                 &update,
+                &copy_token,
                 &at_login,
                 &PredefinedMenuItem::separator(),
                 &quit,
@@ -154,6 +171,7 @@ mod imp {
                 status_item,
                 open,
                 update,
+                copy_token,
                 at_login,
                 quit,
                 status: Status::default(),
@@ -171,6 +189,8 @@ mod imp {
                     UpdateState::Available(_) => send(Action::Update),
                     _ => send(Action::CheckForUpdates),
                 }
+            } else if id == self.copy_token.id() {
+                send(Action::CopyAccessToken);
             } else if id == self.at_login.id() {
                 // The item has ticked itself already.
                 let on = self.at_login.is_checked();
@@ -211,6 +231,7 @@ mod imp {
             };
             self.update.set_text(text);
             self.update.set_enabled(enabled);
+            self.copy_token.set_enabled(status.token_set);
 
             self.quit.set_text(if recording {
                 format!("Quit (stops {})", plural(status.recordings, "recording"))

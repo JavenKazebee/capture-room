@@ -53,21 +53,23 @@ impl Controller {
 
         let ctx = Ctx {
             state: Arc::clone(state),
-            registry: Arc::new(RwLock::new(NodeRegistry::default())),
+            registry: Arc::new(RwLock::new(NodeRegistry::new(Arc::clone(
+                &state.peers.pins,
+            )))),
             cancel: CancellationToken::new(),
         };
 
-        // Manually-registered nodes come back immediately (marked unhealthy
-        // until the first health check succeeds).
+        // Approved nodes come back immediately, their keys pinned (marked
+        // unhealthy until the first health check succeeds).
         for row in db::nodes_list(&state.db).await? {
             let entry = NodeEntry {
                 id: row.id.clone(),
                 name: row.name,
-                url: row.url,
+                url: discovery::https_url(&row.url),
+                fingerprint: row.fingerprint,
                 healthy: false,
                 fail_count: 0,
                 access_denied: false,
-                manual: true,
                 status: None,
                 relay: ctx.cancel.child_token(),
             };
@@ -89,7 +91,7 @@ impl Controller {
         let mdns_browser = match discovery::start_mdns_browser(ctx.clone()) {
             Ok(d) => Some(d),
             Err(e) => {
-                warn!(error = %e, "mDNS browse failed; only manually added nodes will be found");
+                warn!(error = %e, "mDNS browse failed; nodes can only be added by address");
                 None
             }
         };
@@ -108,6 +110,7 @@ impl Controller {
     pub async fn disable(state: &AppState) {
         if let Some(c) = state.controller.write().await.take() {
             c.cancel.cancel();
+            state.peers.pins.clear();
             if let Some(d) = c.mdns_browser {
                 let _ = d.shutdown();
             }

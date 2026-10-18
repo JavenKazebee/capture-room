@@ -83,7 +83,8 @@ async fn proxy(Path(path): Path<String>, req: Request) -> Response {
             builder = builder.header(&name, v);
         }
     }
-    // The signaller's resource URL, as it is through here.
+    // The signaller's resource URL, as it is through here. Relative to the
+    // endpoint, so it also works under `/api/v1/nodes/{id}/whep`.
     if let Some(id) = resp
         .headers()
         .get(header::LOCATION)
@@ -91,7 +92,8 @@ async fn proxy(Path(path): Path<String>, req: Request) -> Response {
         .and_then(|l| l.rsplit_once("/resource/"))
         .map(|(_, id)| id)
     {
-        builder = builder.header(header::LOCATION, format!("/whep{mount}/resource/{id}"));
+        let endpoint = mount.rsplit('/').next().unwrap_or_default();
+        builder = builder.header(header::LOCATION, format!("{endpoint}/resource/{id}"));
     }
     if let Some(v) = resp.headers().get(HeaderName::from_static("access-post")) {
         builder = builder.header("accept-post", v);

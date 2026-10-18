@@ -23,8 +23,9 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_BODY: usize = 16 * 1024 * 1024;
 
 /// Request headers passed to a peer.
-const REQUEST_HEADERS: [header::HeaderName; 5] = [
+const REQUEST_HEADERS: [header::HeaderName; 6] = [
     header::CONTENT_TYPE,
+    header::IF_MATCH,
     header::RANGE,
     header::IF_RANGE,
     header::IF_MODIFIED_SINCE,
@@ -32,8 +33,11 @@ const REQUEST_HEADERS: [header::HeaderName; 5] = [
 ];
 
 /// Response headers passed back from a peer.
-const RESPONSE_HEADERS: [header::HeaderName; 8] = [
+const RESPONSE_HEADERS: [header::HeaderName; 10] = [
     header::CONTENT_TYPE,
+    // WHEP's resource URL and ICE servers.
+    header::LOCATION,
+    header::LINK,
     header::CONTENT_LENGTH,
     header::CACHE_CONTROL,
     header::ACCEPT_RANGES,
@@ -125,8 +129,9 @@ async fn forward_peer(state: &AppState, req: Request, url: &str) -> Response {
 
     let mut builder = Response::builder().status(resp.status());
     for name in RESPONSE_HEADERS {
-        if let Some(v) = resp.headers().get(&name) {
-            builder = builder.header(name, v);
+        // WHEP sends a `Link` per ICE server.
+        for v in resp.headers().get_all(&name) {
+            builder = builder.header(&name, v);
         }
     }
     builder

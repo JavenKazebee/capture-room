@@ -374,11 +374,13 @@ pub struct NodeRow {
     pub id: String,
     pub name: String,
     pub url: String,
+    pub fingerprint: Option<String>,
     pub added_at: String,
 }
 
 pub async fn nodes_list(pool: &SqlitePool) -> Result<Vec<NodeRow>> {
-    let rows = sqlx::query_as::<_, NodeRow>("SELECT id, name, url, added_at FROM nodes")
+    let rows =
+        sqlx::query_as::<_, NodeRow>("SELECT id, name, url, fingerprint, added_at FROM nodes")
         .fetch_all(pool)
         .await?;
     Ok(rows)
@@ -386,12 +388,14 @@ pub async fn nodes_list(pool: &SqlitePool) -> Result<Vec<NodeRow>> {
 
 pub async fn node_upsert(pool: &SqlitePool, row: &NodeRow) -> Result<()> {
     sqlx::query(
-        "INSERT INTO nodes (id, name, url, added_at) VALUES (?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET name = excluded.name, url = excluded.url",
+        "INSERT INTO nodes (id, name, url, fingerprint, added_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+             name = excluded.name, url = excluded.url, fingerprint = excluded.fingerprint",
     )
     .bind(&row.id)
     .bind(&row.name)
     .bind(&row.url)
+    .bind(&row.fingerprint)
     .bind(&row.added_at)
     .execute(pool)
     .await?;
@@ -917,13 +921,18 @@ mod tests {
         .unwrap()
     }
 
-    /// Make `pool` look like a database from before the squash: the same
-    /// schema, with `upto` development migrations recorded.
+    /// Make `pool` look like a database from before the squash: the squashed
+    /// schema (without later migrations' changes), with `upto` development
+    /// migrations recorded.
     async fn record_old_migrations(pool: &SqlitePool, upto: i64) {
         sqlx::query("DELETE FROM _sqlx_migrations")
             .execute(pool)
             .await
             .unwrap();
+        // Undo 0002, if it's there.
+        let _ = sqlx::query("ALTER TABLE nodes DROP COLUMN fingerprint")
+            .execute(pool)
+            .await;
         for v in 1..=upto {
             let description = match v {
                 1 => "baseline",
@@ -957,7 +966,13 @@ mod tests {
                 .fetch_all(&pool)
                 .await
                 .unwrap();
-        assert_eq!(rows, [(1, "schema".to_string())]);
+        assert_eq!(
+            rows,
+            [
+                (1, "schema".to_string()),
+                (2, "node fingerprints".to_string())
+            ]
+        );
 
         // Short of the last development migration it can't be adopted.
         record_old_migrations(&pool, 19).await;

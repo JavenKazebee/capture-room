@@ -347,10 +347,38 @@ in-house `DataTable`. Dev: Vite proxies `/api` and `/ws` to :7700.
 
 ## Networking and security
 
-One HTTP port (default 7700); the controller's clock on UDP port + 100; PTP on UDP
-319/320; RTSP 8554. Nodes are discovered by mDNS (`_capture-room._tcp.local.`) and health
-polled; mDNS peers are pruned after ~15 s, URL-added peers persist. The controller
-initiates every connection; the only push is the clock claim.
+One API port (default 7700), HTTPS and HTTP; the controller's clock on UDP port + 100;
+PTP on UDP 319/320; RTSP 8554. Nodes are found by mDNS (`_capture-room._tcp.local.`) or
+added by address, approved, stored and health polled. The controller initiates every
+connection; the only push is the clock claim.
+
+**TLS** (`tls.rs`): each node makes a key on first run and a self-signed certificate for
+it (renewed at startup within 60 days of its 800: macOS refuses longer). Its fingerprint
+is the SHA-256 of the key, so renewing keeps it; Settings › About shows it.
+
+- One port: a connection's first byte tells a TLS handshake from plain HTTP. Plain HTTP
+  is answered from loopback and for `/whep` (players can't trust a self-signed
+  certificate); anything else gets a 308 to HTTPS. The menu bar opens `http://localhost`.
+- Nodes always reach each other over HTTPS. The peer client (HTTP and WebSockets) trusts
+  only the keys of approved nodes; a separate client takes any key, only for the open
+  `/api/v1/auth/identity`, and never sends the token.
+- Browsers accept one certificate warning, for the controller: the UI reaches nodes only
+  through it, WHEP too (`/api/v1/nodes/{id}/whep/…`; the media itself is WebRTC).
+
+**Approving nodes** (`controller/discovery.rs`): a controller asks a node who it is and
+reads its key from the handshake before trusting it. Approved nodes are stored with that
+key pinned and never pruned.
+
+- An mDNS announcement for an approved node moves it to a new URL only if it holds the
+  pinned key. An unknown node is approved at once while the controller has no access
+  token (nothing to protect; zero setup), else listed under Found on the network until
+  approved or dismissed. Found nodes drop off after ~15 s unreachable.
+- Adding by address approves. Approving gives the node this controller's token; one with
+  another token refuses and shows as `access_denied`. An address that claims an approved
+  node's ID with another key is refused.
+- Removing a node unpins it and stops it being offered again until the controller
+  restarts. Nodes stored before TLS have their key pinned at their stored URL on first
+  contact.
 
 **Access token** (`auth.rs`): one shared secret per cluster, stored in each node's config.
 With none set the API is open (Setup › Checks warns). Once set, every `/api` route and
@@ -366,10 +394,11 @@ port.
   shows as `access_denied`.
 - Setting it on a controller sets it on each registered node first (with the old one),
   then itself. Unreachable nodes keep their old token and are listed.
-- **Limits:** plain HTTP, so anyone sniffing the LAN can read it; and a controller sends it
-  to whatever answers an mDNS announcement. An announcement can't move a known node to a
-  new URL unless it was found by mDNS and is failing health checks. A lost token is recovered by deleting
-  `access_token` from `node_config` in the node's database.
+- The cookie is `Secure` when signed in over HTTPS (plain HTTP is only answered from this
+  machine).
+- **A lost token:** the menu bar's Copy Access Token (whoever is at the machine is
+  trusted), or `capture-room access-token show | clear [--restart]` on the node's
+  database (the installed service's by default).
 
 ## Deployment (macOS)
 

@@ -27,6 +27,14 @@ pub fn installed_port() -> Option<u16> {
     None
 }
 
+pub fn installed_db() -> Option<PathBuf> {
+    None
+}
+
+pub fn restart() -> Result<()> {
+    bail!("installing as a service isn't supported on this OS yet")
+}
+
 pub fn is_running() -> bool {
     false
 }

@@ -5,10 +5,12 @@ import { toast } from 'vue-sonner'
 import { Plus } from '@lucide/vue'
 import { errorMessage } from '@/composables/useApi'
 import { reloadAll } from '@/composables/useWebSocket'
+import { formatFingerprint } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
 import { useStorageStore } from '@/stores/storage'
 import { useChecksStore } from '@/stores/checks'
+import type { FoundNodeDto } from '@/types/generated/FoundNodeDto'
 import type { NodeDto } from '@/types/generated/NodeDto'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -102,6 +104,27 @@ async function addNode() {
   }
 }
 
+/** Found nodes with an approve or dismiss on its way. */
+const deciding = ref(new Set<string>())
+
+async function decide(node: FoundNodeDto, approve: boolean) {
+  if (deciding.value.has(node.id)) return
+  deciding.value.add(node.id)
+  try {
+    if (approve) {
+      await store.approve(node.id)
+      toast.success(`Approved ${node.name}`)
+      await refresh()
+    } else {
+      await store.dismiss(node.id)
+    }
+  } catch (e) {
+    notifyError(`Couldn't ${approve ? 'approve' : 'dismiss'} ${node.name}`, e)
+  } finally {
+    deciding.value.delete(node.id)
+  }
+}
+
 // Kept after the dialog closes so its title doesn't change mid-animation.
 const removing = ref<NodeDto | null>(null)
 const confirmRemove = ref(false)
@@ -188,13 +211,44 @@ async function removeNode() {
   </PageHeader>
 
   <div class="p-4 space-y-3">
+    <section v-if="store.isController && store.found.length" class="rounded-lg border border-border bg-card">
+      <header class="px-3 pt-3 pb-2">
+        <h2 class="text-sm font-medium">Found on the network</h2>
+        <p class="text-xs text-muted-foreground">
+          Approve a node to control it from here; it gets this controller's access token. Check its key
+          matches the one under Settings › About on that machine first.
+        </p>
+      </header>
+      <ul class="divide-y divide-border border-t border-border">
+        <li v-for="f in store.found" :key="f.id" class="flex items-center gap-3 px-3 py-2">
+          <div class="min-w-0 flex-1">
+            <div class="text-sm truncate">
+              {{ f.name }} <span class="text-xs text-muted-foreground num">· {{ f.url }} · v{{ f.version }}</span>
+            </div>
+            <div class="text-xs text-muted-foreground num break-all">Key {{ formatFingerprint(f.fingerprint) }}</div>
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            class="h-7 text-xs"
+            :disabled="deciding.has(f.id)"
+            @click="decide(f, false)"
+          >
+            Dismiss
+          </Button>
+          <Button size="sm" class="h-7 text-xs" :disabled="deciding.has(f.id)" @click="decide(f, true)">
+            Approve
+          </Button>
+        </li>
+      </ul>
+    </section>
     <div class="grid gap-3 grid-cols-[repeat(auto-fill,minmax(24rem,1fr))]">
       <NodeCard v-for="node in store.nodes" :key="node.id" :node="node" @remove="askRemove(node)" />
     </div>
     <p class="text-xs text-muted-foreground">
       <template v-if="store.isController">
-        Nodes on this network appear automatically. Discovered nodes drop off about 15 seconds after
-        they go offline; nodes added by address stay listed until removed.
+        Nodes on this network appear automatically: approved at once while this controller has no access
+        token, else listed above for you to approve. Approved nodes stay listed until removed.
       </template>
       <template v-else>
         This machine records its own sources. Turn on Controller to find other nodes on the network and
@@ -219,7 +273,7 @@ async function removeNode() {
     confirm-label="Remove"
     @confirm="removeNode"
   >
-    It stops appearing here and won't be restored on restart. Anything recording on it keeps
-    recording. You can add it again by address.
+    It stops appearing here and this controller stops trusting its key. Anything recording on it keeps
+    recording. You can add it again by address, or approve it when it's found after a restart.
   </ConfirmDialog>
 </template>

@@ -3,7 +3,7 @@ import { computed, nextTick, ref, type ComponentPublicInstance } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { Check, Clock, Pencil, Radio, Trash2, TriangleAlert, Video, X } from '@lucide/vue'
 import { clockSummary } from '@/lib/clock'
-import { formatUptime } from '@/lib/format'
+import { formatFingerprint, formatUptime } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
 import { useSourcesStore } from '@/stores/sources'
@@ -37,7 +37,7 @@ const checks = useChecksStore()
 const router = useRouter()
 
 const isController = computed(() => props.node.is_self && nodes.isController)
-const canRemove = computed(() => !props.node.is_self && props.node.manual && nodes.isController)
+const canRemove = computed(() => !props.node.is_self && nodes.isController)
 
 const nodeSources = computed(() => sources.sources.filter((s) => s.node_id === props.node.id))
 const stats = computed(() => ({
@@ -130,7 +130,17 @@ async function saveRename() {
           </Badge>
           <Badge v-if="isController" variant="default">Controller</Badge>
           <Badge v-if="node.is_self" variant="outline">This machine</Badge>
-          <Badge v-else variant="secondary">{{ node.manual ? 'Added by address' : 'Discovered' }}</Badge>
+          <Badge
+            v-if="node.fingerprint"
+            variant="secondary"
+            class="num"
+            :title="`TLS key ${formatFingerprint(node.fingerprint)}`"
+          >
+            Key {{ formatFingerprint(node.fingerprint, true) }}
+          </Badge>
+          <Badge v-else variant="secondary" title="Approved before TLS: its key is pinned when it next answers">
+            Key not pinned
+          </Badge>
         </template>
       </div>
       <div class="mt-0.5 pl-4 flex items-center gap-1 h-5 text-xs text-muted-foreground min-w-0">
