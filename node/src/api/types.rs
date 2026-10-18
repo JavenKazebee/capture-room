@@ -2113,12 +2113,31 @@ pub struct NodeDto {
     /// SHA-256 of its TLS key, as pinned. `None` for a node approved before
     /// TLS, until its key is pinned.
     pub fingerprint: Option<String>,
-    /// Its last health check was refused: it has a different access token.
-    pub access_denied: bool,
+    /// Why its last health check failed; `None` while healthy, and until
+    /// its first check.
+    pub unreachable: Option<Unreachable>,
     /// What the node last reported; see [`NodeStatus::unanswered`] for one
     /// that hasn't answered yet.
     #[serde(flatten)]
     pub status: NodeStatus,
+}
+
+/// Why an approved node failed its health check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum Unreachable {
+    /// Nothing answers at its address.
+    Offline,
+    /// It refuses this controller's access token: it has a different one.
+    AccessDenied,
+    /// It holds a key other than the one pinned: reinstalled, or its data
+    /// reset. `fingerprint` is the key it holds now.
+    KeyChanged { fingerprint: String },
+    /// Another node answers at its address (its IP went to another machine).
+    OtherNode { name: String },
+    /// It answers with its pinned key, but the check failed.
+    Failing { error: String },
 }
 
 /// A node that announced itself over mDNS, waiting to be approved.

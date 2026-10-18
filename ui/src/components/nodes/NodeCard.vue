@@ -48,6 +48,28 @@ const stats = computed(() => ({
 }))
 
 const clock = computed(() => clockSummary(props.node.clock))
+
+/** Why it's unreachable: a few words for the header, then what to do about it. */
+const down = computed(() => {
+  const u = props.node.unreachable
+  switch (u?.kind) {
+    case 'access-denied':
+      return { label: 'Refuses access token', detail: 'Refuses this controller’s access token: set the same one on it.' }
+    case 'key-changed':
+      return {
+        label: 'Key changed',
+        detail: `Holds key ${formatFingerprint(u.fingerprint, true)}, not the approved one. If it was reinstalled, check the key in its Settings, then remove it and add it again.`,
+      }
+    case 'other-node':
+      return { label: 'Another node here', detail: `${u.name} answers at this address now. Remove this node and add it at its new address.` }
+    case 'failing':
+      return { label: 'Not answering', detail: `Answers, but its check failed: ${u.error}` }
+    case 'offline':
+      return { label: 'Offline', detail: 'Nothing answers at this address: check it’s on and on the network.' }
+    default:
+      return { label: 'Unreachable', detail: 'Not available while unreachable.' }
+  }
+})
 const problems = computed(() => (props.node.healthy ? checks.problems(props.node.id) : 0))
 
 /** `undefined` while loading, `null` if it failed. */
@@ -151,7 +173,7 @@ async function saveRename() {
           <span>·</span><span class="shrink-0">up <span class="num">{{ formatUptime(node.uptime_secs) }}</span></span>
         </template>
         <template v-else>
-          <span>·</span><span class="text-destructive shrink-0">Unreachable</span>
+          <span>·</span><span class="text-destructive shrink-0">{{ down.label }}</span>
         </template>
       </div>
       <div class="pl-4 flex items-center gap-1.5 h-5 text-xs text-muted-foreground min-w-0" :title="node.healthy ? clock.title : undefined">
@@ -197,8 +219,13 @@ async function saveRename() {
 
     <section class="px-4 py-3 space-y-2">
       <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Storage</h3>
-      <p v-if="!node.healthy" class="text-xs h-[1.625rem] flex items-center" :class="node.access_denied ? 'text-destructive' : 'text-muted-foreground'">
-        {{ node.access_denied ? 'Refuses this controller’s access token: set the same one on it.' : 'Not available while unreachable.' }}
+      <p
+        v-if="!node.healthy"
+        class="text-xs min-h-[1.625rem] flex items-center line-clamp-2 break-words"
+        :class="node.unreachable && node.unreachable.kind !== 'offline' ? 'text-destructive' : 'text-muted-foreground'"
+        :title="down.detail"
+      >
+        {{ down.detail }}
       </p>
       <p v-else-if="volumes === undefined" class="text-xs text-muted-foreground h-[1.625rem] flex items-center">Loading…</p>
       <p v-else-if="volumes === null" class="text-xs text-destructive h-[1.625rem] flex items-center">Couldn't read storage.</p>

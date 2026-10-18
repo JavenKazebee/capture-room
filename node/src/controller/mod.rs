@@ -71,7 +71,7 @@ impl Controller {
                 fingerprint: row.fingerprint,
                 healthy: false,
                 fail_count: 0,
-                access_denied: false,
+                unreachable: None,
                 status: None,
                 relay: ctx.cancel.child_token(),
             };

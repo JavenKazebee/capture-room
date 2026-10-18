@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::api::types::{ClockStatusDto, FoundNodeDto, NodeDto, NodeStatus};
+use crate::api::types::{ClockStatusDto, FoundNodeDto, NodeDto, NodeStatus, Unreachable};
 use crate::tls::Pins;
 
 /// An approved node: stored in the `nodes` table, its key pinned, sent the
@@ -20,8 +20,8 @@ pub struct NodeEntry {
     pub healthy: bool,
     /// Consecutive failed health checks. Reset to 0 on success.
     pub fail_count: u32,
-    /// The last check was refused: it has a different access token.
-    pub access_denied: bool,
+    /// Why the last check failed; `None` after a success.
+    pub unreachable: Option<Unreachable>,
     /// What it reported at its last successful health check; `None` until
     /// it has answered once.
     pub status: Option<NodeStatus>,
@@ -37,7 +37,7 @@ impl From<&NodeEntry> for NodeDto {
             healthy: n.healthy,
             is_self: false,
             fingerprint: n.fingerprint.clone(),
-            access_denied: n.access_denied,
+            unreachable: n.unreachable.clone(),
             status: n
                 .status
                 .clone()
@@ -183,21 +183,22 @@ impl NodeRegistry {
         e.status = Some(status.clone());
         e.healthy = true;
         e.fail_count = 0;
-        e.access_denied = false;
+        e.unreachable = None;
         (recovered, clock_changed)
     }
 
-    /// Record a failed health check, `denied` if it refused this node's
-    /// access token. Returns the new consecutive failure count.
-    pub fn record_failure(&mut self, id: &str, denied: bool) -> u32 {
+    /// Record a failed health check and why. Returns the new consecutive
+    /// failure count, and whether the reason differs from the last check's.
+    pub fn record_failure(&mut self, id: &str, reason: Unreachable) -> (u32, bool) {
         match self.entries.get_mut(id) {
             Some(e) => {
                 e.healthy = false;
                 e.fail_count += 1;
-                e.access_denied = denied;
-                e.fail_count
+                let changed = e.unreachable.as_ref() != Some(&reason);
+                e.unreachable = Some(reason);
+                (e.fail_count, changed)
             }
-            None => 0,
+            None => (0, false),
         }
     }
 }
@@ -214,7 +215,7 @@ mod tests {
             fingerprint: fingerprint.map(String::from),
             healthy: false,
             fail_count: 0,
-            access_denied: false,
+            unreachable: None,
             status: None,
             relay: CancellationToken::new(),
         }
@@ -262,5 +263,22 @@ mod tests {
             !r.set_found(found("node", "k2")),
             "removed: not offered again"
         );
+    }
+
+    #[test]
+    fn a_failure_reports_when_its_reason_changes() {
+        let mut r = NodeRegistry::new(Arc::default());
+        r.upsert(entry(Some("k1")));
+        assert_eq!(r.record_failure("node", Unreachable::Offline), (1, true));
+        assert_eq!(r.record_failure("node", Unreachable::Offline), (2, false));
+        let changed = Unreachable::KeyChanged {
+            fingerprint: "k2".into(),
+        };
+        assert_eq!(r.record_failure("node", changed.clone()), (3, true));
+        assert_eq!(r.get("node").unwrap().unreachable, Some(changed));
+
+        r.record_success(&NodeStatus::unanswered("node".into(), "Node".into()));
+        let e = r.get("node").unwrap();
+        assert!(e.healthy && e.unreachable.is_none() && e.fail_count == 0);
     }
 }

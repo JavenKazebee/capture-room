@@ -120,7 +120,7 @@ async fn get_nodes(State(state): State<Arc<AppState>>) -> Json<Vec<NodeDto>> {
         healthy: true,
         is_self: true,
         fingerprint: Some(state.fingerprint.clone()),
-        access_denied: false,
+        unreachable: None,
         status: crate::api::node::local_status(&state).await,
     }];
 

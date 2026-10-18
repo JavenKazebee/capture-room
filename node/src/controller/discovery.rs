@@ -11,7 +11,8 @@ use tracing::{debug, info, warn};
 use super::registry::NodeEntry;
 use super::{relay, Ctx};
 use crate::api::types::{
-    AccessTokenRequest, ClockClaim, ClockMode, FoundNodeDto, IdentityDto, NodeStatus, WsEvent,
+    AccessTokenRequest, ClockClaim, ClockMode, FoundNodeDto, IdentityDto, NodeStatus, Unreachable,
+    WsEvent,
 };
 use crate::auth::AccessDenied;
 use crate::db;
@@ -239,7 +240,7 @@ async fn approve(ctx: &Ctx, url: &str, identity: &IdentityDto, fingerprint: Stri
             fingerprint: Some(fingerprint),
             healthy: false,
             fail_count: 0,
-            access_denied: false,
+            unreachable: None,
             status: None,
             relay: ctx.cancel.child_token(),
         },
@@ -308,6 +309,33 @@ async fn fetch_status(ctx: &Ctx, url: &str) -> Result<NodeStatus> {
     Ok(resp.json::<NodeStatus>().await?)
 }
 
+/// Why the check of node `id` at `url` failed with `error`. Unless the node
+/// refused the token, it's asked who it is without pinning, which tells a
+/// changed key or another node at that address from nothing answering.
+async fn diagnose(
+    ctx: &Ctx,
+    id: &str,
+    url: &str,
+    pinned: Option<&str>,
+    error: anyhow::Error,
+) -> Unreachable {
+    if error.is::<AccessDenied>() {
+        return Unreachable::AccessDenied;
+    }
+    match ctx.state.peers.identify(url).await {
+        Err(_) => Unreachable::Offline,
+        Ok((identity, _)) if identity.id != id => Unreachable::OtherNode {
+            name: identity.name,
+        },
+        Ok((_, fingerprint)) if pinned.is_some_and(|p| p != fingerprint) => {
+            Unreachable::KeyChanged { fingerprint }
+        }
+        Ok(_) => Unreachable::Failing {
+            error: format!("{error:#}"),
+        },
+    }
+}
+
 /// Pin the key of a node approved before TLS, at the URL it was approved
 /// at: trusted once, as it was then.
 async fn pin(ctx: &Ctx, id: &str, url: &str) -> Result<()> {
@@ -374,7 +402,7 @@ pub fn start_health_poller(ctx: Ctx) {
                 (
                     reg.all()
                         .iter()
-                        .map(|n| (n.id.clone(), n.url.clone(), n.fingerprint.is_none()))
+                        .map(|n| (n.id.clone(), n.url.clone(), n.fingerprint.clone()))
                         .collect(),
                     reg.found
                         .values()
@@ -403,22 +431,31 @@ pub fn start_health_poller(ctx: Ctx) {
             };
 
             // Check concurrently so one unreachable node doesn't delay the rest.
-            let results = join_all(entries.into_iter().map(|(id, url, unpinned)| {
+            let results = join_all(entries.into_iter().map(|(id, url, pinned)| {
                 let ctx = &ctx;
                 let claim = claim.as_ref();
                 async move {
-                    if unpinned {
-                        if let Err(e) = pin(ctx, &id, &url).await {
-                            return (id, Err(e));
+                    let result = async {
+                        if pinned.is_none() {
+                            pin(ctx, &id, &url).await?;
                         }
-                    }
-                    if let Some(claim) = claim {
-                        // Nodes that predate clock sync refuse it; that's fine.
-                        if let Err(e) = send_claim(ctx, &url, claim).await {
-                            debug!(id = %id, error = %e, "clock claim failed");
+                        if let Some(claim) = claim {
+                            // Nodes that predate clock sync refuse it; that's fine.
+                            if let Err(e) = send_claim(ctx, &url, claim).await {
+                                debug!(id = %id, error = %e, "clock claim failed");
+                            }
                         }
+                        let status = fetch_status(ctx, &url).await?;
+                        if status.id != id {
+                            return Err(anyhow!("answered as {} ({})", status.name, status.id));
+                        }
+                        Ok(status)
                     }
-                    let result = fetch_status(ctx, &url).await;
+                    .await;
+                    let result = match result {
+                        Ok(status) => Ok(status),
+                        Err(e) => Err(diagnose(ctx, &id, &url, pinned.as_deref(), e).await),
+                    };
                     (id, result)
                 }
             }))
@@ -427,7 +464,7 @@ pub fn start_health_poller(ctx: Ctx) {
             let mut reg = ctx.registry.write().await;
             for (id, result) in results {
                 match result {
-                    Ok(status) if status.id == id => {
+                    Ok(status) => {
                         let (recovered, clock_changed) = reg.record_success(&status);
                         if recovered {
                             info!(id = %id, "node reachable again");
@@ -438,17 +475,17 @@ pub fn start_health_poller(ctx: Ctx) {
                             ctx.state.emit_controller(&WsEvent::NodeUpdated);
                         }
                     }
-                    result => {
-                        let denied = result.is_err_and(|e| e.is::<AccessDenied>());
-                        if reg.record_failure(&id, denied) == 1 {
-                            if denied {
-                                warn!(id = %id, "node refused this controller's access token");
-                            } else {
-                                warn!(id = %id, "node health check failed");
-                            }
+                    Err(reason) => {
+                        let (fails, changed) = reg.record_failure(&id, reason.clone());
+                        if changed {
+                            warn!(id = %id, reason = ?reason, "node unreachable");
+                        }
+                        if fails == 1 {
                             ctx.state.emit_controller(&WsEvent::NodeOffline {
                                 peer_id: id.clone(),
                             });
+                        } else if changed {
+                            ctx.state.emit_controller(&WsEvent::NodeUpdated);
                         }
                     }
                 }

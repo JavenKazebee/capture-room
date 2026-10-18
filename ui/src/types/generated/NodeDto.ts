@@ -2,6 +2,7 @@
 import type { ClockStatusDto } from "./ClockStatusDto";
 import type { ReplayCodec } from "./ReplayCodec";
 import type { SourceTypeSupport } from "./SourceTypeSupport";
+import type { Unreachable } from "./Unreachable";
 
 export type NodeDto = { 
 /**
@@ -14,9 +15,10 @@ url: string, healthy: boolean, is_self: boolean,
  */
 fingerprint: string | null, 
 /**
- * Its last health check was refused: it has a different access token.
+ * Why its last health check failed; `None` while healthy, and until
+ * its first check.
  */
-access_denied: boolean, id: string, name: string, version: string, uptime_secs: number, is_controller: boolean, 
+unreachable: Unreachable | null, id: string, name: string, version: string, uptime_secs: number, is_controller: boolean, 
 /**
  * Video encoder elements this node has (of those recording can use), so
  * the UI can say what an output's Auto encoder resolves to here.

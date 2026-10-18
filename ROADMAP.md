@@ -13,7 +13,8 @@ browser preview; playout channels with gapless playlists and NDI, SRT, RTSP, WHE
 display and Decklink outputs; shared node clock, synchronized start and MOV timecode;
 Setup › Checks; pushed thumbnails up to 30 fps; instant replay (buffers, clips, groups, export); macOS installer,
 login service, menu bar icon and signed self-updates; a shared access token over TLS, with
-pinned node keys, approval of found nodes, and lost-token recovery (menu bar, CLI); a Logs
+pinned node keys, approval of found nodes, lost-token recovery (menu bar, CLI) and node
+cards saying why a node is unreachable (offline, changed key, another node, token); a Logs
 view of every node's log lines; schedules that record and play out once or weekly.
 
 ## Now: Mac Pro (Intel, two Decklink 8K Pro G2s)
@@ -37,10 +38,8 @@ view of every node's log lines; schedules that record and play out once or weekl
 
 ## Next
 
-- **Authentication** — the shared token travels over TLS with pinned node keys,
-  and only to approved nodes. Left: a node card saying *why* a node is unreachable
-  (wrong key vs. offline). Also optional: trust the controller's certificate in the
-  keychain at install, so browsers on that Mac don't warn.
+- **Authentication** — optional: trust the controller's certificate in the keychain at
+  install, so browsers on that Mac don't warn.
 - **Packaging** — Developer ID (stable signature so permissions survive updates,
   notarization, hardened runtime); rolling back an update that won't start; log rotation.
 - **Hardware encoders** — NVENC, QSV and VA-API in `RecordingProfile::encoders` with the
