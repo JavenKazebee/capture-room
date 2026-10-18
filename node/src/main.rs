@@ -135,6 +135,8 @@ async fn run(
             .with(logs::layer())
             .init();
     }
+    #[cfg(unix)]
+    service::log_rotation::spawn();
 
     if let Some(dir) = bundled_gst {
         info!(dir = %dir.display(), "using the GStreamer bundled in");

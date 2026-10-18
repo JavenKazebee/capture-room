@@ -15,7 +15,7 @@ Setup › Checks; pushed thumbnails up to 30 fps; instant replay (buffers, clips
 login service, menu bar icon and signed self-updates; a shared access token over TLS, with
 pinned node keys, approval of found nodes, lost-token recovery (menu bar, CLI) and node
 cards saying why a node is unreachable (offline, changed key, another node, token); a Logs
-view of every node's log lines; schedules that record and play out once or weekly.
+view of every node's log lines, and rotation of the service's log file; schedules that record and play out once or weekly.
 
 ## Now: Mac Pro (Intel, two Decklink 8K Pro G2s)
 
@@ -41,7 +41,7 @@ view of every node's log lines; schedules that record and play out once or weekl
 - **Authentication** — optional: trust the controller's certificate in the keychain at
   install, so browsers on that Mac don't warn.
 - **Packaging** — Developer ID (stable signature so permissions survive updates,
-  notarization, hardened runtime); rolling back an update that won't start; log rotation.
+  notarization, hardened runtime).
 - **Hardware encoders** — NVENC, QSV and VA-API in `RecordingProfile::encoders` with the
   same fallback. Only VA-API is testable today (AMD). Re-run benchmarks after. Encode
   sharing between identical legs: decided against for now.

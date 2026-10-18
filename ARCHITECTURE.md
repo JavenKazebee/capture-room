@@ -453,7 +453,8 @@ curl -fsSL https://github.com/JavenKazebee/capture-room/releases/latest/download
 - **Service:** a LaunchAgent (a LaunchDaemon can't get camera/mic/screen permission).
   `KeepAlive { SuccessfulExit = false }` restarts crashes and panics but not Quit. Exit 75
   asks for a restart. Start at Login is a copy of the plist, so turning it off never stops
-  the node.
+  the node. launchd opens the log file once, so past 20 MB the node renames it to `.1`
+  (keeping four) and `dup2`s a fresh one over stdout and stderr (`service/log_rotation.rs`).
 - **Menu bar icon** (`tray.rs`): status, open UI, update, Start at Login, Quit.
 - **Updates** (`update.rs`): checks `latest.json` every 6 h; refuses while busy; verifies
   the minisign signature against the compiled-in key (`scripts/release-key.pub`), swaps

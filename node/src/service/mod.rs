@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
+#[cfg(unix)]
+pub mod log_rotation;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
