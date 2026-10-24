@@ -29,6 +29,10 @@ let attempt = 0
 let connectedBefore = false
 
 export const wsStatus = ref<WsStatus>('disconnected')
+/** Failed connection attempts since the socket was last open; 0 while connected. */
+export const reconnectAttempt = ref(0)
+/** Whether the socket has opened at least once since the page loaded. */
+export const wsEverConnected = ref(false)
 
 function connect() {
   if (socket && socket.readyState <= WebSocket.OPEN) return
@@ -43,6 +47,8 @@ function connect() {
     wsStatus.value = 'connected'
     if (connectedBefore) useEventsStore().log('info', 'Reconnected to server')
     attempt = 0
+    reconnectAttempt.value = 0
+    wsEverConnected.value = true
     if (reconnectTimer) {
       clearTimeout(reconnectTimer)
       reconnectTimer = null
@@ -68,6 +74,7 @@ function connect() {
     checkAuth()
     const delay = Math.min(BASE_DELAY * 2 ** attempt, MAX_DELAY)
     attempt++
+    reconnectAttempt.value++
     reconnectTimer = setTimeout(connect, delay)
   })
 
@@ -83,7 +90,7 @@ async function reloadAfterReconnect() {
 }
 
 /** Connect now instead of waiting out the backoff (the tab came back, the network did). */
-function reconnectNow() {
+export function reconnectNow() {
   if (wsStatus.value !== 'disconnected') return
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
