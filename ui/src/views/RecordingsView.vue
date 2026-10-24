@@ -173,11 +173,6 @@ const columns = computed<Column<RecordingSession>[]>(() => [
 /** Checked rows, for bulk actions (separate from the one open in the detail). */
 const checked = useSelection()
 const checkedSessions = computed(() => recordings.sessions.filter((s) => checked.selected.value.has(key(s))))
-// Sessions removed here or elsewhere drop out of the selection.
-watch(
-  () => recordings.sessions.map(key),
-  (keys) => checked.retain(keys),
-)
 
 registerCommands(() => [
   {

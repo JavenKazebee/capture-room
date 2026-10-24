@@ -1,5 +1,5 @@
 <script setup lang="ts" generic="T">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ArrowDown, ArrowUp, ChevronsUpDown } from '@lucide/vue'
 import { usePreferences } from '@/composables/usePreferences'
 import type { Selection } from '@/composables/useSelection'
@@ -88,6 +88,8 @@ defineExpose({ displayedRows })
 const colspan = computed(() => visibleColumns.value.length + (props.selection ? 1 : 0))
 
 const displayedKeys = computed(() => displayedRows.value.map(props.rowKey))
+// Rows a filter hides leave the selection, so a bulk action only touches rows in view.
+watch(displayedKeys, (keys) => props.selection?.retain(keys))
 const isSelected = (r: T) => !!props.selection?.selected.value.has(props.rowKey(r))
 
 /** The header checkbox: over the rows shown, so a filter narrows what it selects. */

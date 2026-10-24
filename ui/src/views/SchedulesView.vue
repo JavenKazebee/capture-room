@@ -124,10 +124,6 @@ async function destroy(s: ScheduleDto) {
 
 const checked = useSelection()
 const checkedSchedules = computed(() => store.schedules.filter((s) => checked.selected.value.has(s.id)))
-watch(
-  () => store.schedules.map((s) => s.id),
-  (ids) => checked.retain(ids),
-)
 const bulkDeleting = ref(false)
 
 const table = ref<{ displayedRows: ScheduleDto[] }>()

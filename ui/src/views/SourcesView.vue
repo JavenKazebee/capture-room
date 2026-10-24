@@ -139,10 +139,6 @@ const deletable = (s: Source) => CONFIGURED_TYPES.includes(s.source_type) && s.s
 
 const checked = useSelection()
 const checkedSources = computed(() => store.sources.filter((s) => checked.selected.value.has(s.key)))
-watch(
-  () => store.sources.map((s) => s.key),
-  (keys) => checked.retain(keys),
-)
 const bulkDeleting = ref(false)
 
 const table = ref<{ displayedRows: Source[] }>()
