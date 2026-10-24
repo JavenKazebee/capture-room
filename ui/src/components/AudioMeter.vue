@@ -9,6 +9,9 @@ const props = defineProps<{
 const DB_MIN = -60
 const DB_MAX = 0
 
+// A sample-peak meter, the broadcast standard: a solid peak bar, a peak-hold
+// line and a clip light. The backend's RMS level isn't drawn.
+
 // Zones are fixed by position, like a hardware meter: the top of the scale is
 // always red, whatever the level. One gradient is drawn for every layer and
 // each layer reveals only its share of it.
@@ -48,13 +51,12 @@ function finite(db: number | null): number {
 // straight to the DOM; only the clip and silence flags, which change rarely,
 // go through Vue. The layers' clip-paths start as static attributes in the
 // template so a re-render never resets what the animation wrote.
-type Bar = { peak: number; rms: number; holdTop: number; holdAt: number; loudAt: number }
+type Bar = { peak: number; holdTop: number; holdAt: number; loudAt: number }
 let bars: Bar[] = []
 const clipped = ref<boolean[]>([])
 const silent = ref<boolean[]>([])
 
 const peakEls: HTMLElement[] = []
-const rmsEls: HTMLElement[] = []
 const holdEls: HTMLElement[] = []
 
 function heldDb(bar: Bar, now: number): number {
@@ -74,7 +76,7 @@ watch(
   (channels) => {
     const now = performance.now()
     if (channels.length !== bars.length) {
-      bars = channels.map(() => ({ peak: DB_MIN, rms: DB_MIN, holdTop: -Infinity, holdAt: now, loudAt: now }))
+      bars = channels.map(() => ({ peak: DB_MIN, holdTop: -Infinity, holdAt: now, loudAt: now }))
       clipped.value = channels.map(() => false)
       silent.value = channels.map(() => false)
     }
@@ -111,12 +113,10 @@ function tick(now: number) {
     const bar = bars[i]
     if (!bar) return
     bar.peak = Math.max(finite(ch.peak_db), bar.peak - fall, DB_MIN)
-    bar.rms = Math.max(finite(ch.rms_db), bar.rms - fall, DB_MIN)
     const held = heldDb(bar, now)
     reveal(peakEls[i], bar.peak)
-    reveal(rmsEls[i], bar.rms)
     reveal(holdEls[i], held, true)
-    moving ||= bar.peak > DB_MIN || bar.rms > DB_MIN || held > DB_MIN
+    moving ||= bar.peak > DB_MIN || held > DB_MIN
   })
   // Settled at the floor: sleep until the next level message.
   frame = moving ? requestAnimationFrame(tick) : 0
@@ -147,16 +147,9 @@ onBeforeUnmount(() => cancelAnimationFrame(frame))
         <!-- Track: the zones, faint, so the scale reads even when idle -->
         <div v-if="!silent[i]" class="absolute inset-0 opacity-15" style="background: var(--zones)" />
 
-        <!-- Peak: the full extent, dimmer -->
+        <!-- Peak: the bar, solid -->
         <div
           :ref="(el) => (peakEls[i] = el as HTMLElement)"
-          class="absolute inset-0 opacity-45"
-          style="background: var(--zones); clip-path: inset(100% 0 0 0)"
-        />
-
-        <!-- RMS: the body, solid -->
-        <div
-          :ref="(el) => (rmsEls[i] = el as HTMLElement)"
           class="absolute inset-0"
           style="background: var(--zones); clip-path: inset(100% 0 0 0)"
         />
