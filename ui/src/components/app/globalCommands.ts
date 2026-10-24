@@ -31,6 +31,7 @@ import { useRecordingsStore } from '@/stores/recordings'
 import { useSchedulesStore } from '@/stores/schedules'
 import { useSourcesStore, type Source } from '@/stores/sources'
 import type { ScheduleDto } from '@/types/generated/ScheduleDto'
+import { scrollToHash } from '@/router'
 import { setupPages, workspaces } from './workspaces'
 
 /** Every page: the operating workspaces, then Setup's pages in place of Setup. */
@@ -40,8 +41,8 @@ const SHORTCUTS: Record<string, string> = { '/setup/logs': shortcut('J') }
 const SETTINGS_SECTIONS = [
   { hash: 'appearance', label: 'Appearance', icon: Palette, keywords: ['theme', 'density', 'dark', 'light'] },
   { hash: 'monitoring', label: 'Monitoring', icon: Gauge, keywords: ['thumbnail', 'meter', 'levels'] },
-  { hash: 'clock', label: 'Clock sync', icon: Clock, keywords: ['ptp', 'ntp', 'time'] },
-  { hash: 'access', label: 'Access token', icon: KeyRound, keywords: ['password', 'sign in', 'auth', 'security'] },
+  { hash: 'clock-sync', label: 'Clock sync', icon: Clock, keywords: ['ptp', 'ntp', 'time'] },
+  { hash: 'access-token', label: 'Access token', icon: KeyRound, keywords: ['password', 'sign in', 'auth', 'security'] },
   { hash: 'about', label: 'About', icon: Info, keywords: ['version', 'uptime', 'fingerprint'] },
 ]
 
@@ -197,13 +198,18 @@ export function useGlobalCommands() {
   )
 
   registerCommands(() =>
-    SETTINGS_SECTIONS.filter((s) => s.hash !== 'clock' || nodes.isController).map((s) => ({
+    SETTINGS_SECTIONS.filter((s) => s.hash !== 'clock-sync' || nodes.isController).map((s) => ({
       id: `settings:${s.hash}`,
       title: `Settings: ${s.label}`,
       group: 'Settings',
       icon: s.icon,
       keywords: ['settings', 'preferences', ...s.keywords],
-      run: () => router.push({ path: '/setup/settings', hash: `#${s.hash}` }),
+      run: () => {
+        const to = { path: '/setup/settings', hash: `#${s.hash}` }
+        // Pushing the URL already shown is a no-op, so scroll ourselves.
+        if (router.currentRoute.value.fullPath === router.resolve(to).fullPath) scrollToHash(to.hash)
+        else router.push(to)
+      },
     })),
   )
 

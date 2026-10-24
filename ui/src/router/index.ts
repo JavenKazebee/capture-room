@@ -7,7 +7,7 @@ import { createRouter, createWebHistory } from 'vue-router'
  * container rather than the window, so this scrolls the element itself
  * instead of returning a position for the router to apply.
  */
-function scrollToHash(hash: string) {
+export function scrollToHash(hash: string) {
   const id = decodeURIComponent(hash.slice(1))
   const deadline = performance.now() + 3000
   let lastTop: number | null = null
