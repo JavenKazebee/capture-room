@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { CalendarClock, Pencil, Plus, Square } from '@lucide/vue'
+import { toast } from 'vue-sonner'
+import { CalendarClock, ListChecks, Pencil, Plus, Power, PowerOff, Square, Trash2, X } from '@lucide/vue'
 import { sourceKey } from '@/composables/useApi'
 import { registerCommands } from '@/composables/useCommands'
 import { useSecondClock } from '@/composables/useSecondClock'
-import { dateTime } from '@/lib/format'
+import { useSelection } from '@/composables/useSelection'
+import { bulkToast, runBulk } from '@/lib/bulk'
+import { dateTime, plural } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
 import { relativeFuture, scheduleInput, whatLabel, whenLabel } from '@/lib/schedules'
 import { useNodesStore } from '@/stores/nodes'
@@ -13,6 +16,9 @@ import { useSchedulesStore } from '@/stores/schedules'
 import { useSourcesStore } from '@/stores/sources'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import BulkActionBar from '@/components/common/BulkActionBar.vue'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
@@ -53,6 +59,7 @@ const columns: Column<ScheduleDto>[] = [
   { id: 'next', label: 'Next', value: (s) => s.next_start ?? '' },
   { id: 'status', label: 'Last run', value: (s) => s.last_run?.status ?? '' },
   { id: 'enabled', label: 'Enabled', alwaysVisible: true, align: 'right' },
+  { id: 'actions', label: '', alwaysVisible: true, align: 'right', class: 'w-px whitespace-nowrap' },
 ]
 
 const selectedId = ref<string | null>(null)
@@ -104,6 +111,54 @@ async function setEnabled(s: ScheduleDto, on: boolean) {
   }
 }
 
+const deleting = ref<ScheduleDto | null>(null)
+
+async function destroy(s: ScheduleDto) {
+  try {
+    await store.remove(s.id)
+    toast.success(`Deleted “${s.name}”`)
+  } catch (e) {
+    notifyError(`Couldn’t delete “${s.name}”`, e)
+  }
+}
+
+const checked = useSelection()
+const checkedSchedules = computed(() => store.schedules.filter((s) => checked.selected.value.has(s.id)))
+watch(
+  () => store.schedules.map((s) => s.id),
+  (ids) => checked.retain(ids),
+)
+const bulkDeleting = ref(false)
+
+const table = ref<{ displayedRows: ScheduleDto[] }>()
+registerCommands(() => !nodes.isController ? [] : [
+  {
+    id: 'schedule:select-all',
+    title: 'Select all schedules shown',
+    group: 'This page',
+    icon: ListChecks,
+    keywords: ['bulk', 'multiple', 'check'],
+    run: () => checked.selectAll((table.value?.displayedRows ?? []).map((s) => s.id)),
+  },
+  ...(checked.count.value
+    ? [{ id: 'schedule:clear-selection', title: 'Clear selection', group: 'This page' as const, icon: X, keywords: ['deselect', 'none'], run: checked.clearSelection }]
+    : []),
+])
+
+async function bulkDelete() {
+  const result = await runBulk(checkedSchedules.value, (s) => store.remove(s.id))
+  checked.deselect(result.ok.map((s) => s.id))
+  bulkToast('Deleted', result, (s) => s.name)
+}
+
+async function bulkSetEnabled(on: boolean) {
+  const result = await runBulk(checkedSchedules.value, async (s) => {
+    if (s.enabled !== on) await store.update(s.id, { ...scheduleInput(s), enabled: on })
+  })
+  checked.deselect(result.ok.map((s) => s.id))
+  bulkToast(on ? 'Enabled' : 'Disabled', result, (s) => s.name)
+}
+
 async function stop(s: ScheduleDto) {
   try {
     await store.stop(s.id)
@@ -135,12 +190,14 @@ async function stop(s: ScheduleDto) {
     <template v-else>
       <div class="flex-1 min-h-0 overflow-y-auto p-4">
         <DataTable
+          ref="table"
           table-id="schedules"
           :columns="columns"
           :rows="store.schedules"
           :row-key="(s) => s.id"
           :filter="filter"
           :row-class="(s) => (s.id === selectedId ? 'bg-accent/60 cursor-pointer' : 'cursor-pointer')"
+          :selection="checked"
           @row-click="(s) => (selectedId = selectedId === s.id ? null : s.id)"
         >
           <template #cell-when="{ row }">
@@ -174,6 +231,20 @@ async function stop(s: ScheduleDto) {
               <Switch :model-value="row.enabled" @update:model-value="(v: boolean) => setEnabled(row, v)" />
             </span>
           </template>
+          <template #cell-actions="{ row }">
+            <Tooltip>
+              <TooltipTrigger as-child>
+                <button
+                  class="size-7 grid place-items-center rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                  :aria-label="`Delete ${row.name}`"
+                  @click.stop="deleting = row"
+                >
+                  <Trash2 class="size-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Delete schedule</TooltipContent>
+            </Tooltip>
+          </template>
           <template #empty>
             <div class="py-8 text-center space-y-2">
               <p class="text-sm text-muted-foreground">No schedules yet.</p>
@@ -181,6 +252,18 @@ async function stop(s: ScheduleDto) {
             </div>
           </template>
         </DataTable>
+
+        <BulkActionBar :count="checked.count.value" @clear="checked.clearSelection()">
+          <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" @click="bulkSetEnabled(true)">
+            <Power class="size-3.5" /> Enable
+          </Button>
+          <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" @click="bulkSetEnabled(false)">
+            <PowerOff class="size-3.5" /> Disable
+          </Button>
+          <Button variant="destructive" size="sm" class="h-7 gap-1.5 text-xs" @click="bulkDeleting = true">
+            <Trash2 class="size-3.5" /> Delete
+          </Button>
+        </BulkActionBar>
       </div>
 
       <!-- The selected schedule's recent runs -->
@@ -209,6 +292,20 @@ async function stop(s: ScheduleDto) {
         </div>
       </section>
     </template>
+
+    <ConfirmDialog
+      :open="!!deleting"
+      :title="`Delete “${deleting?.name}”?`"
+      description="The schedule won’t run again, and a run in progress stops now. Recordings it made are kept."
+      @update:open="(v) => !v && (deleting = null)"
+      @confirm="deleting && destroy(deleting)"
+    />
+    <ConfirmDialog
+      v-model:open="bulkDeleting"
+      :title="`Delete ${plural(checked.count.value, 'schedule')}?`"
+      description="They won’t run again, and any runs in progress stop now. Recordings they made are kept."
+      @confirm="bulkDelete"
+    />
 
     <ScheduleFormSheet
       v-if="editing"

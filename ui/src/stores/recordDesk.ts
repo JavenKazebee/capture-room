@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { useStorage } from '@vueuse/core'
 import { toast } from 'vue-sonner'
 import { api } from '@/composables/useApi'
+import { useSelection } from '@/composables/useSelection'
 import { formatTimeLeft, plural } from '@/lib/format'
 import { notifyError, notifyWarn } from '@/lib/notify'
 import { LOW_TIME_SECS, capacityWarningText, useCapacityStore } from '@/stores/capacity'
@@ -57,48 +58,14 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     stateFilter.value = 'all'
   }
 
-  /** Selected source keys. */
-  const selected = ref(new Set<string>())
-  /** The last tile clicked: where Shift-click ranges start and what the I key opens. */
-  const focusedKey = ref<string | null>(null)
+  /** Selected source keys; `focusedKey` (the last tile clicked) is also what the I key opens. */
+  const { selected, focusedKey, select, selectRange, selectAll, clearSelection } = useSelection(() =>
+    visible.value.map((s) => s.key),
+  )
   /** The tile whose info popover is open, if any. */
   const infoKey = ref<string | null>(null)
 
   const selectedSources = computed(() => sources.sources.filter((s) => selected.value.has(s.key)))
-
-  /** Plain click: select just this one. Toggle (Ctrl/Cmd-click or the checkbox): add or remove it. */
-  function select(key: string, mode: 'only' | 'toggle' = 'only') {
-    const next = new Set(mode === 'toggle' ? selected.value : [])
-    if (mode === 'toggle' && next.has(key)) {
-      next.delete(key)
-      if (focusedKey.value === key) focusedKey.value = [...next].at(-1) ?? null
-    } else {
-      next.add(key)
-      focusedKey.value = key
-    }
-    selected.value = next
-  }
-
-  /** Shift-click: select the visible range from the focused tile to this one. */
-  function selectRange(key: string) {
-    const keys = visible.value.map((s) => s.key)
-    const from = keys.indexOf(focusedKey.value ?? key)
-    const to = keys.indexOf(key)
-    if (from === -1 || to === -1) return select(key)
-    const [a, b] = from < to ? [from, to] : [to, from]
-    selected.value = new Set([...selected.value, ...keys.slice(a, b + 1)])
-    focusedKey.value = key
-  }
-
-  function selectAll() {
-    selected.value = new Set(visible.value.map((s) => s.key))
-    if (!focusedKey.value) focusedKey.value = visible.value[0]?.key ?? null
-  }
-
-  function clearSelection() {
-    selected.value = new Set()
-    focusedKey.value = null
-  }
 
   /** Preset id per source key; `default` is the built-in H.264/MOV output. */
   const presetFor = useStorage<Record<string, string>>('cr.record.presets', {})

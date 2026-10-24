@@ -2,13 +2,16 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { MonitorPlay, Pencil, Plus, Radio, RadioTower, RefreshCw, Trash2 } from '@lucide/vue'
+import { ListChecks, MonitorPlay, Pencil, Plus, Radio, RadioTower, RefreshCw, Trash2, X } from '@lucide/vue'
 import { CONFIGURED_TYPES, useSourcesStore, type Source } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordingsStore } from '@/stores/recordings'
 import { useRecordDeskStore } from '@/stores/recordDesk'
 import { notifyError } from '@/lib/notify'
 import { registerCommands } from '@/composables/useCommands'
+import { useSelection } from '@/composables/useSelection'
+import { BulkSkip, bulkToast, runBulk } from '@/lib/bulk'
+import { plural } from '@/lib/format'
 import { fpsLabel, resolutionLabel } from '@/lib/sourceFormat'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -19,6 +22,7 @@ import ToolbarField from '@/components/common/ToolbarField.vue'
 import ToolbarSearch from '@/components/common/ToolbarSearch.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import ColumnsMenu from '@/components/common/ColumnsMenu.vue'
+import BulkActionBar from '@/components/common/BulkActionBar.vue'
 import type { Column } from '@/components/common/dataTable'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
@@ -130,6 +134,42 @@ async function destroy(src: Source) {
   }
 }
 
+/** Configured sources are deleted here; channels from their settings in Playback. */
+const deletable = (s: Source) => CONFIGURED_TYPES.includes(s.source_type) && s.source_type !== 'channel'
+
+const checked = useSelection()
+const checkedSources = computed(() => store.sources.filter((s) => checked.selected.value.has(s.key)))
+watch(
+  () => store.sources.map((s) => s.key),
+  (keys) => checked.retain(keys),
+)
+const bulkDeleting = ref(false)
+
+const table = ref<{ displayedRows: Source[] }>()
+registerCommands(() => [
+  {
+    id: 'sources:select-all',
+    title: 'Select all sources shown',
+    group: 'This page',
+    icon: ListChecks,
+    keywords: ['bulk', 'multiple', 'check'],
+    run: () => checked.selectAll((table.value?.displayedRows ?? []).map((s) => s.key)),
+  },
+  ...(checked.count.value
+    ? [{ id: 'sources:clear-selection', title: 'Clear selection', group: 'This page' as const, icon: X, keywords: ['deselect', 'none'], run: checked.clearSelection }]
+    : []),
+])
+
+async function bulkDelete() {
+  const result = await runBulk(checkedSources.value, (s) =>
+    deletable(s)
+      ? store.deleteSource(s.node_id, s.id)
+      : Promise.reject(new BulkSkip(s.source_type === 'channel' ? 'channels are deleted in Playback' : 'NDI sources come from discovery')),
+  )
+  checked.deselect(result.ok.map((s) => s.key))
+  bulkToast('Deleted', result, (s) => s.display_name)
+}
+
 async function scan() {
   scanning.value = true
   try {
@@ -166,6 +206,7 @@ onMounted(() => store.ensureLoaded())
 
   <div class="p-4">
     <DataTable
+      ref="table"
       table-id="sources"
       :columns="columns"
       :rows="store.sources"
@@ -173,6 +214,7 @@ onMounted(() => store.ensureLoaded())
       :filter="filter"
       :group-by="grouped ? (s) => s.node_id : null"
       :group-label="(id) => nodesStore.labelOf(id)"
+      :selection="checked"
     >
       <template #cell-status="{ row }">
         <span class="flex items-center gap-1.5 whitespace-nowrap" :class="status(row).key === 'live' && 'text-tally font-medium'">
@@ -254,6 +296,12 @@ onMounted(() => store.ensureLoaded())
         </template>
       </template>
     </DataTable>
+
+    <BulkActionBar :count="checked.count.value" @clear="checked.clearSelection()">
+      <Button variant="destructive" size="sm" class="h-7 gap-1.5 text-xs" @click="bulkDeleting = true">
+        <Trash2 class="size-3.5" /> Delete
+      </Button>
+    </BulkActionBar>
   </div>
 
   <ConfirmDialog
@@ -262,6 +310,13 @@ onMounted(() => store.ensureLoaded())
     description="The source is removed from its node. Recordings already made are kept."
     @update:open="(v) => !v && (deleting = null)"
     @confirm="deleting && destroy(deleting)"
+  />
+
+  <ConfirmDialog
+    v-model:open="bulkDeleting"
+    :title="`Delete ${plural(checked.count.value, 'source')}?`"
+    description="The sources are removed from their nodes. Recordings already made are kept. Playout channels and discovered NDI sources are skipped."
+    @confirm="bulkDelete"
   />
 
   <SourceFormSheet v-if="formOpen" :source="editing" @close="formOpen = false" />

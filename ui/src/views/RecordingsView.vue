@@ -5,12 +5,18 @@ import { useRoute, useRouter } from 'vue-router'
 import { registerCommands } from '@/composables/useCommands'
 import { useSecondClock } from '@/composables/useSecondClock'
 import { useViewKeys } from '@/composables/useViewKeys'
-import { History, Play } from '@lucide/vue'
+import { Download, History, ListChecks, Play, Trash2, X } from '@lucide/vue'
+import { FetchError } from 'ofetch'
+import { toast } from 'vue-sonner'
+import { downloadUrl, errorMessage, recordingFileUrl } from '@/composables/useApi'
+import { useSelection } from '@/composables/useSelection'
+import { BulkSkip, bulkToast, runBulk } from '@/lib/bulk'
 import { clockTime, dayKey, dayLabel, elapsedMs, formatDuration, plural } from '@/lib/format'
 import { CODECS } from '@/lib/codecs'
+import { shortcut } from '@/lib/keys'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
-import { previewOutput, totalDropped, useRecordingsStore, type RecordingSession } from '@/stores/recordings'
+import { outputFiles, previewOutput, totalDropped, useRecordingsStore, type RecordingSession } from '@/stores/recordings'
 import { Button } from '@/components/ui/button'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -19,6 +25,8 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import ToolbarSearch from '@/components/common/ToolbarSearch.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import ColumnsMenu from '@/components/common/ColumnsMenu.vue'
+import BulkActionBar from '@/components/common/BulkActionBar.vue'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import type { RecordingStatus } from '@/types/generated/RecordingStatus'
 import type { Column } from '@/components/common/dataTable'
 import StatusDot from '@/components/common/StatusDot.vue'
@@ -43,7 +51,9 @@ const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
 const SHORTCUTS: [string[], string][] = [
   [['↑', '↓'], 'Select the previous or next recording'],
   [['Space'], 'Play or pause'],
-  [['Esc'], 'Close the recording'],
+  [[shortcut('Click')], 'Add or remove a recording from the selection'],
+  [['Shift', 'Click'], 'Select a range'],
+  [['Esc'], 'Close the recording, then clear the selection'],
 ]
 
 const nodeOptions = computed(() => [
@@ -123,7 +133,11 @@ useViewKeys((e) => {
   } else if (e.key === ' ' && detail.value) {
     e.preventDefault()
     detail.value.togglePlay()
-  } else if (e.key === 'Escape') selectedKey.value = null
+  } else if (e.key === 'Escape' && selectedKey.value) {
+    // Closing the detail uses up this Esc; the next one clears the selection.
+    e.preventDefault()
+    selectedKey.value = null
+  }
 }, { alsoIgnore: 'video, button, a, [role="button"], [role="listbox"]' })
 
 const STATUS = {
@@ -155,6 +169,75 @@ const columns = computed<Column<RecordingSession>[]>(() => [
   { id: 'dropped', label: 'Dropped', value: (s) => totalDropped(s), align: 'right', hiddenByDefault: true, class: 'num' },
   { id: 'id', label: 'Session ID', value: (s) => s.id, hiddenByDefault: true, class: 'num' },
 ])
+
+/** Checked rows, for bulk actions (separate from the one open in the detail). */
+const checked = useSelection()
+const checkedSessions = computed(() => recordings.sessions.filter((s) => checked.selected.value.has(key(s))))
+// Sessions removed here or elsewhere drop out of the selection.
+watch(
+  () => recordings.sessions.map(key),
+  (keys) => checked.retain(keys),
+)
+
+registerCommands(() => [
+  {
+    id: 'recordings:select-all',
+    title: 'Select all recordings shown',
+    group: 'This page',
+    icon: ListChecks,
+    keywords: ['bulk', 'multiple', 'check'],
+    run: () => checked.selectAll((table.value?.displayedRows ?? []).map(key)),
+  },
+  ...(checked.count.value
+    ? [{ id: 'recordings:clear-selection', title: 'Clear selection', group: 'This page' as const, icon: X, keywords: ['deselect', 'none'], run: checked.clearSelection }]
+    : []),
+])
+
+const bulkConfirm = ref<'remove' | 'files' | null>(null)
+
+/** Why a bulk action failed: active sessions get a 409. */
+function reasonOf(e: unknown) {
+  if (e instanceof FetchError && e.statusCode === 409) return 'still recording'
+  return errorMessage(e, 'failed')
+}
+
+async function bulkRemove(files: boolean) {
+  const items = checkedSessions.value
+  const result = await runBulk(
+    items,
+    (s) => (s.status === 'active' ? Promise.reject(new BulkSkip('still recording')) : recordings.remove(s.node_id, s.id, { files })),
+    reasonOf,
+  )
+  checked.deselect(result.ok.map(key))
+  bulkToast(files ? 'Deleted' : 'Removed', result, (s) => recordings.sourceNameOf(s))
+}
+
+/** Each checked session's files, downloaded in turn; browsers may ask to allow several downloads. */
+async function bulkDownload() {
+  const items = checkedSessions.value
+  const live = items.filter((s) => s.status === 'active')
+  const urls = items
+    .filter((s) => s.status !== 'active')
+    .flatMap((s) => s.output_paths.flatMap((_, i) => outputFiles(s, i).map((_, j) => recordingFileUrl(s.node_id, s.id, i, j, true))))
+  if (urls.length) {
+    toast.success(`Downloading ${plural(urls.length, 'file')}`, {
+      description: live.length ? `Skipped ${plural(live.length, 'recording')} still recording.` : undefined,
+    })
+  } else {
+    toast.error('Nothing to download', { description: live.length ? 'Those recordings are still recording.' : undefined })
+  }
+  for (const [i, url] of urls.entries()) {
+    if (i) await new Promise((r) => setTimeout(r, 400))
+    downloadUrl(url)
+  }
+}
+
+/** Files "Delete files" would delete: those of checked sessions that aren't recording. */
+const checkedFileCount = computed(() =>
+  checkedSessions.value
+    .filter((s) => s.status !== 'active')
+    .reduce((n, s) => n + s.output_paths.reduce((m, _, i) => m + outputFiles(s, i).length, 0), 0),
+)
 
 async function loadOlder() {
   try {
@@ -197,6 +280,7 @@ async function loadOlder() {
             :group-by="(s) => dayKey(s.started_at)"
             :group-label="(k) => dayLabel(k, now)"
             :row-class="(s) => (key(s) === selectedKey ? 'bg-accent/60 cursor-pointer' : 'cursor-pointer')"
+            :selection="checked"
             @row-click="select"
           >
             <template #cell-status="{ row }">
@@ -242,6 +326,23 @@ async function loadOlder() {
               {{ recordings.loadingOlder ? 'Loading…' : 'Load older recordings' }}
             </Button>
           </div>
+
+          <BulkActionBar :count="checked.count.value" @clear="checked.clearSelection()">
+            <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" @click="bulkDownload">
+              <Download class="size-3.5" /> Download
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              class="h-7 gap-1.5 text-xs hover:text-destructive hover:border-destructive/40"
+              @click="bulkConfirm = 'remove'"
+            >
+              <Trash2 class="size-3.5" /> Remove from history
+            </Button>
+            <Button variant="destructive" size="sm" class="h-7 gap-1.5 text-xs" @click="bulkConfirm = 'files'">
+              <Trash2 class="size-3.5" /> Delete files
+            </Button>
+          </BulkActionBar>
         </div>
       </ResizablePanel>
 
@@ -252,5 +353,21 @@ async function loadOlder() {
         </ResizablePanel>
       </template>
     </ResizablePanelGroup>
+
+    <ConfirmDialog
+      :open="bulkConfirm === 'remove'"
+      :title="`Remove ${plural(checked.count.value, 'recording')} from history?`"
+      description="The sessions disappear from Recordings on every client. Their files are not deleted and stay on disk. Any still recording are skipped."
+      confirm-label="Remove"
+      @update:open="(v) => !v && (bulkConfirm = null)"
+      @confirm="bulkRemove(false)"
+    />
+    <ConfirmDialog
+      :open="bulkConfirm === 'files'"
+      :title="`Delete ${plural(checked.count.value, 'recording')} and their files?`"
+      :description="`${plural(checkedFileCount, 'file')} will be permanently deleted from disk, and the sessions removed from Recordings on every client. This can't be undone. Any still recording are skipped.`"
+      @update:open="(v) => !v && (bulkConfirm = null)"
+      @confirm="bulkRemove(true)"
+    />
   </div>
 </template>

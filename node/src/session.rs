@@ -184,8 +184,12 @@ pub fn spawn_teardowns(state: &Arc<AppState>, teardowns: Vec<Teardown>) {
 /// Rebuild the source list, tearing down whatever went away, changed or
 /// failed.
 pub async fn rebuild_sources(state: &Arc<AppState>) -> anyhow::Result<()> {
+    // Read the configs under the lock: a concurrent rebuild with an older list
+    // would otherwise bring back a source another request just deleted.
+    let mut mgr = state.source_manager.write().await;
     let configs = db::configured_sources_list(&state.db).await?;
-    let teardowns = state.source_manager.write().await.scan(&configs);
+    let teardowns = mgr.scan(&configs);
+    drop(mgr);
     spawn_teardowns(state, teardowns);
     Ok(())
 }
