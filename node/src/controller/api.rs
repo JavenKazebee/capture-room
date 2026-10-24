@@ -18,7 +18,7 @@ use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     AddNodeRequest, CheckDto, ClockMode, ControllerClockDto, ControllerToggleRequest, FoundNodeDto,
     NodeChecksDto, NodeDto, PresetCreateRequest, PresetDto, PresetOutputInput, ScheduleAction,
-    ScheduleDto, ScheduleInput, ScheduleRunDto, WsEvent,
+    ScheduleDto, ScheduleInput, ScheduleKind, ScheduleRunDto, WsEvent,
 };
 use crate::db;
 use crate::pipeline::profile::{plan_legs, unknown_token};
@@ -383,13 +383,21 @@ async fn save_schedule(
 ) -> ApiResult<ScheduleDto> {
     let scheduler = scheduler(state).await?;
     validate_schedule(state, &req).await?;
+    // Keep only the fields the kind uses.
+    let monthly = req.kind == ScheduleKind::Monthly;
     let s = ScheduleDto {
         id,
         name: req.name.trim().to_string(),
         enabled: req.enabled,
         kind: req.kind,
         date: req.date,
-        weekdays: req.weekdays,
+        weekdays: if monthly && req.month_day.is_some() {
+            0
+        } else {
+            req.weekdays
+        },
+        month_day: req.month_day.filter(|_| monthly),
+        month_week: req.month_week.filter(|_| monthly),
         start_time: req.start_time,
         duration_s: req.duration_s,
         actions: req.actions,
@@ -417,11 +425,13 @@ async fn validate_schedule(state: &AppState, req: &ScheduleInput) -> ApiResult<(
         req.kind,
         req.date.as_deref(),
         req.weekdays,
+        req.month_day,
+        req.month_week,
         &req.start_time,
         req.duration_s,
     )
     .map_err(ApiError::bad)?;
-    if req.kind == crate::api::types::ScheduleKind::Once {
+    if req.kind == ScheduleKind::Once {
         let now = chrono::Utc::now();
         // Still worth saving while its window is open: it starts late.
         let window = rule.duration.unwrap_or(chrono::Duration::minutes(2));

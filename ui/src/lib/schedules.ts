@@ -30,15 +30,54 @@ export function weekdaysLabel(bits: number): string {
   return WEEKDAYS.filter((_, i) => bits & (1 << i)).join(', ')
 }
 
-/** `Sun 08:45–10:15`, or `Oct 24 19:00` for a one-off without an end. */
-export function whenLabel(s: Pick<ScheduleDto, 'kind' | 'date' | 'weekdays' | 'start_time' | 'duration_s'>): string {
+/** Monday first, as `WEEKDAYS`. */
+export const WEEKDAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] as const
+
+/** `1st`, `2nd`, `15th`, `31st`. */
+export function ordinal(n: number): string {
+  const tens = n % 100
+  const suffix = tens >= 11 && tens <= 13 ? 'th' : (['th', 'st', 'nd', 'rd'][n % 10] ?? 'th')
+  return `${n}${suffix}`
+}
+
+/** A monthly `month_week`: `2nd`, or `last` for -1. */
+export function weekOfMonthLabel(week: number): string {
+  return week < 0 ? 'last' : ordinal(week)
+}
+
+/**
+ * A monthly schedule seeded from a `YYYY-MM-DD` date: its day of the month,
+ * and which of its weekday it is (`last` for a fifth). Weekday is Monday 0.
+ */
+export function monthlyFrom(date: string): { day: number; week: number; weekday: number } {
+  const d = new Date(`${date}T00:00`)
+  const day = d.getDate()
+  const week = Math.ceil(day / 7)
+  return { day, week: week > 4 ? -1 : week, weekday: (d.getDay() + 6) % 7 }
+}
+
+type When = Pick<ScheduleDto, 'kind' | 'date' | 'weekdays' | 'month_day' | 'month_week' | 'start_time' | 'duration_s'>
+
+/** `on the 15th`, `on the last Sunday`. */
+function monthlyLabel(s: When): string {
+  if (s.month_day != null) return `on the ${ordinal(s.month_day)}`
+  const weekday = WEEKDAY_NAMES.find((_, i) => s.weekdays & (1 << i)) ?? ''
+  return `on the ${weekOfMonthLabel(s.month_week ?? 1)} ${weekday}`
+}
+
+/**
+ * `Sun 08:45–10:15`, `Monthly on the last Sunday · 10:00`, or `Oct 24 19:00`
+ * for a one-off without an end.
+ */
+export function whenLabel(s: When): string {
+  const end = s.duration_s ? `–${addToTime(s.start_time, s.duration_s)}` : ''
+  if (s.kind === 'monthly') return `Monthly ${monthlyLabel(s)} · ${s.start_time}${end}`
   const days =
     s.kind === 'weekly'
       ? weekdaysLabel(s.weekdays)
       : s.date
         ? new Date(`${s.date}T00:00`).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
         : ''
-  const end = s.duration_s ? `–${addToTime(s.start_time, s.duration_s)}` : ''
   return `${days} ${s.start_time}${end}`
 }
 

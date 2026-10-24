@@ -401,8 +401,11 @@ fn emit(state: &AppState, s: &ScheduleDto, run: ScheduleRunDto) {
 #[derive(Debug, Clone)]
 pub struct Rule {
     kind: ScheduleKind,
+    /// A one-off's date, or the first date a monthly schedule may run.
     date: Option<NaiveDate>,
     weekdays: u8,
+    month_day: Option<u8>,
+    month_week: Option<i8>,
     start: NaiveTime,
     pub duration: Option<chrono::Duration>,
 }
@@ -413,6 +416,8 @@ impl Rule {
             s.kind,
             s.date.as_deref(),
             s.weekdays,
+            s.month_day,
+            s.month_week,
             &s.start_time,
             s.duration_s,
         )
@@ -422,31 +427,64 @@ impl Rule {
         kind: ScheduleKind,
         date: Option<&str>,
         weekdays: u8,
+        month_day: Option<u8>,
+        month_week: Option<i8>,
         start_time: &str,
         duration_s: Option<u32>,
     ) -> Result<Self, String> {
         let start = NaiveTime::parse_from_str(start_time, "%H:%M")
             .map_err(|_| format!("{start_time:?} isn't a time (HH:MM)"))?;
-        let date = match kind {
+        let parse_date = |d: &str| {
+            NaiveDate::parse_from_str(d, "%Y-%m-%d")
+                .map_err(|_| format!("{d:?} isn't a date (YYYY-MM-DD)"))
+        };
+        let weekdays = weekdays & 0x7f;
+        let (date, month_day, month_week) = match kind {
             ScheduleKind::Once => {
                 let d = date.ok_or("a one-off schedule needs a date")?;
-                Some(
-                    NaiveDate::parse_from_str(d, "%Y-%m-%d")
-                        .map_err(|_| format!("{d:?} isn't a date (YYYY-MM-DD)"))?,
-                )
+                (Some(parse_date(d)?), None, None)
             }
-            ScheduleKind::Weekly => None,
+            ScheduleKind::Weekly => {
+                if weekdays == 0 {
+                    return Err("pick at least one day".into());
+                }
+                (None, None, None)
+            }
+            ScheduleKind::Monthly => {
+                match (month_day, month_week) {
+                    (Some(_), Some(_)) => {
+                        return Err("a monthly schedule runs on a day of the month or on a \
+                                    weekday, not both"
+                            .into());
+                    }
+                    (None, None) => {
+                        return Err("pick a day of the month, or a weekday in it".into());
+                    }
+                    (Some(d), None) if !(1..=31).contains(&d) => {
+                        return Err(format!("{d} isn't a day of the month (1–31)"));
+                    }
+                    (None, Some(w)) if !matches!(w, 1..=4 | -1) => {
+                        return Err(format!(
+                            "{w} isn't a week of the month (1–4, or -1 for the last)"
+                        ));
+                    }
+                    (None, Some(_)) if weekdays.count_ones() != 1 => {
+                        return Err("pick one day of the week".into());
+                    }
+                    _ => {}
+                }
+                (date.map(parse_date).transpose()?, month_day, month_week)
+            }
         };
-        if kind == ScheduleKind::Weekly && weekdays & 0x7f == 0 {
-            return Err("pick at least one day".into());
-        }
         if duration_s == Some(0) {
             return Err("a schedule that ends must last at least a second".into());
         }
         Ok(Self {
             kind,
             date,
-            weekdays: weekdays & 0x7f,
+            weekdays,
+            month_day,
+            month_week,
             start,
             duration: duration_s.map(|s| chrono::Duration::seconds(s.into())),
         })
@@ -457,6 +495,30 @@ impl Rule {
         match self.kind {
             ScheduleKind::Once => self.date == Some(d),
             ScheduleKind::Weekly => self.weekdays & (1 << d.weekday().num_days_from_monday()) != 0,
+            ScheduleKind::Monthly => {
+                self.in_month(d.year(), d.month()) == Some(d) && self.date.is_none_or(|a| d >= a)
+            }
+        }
+    }
+
+    /// A monthly schedule's date in a month, if that month has one.
+    fn in_month(&self, year: i32, month: u32) -> Option<NaiveDate> {
+        use chrono::Datelike;
+        if let Some(day) = self.month_day {
+            return NaiveDate::from_ymd_opt(year, month, day.into());
+        }
+        let week = self.month_week?;
+        let weekday = self.weekdays.trailing_zeros();
+        let first = NaiveDate::from_ymd_opt(year, month, 1)?;
+        if week > 0 {
+            let ahead = (weekday + 7 - first.weekday().num_days_from_monday()) % 7;
+            NaiveDate::from_ymd_opt(year, month, 1 + ahead + 7 * (week as u32 - 1))
+        } else {
+            let last = first
+                .checked_add_months(chrono::Months::new(1))?
+                .pred_opt()?;
+            let back = (last.weekday().num_days_from_monday() + 7 - weekday) % 7;
+            Some(last - chrono::Duration::days(back.into()))
         }
     }
 
@@ -474,22 +536,53 @@ impl Rule {
         local.map(|t| t.with_timezone(&Utc))
     }
 
-    /// The candidate starts on local dates around `t`, walking `days` days
-    /// from it (backwards when negative). A one-off has only its date.
-    fn starts<Tz: TimeZone>(&self, tz: &Tz, t: DateTime<Utc>, days: i64) -> Vec<DateTime<Utc>> {
-        if let Some(d) = self.date {
-            return self.start_on(tz, d).into_iter().collect();
-        }
+    /// The candidate starts on local dates around `t`, far enough `ahead` of
+    /// it (or behind) to hold the next (or previous) one, plus a day the
+    /// other way for the time zone. A one-off has only its date.
+    fn starts<Tz: TimeZone>(&self, tz: &Tz, t: DateTime<Utc>, ahead: bool) -> Vec<DateTime<Utc>> {
+        use chrono::Datelike;
         let today = t.with_timezone(tz).date_naive();
-        let range: Vec<i64> = if days < 0 {
-            (days..=1).rev().collect()
-        } else {
-            (-1..=days).collect()
+        let dates: Vec<NaiveDate> = match self.kind {
+            ScheduleKind::Once => self.date.into_iter().collect(),
+            // Every week has one.
+            ScheduleKind::Weekly => {
+                let range: Vec<i64> = if ahead {
+                    (-1..=8).collect()
+                } else {
+                    (-8..=1).rev().collect()
+                };
+                range
+                    .into_iter()
+                    .map(|i| today + chrono::Duration::days(i))
+                    .filter(|d| self.matches(*d))
+                    .collect()
+            }
+            // Each month's date, worked out directly. A day of the month
+            // skips at most two months running (the 31st), so a year is
+            // plenty. Looking ahead starts from the first date it may run.
+            ScheduleKind::Monthly => {
+                let from = match self.date {
+                    Some(first) if ahead => today.max(first),
+                    _ => today,
+                };
+                let base = from.year() * 12 + from.month0() as i32;
+                let range: Vec<i32> = if ahead {
+                    (-1..=13).collect()
+                } else {
+                    (-13..=1).rev().collect()
+                };
+                range
+                    .into_iter()
+                    .filter_map(|i| {
+                        let m = base + i;
+                        self.in_month(m.div_euclid(12), m.rem_euclid(12) as u32 + 1)
+                    })
+                    .filter(|d| self.matches(*d))
+                    .collect()
+            }
         };
-        range
+        dates
             .into_iter()
-            .map(|i| today + chrono::Duration::days(i))
-            .filter(|d| self.matches(*d))
             .filter_map(|d| self.start_on(tz, d))
             .collect()
     }
@@ -500,12 +593,18 @@ impl Rule {
         tz: &Tz,
         t: DateTime<Utc>,
     ) -> Option<DateTime<Utc>> {
-        self.starts(tz, t, -8).into_iter().filter(|s| *s <= t).max()
+        self.starts(tz, t, false)
+            .into_iter()
+            .filter(|s| *s <= t)
+            .max()
     }
 
     /// The first start after `t`.
     pub fn next_after<Tz: TimeZone>(&self, tz: &Tz, t: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        self.starts(tz, t, 8).into_iter().filter(|s| *s > t).min()
+        self.starts(tz, t, true)
+            .into_iter()
+            .filter(|s| *s > t)
+            .min()
     }
 }
 
@@ -519,11 +618,37 @@ mod tests {
     }
 
     fn weekly(days: u8, time: &str) -> Rule {
-        Rule::parse(ScheduleKind::Weekly, None, days, time, Some(3600)).unwrap()
+        Rule::parse(
+            ScheduleKind::Weekly,
+            None,
+            days,
+            None,
+            None,
+            time,
+            Some(3600),
+        )
+        .unwrap()
     }
 
     const SUN: u8 = 1 << 6;
     const WED: u8 = 1 << 2;
+
+    fn monthly_on(day: u8, time: &str) -> Rule {
+        Rule::parse(ScheduleKind::Monthly, None, 0, Some(day), None, time, None).unwrap()
+    }
+
+    fn monthly_nth(week: i8, weekday: u8, time: &str) -> Rule {
+        Rule::parse(
+            ScheduleKind::Monthly,
+            None,
+            weekday,
+            None,
+            Some(week),
+            time,
+            None,
+        )
+        .unwrap()
+    }
 
     #[test]
     fn weekly_next_crosses_the_week() {
@@ -548,7 +673,16 @@ mod tests {
 
     #[test]
     fn once_has_one_start() {
-        let r = Rule::parse(ScheduleKind::Once, Some("2026-10-24"), 0, "19:00", None).unwrap();
+        let r = Rule::parse(
+            ScheduleKind::Once,
+            Some("2026-10-24"),
+            0,
+            None,
+            None,
+            "19:00",
+            None,
+        )
+        .unwrap();
         let start = utc("2026-10-25T02:00:00Z");
         assert_eq!(r.next_after(&LA, utc("2026-01-01T00:00:00Z")), Some(start));
         assert_eq!(r.next_after(&LA, start), None);
@@ -581,10 +715,178 @@ mod tests {
 
     #[test]
     fn rejects_bad_rules() {
-        assert!(Rule::parse(ScheduleKind::Weekly, None, 0, "08:00", None).is_err());
-        assert!(Rule::parse(ScheduleKind::Weekly, None, SUN, "8am", None).is_err());
-        assert!(Rule::parse(ScheduleKind::Once, None, 0, "08:00", None).is_err());
-        assert!(Rule::parse(ScheduleKind::Once, Some("2026-13-01"), 0, "08:00", None).is_err());
-        assert!(Rule::parse(ScheduleKind::Weekly, None, SUN, "08:00", Some(0)).is_err());
+        assert!(Rule::parse(ScheduleKind::Weekly, None, 0, None, None, "08:00", None).is_err());
+        assert!(Rule::parse(ScheduleKind::Weekly, None, SUN, None, None, "8am", None).is_err());
+        assert!(Rule::parse(ScheduleKind::Once, None, 0, None, None, "08:00", None).is_err());
+        assert!(Rule::parse(
+            ScheduleKind::Once,
+            Some("2026-13-01"),
+            0,
+            None,
+            None,
+            "08:00",
+            None
+        )
+        .is_err());
+        assert!(Rule::parse(
+            ScheduleKind::Weekly,
+            None,
+            SUN,
+            None,
+            None,
+            "08:00",
+            Some(0)
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn the_31st_skips_short_months() {
+        let r = monthly_on(31, "10:00");
+        // After Sat 31 Jan 2026 10:00 PST: February has no 31st.
+        let t = utc("2026-01-31T19:00:00Z");
+        assert_eq!(r.next_after(&LA, t), Some(utc("2026-03-31T17:00:00Z")));
+        assert_eq!(
+            r.latest_at_or_before(&LA, utc("2026-03-30T00:00:00Z")),
+            Some(utc("2026-01-31T18:00:00Z"))
+        );
+        // April has none either; May does.
+        assert_eq!(
+            r.next_after(&LA, utc("2026-04-01T00:00:00Z")),
+            Some(utc("2026-05-31T17:00:00Z"))
+        );
+    }
+
+    #[test]
+    fn the_29th_and_30th_of_february() {
+        let r = monthly_on(29, "10:00");
+        // 2027 isn't a leap year; 2028 is.
+        assert_eq!(
+            r.next_after(&LA, utc("2027-01-30T00:00:00Z")),
+            Some(utc("2027-03-29T17:00:00Z"))
+        );
+        assert_eq!(
+            r.next_after(&LA, utc("2028-01-30T00:00:00Z")),
+            Some(utc("2028-02-29T18:00:00Z"))
+        );
+        // There's never a 30 February.
+        let r = monthly_on(30, "10:00");
+        assert_eq!(
+            r.next_after(&LA, utc("2028-01-31T00:00:00Z")),
+            Some(utc("2028-03-30T17:00:00Z"))
+        );
+        assert_eq!(
+            r.latest_at_or_before(&LA, utc("2028-03-01T00:00:00Z")),
+            Some(utc("2028-01-30T18:00:00Z"))
+        );
+    }
+
+    #[test]
+    fn last_weekday_in_four_and_five_week_months() {
+        let r = monthly_nth(-1, SUN, "10:00");
+        // February 2026 has four Sundays, November 2026 five.
+        assert_eq!(
+            r.next_after(&LA, utc("2026-02-01T00:00:00Z")),
+            Some(utc("2026-02-22T18:00:00Z"))
+        );
+        assert_eq!(
+            r.next_after(&LA, utc("2026-11-01T00:00:00Z")),
+            Some(utc("2026-11-29T18:00:00Z"))
+        );
+        // After the last in October (the 25th), it's November's.
+        assert_eq!(
+            r.next_after(&LA, utc("2026-10-26T00:00:00Z")),
+            Some(utc("2026-11-29T18:00:00Z"))
+        );
+    }
+
+    #[test]
+    fn nth_weekday_counts_from_the_first() {
+        // 1 Nov 2026 is a Sunday, so it's the first.
+        let r = monthly_nth(2, SUN, "10:00");
+        assert_eq!(
+            r.next_after(&LA, utc("2026-10-24T00:00:00Z")),
+            Some(utc("2026-11-08T18:00:00Z"))
+        );
+        assert_eq!(
+            r.latest_at_or_before(&LA, utc("2026-10-24T00:00:00Z")),
+            Some(utc("2026-10-11T17:00:00Z"))
+        );
+        let r = monthly_nth(1, WED, "10:00");
+        assert_eq!(
+            r.next_after(&LA, utc("2026-10-24T00:00:00Z")),
+            Some(utc("2026-11-04T18:00:00Z"))
+        );
+    }
+
+    #[test]
+    fn monthly_crosses_the_year() {
+        let r = monthly_nth(-1, SUN, "10:00");
+        assert_eq!(
+            r.next_after(&LA, utc("2026-12-28T00:00:00Z")),
+            Some(utc("2027-01-31T18:00:00Z"))
+        );
+        assert_eq!(
+            r.latest_at_or_before(&LA, utc("2027-01-05T00:00:00Z")),
+            Some(utc("2026-12-27T18:00:00Z"))
+        );
+        let r = monthly_on(15, "10:00");
+        assert_eq!(
+            r.next_after(&LA, utc("2026-12-16T00:00:00Z")),
+            Some(utc("2027-01-15T18:00:00Z"))
+        );
+        assert_eq!(
+            r.latest_at_or_before(&LA, utc("2027-01-14T00:00:00Z")),
+            Some(utc("2026-12-15T18:00:00Z"))
+        );
+    }
+
+    #[test]
+    fn monthly_starts_on_or_after_its_date() {
+        let r = Rule::parse(
+            ScheduleKind::Monthly,
+            Some("2027-03-01"),
+            0,
+            Some(15),
+            None,
+            "10:00",
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            r.next_after(&LA, utc("2026-10-24T00:00:00Z")),
+            Some(utc("2027-03-15T17:00:00Z"))
+        );
+        assert_eq!(
+            r.latest_at_or_before(&LA, utc("2027-03-10T00:00:00Z")),
+            None
+        );
+    }
+
+    #[test]
+    fn monthly_skipped_time_moves_to_the_first_minute_after() {
+        // 8 Mar 2026: 2:00 PST jumps to 3:00 PDT.
+        let r = monthly_on(8, "02:30");
+        assert_eq!(
+            r.next_after(&LA, utc("2026-02-09T00:00:00Z")),
+            Some(utc("2026-03-08T10:00:00Z"))
+        );
+    }
+
+    #[test]
+    fn rejects_bad_monthly_rules() {
+        let parse = |days, day, week| {
+            Rule::parse(ScheduleKind::Monthly, None, days, day, week, "08:00", None)
+        };
+        assert!(parse(0, None, None).is_err());
+        assert!(parse(SUN, Some(15), Some(2)).is_err());
+        assert!(parse(0, Some(0), None).is_err());
+        assert!(parse(0, Some(32), None).is_err());
+        assert!(parse(SUN, None, Some(5)).is_err());
+        assert!(parse(SUN, None, Some(0)).is_err());
+        assert!(parse(0, None, Some(2)).is_err());
+        assert!(parse(SUN | WED, None, Some(2)).is_err());
+        assert!(parse(SUN, None, Some(-1)).is_ok());
+        assert!(parse(0, Some(31), None).is_ok());
     }
 }

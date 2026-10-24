@@ -1609,6 +1609,9 @@ pub enum ScheduleKind {
     Once,
     /// On each of `weekdays`.
     Weekly,
+    /// Once a month: on `month_day`, or on the `month_week`th of the one
+    /// day in `weekdays`.
+    Monthly,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1648,12 +1651,22 @@ pub struct ScheduleInput {
     pub name: String,
     pub enabled: bool,
     pub kind: ScheduleKind,
-    /// `YYYY-MM-DD`, for `once`.
+    /// `YYYY-MM-DD`, for `once`. For `monthly`, optional: the first run is
+    /// on or after it.
     #[serde(default)]
     pub date: Option<String>,
-    /// For `weekly`: bit 0 is Monday … bit 6 Sunday.
+    /// For `weekly`: bit 0 is Monday … bit 6 Sunday. For `monthly` by
+    /// weekday, the one day.
     #[serde(default)]
     pub weekdays: u8,
+    /// For `monthly` by date: 1–31. Months without that day are skipped.
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(optional = nullable))]
+    pub month_day: Option<u8>,
+    /// For `monthly` by weekday: 1–4, or -1 for the last in the month.
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(optional = nullable))]
+    pub month_week: Option<i8>,
     /// `HH:MM` in the controller's local time.
     pub start_time: String,
     /// `None`: nothing is stopped.
@@ -1672,6 +1685,8 @@ pub struct ScheduleDto {
     pub kind: ScheduleKind,
     pub date: Option<String>,
     pub weekdays: u8,
+    pub month_day: Option<u8>,
+    pub month_week: Option<i8>,
     pub start_time: String,
     pub duration_s: Option<u32>,
     #[sqlx(json)]

@@ -942,8 +942,8 @@ pub async fn benchmarks_running(pool: &SqlitePool) -> Result<Vec<BenchmarkRunDto
     Ok(rows.into_iter().map(|r| r.0).collect())
 }
 
-const SCHEDULE_SELECT: &str = "SELECT id, name, enabled, kind, date, weekdays, start_time, \
-     duration_s, actions, created_at, updated_at FROM schedules";
+const SCHEDULE_SELECT: &str = "SELECT id, name, enabled, kind, date, weekdays, month_day, \
+     month_week, start_time, duration_s, actions, created_at, updated_at FROM schedules";
 
 pub async fn schedules_list(pool: &SqlitePool) -> Result<Vec<ScheduleDto>> {
     Ok(
@@ -965,12 +965,13 @@ pub async fn schedule_get(pool: &SqlitePool, id: &str) -> Result<Option<Schedule
 /// Insert or replace a schedule (its runs stay).
 pub async fn schedule_save(pool: &SqlitePool, s: &ScheduleDto) -> Result<()> {
     sqlx::query(
-        "INSERT INTO schedules (id, name, enabled, kind, date, weekdays, start_time, duration_s,
-                                actions, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO schedules (id, name, enabled, kind, date, weekdays, month_day, month_week,
+                                start_time, duration_s, actions, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
              name = excluded.name, enabled = excluded.enabled, kind = excluded.kind,
              date = excluded.date, weekdays = excluded.weekdays,
+             month_day = excluded.month_day, month_week = excluded.month_week,
              start_time = excluded.start_time, duration_s = excluded.duration_s,
              actions = excluded.actions, updated_at = excluded.updated_at",
     )
@@ -980,6 +981,8 @@ pub async fn schedule_save(pool: &SqlitePool, s: &ScheduleDto) -> Result<()> {
     .bind(s.kind)
     .bind(&s.date)
     .bind(s.weekdays)
+    .bind(s.month_day)
+    .bind(s.month_week)
     .bind(&s.start_time)
     .bind(s.duration_s)
     .bind(Json(&s.actions))
@@ -1144,7 +1147,8 @@ mod tests {
             [
                 (1, "schema".to_string()),
                 (2, "node fingerprints".to_string()),
-                (3, "schedules".to_string())
+                (3, "schedules".to_string()),
+                (4, "schedule monthly".to_string())
             ]
         );
 

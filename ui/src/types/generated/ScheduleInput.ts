@@ -7,13 +7,23 @@ import type { ScheduleKind } from "./ScheduleKind";
  */
 export type ScheduleInput = { name: string, enabled: boolean, kind: ScheduleKind, 
 /**
- * `YYYY-MM-DD`, for `once`.
+ * `YYYY-MM-DD`, for `once`. For `monthly`, optional: the first run is
+ * on or after it.
  */
 date: string | null, 
 /**
- * For `weekly`: bit 0 is Monday … bit 6 Sunday.
+ * For `weekly`: bit 0 is Monday … bit 6 Sunday. For `monthly` by
+ * weekday, the one day.
  */
 weekdays: number, 
+/**
+ * For `monthly` by date: 1–31. Months without that day are skipped.
+ */
+month_day?: number | null, 
+/**
+ * For `monthly` by weekday: 1–4, or -1 for the last in the month.
+ */
+month_week?: number | null, 
 /**
  * `HH:MM` in the controller's local time.
  */

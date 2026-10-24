@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { Circle, MonitorPlay, Trash2 } from '@lucide/vue'
 import { errorMessage, sourceKey } from '@/composables/useApi'
-import { addToTime, secondsBetween } from '@/lib/schedules'
+import { addToTime, monthlyFrom, secondsBetween, WEEKDAY_NAMES, weekOfMonthLabel } from '@/lib/schedules'
 import { useNodesStore } from '@/stores/nodes'
 import { usePlayoutStore } from '@/stores/playout'
 import { usePresetsStore } from '@/stores/presets'
@@ -52,6 +52,23 @@ const date = ref(s?.date ?? todayDate)
 const days = ref<string[]>(
   s ? WEEKDAYS.map((_, i) => String(i)).filter((i) => s.weekdays & (1 << Number(i))) : [String(todayBit)],
 )
+// Monthly: a day of the month, or the nth (-1: last) of a weekday. Both
+// follow the start date as it changes, as in a calendar.
+const seed = monthlyFrom(date.value)
+const monthBy = ref<'day' | 'weekday'>(s?.month_week != null ? 'weekday' : 'day')
+const monthDay = ref<number | null>(s?.month_day ?? seed.day)
+const monthWeek = ref(String(s?.month_week ?? seed.week))
+const monthWeekday = ref(String(s?.month_week != null ? Math.max(0, WEEKDAYS.findIndex((_, i) => s.weekdays & (1 << i))) : seed.weekday))
+watch(date, (d) => {
+  if (!d) return
+  const m = monthlyFrom(d)
+  monthDay.value = m.day
+  monthWeek.value = String(m.week)
+  monthWeekday.value = String(m.weekday)
+})
+const weekOptions = [1, 2, 3, 4, -1].map((w) => ({ value: String(w), label: weekOfMonthLabel(w) }))
+const weekdayOptions = WEEKDAY_NAMES.map((label, i) => ({ value: String(i), label }))
+
 const startTime = ref(s?.start_time ?? '09:00')
 const hasEnd = ref(s ? s.duration_s != null : true)
 const endTime = ref(s?.duration_s ? addToTime(s.start_time, s.duration_s) : '10:00')
@@ -133,12 +150,22 @@ const saving = ref(false)
 
 async function save() {
   formError.value = null
+  const monthly = kind.value === 'monthly'
+  const byWeekday = monthBy.value === 'weekday'
   const input: ScheduleInput = {
     name: name.value,
     enabled: enabled.value,
     kind: kind.value,
-    date: kind.value === 'once' ? date.value : null,
-    weekdays: kind.value === 'weekly' ? days.value.reduce((bits, d) => bits | (1 << Number(d)), 0) : 0,
+    // A monthly schedule's first run is on or after its date.
+    date: kind.value === 'weekly' ? null : date.value,
+    weekdays:
+      kind.value === 'weekly'
+        ? days.value.reduce((bits, d) => bits | (1 << Number(d)), 0)
+        : monthly && byWeekday
+          ? 1 << Number(monthWeekday.value)
+          : 0,
+    month_day: monthly && !byWeekday ? monthDay.value : null,
+    month_week: monthly && byWeekday ? Number(monthWeek.value) : null,
     start_time: startTime.value,
     duration_s: hasEnd.value ? secondsBetween(startTime.value, endTime.value) : null,
     actions: rows.value.map(toAction),
@@ -191,6 +218,7 @@ async function remove() {
           @update:model-value="(v) => v && (kind = v as ScheduleKind)"
         >
           <ToggleGroupItem value="weekly" class="px-3">Weekly</ToggleGroupItem>
+          <ToggleGroupItem value="monthly" class="px-3">Monthly</ToggleGroupItem>
           <ToggleGroupItem value="once" class="px-3">Once</ToggleGroupItem>
         </ToggleGroup>
       </FormField>
@@ -200,8 +228,24 @@ async function remove() {
           <ToggleGroupItem v-for="(d, i) in WEEKDAYS" :key="d" :value="String(i)" class="px-2.5">{{ d }}</ToggleGroupItem>
         </ToggleGroup>
       </FormField>
-      <FormField v-else label="Date" class="col-span-2">
+      <FormField v-else :label="kind === 'monthly' ? 'Starting' : 'Date'" class="col-span-2">
         <Input v-model="date" type="date" class="w-44" />
+      </FormField>
+      <FormField v-if="kind === 'monthly'" label="On" class="col-span-2">
+        <div class="space-y-2">
+          <label class="flex items-center gap-2 text-sm">
+            <input v-model="monthBy" type="radio" value="day" class="accent-primary" />
+            On day
+            <Input v-model.number="monthDay" type="number" min="1" max="31" class="num w-16" @focus="monthBy = 'day'" />
+            <span v-if="(monthDay ?? 0) > 28" class="text-xs text-muted-foreground">Months without it are skipped</span>
+          </label>
+          <label class="flex items-center gap-2 text-sm">
+            <input v-model="monthBy" type="radio" value="weekday" class="accent-primary" />
+            On the
+            <OptionSelect v-model="monthWeek" :options="weekOptions" class="w-20" @update:model-value="monthBy = 'weekday'" />
+            <OptionSelect v-model="monthWeekday" :options="weekdayOptions" class="w-32" @update:model-value="monthBy = 'weekday'" />
+          </label>
+        </div>
       </FormField>
 
       <FormField label="Start">

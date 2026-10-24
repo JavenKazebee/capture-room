@@ -3,4 +3,4 @@
 /**
  * How a schedule repeats.
  */
-export type ScheduleKind = "once" | "weekly";
+export type ScheduleKind = "once" | "weekly" | "monthly";

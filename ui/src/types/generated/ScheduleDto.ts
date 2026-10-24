@@ -6,7 +6,7 @@ import type { ScheduleRunDto } from "./ScheduleRunDto";
 /**
  * A stored schedule, with when it next runs and its latest run.
  */
-export type ScheduleDto = { id: string, name: string, enabled: boolean, kind: ScheduleKind, date: string | null, weekdays: number, start_time: string, duration_s: number | null, actions: Array<ScheduleAction>, created_at: string, updated_at: string, 
+export type ScheduleDto = { id: string, name: string, enabled: boolean, kind: ScheduleKind, date: string | null, weekdays: number, month_day: number | null, month_week: number | null, start_time: string, duration_s: number | null, actions: Array<ScheduleAction>, created_at: string, updated_at: string, 
 /**
  * RFC 3339; `None` when disabled or nothing is left to run.
  */
