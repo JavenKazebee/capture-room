@@ -1,7 +1,41 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
+/**
+ * Wait for `#id` to render and stop moving, then scroll it into view. The
+ * target's page loads lazily and fills in sections above it as data arrives,
+ * so scrolling at once would land short. Pages scroll inside their own
+ * container rather than the window, so this scrolls the element itself
+ * instead of returning a position for the router to apply.
+ */
+function scrollToHash(hash: string) {
+  const id = decodeURIComponent(hash.slice(1))
+  const deadline = performance.now() + 3000
+  let lastTop: number | null = null
+  let still = 0
+  const step = () => {
+    const el = document.getElementById(id)
+    const top = el?.getBoundingClientRect().top ?? null
+    still = el && top === lastTop ? still + 1 : 0
+    lastTop = top
+    // A few frames in the same place: the page above it has settled.
+    if (el && (still >= 5 || performance.now() > deadline)) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    } else if (performance.now() <= deadline) {
+      requestAnimationFrame(step)
+    }
+  }
+  requestAnimationFrame(step)
+}
+
 export const router = createRouter({
   history: createWebHistory(),
+  scrollBehavior(to, _from, savedPosition) {
+    if (to.hash) {
+      scrollToHash(to.hash)
+      return false
+    }
+    return savedPosition ?? false
+  },
   routes: [
     { path: '/', redirect: '/record' },
     {

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::api::types::{
-    AudioPlan, CheckDto, CheckFix, CheckGroup, CheckLink, CheckStatus, ClockSourceDto,
+    AudioPlan, CheckDto, CheckFix, CheckGroup, CheckLink, CheckRoute, CheckStatus, ClockSourceDto,
     ClockStatusDto, ConfiguredSourceDto, DeviceDto, DeviceKind, NdiConnect, NdiSubscriptionsDto,
     NodeChecksDto, NodePortDto, OutputConfig, PortProtocol, SourceConfig,
 };
@@ -323,8 +323,7 @@ fn ndi_intake_check(ndi: &NdiSubscriptionsDto) -> CheckDto {
     c
 }
 
-/// The default recording folder can be written, with room to record.
-/// Blocking.
+/// An access token keeps the API to those who know it.
 fn access_token_check(set: bool) -> CheckDto {
     let mut c = check(
         "access_token",
@@ -341,15 +340,21 @@ fn access_token_check(set: bool) -> CheckDto {
                      update it."
             .into();
         c.fix = Some(CheckFix {
-            steps: "Set one in Settings › Access token. On a controller it's set on every \
-                    node too."
+            steps: "Turn one on, then sign in with it once in each browser. Set on a \
+                    controller, it's set on every node too."
                 .into(),
+            route: Some(CheckRoute {
+                path: "/setup/settings#access-token".into(),
+                label: "Open Settings › Access token".into(),
+            }),
             ..Default::default()
         });
     }
     c
 }
 
+/// The default recording folder can be written, with room to record.
+/// Blocking.
 fn storage_check() -> CheckDto {
     let mut c = check(
         "storage",

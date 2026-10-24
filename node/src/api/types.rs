@@ -2339,6 +2339,8 @@ pub struct CheckFix {
     pub command: Option<String>,
     /// A page to go to (e.g. a download).
     pub link: Option<CheckLink>,
+    /// A page of this app to go to, where the fix is made.
+    pub route: Option<CheckRoute>,
     /// The node can ask the OS to show its permission prompt
     /// (`POST /checks/request`).
     pub can_request: bool,
@@ -2348,6 +2350,14 @@ pub struct CheckFix {
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct CheckLink {
     pub url: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct CheckRoute {
+    /// An app path, with a `#hash` to scroll to (`/setup/settings#access-token`).
+    pub path: String,
     pub label: String,
 }
 

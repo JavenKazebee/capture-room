@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onScopeDispose, ref } from 'vue'
-import { ExternalLink, Settings2, ShieldQuestion } from '@lucide/vue'
+import { RouterLink } from 'vue-router'
+import { ArrowRight, ExternalLink, Settings2, ShieldQuestion } from '@lucide/vue'
 import { notifyError } from '@/lib/notify'
 import { browserIsOn, isProblem, useChecksStore } from '@/stores/checks'
 import type { CheckDto } from '@/types/generated/CheckDto'
@@ -126,7 +127,7 @@ async function ask(c: CheckDto) {
                 <CopyButton :value="c.fix.command" label="Copy command" />
               </div>
               <div
-                v-if="(local && (c.fix.settings_url || c.fix.can_request)) || c.fix.link"
+                v-if="(local && (c.fix.settings_url || c.fix.can_request)) || c.fix.link || c.fix.route"
                 class="flex flex-wrap items-center gap-1.5"
               >
                 <Button
@@ -141,6 +142,9 @@ async function ask(c: CheckDto) {
                 </Button>
                 <Button v-if="local && c.fix.settings_url" as-child variant="outline" size="sm" class="h-7 gap-1.5 text-xs">
                   <a :href="c.fix.settings_url"><Settings2 class="size-3.5" /> Open System Settings</a>
+                </Button>
+                <Button v-if="c.fix.route" as-child variant="outline" size="sm" class="h-7 gap-1.5 text-xs">
+                  <RouterLink :to="c.fix.route.path"><ArrowRight class="size-3.5" /> {{ c.fix.route.label }}</RouterLink>
                 </Button>
                 <Button v-if="c.fix.link" as-child variant="outline" size="sm" class="h-7 gap-1.5 text-xs">
                   <a :href="c.fix.link.url" target="_blank" rel="noopener noreferrer">

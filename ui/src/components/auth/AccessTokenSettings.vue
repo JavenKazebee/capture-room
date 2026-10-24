@@ -54,7 +54,8 @@ async function save(token: string | null) {
 </script>
 
 <template>
-  <section class="space-y-2">
+  <!-- The access token check links here by its id. -->
+  <section id="access-token" class="space-y-2 scroll-mt-4">
     <div>
       <h2 class="text-base font-semibold tracking-tight">Access token</h2>
       <p class="text-xs text-muted-foreground">
