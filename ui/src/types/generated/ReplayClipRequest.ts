@@ -10,7 +10,8 @@ export type ReplayClipRequest = { source_id: string,
  */
 from_us: number, 
 /**
- * Until when; the newest frame kept if `None`.
+ * Until when. If `None`, on into what's recorded meanwhile: no out
+ * point, and at the newest frame it holds until more is recorded.
  */
 to_us: number | null, 
 /**

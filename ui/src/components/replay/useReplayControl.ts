@@ -7,8 +7,8 @@ import { notifyError } from '@/lib/notify'
 import type { TransportAction } from '@/types/generated/TransportAction'
 import type { TransportRequest } from '@/types/generated/TransportRequest'
 
-/** Speeds offered, slowest first; either way round. */
-export const SPEEDS = [0.25, 0.5, 0.75, 1] as const
+/** Speeds offered, slowest first; either way round. Above 1× catches up with live. */
+export const SPEEDS = [0.25, 0.5, 0.75, 1, 1.5, 2] as const
 
 export type Angle = { source: Source; buffer: ReplayBuffer }
 
@@ -145,16 +145,10 @@ export function useReplayControl(opts: {
       const s = showing.value
       const clip = status.value?.clip
       if (!s || !clip || playing.value) return
-      if (status.value?.state === 'ended') {
-        // Again from its in point (its out point backwards).
-        const saved = clips.value.find((x) => x.id === clip.replay_clip_id)
-        if (saved) return replay.playClip(c.id, saved, rate.value, true)
-        const a = angles.value.find((x) => x.source.key === s.key)
-        if (!a) return
-        const start = clip.replay_start_us! + clip.in_ms * 1000
-        const end = clip.out_ms == null ? null : clip.replay_start_us! + clip.out_ms * 1000
-        return playSpan(a.source, start, end, true)
-      }
+      // Ended, a saved clip plays again from its in point (its out point backwards). The
+      // buffer plays on from the frame shown, past the out point, into newer footage.
+      const saved = clips.value.find((x) => x.id === clip.replay_clip_id)
+      if (status.value?.state === 'ended' && saved) return replay.playClip(c.id, saved, rate.value, true)
       if (s.rate !== rate.value) await transport('speed', { rate: rate.value })
       await transport('play')
     })

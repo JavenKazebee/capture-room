@@ -2,9 +2,10 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use gstreamer::{self as gst, prelude::*};
+use gstreamer::{self as gst, glib, prelude::*};
 use gstreamer_app as gst_app;
 use tracing::warn;
 
@@ -75,15 +76,24 @@ pub(super) fn build_player(
 }
 
 /// splitmuxsrc over a replay span's files plus the codec's decoder, exposing
-/// raw video (and PCM audio) like uridecodebin.
+/// raw video (and PCM audio) like uridecodebin. A span from a buffer grows:
+/// see [`follow_buffer`].
 ///
 /// splitmuxsrc ─┬→ decoder ─→ "video" ghost pad
 ///              └→ "audio" ghost pad
 fn replay_source(player: &gst::Pipeline, replay: &ReplayClip, id: &str) -> Result<gst::Element> {
     let bin = gst::Bin::with_name(&format!("channel-replay-{id}"));
     let src = make_el("splitmuxsrc", &format!("channel-replay-src-{id}"))?;
-    let files = replay.span.files.clone();
-    src.connect("format-location", false, move |_| Some(files.to_value()));
+    if glib::subclass::signal::SignalId::lookup("add-fragment", src.type_()).is_some() {
+        for file in &replay.span.files {
+            add_fragment(&src, file);
+        }
+        follow_buffer(&src, replay);
+    } else {
+        // Before GStreamer 1.26: a fixed list.
+        let files = replay.span.files.clone();
+        src.connect("format-location", false, move |_| Some(files.to_value()));
+    }
     let decoder = replay
         .span
         .codec
@@ -139,6 +149,49 @@ fn replay_source(player: &gst::Pipeline, replay: &ReplayClip, id: &str) -> Resul
     });
     Ok(bin.upcast())
 }
+
+/// Append a file to splitmuxsrc's list; it measures the file itself.
+fn add_fragment(src: &gst::Element, file: &str) {
+    let none = u64::MAX;
+    if !src.emit_by_name::<bool>("add-fragment", &[&file, &none, &none]) {
+        warn!(file, "replay can't add a segment");
+    }
+}
+
+/// Hand a buffer span's player each segment the buffer finishes after its
+/// own, while it lives: the span plays on into new footage instead of ending
+/// where the buffer did when it was cued. Its seek's stop, if it has an out
+/// point, still ends it there. splitmuxsrc takes files while playing, and
+/// carries on into them without a seam if they come before it runs out.
+fn follow_buffer(src: &gst::Element, replay: &ReplayClip) {
+    let (Some(hold), Some(last), Ok(runtime)) = (
+        replay.span.hold.as_ref(),
+        replay.span.files.last(),
+        tokio::runtime::Handle::try_current(),
+    ) else {
+        return;
+    };
+    // Weak: the clip's request holds the segments, not this.
+    let (src, hold, mut last) = (src.downgrade(), Arc::downgrade(hold), last.clone());
+    runtime.spawn(async move {
+        loop {
+            tokio::time::sleep(FOLLOW_EVERY).await;
+            let (Some(src), Some(hold)) = (src.upgrade(), hold.upgrade()) else {
+                return;
+            };
+            let Some(newer) = hold.newer(&last) else {
+                return;
+            };
+            for file in newer {
+                add_fragment(&src, &file);
+                last = file;
+            }
+        }
+    });
+}
+
+/// How often a buffer span looks for new segments: a small part of one.
+const FOLLOW_EVERY: Duration = Duration::from_millis(50);
 
 /// Where a player's video is, kept by its appsink.
 pub(super) struct Marks {

@@ -528,7 +528,9 @@ async fn post_replay(
         name: format!("{name} (replay)"),
         path,
         in_point: replay.span.from,
-        out_point: Some(replay.span.to),
+        // Without one it plays on into what's recorded meanwhile, holding at
+        // the newest frame if it catches up.
+        out_point: req.to_us.map(|_| replay.span.to),
         start: None,
         end: ClipEnd::Hold,
         rate,

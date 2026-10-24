@@ -72,8 +72,19 @@ const usableAngles = computed(() =>
   angles.value.filter((a) => !!channel.value && a.buffer.node_id === channel.value.node_id),
 )
 const angleKey = useStorage('cr.replay.angle', '')
+/** The angle a replay on the channel shows, if one does. */
+const onAirKey = computed(() => {
+  const c = channel.value
+  const id = c ? playout.status.get(c.key)?.clip?.replay_source_id : null
+  return c && id ? `${c.node_id}/${id}` : null
+})
+/** The chosen angle; failing that (gone, or on another node), the one on air, else the first. */
 const angle = computed(
-  () => usableAngles.value.find((a) => a.source.key === angleKey.value) ?? usableAngles.value[0] ?? null,
+  () =>
+    usableAngles.value.find((a) => a.source.key === angleKey.value) ??
+    usableAngles.value.find((a) => a.source.key === onAirKey.value) ??
+    usableAngles.value[0] ??
+    null,
 )
 
 // One poll at a time: a slow node mustn't pile requests up.
@@ -94,10 +105,14 @@ useIntervalFn(
 
 const rate = useStorage('cr.replay.rate', 0.5)
 const lastSecs = useStorage('cr.replay.last', 8)
-const windowSecs = useStorage<number | null>('cr.replay.window', 30)
+/** Seconds the strip reaches back; 0 for the whole buffer (storing null would drop the key, back to the default). */
+const windowSecs = useStorage<number>('cr.replay.window', 30)
 const windowChoice = computed({
-  get: () => String(windowSecs.value ?? 'all'),
-  set: (v: string) => (windowSecs.value = v === 'all' ? null : Number(v)),
+  get: () => (windowSecs.value > 0 ? String(windowSecs.value) : 'all'),
+  // Clicking the chosen item again unselects it: keep the choice.
+  set: (v: string | undefined) => {
+    if (v) windowSecs.value = v === 'all' ? 0 : Number(v)
+  },
 })
 const buffersOpen = ref(false)
 
@@ -272,7 +287,12 @@ onMounted(() => sources.ensureLoaded())
                 </span>
                 <span class="flex flex-col items-end leading-tight">
                   <span class="text-[10px] uppercase tracking-wide text-muted-foreground font-sans">Behind live</span>
-                  <BehindLive class="text-lg" :buffer="angle?.buffer ?? null" :showing-us="showing?.us ?? null" />
+                  <BehindLive
+                    class="text-lg"
+                    :buffer="angle?.buffer ?? null"
+                    :showing-us="showing?.us ?? null"
+                    :playing-rate="playing ? (showing?.rate ?? null) : null"
+                  />
                 </span>
               </div>
             </div>
@@ -280,8 +300,10 @@ onMounted(() => sources.ensureLoaded())
             <ReplayTimeline
               v-if="angle"
               :buffer="angle.buffer"
-              :window-secs="windowSecs"
-              :playhead-us="showing?.key === angle.source.key ? showing.us : null"
+              :window-secs="windowSecs > 0 ? windowSecs : null"
+              :playhead-us="showing?.us ?? null"
+              :playhead-other="!!showing && showing.key !== angle.source.key"
+              :playing="playing && !!showing"
               :in-us="inUs"
               :out-us="outUs"
               @pick="ctl.pick"

@@ -937,3 +937,167 @@ async fn replay_plays_at_any_speed() {
     mon.stop().unwrap();
     drop(index);
 }
+
+/// An open-ended replay plays on into footage recorded after it was cued: at
+/// half speed from near the newest frame it keeps going, and never ends, while
+/// the buffer grows; at 2× it catches up and holds at the newest frame, still
+/// playing, going on as segments come. A replay ended at its out point plays
+/// on from there. Once the recording stops, it ends at the edge.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "real-time (~20 s); run with --ignored"]
+async fn open_replay_plays_on_into_new_footage() {
+    use crate::api::types::{AudioTestSignal, ReplayCodec, TestSourceConfig, VideoTestPattern};
+    use crate::pipeline::replay::{Index, ReplayLeg, ReplaySpan};
+    use crate::sources::test::TestSource;
+
+    gst::init().unwrap();
+    let clock = gst::SystemClock::obtain();
+    let sleep = |ms| tokio::time::sleep(Duration::from_millis(ms));
+    let ms = gst::ClockTime::from_mseconds;
+
+    let camera = TestSource::new(
+        "cam".into(),
+        "cam".into(),
+        TestSourceConfig {
+            pattern: VideoTestPattern::Ball,
+            width: 640,
+            height: 360,
+            fps_num: 30,
+            fps_den: 1,
+            audio_signal: AudioTestSignal::Tone,
+            frequency: 440.0,
+            channels: 2,
+        },
+    );
+    let camera_mon = MonitorPipeline::new(&camera, &MonitorSettingsDto::default(), &clock).unwrap();
+    let dir = std::env::temp_dir().join(format!("cr-replay-open-{}", uuid::Uuid::new_v4()));
+    let index = Index::create(&dir, gst::ClockTime::from_seconds(60));
+    while camera_mon.video_frames() == 0 {
+        sleep(20).await;
+    }
+    let leg = ReplayLeg::start(&camera_mon, ReplayCodec::Mjpeg, &index, "cam").unwrap();
+    let newest = || index.lock().unwrap().span().map(|(_, b)| b).unwrap();
+    for _ in 0..200 {
+        if index
+            .lock()
+            .unwrap()
+            .span()
+            .is_some_and(|(a, b)| b - a >= gst::ClockTime::from_seconds(3))
+        {
+            break;
+        }
+        sleep(50).await;
+    }
+
+    let src = channel();
+    let playout = src.playout().unwrap().clone();
+    let mon = MonitorPipeline::new(&src, &MonitorSettingsDto::default(), &clock).unwrap();
+    let request = |span: ReplaySpan, open: bool, rate: f64| ClipRequest {
+        media_id: "replay:cam".into(),
+        name: "cam".into(),
+        path: dir.to_string_lossy().into(),
+        in_point: span.from,
+        out_point: (!open).then_some(span.to),
+        start: None,
+        end: ClipEnd::Hold,
+        rate,
+        replay: Some(ReplayClip {
+            source_id: "cam".into(),
+            clip_id: None,
+            span,
+        }),
+    };
+    // The clock time shown, and the transport's state.
+    let shown = |base: gst::ClockTime| {
+        let status = playout.status();
+        (base + status.position.expect("no position"), status.state)
+    };
+
+    // Half speed from a second before the newest frame.
+    let span = Index::clip(&index, newest() - gst::ClockTime::SECOND, None).unwrap();
+    let (base, first_end) = (span.base, span.base + span.to);
+    playout.load(request(span, true, 0.5), true).await.unwrap();
+    let mut last = gst::ClockTime::ZERO;
+    for _ in 0..8 {
+        sleep(500).await;
+        let (at, state) = shown(base);
+        assert_eq!(state, TransportState::Playing, "at {at}");
+        assert!(at > last, "stuck at {at}");
+        last = at;
+    }
+    assert!(
+        last > first_end + ms(500),
+        "{last} isn't past where the buffer ended when cued, {first_end}"
+    );
+    assert!(
+        !played(&take_pushed(&playout), Kind::Video).is_empty(),
+        "nothing played"
+    );
+
+    // At 2× it catches up with the recording, and holds there, playing.
+    playout.set_rate(2.0).await.unwrap();
+    let mut closest = gst::ClockTime::MAX;
+    for _ in 0..12 {
+        sleep(500).await;
+        let (at, state) = shown(base);
+        assert_eq!(state, TransportState::Playing, "at {at}");
+        assert!(at >= last, "went back from {last} to {at}");
+        last = at;
+        closest = closest.min(newest().saturating_sub(at));
+    }
+    assert!(
+        closest < ms(300),
+        "only got within {closest} of the newest frame"
+    );
+
+    // A closed replay ends at its out point; Play goes on from there.
+    let out_at = newest() - gst::ClockTime::SECOND;
+    let span = Index::clip(&index, out_at - ms(300), Some(out_at)).unwrap();
+    let base = span.base;
+    playout.load(request(span, false, 1.0), true).await.unwrap();
+    sleep(800).await;
+    let (at, state) = shown(base);
+    assert_eq!(state, TransportState::Ended);
+    assert!(at + ms(50) >= out_at, "ended at {at}, before {out_at}");
+    playout.play().await.unwrap();
+    sleep(600).await;
+    let (at, state) = shown(base);
+    assert_eq!(state, TransportState::Playing);
+    assert!(at > out_at + ms(300), "{at} isn't past {out_at}");
+    assert_eq!(playout.status().clip.unwrap().out_point, None);
+    // Stepping and changing speed there go on too.
+    playout.pause().await.unwrap();
+    playout.step(1).await.unwrap();
+    playout.set_rate(1.0).await.unwrap();
+    playout.play().await.unwrap();
+    sleep(300).await;
+    assert_eq!(playout.status().state, TransportState::Playing);
+
+    // The recording stops: it holds at the edge for a while, then ends.
+    drop(leg);
+    let _ = camera_mon.stop();
+    playout.set_rate(2.0).await.unwrap();
+    let mut ended = None;
+    for i in 0..100 {
+        sleep(100).await;
+        if playout.status().state == TransportState::Ended {
+            ended = Some(i);
+            break;
+        }
+    }
+    assert!(
+        ended.is_some_and(|i| i >= 20),
+        "ended after {ended:?} × 100 ms"
+    );
+    let (at, _) = shown(base);
+    assert!(
+        at + ms(100) > newest(),
+        "ended at {at}, short of {}",
+        newest()
+    );
+
+    playout.stop().await;
+    sleep(500).await;
+    mon.stop().unwrap();
+    drop(index);
+}

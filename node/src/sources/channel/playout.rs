@@ -173,11 +173,34 @@ struct Clip {
     /// The rate the player was last sought at: the request's, or ±1 after
     /// stepping.
     rate: f64,
+    /// An open buffer replay that ran out of footage: its player ended at the
+    /// buffer's newest frame and holds it until more comes. A seek clears it.
+    at_edge: bool,
 }
 
 impl Clip {
     fn is(&self, item: &PlaylistItem) -> bool {
         self.item.as_ref() == Some(&item.id) && self.request == item.clip
+    }
+
+    /// A replay straight from a buffer, whose player takes new segments as
+    /// they're recorded: it can play on past its out point.
+    fn grows(&self) -> bool {
+        self.request
+            .replay
+            .as_ref()
+            .is_some_and(|r| r.span.hold.is_some())
+    }
+
+    /// Whether going forward from `at` ends at once: at (or ended at) the out
+    /// point, or at the buffer's newest frame.
+    fn at_end(&self, at: gst::ClockTime, ended: bool) -> bool {
+        ended
+            || self.at_edge
+            || self
+                .request
+                .out_point
+                .is_some_and(|out| at + NEAR_OUT >= out)
     }
 
     /// Set the appsinks' mode, then put the player in `state`.
@@ -201,6 +224,21 @@ impl Drop for Clip {
         let _ = self.player.set_state(gst::State::Null);
     }
 }
+
+/// The frame shown is at the out point when it's this close: the last frame
+/// before it starts up to a frame earlier.
+const NEAR_OUT: gst::ClockTime = gst::ClockTime::from_mseconds(50);
+
+/// How long a buffer replay that caught up with the recording waits for the
+/// next segment, holding its last frame, before it ends: a few segments' time,
+/// in case the source stopped.
+const EDGE_WAIT: Duration = Duration::from_secs(3);
+
+/// How often it looks.
+const EDGE_POLL: Duration = Duration::from_millis(50);
+
+/// Footage past the frame shown by more than a frame or two: a new segment.
+const EDGE_MORE: gst::ClockTime = gst::ClockTime::from_mseconds(250);
 
 /// A speed a replay can play at: up to 4x either way, and not stopped.
 pub fn check_rate(rate: f64) -> Result<()> {
@@ -509,6 +547,7 @@ impl Playout {
             item,
             has_audio,
             rate: request.rate,
+            at_edge: false,
         })
     }
 
@@ -575,7 +614,19 @@ impl Playout {
             return self.take(&mut deck, item, true).await;
         };
         let mut state = self.shared.lock().unwrap().state;
-        if clip.rate != clip.request.rate && state != TransportState::Ended {
+        let at = self.position_of(clip);
+        if state != TransportState::Playing
+            && clip.request.rate > 0.0
+            && self.play_on(clip, at, state == TransportState::Ended)
+        {
+            // A buffer replay at its end plays on from the frame shown, into
+            // what's been recorded since.
+            self.reopen_if_ended(clip)?;
+            clip.rate = clip.request.rate;
+            seek_from(&clip.player, &clip.request, at, clip.rate).await?;
+            clip.at_edge = false;
+            state = TransportState::Paused;
+        } else if clip.rate != clip.request.rate && state != TransportState::Ended {
             // Stepped: back to the clip's speed, from the frame shown.
             let at = self.position_of(clip);
             clip.rate = clip.request.rate;
@@ -658,6 +709,7 @@ impl Playout {
         let clip = deck.current.as_mut().context("no clip loaded")?;
         self.reopen_if_ended(clip)?;
         let at = seek_from(&clip.player, &clip.request, position, clip.rate).await?;
+        clip.at_edge = false;
         self.shared.lock().unwrap().position = Some(at);
         Ok(())
     }
@@ -672,10 +724,14 @@ impl Playout {
             bail!("only a replay plays at other speeds");
         }
         let at = self.position_of(clip);
-        self.reopen_if_ended(clip)?;
+        let ended = self.reopen_if_ended(clip)?;
+        if rate > 0.0 {
+            self.play_on(clip, at, ended);
+        }
         clip.request.rate = rate;
         clip.rate = rate;
         seek_from(&clip.player, &clip.request, at, rate).await?;
+        clip.at_edge = false;
         let mut shared = self.shared.lock().unwrap();
         if let Some(c) = shared.clip.as_mut() {
             c.rate = rate;
@@ -694,13 +750,16 @@ impl Playout {
         if state == TransportState::Playing {
             clip.run(ClipMode::Cued, gst::State::Paused)?;
         }
-        self.reopen_if_ended(clip)?;
-        // A step goes the way the player plays: turn it round first.
+        let ended = self.reopen_if_ended(clip)?;
+        // A step goes the way the player plays: turn it round first. Forward
+        // at its end, a buffer replay steps on into newer footage.
         let forward = frames > 0;
-        if (clip.rate > 0.0) != forward {
-            let at = self.position_of(clip);
+        let at = self.position_of(clip);
+        let opened = forward && self.play_on(clip, at, ended);
+        if (clip.rate > 0.0) != forward || opened {
             clip.rate = if forward { 1.0 } else { -1.0 };
             seek_from(&clip.player, &clip.request, at, clip.rate).await?;
+            clip.at_edge = false;
         }
         let before = clip.marks.shown();
         clip.player.send_event(gst::event::Step::new(
@@ -730,24 +789,56 @@ impl Playout {
             .unwrap_or(clip.request.in_point)
     }
 
-    /// Show an ended clip paused again, its lanes back if it went to black.
-    fn reopen_if_ended(&self, clip: &Clip) -> Result<()> {
-        let mut shared = self.shared.lock().unwrap();
-        if shared.state == TransportState::Ended {
-            self.lanes.open(clip.has_audio)?;
-            clip.mode.store(ClipMode::Cued);
-            shared.state = TransportState::Paused;
+    /// Before going forward from `at`: a buffer replay at its end drops its
+    /// out point, so it plays on instead of ending at once. Says whether it
+    /// did (the player then needs a seek).
+    fn play_on(&self, clip: &mut Clip, at: gst::ClockTime, ended: bool) -> bool {
+        if !clip.grows() || !clip.at_end(at, ended) {
+            return false;
         }
-        Ok(())
+        clip.request.out_point = None;
+        if let Some(c) = self.shared.lock().unwrap().clip.as_mut() {
+            c.out_point = None;
+        }
+        true
+    }
+
+    /// Show an ended clip paused again, its lanes back if it went to black.
+    /// Says whether it had ended.
+    fn reopen_if_ended(&self, clip: &Clip) -> Result<bool> {
+        let mut shared = self.shared.lock().unwrap();
+        if shared.state != TransportState::Ended {
+            return Ok(false);
+        }
+        self.lanes.open(clip.has_audio)?;
+        clip.mode.store(ClipMode::Cued);
+        shared.state = TransportState::Paused;
+        Ok(true)
     }
 
     /// A clip's player reached its out point.
     async fn ended(self: Arc<Self>, serial: u64) {
         let mut deck = self.deck.lock().await;
+        let Some(clip) = deck.current.as_mut().filter(|c| c.serial == serial) else {
+            return;
+        };
+        // An open buffer replay caught up with the recording: it holds the
+        // last frame, still playing, until the next segment is in.
+        let playing = self.shared.lock().unwrap().state == TransportState::Playing;
+        let edge = playing && clip.grows() && clip.request.out_point.is_none() && clip.rate > 0.0;
+        if edge {
+            clip.at_edge = true;
+            drop(deck);
+            if self.wait_at_edge(serial).await {
+                return;
+            }
+            deck = self.deck.lock().await;
+        }
+        // Still at the edge, if it waited there: not moved since.
         let Some(end) = deck
             .current
             .as_ref()
-            .filter(|c| c.serial == serial)
+            .filter(|c| c.serial == serial && (c.at_edge || !edge))
             .map(|c| c.request.end)
         else {
             return;
@@ -773,6 +864,49 @@ impl Playout {
             self.lanes.close();
         }
         self.shared.lock().unwrap().state = TransportState::Ended;
+    }
+
+    /// Wait at the edge of the recording for footage after the frame shown,
+    /// and play on into it. False if none came in time: the clip ends there.
+    /// True too if something else moved it meanwhile; paused, it stays at
+    /// the edge, and Play goes on from there.
+    async fn wait_at_edge(&self, serial: u64) -> bool {
+        let until = tokio::time::Instant::now() + EDGE_WAIT;
+        loop {
+            tokio::time::sleep(EDGE_POLL).await;
+            let mut deck = self.deck.lock().await;
+            let Some(clip) = deck
+                .current
+                .as_mut()
+                .filter(|c| c.serial == serial && c.at_edge)
+            else {
+                return true;
+            };
+            if self.shared.lock().unwrap().state != TransportState::Playing {
+                return true;
+            }
+            let at = self.position_of(clip);
+            // The player's length grows as segments are added to it.
+            let more = clip
+                .player
+                .query_duration::<gst::ClockTime>()
+                .is_some_and(|d| d > at + EDGE_MORE);
+            if more {
+                return match seek_from(&clip.player, &clip.request, at, clip.rate).await {
+                    Ok(_) => {
+                        clip.at_edge = false;
+                        true
+                    }
+                    Err(e) => {
+                        warn!(path = %clip.request.path, error = %e, "can't play on from the edge");
+                        false
+                    }
+                };
+            }
+            if tokio::time::Instant::now() >= until {
+                return false;
+            }
+        }
     }
 
     /// A clip's player failed: on air, stop and go to black, keeping the error;
@@ -885,16 +1019,14 @@ fn seek_span(
     if clip.end == ClipEnd::Loop {
         flags |= gst::SeekFlags::SEGMENT;
     }
-    let (stop_type, stop) = match stop {
-        Some(out) => (gst::SeekType::Set, Some(out)),
-        None => (gst::SeekType::None, gst::ClockTime::NONE),
-    };
+    // Set either way: no stop clears an earlier seek's, as when a replay
+    // drops its out point.
     player.seek(
         rate,
         flags,
         gst::SeekType::Set,
         Some(start),
-        stop_type,
+        gst::SeekType::Set,
         stop,
     )?;
     Ok(())

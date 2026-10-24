@@ -869,7 +869,8 @@ pub struct ReplayClipRequest {
     /// it's outside it.
     #[cfg_attr(feature = "export-types", ts(type = "number"))]
     pub from_us: u64,
-    /// Until when; the newest frame kept if `None`.
+    /// Until when. If `None`, on into what's recorded meanwhile: no out
+    /// point, and at the newest frame it holds until more is recorded.
     #[serde(default)]
     #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
     pub to_us: Option<u64>,

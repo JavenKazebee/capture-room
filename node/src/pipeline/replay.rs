@@ -221,7 +221,8 @@ impl Index {
 
     /// The files covering `from` → `to`, within one gapless stretch: the one
     /// `from` falls in, else the next. Positions count from the first file's
-    /// start.
+    /// start. Without `to`, the span reaches the stretch's newest frame for
+    /// now, and [`Hold::newer`] has what's recorded after.
     pub fn clip(
         index: &ReplayIndex,
         from: gst::ClockTime,
@@ -275,6 +276,21 @@ impl Index {
             })),
         })
     }
+
+    /// The segments finished after the one at `last`, up to a gap: what a
+    /// clip plays on into. `None` once `last` has left the index.
+    fn after(&self, last: &Path) -> Option<Vec<PathBuf>> {
+        let at = self.segments.iter().position(|s| s.path == last)?;
+        let newer = self.segments.range(at..);
+        Some(
+            newer
+                .clone()
+                .zip(newer.skip(1))
+                .take_while(|(a, b)| b.start <= a.end + GAP)
+                .map(|(_, b)| b.path.clone())
+                .collect(),
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -284,18 +300,35 @@ pub struct ReplaySpan {
     /// The clock time position 0 shows.
     pub base: gst::ClockTime,
     pub from: gst::ClockTime,
+    /// The out point asked for, else the newest frame when it was made.
     pub to: gst::ClockTime,
     /// Held for the clip's life. `None` for a saved clip, which owns its
     /// files.
-    #[allow(dead_code)]
     pub hold: Option<Arc<Hold>>,
 }
 
-/// Keeps a clip's segments on disk while it lives.
+/// Keeps a clip's segments on disk while it lives, and finds the ones it can
+/// play on into.
 #[derive(Debug)]
 pub struct Hold {
     index: Weak<Mutex<Index>>,
     id: u64,
+}
+
+impl Hold {
+    /// The files recorded after `last` (the span's own last, or the last of
+    /// an earlier answer) without a gap. `None` once the buffer has gone or
+    /// started again.
+    pub fn newer(&self, last: &str) -> Option<Vec<String>> {
+        let index = self.index.upgrade()?;
+        let files = index.lock().unwrap().after(Path::new(last))?;
+        Some(
+            files
+                .into_iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
+        )
+    }
 }
 
 impl Drop for Hold {
@@ -797,6 +830,82 @@ mod tests {
                 channels: 2,
             },
         )
+    }
+
+    /// An index holding segments at these spans (seconds), without files.
+    fn index_of(spans: &[(f64, f64)]) -> ReplayIndex {
+        let dir = std::env::temp_dir().join(format!("cr-replay-index-{}", uuid::Uuid::new_v4()));
+        let index = Index::create(&dir, gst::ClockTime::from_seconds(600));
+        let mut i = index.lock().unwrap();
+        i.codec = Some(ReplayCodec::Mjpeg);
+        for &(start, end) in spans {
+            i.record(start, end);
+        }
+        drop(i);
+        index
+    }
+
+    fn newer_than(span: &ReplaySpan, last: &str) -> Option<Vec<String>> {
+        span.hold.as_ref().unwrap().newer(last)
+    }
+
+    fn secs(s: f64) -> gst::ClockTime {
+        gst::ClockTime::from_nseconds((s * 1e9) as u64)
+    }
+
+    impl Index {
+        fn record(&mut self, start: f64, end: f64) {
+            let path = self.dir.join(format!("{:08}.mov", self.next_number));
+            self.next_number += 1;
+            self.opened(path.clone(), secs(start));
+            self.closed(&path, secs(end));
+        }
+    }
+
+    /// Open-ended, a clip runs to the newest frame of its stretch for now,
+    /// and plays on into what's recorded after it, up to a gap.
+    #[test]
+    fn open_clip_plays_on_into_newer_segments() {
+        let index = index_of(&[(10.0, 11.0), (11.0, 12.0), (12.0, 13.0)]);
+        let span = Index::clip(&index, secs(11.5), None).unwrap();
+        assert_eq!(span.files.len(), 2, "from the file holding its first frame");
+        assert_eq!(span.base, secs(11.0));
+        assert_eq!(span.from, secs(0.5));
+        assert_eq!(span.to, secs(2.0), "to the newest frame");
+        let last = span.files.last().unwrap().clone();
+        assert_eq!(newer_than(&span, &last), Some(vec![]), "nothing newer yet");
+
+        // Two more seconds, then a gap: the source restarted.
+        {
+            let mut i = index.lock().unwrap();
+            i.record(13.0, 14.0);
+            i.record(14.0, 15.0);
+            i.record(20.0, 21.0);
+        }
+        let newer = newer_than(&span, &last).unwrap();
+        assert_eq!(newer.len(), 2, "up to the gap: {newer:?}");
+        assert_eq!(newer_than(&span, newer.last().unwrap()), Some(vec![]));
+
+        // A closed clip stops at its out point's file, but can still grow.
+        let closed = Index::clip(&index, secs(10.2), Some(secs(11.5))).unwrap();
+        assert_eq!(closed.files.len(), 2);
+        assert_eq!(closed.to, secs(1.5));
+        assert_eq!(
+            newer_than(&closed, closed.files.last().unwrap())
+                .unwrap()
+                .len(),
+            3
+        );
+
+        // After a gap, a clip is within the later stretch.
+        let later = Index::clip(&index, secs(16.0), None).unwrap();
+        assert_eq!(later.base, secs(20.0));
+        assert_eq!(later.from, gst::ClockTime::ZERO);
+        assert_eq!(later.to, secs(1.0));
+
+        // Nor once the buffer has gone.
+        drop(index);
+        assert_eq!(newer_than(&span, &last), None);
     }
 
     /// Records into one-second segments laid end to end on the monitor's
