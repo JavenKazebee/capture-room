@@ -2,6 +2,7 @@ import { plural } from '@/lib/format'
 import { WEEKDAYS } from '@/stores/schedules'
 import type { ScheduleAction } from '@/types/generated/ScheduleAction'
 import type { ScheduleDto } from '@/types/generated/ScheduleDto'
+import type { ScheduleInput } from '@/types/generated/ScheduleInput'
 
 const pad = (n: number) => String(n).padStart(2, '0')
 
@@ -99,4 +100,10 @@ export function relativeFuture(iso: string, now: Date): string {
   const hours = Math.round(mins / 60)
   if (hours < 36) return `in ${hours} h`
   return `in ${Math.round(hours / 24)} days`
+}
+
+/** The fields of a schedule that saving it takes, to change one and save the rest unchanged. */
+export function scheduleInput(s: ScheduleDto): ScheduleInput {
+  const { name, enabled, kind, date, weekdays, month_day, month_week, start_time, duration_s, actions } = s
+  return { name, enabled, kind, date, weekdays, month_day, month_week, start_time, duration_s, actions }
 }

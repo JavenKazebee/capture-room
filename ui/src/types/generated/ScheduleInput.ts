@@ -19,11 +19,11 @@ weekdays: number,
 /**
  * For `monthly` by date: 1–31. Months without that day are skipped.
  */
-month_day?: number | null, 
+month_day: number | null, 
 /**
  * For `monthly` by weekday: 1–4, or -1 for the last in the month.
  */
-month_week?: number | null, 
+month_week: number | null, 
 /**
  * `HH:MM` in the controller's local time.
  */

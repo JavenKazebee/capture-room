@@ -7,7 +7,7 @@ import { registerCommands } from '@/composables/useCommands'
 import { useSecondClock } from '@/composables/useSecondClock'
 import { dateTime } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
-import { relativeFuture, whatLabel, whenLabel } from '@/lib/schedules'
+import { relativeFuture, scheduleInput, whatLabel, whenLabel } from '@/lib/schedules'
 import { useNodesStore } from '@/stores/nodes'
 import { useSchedulesStore } from '@/stores/schedules'
 import { useSourcesStore } from '@/stores/sources'
@@ -20,7 +20,6 @@ import ToolbarSearch from '@/components/common/ToolbarSearch.vue'
 import ScheduleFormSheet from '@/components/schedules/ScheduleFormSheet.vue'
 import type { Column } from '@/components/common/dataTable'
 import type { ScheduleDto } from '@/types/generated/ScheduleDto'
-import type { ScheduleInput } from '@/types/generated/ScheduleInput'
 import type { ScheduleRunDto } from '@/types/generated/ScheduleRunDto'
 import type { ScheduleRunStatus } from '@/types/generated/ScheduleRunStatus'
 
@@ -97,14 +96,9 @@ registerCommands(() =>
     : [],
 )
 
-function inputOf(s: ScheduleDto): ScheduleInput {
-  const { name, enabled, kind, date, weekdays, start_time, duration_s, actions } = s
-  return { name, enabled, kind, date, weekdays, start_time, duration_s, actions }
-}
-
 async function setEnabled(s: ScheduleDto, on: boolean) {
   try {
-    await store.update(s.id, { ...inputOf(s), enabled: on })
+    await store.update(s.id, { ...scheduleInput(s), enabled: on })
   } catch (e) {
     notifyError(`Couldn’t ${on ? 'enable' : 'disable'} “${s.name}”`, e)
   }

@@ -1661,11 +1661,9 @@ pub struct ScheduleInput {
     pub weekdays: u8,
     /// For `monthly` by date: 1–31. Months without that day are skipped.
     #[serde(default)]
-    #[cfg_attr(feature = "export-types", ts(optional = nullable))]
     pub month_day: Option<u8>,
     /// For `monthly` by weekday: 1–4, or -1 for the last in the month.
     #[serde(default)]
-    #[cfg_attr(feature = "export-types", ts(optional = nullable))]
     pub month_week: Option<i8>,
     /// `HH:MM` in the controller's local time.
     pub start_time: String,

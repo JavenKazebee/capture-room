@@ -23,6 +23,7 @@ import { registerCommands, type Command } from '@/composables/useCommands'
 import { usePreferences, type Density } from '@/composables/usePreferences'
 import { authStatus, signOut } from '@/composables/useAuth'
 import { dateTime } from '@/lib/format'
+import { scheduleInput } from '@/lib/schedules'
 import { shortcut } from '@/lib/keys'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
@@ -30,7 +31,6 @@ import { useRecordDeskStore } from '@/stores/recordDesk'
 import { useRecordingsStore } from '@/stores/recordings'
 import { useSchedulesStore } from '@/stores/schedules'
 import { useSourcesStore, type Source } from '@/stores/sources'
-import type { ScheduleDto } from '@/types/generated/ScheduleDto'
 import { scrollToHash } from '@/router'
 import { setupPages, workspaces } from './workspaces'
 
@@ -137,11 +137,6 @@ export function useGlobalCommands() {
     })),
   )
 
-  function inputOf(s: ScheduleDto) {
-    const { name, enabled, kind, date, weekdays, start_time, duration_s, actions } = s
-    return { name, enabled, kind, date, weekdays, start_time, duration_s, actions }
-  }
-
   registerCommands(() =>
     !nodes.isController
       ? []
@@ -176,7 +171,7 @@ export function useGlobalCommands() {
               searchOnly: true,
               run: () =>
                 schedules
-                  .update(s.id, { ...inputOf(s), enabled: !s.enabled })
+                  .update(s.id, { ...scheduleInput(s), enabled: !s.enabled })
                   .catch((e) => notifyError(`Couldn’t ${s.enabled ? 'disable' : 'enable'} “${s.name}”`, e)),
             },
           ]
