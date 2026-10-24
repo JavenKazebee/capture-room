@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useViewKeys } from '@/composables/useViewKeys'
-import { Eye, X } from '@lucide/vue'
+import { Circle, Eye, FilterX, ListChecks, Square, X } from '@lucide/vue'
+import { registerCommands, type Command } from '@/composables/useCommands'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordDeskStore, type StateFilter } from '@/stores/recordDesk'
@@ -73,6 +74,22 @@ const SHORTCUTS: [string[], string][] = [
 const scopeLive = computed(() => desk.scope.filter((s) => desk.isLive(s)))
 const scopeIdle = computed(() => desk.scope.filter((s) => !desk.isLive(s)))
 const allScope = computed(() => desk.selected.size === 0)
+
+registerCommands(() => {
+  const scope = allScope.value ? 'all visible feeds' : 'the selected feeds'
+  const out: Command[] = []
+  if (scopeIdle.value.length) {
+    out.push({ id: 'record:scope-start', title: `Record ${scope}`, detail: `${scopeIdle.value.length} idle`, group: 'This page', icon: Circle, iconClass: 'text-tally!', keywords: ['start', 'rec', 'bulk'], run: () => desk.bulk('start', scopeIdle.value) })
+  }
+  if (scopeLive.value.length) {
+    out.push({ id: 'record:scope-stop', title: `Stop ${scope}`, detail: `${scopeLive.value.length} recording`, group: 'This page', icon: Square, iconClass: 'text-tally!', keywords: ['end', 'bulk'], run: () => desk.bulk('stop', scopeLive.value) })
+  }
+  out.push({ id: 'record:select-all', title: 'Select all visible feeds', group: 'This page', icon: ListChecks, shortcut: shortcut('A'), keywords: ['selection'], run: () => desk.selectAll() })
+  if (desk.filtered) {
+    out.push({ id: 'record:clear-filters', title: 'Clear filters', group: 'This page', icon: FilterX, keywords: ['reset', 'show all'], run: () => desk.clearFilters() })
+  }
+  return out
+})
 
 useViewKeys((e) => {
   // Esc closes an open info popover first, then clears the selection.

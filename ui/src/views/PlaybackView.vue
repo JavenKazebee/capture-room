@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useViewKeys } from '@/composables/useViewKeys'
+import { registerCommands } from '@/composables/useCommands'
 import { Plus, Settings2 } from '@lucide/vue'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
@@ -46,6 +47,13 @@ const items = computed(() => playlist.value?.items ?? [])
 
 /** The channel sheet: `'new'`, the channel being edited, or closed. */
 const sheet = ref<'new' | { nodeId: string; id: string } | null>(null)
+
+registerCommands(() => [
+  { id: 'playback:new-channel', title: 'New playout channel', group: 'This page', icon: Plus, keywords: ['add', 'create', 'output'], run: () => (sheet.value = 'new') },
+  ...(channel.value
+    ? [{ id: 'playback:channel-settings', title: `${channel.value.display_name} settings`, group: 'This page' as const, icon: Settings2, keywords: ['channel', 'edit', 'configure'], run: () => editChannel(channel.value!.key) }]
+    : []),
+])
 
 function editChannel(key: string) {
   const c = playout.channels.find((c) => c.key === key)

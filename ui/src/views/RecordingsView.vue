@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useStorage } from '@vueuse/core'
+import { useRoute, useRouter } from 'vue-router'
+import { registerCommands } from '@/composables/useCommands'
 import { useSecondClock } from '@/composables/useSecondClock'
 import { useViewKeys } from '@/composables/useViewKeys'
-import { Play } from '@lucide/vue'
+import { History, Play } from '@lucide/vue'
 import { clockTime, dayKey, dayLabel, elapsedMs, formatDuration, plural } from '@/lib/format'
 import { CODECS } from '@/lib/codecs'
 import { notifyError } from '@/lib/notify'
@@ -70,6 +72,34 @@ watch(selected, (s) => {
 function select(s: RecordingSession) {
   selectedKey.value = selectedKey.value === key(s) ? null : key(s)
 }
+
+// From the command palette: `?select=<node>/<id>` opens a recording, clearing filters that hide it.
+const route = useRoute()
+const router = useRouter()
+watch(
+  () => [route.query.select, recordings.sessions.length] as const,
+  async ([want]) => {
+    if (typeof want !== 'string') return
+    const s = recordings.sessions.find((x) => key(x) === want)
+    if (!s) return
+    if (!rows.value.includes(s)) {
+      statusFilter.value = 'all'
+      nodeFilter.value = 'all'
+    }
+    filter.value = ''
+    selectedKey.value = want
+    router.replace({ query: {} })
+    await nextTick()
+    document.querySelector(`[data-row-key="${CSS.escape(want)}"]`)?.scrollIntoView({ block: 'nearest' })
+  },
+  { immediate: true },
+)
+
+registerCommands(() =>
+  recordings.hasOlder
+    ? [{ id: 'recordings:older', title: 'Load older recordings', group: 'This page', icon: History, keywords: ['more', 'history'], run: loadOlder }]
+    : [],
+)
 
 const table = ref<{ displayedRows: RecordingSession[] }>()
 const detail = ref<InstanceType<typeof RecordingDetail>>()

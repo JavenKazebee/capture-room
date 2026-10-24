@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { MonitorPlay, Pencil, Plus, Radio, RadioTower, RefreshCw, Trash2 } from '@lucide/vue'
 import { CONFIGURED_TYPES, useSourcesStore, type Source } from '@/stores/sources'
@@ -8,6 +8,7 @@ import { useNodesStore } from '@/stores/nodes'
 import { useRecordingsStore } from '@/stores/recordings'
 import { useRecordDeskStore } from '@/stores/recordDesk'
 import { notifyError } from '@/lib/notify'
+import { registerCommands } from '@/composables/useCommands'
 import { fpsLabel, resolutionLabel } from '@/lib/sourceFormat'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -98,6 +99,25 @@ function openEdit(src: Source) {
   editing.value = src
   formOpen.value = true
 }
+
+// From the command palette: `?edit=<source key>` opens that source's settings.
+const route = useRoute()
+watch(
+  () => route.query.edit,
+  async (key) => {
+    if (typeof key !== 'string') return
+    await store.ensureLoaded()
+    const src = store.sources.find((s) => s.key === key)
+    router.replace({ query: {} })
+    if (src) openEdit(src)
+  },
+  { immediate: true },
+)
+
+registerCommands(() => [
+  { id: 'sources:add', title: 'Add source', group: 'This page', icon: Plus, keywords: ['new', 'create'], run: openCreate },
+  { id: 'sources:ndi', title: 'Show NDI senders', group: 'This page', icon: RadioTower, keywords: ['ndi', 'network'], run: () => (ndiOpen.value = true) },
+])
 
 const deleting = ref<Source | null>(null)
 

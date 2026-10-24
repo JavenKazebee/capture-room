@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { CalendarClock, Pencil, Plus, Square } from '@lucide/vue'
 import { sourceKey } from '@/composables/useApi'
+import { registerCommands } from '@/composables/useCommands'
 import { useSecondClock } from '@/composables/useSecondClock'
 import { dateTime } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
@@ -69,6 +71,31 @@ watch(
 )
 
 const editing = ref<ScheduleDto | null | 'new'>(null)
+
+// From the command palette: `?select=<id>` picks a schedule, `?edit=<id>` opens it.
+const route = useRoute()
+const router = useRouter()
+watch(
+  () => [route.query.select, route.query.edit, store.loaded] as const,
+  ([select, edit, loaded]) => {
+    if (!loaded) return
+    const id = typeof select === 'string' ? select : typeof edit === 'string' ? edit : null
+    if (!id) return
+    const s = store.schedules.find((x) => x.id === id)
+    if (s) {
+      selectedId.value = s.id
+      if (edit !== undefined) editing.value = s
+    }
+    router.replace({ query: {} })
+  },
+  { immediate: true },
+)
+
+registerCommands(() =>
+  nodes.isController
+    ? [{ id: 'schedule:new', title: 'New schedule', group: 'This page', icon: Plus, keywords: ['add', 'create'], run: () => (editing.value = 'new') }]
+    : [],
+)
 
 function inputOf(s: ScheduleDto): ScheduleInput {
   const { name, enabled, kind, date, weekdays, start_time, duration_s, actions } = s

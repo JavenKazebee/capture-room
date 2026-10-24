@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { AlertTriangle, RotateCcw } from '@lucide/vue'
 import { api, nodeApi } from '@/composables/useApi'
@@ -152,6 +152,23 @@ async function loadClock() {
 }
 watch(() => nodes.nodes, loadClock, { immediate: true })
 
+// `#monitoring` etc. (from the command palette) scrolls to that section; Clock sync appears once loaded.
+const route = useRoute()
+const router = useRouter()
+watch(
+  () => [route.hash, !!clockSettings.value] as const,
+  async ([hash]) => {
+    if (!hash) return
+    await nextTick()
+    const el = document.getElementById(`settings-${hash.slice(1)}`)
+    if (!el) return
+    el.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    // Cleared, so asking for the same section again scrolls again.
+    router.replace({ hash: '' })
+  },
+  { immediate: true },
+)
+
 async function setClockMode(mode: ClockMode) {
   savingClock.value = true
   try {
@@ -205,7 +222,7 @@ const about = computed(() => [
 <template>
   <PageHeader title="Settings" />
   <div class="p-4 max-w-3xl space-y-6">
-    <section class="space-y-2">
+    <section id="settings-appearance" class="space-y-2">
       <div>
         <h2 class="text-base font-semibold tracking-tight">Appearance</h2>
         <p class="text-xs text-muted-foreground">Stored in this browser only.</p>
@@ -238,7 +255,7 @@ const about = computed(() => [
       </div>
     </section>
 
-    <section class="space-y-2">
+    <section id="settings-monitoring" class="space-y-2">
       <div>
         <h2 class="text-base font-semibold tracking-tight">Monitoring</h2>
         <p class="text-xs text-muted-foreground">How each source's thumbnail and audio meter are sampled for the Record view. Shared by every node.</p>
@@ -290,7 +307,7 @@ const about = computed(() => [
       </div>
     </section>
 
-    <section v-if="clockSettings" class="space-y-2">
+    <section id="settings-clock" v-if="clockSettings" class="space-y-2">
       <div>
         <h2 class="text-base font-semibold tracking-tight">Clock sync</h2>
         <p class="text-xs text-muted-foreground">
@@ -349,9 +366,9 @@ const about = computed(() => [
       </div>
     </section>
 
-    <AccessTokenSettings />
+    <div id="settings-access"><AccessTokenSettings /></div>
 
-    <section class="space-y-2">
+    <section id="settings-about" class="space-y-2">
       <div>
         <h2 class="text-base font-semibold tracking-tight">About</h2>
         <p class="text-xs text-muted-foreground">The Capture Room instance this browser is connected to.</p>
