@@ -23,11 +23,44 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
         .context("open sqlite")?;
 
     let migrator = sqlx::migrate!("./migrations");
+    let fresh = is_fresh(&pool).await;
     adopt_squashed_schema(&pool, &migrator).await?;
     migrator.run(&pool).await.context("run migrations")?;
+    if fresh {
+        seed_fresh(&pool).await.context("seed a new database")?;
+    }
 
     info!(path = db_path, "database ready");
     Ok(pool)
+}
+
+/// Nothing has been migrated yet: no migrations table, or an empty one.
+async fn is_fresh(pool: &SqlitePool) -> bool {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM _sqlx_migrations")
+        .fetch_one(pool)
+        .await
+        .map_or(true, |n| n == 0)
+}
+
+/// `0001_schema.sql` seeds two test sources, and can't be changed without
+/// breaking its checksum. A new install starts with one instead; databases
+/// that already have the two keep them.
+async fn seed_fresh(pool: &SqlitePool) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM configured_sources WHERE id IN ('test-1', 'test-2')")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO configured_sources (id, name, config, created_at) VALUES \
+         ('test-1', 'Test Source', ?, datetime('now'))",
+    )
+    .bind(
+        r#"{"type":"test","pattern":"smpte","width":1920,"height":1080,"fps_num":30,"fps_den":1,"audio_signal":"pink-noise","frequency":0.0,"channels":2}"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 /// The last of the development migrations squashed into `0001_schema.sql`.
@@ -1043,6 +1076,7 @@ pub async fn schedule_runs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::types::{AudioTestSignal, SourceConfig, VideoTestPattern};
 
     async fn count(pool: &SqlitePool, table: &str, column: &str) -> i64 {
         sqlx::query_scalar(&format!(
@@ -1119,6 +1153,55 @@ mod tests {
         pool.close().await;
         assert!(init(&url).await.is_err());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn a_new_database_starts_with_one_test_source() {
+        let path =
+            std::env::temp_dir().join(format!("capture-room-fresh-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let pool = init(&format!("sqlite://{}", path.display())).await.unwrap();
+        let sources = configured_sources_list(&pool).await.unwrap();
+        assert_eq!(sources.len(), 1);
+        let s = &sources[0];
+        assert_eq!((s.id.as_str(), s.name.as_str()), ("test-1", "Test Source"));
+        let SourceConfig::Test(t) = &s.config else {
+            panic!("not a test source: {:?}", s.config);
+        };
+        assert_eq!(
+            (t.pattern, t.width, t.height, t.fps_num, t.fps_den, t.channels),
+            (VideoTestPattern::Smpte, 1920, 1080, 30, 1, 2)
+        );
+        assert_eq!(t.audio_signal, AudioTestSignal::PinkNoise);
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn an_existing_database_keeps_its_test_sources() {
+        let path =
+            std::env::temp_dir().join(format!("capture-room-seed-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let url = format!("sqlite://{}", path.display());
+        // Migrated by an earlier build, which kept the schema's two seeds.
+        let opts = SqliteConnectOptions::from_str(&url)
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(opts).await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool.close().await;
+
+        let pool = init(&url).await.unwrap();
+        let mut ids: Vec<String> = configured_sources_list(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["test-1", "test-2"]);
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
