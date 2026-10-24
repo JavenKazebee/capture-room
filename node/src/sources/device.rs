@@ -498,6 +498,7 @@ impl InputSource for DeviceSource {
             format: cfg.format.as_ref(),
             tracker: &self.tracker,
             direct: false,
+            latency: None,
         })?;
         Ok(bin.upcast())
     }

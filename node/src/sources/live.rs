@@ -108,6 +108,9 @@ pub struct LiveInput<'a> {
     /// restarted. A black background keeps video running while it has no
     /// pads; its EOSes are dropped so the next publisher's pads link in.
     pub direct: bool,
+    /// Extra time the compositor and mixer wait for late input, beyond what
+    /// the source reports (a `fallbacksrc` reports [`MIN_LATENCY`] already).
+    pub latency: Option<Duration>,
 }
 
 /// Build a source bin (`"video"` / `"audio"` ghost pads) around `input`.
@@ -130,6 +133,7 @@ pub fn build_bin(input: LiveInput) -> Result<gst::Bin> {
         format,
         tracker,
         direct,
+        latency,
     } = input;
     tracker.reset();
     let bin = gst::Bin::with_name(&format!("live-bin-{id}"));
@@ -152,6 +156,12 @@ pub fn build_bin(input: LiveInput) -> Result<gst::Bin> {
     // Picked device channels are numbered; a source's own are laid out.
     let numbered = matches!(audio, LiveAudio::Element { .. });
     let audio_inputs = audio_output(&bin, id, channels, numbered)?;
+    if let Some(latency) = latency {
+        let mixer = audio_inputs.aggregator().context("audio mixer")?;
+        for agg in [&compositor, &mixer] {
+            agg.set_property("latency", latency.as_nanos() as u64);
+        }
+    }
 
     watch_source(&source, tracker.clone(), format.copied(), move |lock| {
         video_format.lock().unwrap().lock(lock);
@@ -704,6 +714,9 @@ fn initial_video_caps(format: Option<&LiveVideoFormat>) -> gst::Caps {
 /// Count real frames for the link state, and lock output caps to the first
 /// video format (a configured one wins). The lock holds for the bin's life;
 /// a source that reconnects in another format is scaled into it.
+///
+/// It locks on the first real frame, not the first caps: a Decklink detecting
+/// its signal sends caps for its first mode (NTSC) before the signal's own.
 fn watch_source(
     source: &gst::Element,
     tracker: Arc<LinkTracker>,
@@ -719,25 +732,32 @@ fn watch_source(
         let is_video = AtomicBool::new(false);
         pad.add_probe(
             gst::PadProbeType::BUFFER | gst::PadProbeType::EVENT_DOWNSTREAM,
-            move |_, info| {
+            move |pad, info| {
                 match &info.data {
-                    Some(gst::PadProbeData::Buffer(_)) => {
-                        if is_video.load(Ordering::Relaxed) {
-                            tracker.frame();
+                    Some(gst::PadProbeData::Buffer(buffer)) => {
+                        if !is_video.load(Ordering::Relaxed)
+                            || buffer.flags().contains(gst::BufferFlags::GAP)
+                        {
+                            return gst::PadProbeReturn::Ok;
+                        }
+                        tracker.frame();
+                        if !locked.load(Ordering::SeqCst) {
+                            if let Some(caps) = pad.current_caps() {
+                                if !locked.swap(true, Ordering::SeqCst) {
+                                    let lock = lock_caps(&caps, format.as_ref());
+                                    info!(caps = %lock, "live source format locked");
+                                    on_lock(&lock);
+                                }
+                            }
                         }
                     }
                     Some(gst::PadProbeData::Event(ev)) => {
                         if let gst::EventView::Caps(c) = ev.view() {
-                            let caps = c.caps();
-                            let video = caps
+                            let video = c
+                                .caps()
                                 .structure(0)
                                 .is_some_and(|s| s.name().starts_with("video/"));
                             is_video.store(video, Ordering::Relaxed);
-                            if video && !locked.swap(true, Ordering::SeqCst) {
-                                let lock = lock_caps(caps, format.as_ref());
-                                info!(caps = %lock, "live source format locked");
-                                on_lock(&lock);
-                            }
                         }
                     }
                     _ => {}
@@ -922,6 +942,7 @@ mod tests {
             format: None,
             tracker: &tracker,
             direct: true,
+            latency: None,
         })
         .unwrap();
         let tc_src = capture.by_name("tc").unwrap().static_pad("src").unwrap();
@@ -981,6 +1002,84 @@ mod tests {
         for pair in stamped.windows(2) {
             assert_eq!(frame(pair[1]), frame(pair[0]) + 1, "{stamped:?}");
         }
+    }
+
+    /// Caps and no-signal (gap) frames ahead of the real format don't lock it,
+    /// as a Decklink sends for its first mode while it detects the signal.
+    #[test]
+    fn format_locks_on_the_first_real_frame() {
+        gst::init().unwrap();
+        let capture = gst::parse::bin_from_description(
+            "videotestsrc is-live=1 \
+             ! capsfilter name=cf caps=video/x-raw,width=720,height=486,framerate=30/1",
+            false,
+        )
+        .unwrap();
+        let cf = capture.by_name("cf").unwrap();
+        let cf_src = cf.static_pad("src").unwrap();
+        let seen = AtomicU64::new(0);
+        let cf_ = cf.clone();
+        // Gap frames until the source is in its real format, asked for after a few.
+        cf_src.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
+            let real = pad
+                .current_caps()
+                .and_then(|c| c.structure(0)?.get::<i32>("width").ok())
+                == Some(1280);
+            if seen.fetch_add(1, Ordering::Relaxed) == 5 {
+                let cf = cf_.clone();
+                std::thread::spawn(move || {
+                    let caps: gst::Caps = "video/x-raw,width=1280,height=720,framerate=30/1"
+                        .parse()
+                        .unwrap();
+                    cf.set_property("caps", &caps);
+                });
+            }
+            if let (false, Some(buffer)) = (real, info.buffer_mut()) {
+                buffer.make_mut().set_flags(gst::BufferFlags::GAP);
+            }
+            gst::PadProbeReturn::Ok
+        });
+        let tracker = Arc::new(LinkTracker::default());
+        let bin = build_bin(LiveInput {
+            id: "t",
+            source: capture.clone().upcast(),
+            audio: LiveAudio::Silence { channels: 2 },
+            format: None,
+            tracker: &tracker,
+            direct: true,
+            latency: None,
+        })
+        .unwrap();
+        let ghost = gst::GhostPad::builder_with_target(&cf_src)
+            .unwrap()
+            .name("video")
+            .build();
+        capture.add_pad(&ghost).unwrap();
+
+        let pipeline = gst::Pipeline::new();
+        let v = Arc::new(Sink::default());
+        let vsink = counting_sink(v.clone());
+        let asink = make_el("fakesink", "asink").unwrap();
+        pipeline
+            .add_many([bin.upcast_ref(), &vsink, &asink])
+            .unwrap();
+        bin.link_pads(Some("video"), &vsink, None).unwrap();
+        bin.link_pads(Some("audio"), &asink, None).unwrap();
+        pipeline.set_state(gst::State::Playing).unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        pipeline.set_state(gst::State::Null).unwrap();
+
+        // Unlocked frames pass as they are; locked caps carry the pinned multiview.
+        let caps = v.caps.lock().unwrap();
+        let locked: Vec<_> = caps
+            .iter()
+            .filter(|c| c.contains("multiview-mode"))
+            .collect();
+        assert!(!locked.is_empty(), "never locked: {caps:#?}");
+        assert!(
+            locked.iter().all(|c| c.contains("width=(int)1280")),
+            "locked to the placeholder: {caps:#?}"
+        );
     }
 
     /// Locked caps are fixed, with mono multiview and every flag pinned, so
@@ -1068,6 +1167,7 @@ mod tests {
             format: None,
             tracker: &tracker,
             direct: false,
+            latency: None,
         })
         .unwrap();
         let recv = gst::Pipeline::new();

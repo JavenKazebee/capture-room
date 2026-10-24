@@ -75,6 +75,7 @@ impl InputSource for WhipSource {
             format: cfg.format.as_ref(),
             tracker: &self.tracker,
             direct: true,
+            latency: None,
         })?;
         Ok(bin.upcast())
     }

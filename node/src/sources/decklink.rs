@@ -10,6 +10,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use gstreamer::{self as gst, prelude::*};
@@ -37,6 +38,11 @@ const FRAMEWORK: &str = "/Library/Frameworks/DeckLinkAPI.framework";
 
 /// Embedded audio channel counts the cards carry.
 const AUDIO_CHANNELS: &[u32] = &[2, 8, 16];
+
+/// How long the live bin waits for a card's frames past the latency it reports
+/// (about a frame). In 2160p its audio comes in later than that, and the
+/// mixer dropping the late part of every frame's audio makes it buzz.
+const LATENCY: Duration = Duration::from_millis(200);
 
 /// Why this node can't use Decklink cards, if it can't.
 pub fn unavailable(has: impl Fn(&str) -> bool) -> Option<String> {
@@ -655,6 +661,7 @@ impl InputSource for DecklinkSource {
             format: cfg.format.as_ref(),
             tracker: &self.tracker,
             direct: true,
+            latency: Some(LATENCY),
         })?;
         // Added now that the live bin is watching for them.
         for pad in pads {
