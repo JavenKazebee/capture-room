@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useEventListener } from '@vueuse/core'
 import { RefreshCw } from '@lucide/vue'
@@ -34,6 +34,9 @@ onMounted(async () => {
   await nextTick()
   if (route.hash) document.querySelector(route.hash)?.scrollIntoView({ block: 'start' })
 })
+
+// After a reload the node list can arrive after this page mounts: check nodes as they become known.
+watch(() => nodes.reachable.map((n) => n.id).join(), () => checks.load())
 
 // Back from System Settings: what was just allowed shows without a click.
 useEventListener(window, 'focus', recheck)

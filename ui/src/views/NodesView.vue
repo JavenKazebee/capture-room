@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, type ComponentPublicInstance } from 'vue'
+import { computed, onMounted, ref, watch, type ComponentPublicInstance } from 'vue'
 import { FetchError } from 'ofetch'
 import { toast } from 'vue-sonner'
 import { Plus } from '@lucide/vue'
@@ -26,8 +26,9 @@ const store = useNodesStore()
 const storage = useStorageStore()
 const checks = useChecksStore()
 
-// For each card's problem badge.
+// For each card's problem badge, and again as nodes become known (the list can arrive after a reload).
 onMounted(() => checks.load())
+watch(() => store.reachable.map((n) => n.id).join(), () => checks.load())
 
 const peers = computed(() => store.nodes.filter((n) => !n.is_self))
 
