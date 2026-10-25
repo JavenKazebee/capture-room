@@ -1,6 +1,6 @@
 //! WS relay: a peer's `/api/v1/node/ws` (its own events only, so a peer
 //! controller never echoes its peers) → this controller's merged `/ws`.
-//! Frames are forwarded verbatim. The URL is looked up on every reconnect so
+//! Frames are forwarded verbatim, unless the peer runs another version. The URL is looked up on every reconnect so
 //! IP changes are picked up; it stops when the entry's token is cancelled.
 
 use std::time::Duration;
@@ -63,7 +63,13 @@ async fn run(ctx: Ctx, node_id: String) {
                 while let Some(msg) = read.next().await {
                     match msg {
                         Ok(Message::Text(text)) => {
-                            let _ = ctx.state.ws_tx.send(text.to_string());
+                            // Another version's events may not mean what the UI
+                            // takes them to. Checked per event: the relay
+                            // reconnects to an updated node before the health
+                            // check sees its version.
+                            if ctx.registry.read().await.other_version(&node_id).is_none() {
+                                let _ = ctx.state.ws_tx.send(text.to_string());
+                            }
                         }
                         Ok(Message::Close(_)) => break,
                         Err(e) => {

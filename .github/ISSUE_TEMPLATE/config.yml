@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Ask a question
+    url: https://github.com/JavenKazebee/capture-room/discussions
+    about: How to set something up, whether it fits your show, or an idea to talk through.
   - name: Report a security vulnerability
     url: https://github.com/JavenKazebee/capture-room/security/advisories/new
     about: Privately, through GitHub; please don't open a public issue. See SECURITY.md.
