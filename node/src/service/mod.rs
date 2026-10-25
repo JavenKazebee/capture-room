@@ -1,6 +1,7 @@
 //! Running the node as a service in the user's login session: starts at login
 //! (unless turned off), restarts on a crash, stays stopped after a clean quit.
-//! The installer scripts and updater go through this too. macOS only so far.
+//! The installer scripts and updater go through this too. macOS and Linux so
+//! far.
 
 use std::path::PathBuf;
 
@@ -13,9 +14,14 @@ mod macos;
 #[cfg(target_os = "macos")]
 use macos as platform;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+use linux as platform;
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod unsupported;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use unsupported as platform;
 
 /// Set in the service's environment, so the node knows it runs as one.
@@ -138,9 +144,10 @@ pub fn data_dir() -> PathBuf {
     platform::data_dir()
 }
 
-/// Started from the Finder (the app opened with no arguments): make sure the
-/// service is installed and running, open the UI in the browser, and return
-/// `true` so the process exits instead of running a second node.
+/// Started from the Finder (the app opened with no arguments; on Linux, the
+/// installed binary run with none): make sure the service is installed and
+/// running, open the UI in the browser, and return `true` so the process
+/// exits instead of running a second node.
 pub fn launched_from_desktop() -> Result<bool> {
     if running_as_service() || std::env::args_os().len() > 1 || app_path().is_none() {
         return Ok(false);
@@ -152,7 +159,11 @@ pub fn launched_from_desktop() -> Result<bool> {
         }
         None => platform::install(false, None)?.port,
     };
-    open_url(&crate::auth::installed_sign_in_url(port));
+    let url = crate::auth::installed_sign_in_url(port);
+    // Run from a shell, perhaps with no browser to open.
+    #[cfg(target_os = "linux")]
+    println!("Capture Room is running: {url}");
+    open_url(&url);
     Ok(true)
 }
 
