@@ -27,94 +27,43 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
         .context("open sqlite")?;
 
     let migrator = sqlx::migrate!("./migrations");
-    let fresh = is_fresh(&pool).await;
-    adopt_squashed_schema(&pool, &migrator).await?;
+    refuse_pre_baseline(&pool, &migrator, db_path).await?;
     migrator.run(&pool).await.context("run migrations")?;
-    if fresh {
-        seed_fresh(&pool).await.context("seed a new database")?;
-    }
 
     info!(path = db_path, "database ready");
     Ok(pool)
 }
 
-/// Nothing has been migrated yet: no migrations table, or an empty one.
-async fn is_fresh(pool: &SqlitePool) -> bool {
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM _sqlx_migrations")
-        .fetch_one(pool)
-        .await
-        .map_or(true, |n| n == 0)
-}
-
-/// `0001_schema.sql` seeds two test sources, and can't be changed without
-/// breaking its checksum. A new install starts with one instead; databases
-/// that already have the two keep them.
-async fn seed_fresh(pool: &SqlitePool) -> Result<()> {
-    let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM configured_sources WHERE id IN ('test-1', 'test-2')")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query(
-        "INSERT INTO configured_sources (id, name, config, created_at) VALUES \
-         ('test-1', 'Test Source', ?, datetime('now'))",
-    )
-    .bind(
-        r#"{"type":"test","pattern":"smpte","width":1920,"height":1080,"fps_num":30,"fps_den":1,"audio_signal":"pink-noise","frequency":0.0,"channels":2}"#,
-    )
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(())
-}
-
-/// The last of the development migrations squashed into `0001_schema.sql`.
-const SQUASHED_LAST: (i64, &str) = (20, "replay clip groups");
-
-/// A database from before the squash has all 20 development migrations
-/// applied, and the same schema `0001_schema.sql` creates: record it as that
-/// one migration instead, so sqlx doesn't refuse it. Remove once no node
-/// predates the squash.
-async fn adopt_squashed_schema(
+/// `0001_schema.sql` was rewritten for 0.2, so a database from 0.1 or an
+/// earlier development build has a migration 1 with another checksum. sqlx
+/// would refuse it with "previously applied but has been modified"; say what
+/// it is and what to do instead.
+async fn refuse_pre_baseline(
     pool: &SqlitePool,
     migrator: &sqlx::migrate::Migrator,
+    db_path: &str,
 ) -> Result<()> {
-    let applied: Vec<(i64, String)> = match sqlx::query_as(
-        "SELECT version, description FROM _sqlx_migrations WHERE success ORDER BY version",
-    )
-    .fetch_all(pool)
-    .await
-    {
-        Ok(rows) => rows,
-        // A new database: no migrations table yet.
-        Err(_) => return Ok(()),
-    };
-    if !matches!(applied.first(), Some((1, d)) if d == "baseline") {
-        return Ok(());
-    }
-    if applied.last().map(|(v, d)| (*v, d.as_str())) != Some(SQUASHED_LAST)
-        || applied.len() as i64 != SQUASHED_LAST.0
-    {
-        anyhow::bail!(
-            "this database is from a development build older than its last schema change; \
-             start that build once to bring it up to date, or delete the database"
-        );
-    }
-    let schema = migrator
+    let applied: Option<Vec<u8>> =
+        match sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = 1")
+            .fetch_optional(pool)
+            .await
+        {
+            Ok(checksum) => checksum,
+            // A new database: no migrations table yet.
+            Err(_) => return Ok(()),
+        };
+    let baseline = migrator
         .iter()
         .find(|m| m.version == 1)
         .context("no 0001 migration")?;
-    let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM _sqlx_migrations WHERE version > 1")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("UPDATE _sqlx_migrations SET description = ?, checksum = ? WHERE version = 1")
-        .bind(schema.description.as_ref())
-        .bind(schema.checksum.as_ref())
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
-    info!("recorded the development migrations as the squashed schema");
-    Ok(())
+    match applied {
+        Some(checksum) if checksum != *baseline.checksum => anyhow::bail!(
+            "{db_path} is from Capture Room 0.1 or a development build before 0.2, \
+             which this version can't upgrade: move it aside or delete it, and the node \
+             starts with a new database"
+        ),
+        _ => Ok(()),
+    }
 }
 
 /// Run a `DELETE ... WHERE <key> = ?` for `id`: whether it removed a row.
@@ -1086,73 +1035,24 @@ mod tests {
         .unwrap()
     }
 
-    /// Make `pool` look like a database from before the squash: the squashed
-    /// schema (without later migrations' changes), with `upto` development
-    /// migrations recorded.
-    async fn record_old_migrations(pool: &SqlitePool, upto: i64) {
-        sqlx::query("DELETE FROM _sqlx_migrations")
-            .execute(pool)
-            .await
-            .unwrap();
-        // Undo 0002, if it's there.
-        let _ = sqlx::query("ALTER TABLE nodes DROP COLUMN fingerprint")
-            .execute(pool)
-            .await;
-        // And 0003.
-        for table in ["schedule_runs", "schedules"] {
-            sqlx::query(&format!("DROP TABLE IF EXISTS {table}"))
-                .execute(pool)
-                .await
-                .unwrap();
-        }
-        for v in 1..=upto {
-            let description = match v {
-                1 => "baseline",
-                20 => "replay clip groups",
-                _ => "old",
-            };
-            sqlx::query(
-                "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) \
-                 VALUES (?, ?, 1, x'00', 0)",
-            )
-            .bind(v)
-            .bind(description)
-            .execute(pool)
-            .await
-            .unwrap();
-        }
-    }
-
     #[tokio::test]
-    async fn adopts_a_database_from_before_the_squash() {
-        let path =
-            std::env::temp_dir().join(format!("capture-room-squash-{}.db", std::process::id()));
+    async fn refuses_a_database_from_before_the_baseline() {
+        let path = std::env::temp_dir().join(format!("capture-room-old-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
         let url = format!("sqlite://{}", path.display());
         let pool = init(&url).await.unwrap();
-        record_old_migrations(&pool, 20).await;
         pool.close().await;
-
+        // Opening it again is fine.
         let pool = init(&url).await.unwrap();
-        let rows: Vec<(i64, String)> =
-            sqlx::query_as("SELECT version, description FROM _sqlx_migrations")
-                .fetch_all(&pool)
-                .await
-                .unwrap();
-        assert_eq!(
-            rows,
-            [
-                (1, "schema".to_string()),
-                (2, "node fingerprints".to_string()),
-                (3, "schedules".to_string()),
-                (4, "schedule monthly".to_string()),
-                (5, "whip tokens".to_string())
-            ]
-        );
 
-        // Short of the last development migration it can't be adopted.
-        record_old_migrations(&pool, 19).await;
+        // 0.1's 0001_schema.sql had another checksum.
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = x'00' WHERE version = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
         pool.close().await;
-        assert!(init(&url).await.is_err());
+        let err = init(&url).await.unwrap_err().to_string();
+        assert!(err.contains("Capture Room 0.1"), "{err}");
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1174,33 +1074,6 @@ mod tests {
             (VideoTestPattern::Smpte, 1920, 1080, 30, 1, 2)
         );
         assert_eq!(t.audio_signal, AudioTestSignal::PinkNoise);
-        pool.close().await;
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[tokio::test]
-    async fn an_existing_database_keeps_its_test_sources() {
-        let path =
-            std::env::temp_dir().join(format!("capture-room-seed-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let url = format!("sqlite://{}", path.display());
-        // Migrated by an earlier build, which kept the schema's two seeds.
-        let opts = SqliteConnectOptions::from_str(&url)
-            .unwrap()
-            .create_if_missing(true);
-        let pool = SqlitePool::connect_with(opts).await.unwrap();
-        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-        pool.close().await;
-
-        let pool = init(&url).await.unwrap();
-        let mut ids: Vec<String> = configured_sources_list(&pool)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|s| s.id)
-            .collect();
-        ids.sort();
-        assert_eq!(ids, ["test-1", "test-2"]);
         pool.close().await;
         let _ = std::fs::remove_file(path);
     }
