@@ -18,7 +18,7 @@ starts but has no NDI sources or outputs.
 
 Needs macOS 11 or later, on Apple Silicon or Intel.
 
-<!-- TODO(v0.2.0): Linux and Windows requirements (distros, GStreamer minimum, Windows 10/11 x64). -->
+<!-- TODO(v0.2.0): Windows requirements (Windows 10/11 x64). -->
 
 ```
 curl -fsSL https://github.com/JavenKazebee/capture-room/releases/latest/download/install.sh | bash
@@ -35,7 +35,36 @@ curl -fsSL https://github.com/JavenKazebee/capture-room/releases/latest/download
 - `--port <n>` — API and UI port (default 7700)
 - `--version <tag>` — install that release instead of the latest, e.g. `v0.2.0`
 
-<!-- TODO(v0.2.0): Linux and Windows install. -->
+## Install (Linux)
+
+Needs Ubuntu 24.04 or later, or Debian 13 or later, on x86_64. Other distros may work
+with GStreamer 1.24 or later but aren't tested.
+
+```
+curl -fsSL https://github.com/JavenKazebee/capture-room/releases/latest/download/install.sh | bash
+```
+
+Run it as the user the node should run as, not root. It installs the distro's GStreamer
+packages with `apt` (asking for your password with `sudo` if any are missing), puts the
+app in `~/.local/share/capture-room/app` with `capture-room` linked into `~/.local/bin`,
+and runs it as a systemd user service that updates itself. It turns on lingering
+(`loginctl enable-linger`) so the node starts at boot, before anyone logs in. The same
+options as on macOS go after `bash -s --`.
+
+There's no tray icon. On the machine itself, `capture-room` (no arguments) opens the UI
+signed in; from another computer, sign in with the access token
+(`capture-room access-token show`). Capture devices (`/dev/video*`) need the user in the
+`video` group on a headless machine; Setup › Checks says so. NDI Tools isn't made for
+Linux: for NDI, install the [NDI SDK for Linux](https://ndi.video/for-developers/ndi-sdk/)
+and copy its `libndi.so.6` into `/usr/local/lib` (then `sudo ldconfig`).
+
+```
+systemctl --user status capture-room     # running?
+journalctl --user -u capture-room        # service events; the node's own log is in
+                                         # ~/.local/state/capture-room/capture-room.log
+```
+
+<!-- TODO(v0.2.0): Windows install. -->
 
 ## Getting started
 
@@ -59,7 +88,8 @@ curl -fsSL https://github.com/JavenKazebee/capture-room/releases/latest/download
    Settings › Stream, Service: WHIP, Server: that address, Bearer Token: the source's
    token. One publisher at a time.
 
-The app doesn't put `capture-room` on your `PATH`; from a terminal run it as
+On macOS the app doesn't put `capture-room` on your `PATH` (on Linux it's in
+`~/.local/bin`); from a terminal run it as
 
 ```
 "/Applications/Capture Room.app/Contents/MacOS/capture-room" access-token show
@@ -109,7 +139,18 @@ Stops the service and removes the app and its login item. The database stays in
 `~/Library/Application Support/Capture Room`; add `--purge` to also remove it and the
 logs in `~/Library/Logs/Capture Room`. Recordings in `~/capture-room` are never removed.
 
-<!-- TODO(v0.2.0): Linux and Windows uninstall. -->
+## Uninstall (Linux)
+
+```
+curl -fsSL https://github.com/JavenKazebee/capture-room/releases/latest/download/install.sh | bash -s -- --uninstall
+```
+
+Stops and removes the service and the app, and turns lingering off again if the install
+turned it on. The database stays in `~/.local/share/capture-room`; add `--purge` to also
+remove it and the logs in `~/.local/state/capture-room`. The GStreamer packages stay
+installed. Recordings in `~/capture-room` are never removed.
+
+<!-- TODO(v0.2.0): Windows uninstall. -->
 
 ## Develop
 
@@ -120,4 +161,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 Copyright © 2026 Javen Kazebee.
 
 Capture Room is free software under the [GNU General Public License v3.0 or later](LICENSE).
-The macOS app bundles GStreamer, including GPL encoders (x264, x265).
+The macOS app bundles GStreamer, including GPL encoders (x264, x265); on Linux it uses the
+distro's GStreamer.

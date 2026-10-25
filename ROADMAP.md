@@ -23,16 +23,19 @@ SmartScreen.
 
 ### 2. Linux
 
-- **GStreamer** — distro packages (decide the minimum: Ubuntu 24.04 ships 1.24; the
-  crates ask for 1.16+) or bundled like macOS. Distro first; bundle only if a needed
-  plugin or version is missing.
-- **Service** — `service/linux.rs`: a systemd user unit, XDG data and log paths,
-  `loginctl enable-linger` so a headless node starts at boot. Headless sign-in already
-  works (the node prints a link).
-- **Updater** — swap the binary and restart the unit; drop the "not on this OS" check.
-- **Install** — Linux in `install.sh` (or its own script): install, `--version`,
-  `--uninstall`, `--purge`.
-- **Checks** — `video` group, PTP-helper capabilities, firewall (ufw/firewalld).
+Written, so far only built and linted in CI: Ubuntu 24.04+ and Debian 13+ on x86_64 with
+the distro's GStreamer (1.24+), which `install.sh` installs with apt; `service/linux.rs`
+(a systemd user unit, XDG paths, lingering); the updater; `scripts/linux/package.sh`
+and the release job; a check that `/dev/video*` can be opened. Left:
+
+- **Try it on the AMD desktop** — install, reboot without logging in (lingering), update
+  through `CAPTURE_ROOM_RELEASES`, `--uninstall` and `--purge`; and on a desktop session,
+  `capture-room` with no arguments opening the browser signed in.
+- **Plugin clashes** — the distro's gst-plugins-rs (`gstreamer1.0-plugins-rs` where
+  packaged), if installed, has its own `ndi`, `fallbackswitch` and `rswebrtc`, as the
+  Windows install does. Check whether two of each break the node.
+- **Display outputs** under the service only get a screen when the desktop imports
+  `DISPLAY`/`WAYLAND_DISPLAY` into the user manager; check, or document.
 
 ### 3. Windows
 
@@ -48,7 +51,7 @@ SmartScreen.
 
 ### 4. Release pipeline
 
-- `release.yml`: macOS, Linux and Windows jobs each build and sign
+- `release.yml`: macOS, Linux (done) and Windows jobs each build and sign
   `capture-room-<os>-<arch>.tar.gz`; one publish job, after all of them, writes
   `latest.json` once and creates the release (`package.sh` writes `latest.json` today).
 - Dry run with `workflow_dispatch`, then on each OS: install, then update to a higher

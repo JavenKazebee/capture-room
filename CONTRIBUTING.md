@@ -110,7 +110,9 @@ Run it after changing a type in `node/src/api/` that the UI sees, and commit the
 CI fails if they're stale.
 
 **`pnpm build`** is a release build with the UI embedded. The macOS app is packaged by
-`scripts/macos/package.sh <aarch64|x86_64>`.
+`scripts/macos/package.sh <aarch64|x86_64>`, the Linux one by `scripts/linux/package.sh`
+(on Ubuntu 24.04 with the packages above, as `release.yml` does). `scripts/install.sh`
+installs either; `--archive dist/capture-room-<os>-<arch>.tar.gz` installs a local build.
 
 ## Licenses of dependencies
 

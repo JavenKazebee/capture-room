@@ -493,12 +493,34 @@ truth). A check is a *problem* only when something on the node needs it. Shortcu
 grant permissions; nothing grants them silently. Ports are probed from the controller,
 since a machine can't test its own firewall.
 
+## Deployment (Linux)
+
+The same `install.sh` (Ubuntu 24.04+, Debian 13+, x86_64).
+
+- **Build:** `scripts/linux/package.sh` on Ubuntu 24.04 (the oldest supported, for glibc
+  and GStreamer), against the distro's GStreamer; the archive is a `capture-room/` folder
+  with the binary and `licenses/`.
+- **GStreamer:** the distro's packages; `install.sh` installs the missing ones with apt.
+- **App:** `$XDG_DATA_HOME/capture-room/app` (default `~/.local/share`), beside the
+  database; linked as `~/.local/bin/capture-room`. Log in `$XDG_STATE_HOME/capture-room`.
+- **Service:** a systemd user unit (`capture-room.service`, in the user's
+  `systemd/user` config folder), not a system one, so it has the user's audio session
+  and files. `Restart=on-failure` restarts crashes, kills and exit 75 but not a clean
+  stop. Start at login is `systemctl --user enable`; install turns lingering on (and
+  uninstall off, if install did) so a headless node starts at boot. systemd appends
+  stdout and stderr to the log file, which the node rotates as on macOS.
+- **Updates:** as on macOS; the new binary is run with `--version` before the folder
+  swap, which also shows it runs against this machine's GStreamer.
+- **Not yet:** a tray icon; display outputs need the session's `DISPLAY` or
+  `WAYLAND_DISPLAY` in the user manager's environment, which desktops import but a
+  headless boot doesn't have.
+
 ## Repository
 
 ```
 node/            Rust binary (api/, controller/, pipeline/, sources/, db/, migrations/)
 ui/              Vue 3 UI (views/, components/, stores/, types/generated/)
-scripts/macos/   packaging, install.sh
+scripts/         install.sh (macOS and Linux); macos/, linux/ packaging
 .github/         CI (ci.yml: Linux and macOS) and releases (release.yml)
 .githooks/       pre-commit formatting check
 ```
