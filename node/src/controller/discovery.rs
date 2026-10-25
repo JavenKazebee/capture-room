@@ -1,5 +1,13 @@
 //! mDNS advertisement (every instance) and node discovery + health polling
 //! (controller only).
+//!
+//! A controller trusts a node only once it's approved: it asks the node who
+//! it is and pins the key from the TLS handshake. Approving a found node or
+//! adding one by address also pairs it, unless it already takes this
+//! controller's token: the operator types in the node's pairing code, and the
+//! controller sends it with its own token to `/api/v1/auth/pair`, over a
+//! client that trusts only the key it identified. An mDNS announcement moves
+//! an approved node to a new URL only if it holds the pinned key.
 
 use std::time::Duration;
 

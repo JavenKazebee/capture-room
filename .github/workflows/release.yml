@@ -109,9 +109,8 @@ jobs:
           # Long enough to re-run a failed publish.
           retention-days: 7
 
-  # Linux and Windows jobs slot in here once their packaging scripts exist
-  # (ROADMAP v0.2.0 steps 2-4). Each one: needs: version; checks out, builds
-  # the UI, signs capture-room-<os>-<arch>.tar.gz (+ .sha256, and .minisig
+  # Linux and Windows jobs slot in here once their packaging scripts exist.
+  # Each one: needs: version; checks out, builds the UI, signs capture-room-<os>-<arch>.tar.gz (+ .sha256, and .minisig
   # from MINISIGN_KEY, refusing an unsigned tag build like macOS does);
   # uploads dist/* as the artifact capture-room-<os>; and is added to
   # publish's needs. File names must not clash across platforms: the

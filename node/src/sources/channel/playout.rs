@@ -76,7 +76,7 @@ pub struct PlayoutStatus {
 }
 
 /// A channel's transport: loads clips into its program and runs its playlist.
-/// Lives across monitor restarts and config changes (see [`InputSource::adopt`]).
+/// Lives across monitor restarts and config changes (see [`crate::sources::InputSource::adopt`]).
 ///
 /// The *deck* holds the clip on air and the next item cued in *standby*
 /// (prerolled, pushing nothing) so it starts at once, including as what Play

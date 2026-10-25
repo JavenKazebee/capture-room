@@ -1,3 +1,14 @@
+//! GStreamer pipelines. Each source has one always-on [`MonitorPipeline`];
+//! everything that consumes it (a recording leg, an output, a replay buffer)
+//! runs in its own pipeline fed by the monitor's [`StreamProducer`]s, an
+//! appsink fanning out to appsrcs. Not a tee: a tee passes a branch's error
+//! back to the source, so one failing leg would stop the monitor and every
+//! other leg.
+//!
+//! Consumers share the monitor's clock and base time. Each appsrc holds
+//! 500 ms and drops the oldest when full, so a slow encoder drops frames in
+//! its own leg only.
+
 pub mod monitor;
 pub mod output;
 pub mod profile;

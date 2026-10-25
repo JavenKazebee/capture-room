@@ -1,6 +1,6 @@
 //! Schedules: recordings and playout started at set times, and stopped at
 //! the end. Only a controller runs them, through the same node API the UI
-//! uses ([`forward::call_node`]); nodes know nothing of schedules.
+//! uses ([`super::forward::call_node`]); nodes know nothing of schedules.
 //!
 //! Times are the controller's local time (a venue keeps its machines in one
 //! time zone). Each occurrence that comes due gets one `schedule_runs` row,

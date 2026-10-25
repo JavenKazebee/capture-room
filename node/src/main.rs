@@ -1,3 +1,10 @@
+//! Capture Room's node: one binary, and every running instance is a node. A
+//! node serves its own machine (sources, storage, recordings, channels,
+//! replay buffers) and knows nothing about other nodes. Any node can also be
+//! a controller ([`controller`]), which finds other nodes, forwards commands
+//! to them and merges their events. Every instance serves the web UI,
+//! embedded from `ui/dist` in release builds.
+
 mod api;
 mod auth;
 mod benchmark;

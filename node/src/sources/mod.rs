@@ -1,3 +1,12 @@
+//! Input sources. Each type implements [`InputSource`] and builds a bin with
+//! `video` and `audio` pads for its monitor. All are configured (a
+//! `SourceConfig` in `configured_sources`) except NDI, which is discovered.
+//! A new type adds a `SourceConfig` variant and a case in [`configured`].
+//!
+//! Types that need an optional GStreamer element are unavailable without it
+//! (`NodeStatus::source_types`) rather than stopping the node; only
+//! [`crate::plugins`]' required elements fail startup.
+
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};

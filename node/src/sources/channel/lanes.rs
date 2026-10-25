@@ -30,7 +30,7 @@ struct Played {
     late: AtomicU64,
 }
 
-/// How far a channel's playing clip has got; see [`Playout::played`].
+/// How far a channel's playing clip has got; see [`super::playout::Playout::played`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PlayedProgress {
     /// Like a monitor's, in program time.

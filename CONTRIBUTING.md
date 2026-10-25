@@ -1,8 +1,8 @@
 # Contributing
 
 Bug reports, fixes and features are welcome. For anything bigger than a fix, open an
-issue first so we can agree on the shape. [ARCHITECTURE.md](ARCHITECTURE.md) explains how
-the pieces fit; [ROADMAP.md](ROADMAP.md) is the open work.
+issue first so we can agree on the shape. Each module's `//!` docs explain its design;
+[ROADMAP.md](ROADMAP.md) is the planned work.
 
 Security problems: see [SECURITY.md](SECURITY.md), not the issue tracker.
 

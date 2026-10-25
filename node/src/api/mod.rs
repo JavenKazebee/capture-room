@@ -1,3 +1,12 @@
+//! The HTTP API. `/api/v1/node/…` ([`node`], [`playout`]) is this machine's
+//! own API, with ids local to it. The UI always goes through
+//! `/api/v1/nodes/{node_id}/…` ([`crate::controller::forward`]), which on a
+//! plain node lists only itself, so the UI works the same with or without a
+//! controller.
+//!
+//! The types in [`types`] are exported to TypeScript with ts-rs: `pnpm types`
+//! writes `ui/src/types/generated/`, which is committed and checked by CI.
+
 pub mod error;
 pub mod node;
 pub mod playout;

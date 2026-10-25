@@ -1,3 +1,12 @@
+//! Recording profiles: what a leg encodes and where it writes, resolved on
+//! the node from a preset output. Codecs are ProRes, uncompressed, H.264,
+//! H.265 and VP9 in MOV, MP4 or MKV ([`incompatible`] has the pairs that
+//! don't work). There's no MXF: `mxfmux` rejected every codec.
+//!
+//! Path templates never overwrite: `{take}` advances, or a template without
+//! it gets a `_2` suffix, and a path another active recording holds is
+//! refused.
+
 use std::path::PathBuf;
 
 use chrono::{DateTime, Local};
@@ -785,7 +794,7 @@ impl RecordingProfile {
 
 /// Why `codec` can't be recorded in `container`, if it can't. VP9 in MOV/MP4
 /// only fails at negotiation once frames flow. Keep in step with
-/// `CONTAINERS_FOR` in `PresetsView.vue`.
+/// `CONTAINERS_FOR` in `ui/src/lib/codecs.ts`.
 fn incompatible(codec: VideoCodec, container: Container) -> Option<&'static str> {
     use VideoCodec::*;
     match (codec, container) {

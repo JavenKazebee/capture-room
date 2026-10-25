@@ -1,3 +1,7 @@
+//! The controller's nodes: approved ones (stored, their TLS key pinned, sent
+//! the access token) and ones found over mDNS waiting to be approved. See
+//! [`super::discovery`] for how a node gets from one to the other.
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 

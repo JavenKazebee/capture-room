@@ -1,3 +1,7 @@
+//! The node's SQLite database. Every instance has the same schema
+//! (`node/migrations/`), controller or not. Recording sessions copy in the
+//! names and formats they used, so history survives renames and deletes.
+
 use anyhow::{Context, Result};
 use sqlx::{sqlite::SqliteConnectOptions, types::Json, FromRow, Sqlite, SqlitePool, Transaction};
 use std::collections::HashMap;

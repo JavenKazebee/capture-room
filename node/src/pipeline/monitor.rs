@@ -1,3 +1,12 @@
+//! The monitor: a source's always-on pipeline.
+//!
+//! ```text
+//! source bin ─┬─ vtee ─┬─ videorate → videoscale → jpegenc → ThumbnailStore
+//!             │        └─ appsink = video producer
+//!             └─ atee ─┬─ level → AudioMeter → audio.levels events
+//!                      └─ appsink = audio producer
+//! ```
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
