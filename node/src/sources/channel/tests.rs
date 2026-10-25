@@ -126,15 +126,21 @@ fn listen_ports_are_srt_listeners() {
 
 /// A 5 s 720p30 clip: colour bars and a tone.
 fn make_clip(path: &std::path::Path) {
-    let p = gst::parse::launch(&format!(
+    let p = gst::parse::launch(
         "videotestsrc num-buffers=150 pattern=smpte ! video/x-raw,width=1280,height=720,framerate=30/1 \
          ! x264enc key-int-max=30 ! mux. \
          audiotestsrc num-buffers=235 samplesperbuffer=1024 ! audio/x-raw,rate=48000,channels=2 \
          ! avenc_aac ! aacparse ! mux. \
-         mp4mux name=mux ! filesink location={}",
-        path.display()
-    ))
+         mp4mux name=mux ! filesink name=sink",
+    )
+    .unwrap()
+    .downcast::<gst::Pipeline>()
     .unwrap();
+    // A property, not in the launch string, where a Windows path's
+    // backslashes would be read as escapes.
+    p.by_name("sink")
+        .unwrap()
+        .set_property("location", path.to_str().unwrap());
     p.set_state(gst::State::Playing).unwrap();
     let bus = p.bus().unwrap();
     let msg = bus

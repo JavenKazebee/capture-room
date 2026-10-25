@@ -1010,17 +1010,25 @@ mod tests {
         let _ = monitor.stop();
     }
 
+    /// Sets `src`'s file as a property: in a launch string, a Windows path's
+    /// backslashes would be read as escapes.
+    fn set_location(p: &gst::Pipeline, file: &Path) {
+        p.by_name("src")
+            .unwrap()
+            .set_property("location", file.to_str().unwrap());
+    }
+
     /// A JPEG segment's first frame's mean luma, decoded as a channel's player
     /// does and converted to the program's format.
     fn mean_luma(file: &Path) -> f64 {
-        let p = gst::parse::launch(&format!(
-            "filesrc location=\"{}\" ! qtdemux ! jpegdec ! videoconvert \
+        let p = gst::parse::launch(
+            "filesrc name=src ! qtdemux ! jpegdec ! videoconvert \
              ! video/x-raw,format=I420,colorimetry=bt709 ! appsink name=out",
-            file.display()
-        ))
+        )
         .unwrap()
         .downcast::<gst::Pipeline>()
         .unwrap();
+        set_location(&p, file);
         let sink = p
             .by_name("out")
             .unwrap()
@@ -1048,15 +1056,15 @@ mod tests {
     /// Video frames in a .mov, and how long its sound lasts.
     fn count_frames(file: &Path) -> (usize, gst::ClockTime) {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let p = gst::parse::launch(&format!(
-            "filesrc location=\"{}\" ! qtdemux name=d \
+        let p = gst::parse::launch(
+            "filesrc name=src ! qtdemux name=d \
              d.video_0 ! queue ! fakesink name=v sync=false \
              d.audio_0 ! queue ! fakesink name=a sync=false",
-            file.display()
-        ))
+        )
         .unwrap()
         .downcast::<gst::Pipeline>()
         .unwrap();
+        set_location(&p, file);
         let counts: Vec<Arc<AtomicUsize>> = ["v", "a"]
             .iter()
             .map(|name| {
