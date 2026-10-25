@@ -37,16 +37,21 @@ jobs:
 
       # The -dev packages to build against (plugins-bad has WebRTC, which
       # gst-plugin-webrtc links), libssl for reqwest's native TLS, and the
-      # plugins the tests' pipelines use.
+      # plugins the tests' pipelines use. Installing them from the mirror took
+      # 48 minutes once, so they're cached; a change to the list (or `version`)
+      # makes a new cache.
       - name: Install GStreamer
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config libssl-dev \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            libgstreamer-plugins-bad1.0-dev libgstrtspserver-1.0-dev \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.3
+        with:
+          packages: >-
+            pkg-config libssl-dev
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+            libgstreamer-plugins-bad1.0-dev libgstrtspserver-1.0-dev
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
             gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-nice
+          version: 1
+      # A restored cache doesn't run the packages' install scripts.
+      - run: sudo ldconfig
 
       - uses: dtolnay/rust-toolchain@stable
         with:
