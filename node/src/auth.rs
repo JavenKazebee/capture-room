@@ -52,6 +52,9 @@ const WRONG_TOKEN_DELAY: Duration = Duration::from_secs(1);
 const PAIRING_ATTEMPTS: u32 = 5;
 /// How long a sign-in link works: long enough for a browser to open.
 const LINK_TTL_SECS: u64 = 60;
+/// How long the link a node without a menu bar prints works: long enough to
+/// notice it in the terminal.
+const TERMINAL_LINK_TTL_SECS: u64 = 10 * 60;
 
 /// New tokens: letters and digits that can't be mistaken for each other.
 const TOKEN_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
@@ -428,11 +431,27 @@ async fn stored_links(pool: &SqlitePool) -> anyhow::Result<Vec<Link>> {
 /// what Open Capture Room opens. Kept in the database (hashed), so the app
 /// opened from the Finder, another process, can make one for the service.
 pub async fn sign_in_link(pool: &SqlitePool, port: u16) -> anyhow::Result<String> {
+    make_sign_in_link(pool, port, LINK_TTL_SECS).await
+}
+
+/// A node with no menu bar (run from a terminal, as `pnpm dev` does) prints
+/// a sign-in link instead: nothing else signs a browser in without the token.
+pub async fn log_sign_in_link(state: &AppState) {
+    match make_sign_in_link(&state.db, state.port, TERMINAL_LINK_TTL_SECS).await {
+        Ok(url) => info!(
+            "sign in on this machine (once, within 10 minutes): {url} \
+             (or `capture-room access-token show` prints the token)"
+        ),
+        Err(e) => warn!(error = %e, "couldn't make a sign-in link"),
+    }
+}
+
+async fn make_sign_in_link(pool: &SqlitePool, port: u16, ttl_secs: u64) -> anyhow::Result<String> {
     let secret = new_token();
     let mut links = stored_links(pool).await?;
     links.push(Link {
         hash: link_hash(&secret),
-        expires: unix_secs() + LINK_TTL_SECS,
+        expires: unix_secs() + ttl_secs,
     });
     // A few at once is plenty: the menu clicked again before the first opened.
     let excess = links.len().saturating_sub(8);

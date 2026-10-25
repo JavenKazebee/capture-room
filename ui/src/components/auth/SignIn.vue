@@ -36,6 +36,10 @@ async function submit() {
           get the token from Copy Access Token in its menu bar, or Settings on a browser that's signed in; it's the
           same on every node of a controller.
         </p>
+        <p class="text-xs text-muted-foreground">
+          Running it from a terminal? Open the sign-in link it printed when it started, or run
+          <code class="num">capture-room access-token show</code>.
+        </p>
       </div>
       <Input
         v-model="token"

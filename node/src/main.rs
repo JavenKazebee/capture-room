@@ -259,6 +259,8 @@ async fn run(
     update::spawn_checker(Arc::clone(&state));
     if let Some(actions) = tray_actions {
         tray::spawn(Arc::clone(&state), displays, actions);
+    } else {
+        auth::log_sign_in_link(&state).await;
     }
 
     if controller_enabled {
