@@ -1,0 +1,31 @@
+name: Feature request
+description: Something Capture Room should do, or do differently.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: Check [ROADMAP.md](https://github.com/JavenKazebee/capture-room/blob/main/ROADMAP.md) first; it may already be planned.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you're trying to do
+      description: The job or the show, and where Capture Room gets in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like
+      description: How it could work. Mockups or examples from other tools help.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today
+      description: Workarounds or other tools you use for it.
+  - type: textarea
+    id: context
+    attributes:
+      label: Setup
+      description: OS, hardware and sources involved, if it matters.

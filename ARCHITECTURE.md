@@ -503,4 +503,4 @@ scripts/macos/   packaging, install.sh
 .githooks/       pre-commit formatting check
 ```
 
-Commands are in the [README](README.md).
+Commands are in [CONTRIBUTING.md](CONTRIBUTING.md).

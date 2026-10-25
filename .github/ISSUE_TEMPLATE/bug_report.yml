@@ -1,0 +1,95 @@
+name: Bug report
+description: Something doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems go through private reporting instead: see [SECURITY.md](https://github.com/JavenKazebee/capture-room/blob/main/SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The first line of the menu bar menu, Settings › Version in the UI, or `capture-room --version`.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      placeholder: macOS 15.6, Ubuntu 24.04, Windows 11 24H2
+    validations:
+      required: true
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Architecture
+      options:
+        - Apple Silicon (arm64)
+        - Intel Mac (x86_64)
+        - x86_64 (Linux or Windows)
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: role
+    attributes:
+      label: Where it happens
+      description: The machine the problem is on.
+      options:
+        - A controller
+        - A node managed by a controller
+        - Both, or between them
+        - Not sure
+    validations:
+      required: true
+  - type: checkboxes
+    id: hardware
+    attributes:
+      label: Involved
+      options:
+        - label: Decklink (SDI) cards
+        - label: NDI
+        - label: Cameras or other capture devices
+        - label: PTP clock
+        - label: WHIP or WHEP (e.g. OBS)
+        - label: Display output
+        - label: Replay
+        - label: Schedules
+  - type: textarea
+    id: hardware-detail
+    attributes:
+      label: Hardware and sources
+      description: Models, formats and frame rates, e.g. "Decklink 8K Pro G2, 1080i59.94 SDI in".
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Add an NDI source …
+        2. Start recording …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Include any error shown in the UI, and screenshots if they help.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        The Logs page in the UI shows recent lines from every node and names each node's log file.
+        On macOS the installed app logs to `~/Library/Logs/Capture Room/capture-room.log` (older ones are `.1`, `.2`, …).
+        Run from a terminal, it logs to the terminal. Paste the lines around the problem; remove anything private.
+      render: text
