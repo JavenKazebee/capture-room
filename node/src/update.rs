@@ -29,6 +29,9 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const STAGING: &str = ".capture-room-update";
 #[cfg(target_os = "macos")]
 const APP_NAME: &str = "Capture Room.app";
+/// The folder in the Linux archive: the binary and its licenses.
+#[cfg(target_os = "linux")]
+const APP_NAME: &str = "capture-room";
 
 pub struct Updater {
     status: Mutex<UpdateStatusDto>,
@@ -67,7 +70,7 @@ impl Updater {
 
 /// Why this process can't update itself, if it can't.
 fn unsupported() -> Option<String> {
-    if !cfg!(target_os = "macos") {
+    if !cfg!(any(target_os = "macos", target_os = "linux")) {
         return Some("Updates aren't available on this OS yet.".into());
     }
     if service::app_path().is_none() || !service::running_as_service() {
@@ -299,19 +302,37 @@ fn verify(file: &Path, signature: &str) -> Result<()> {
         .context("the download isn't signed with the release key")
 }
 
-#[cfg(target_os = "macos")]
-fn unpack_and_swap(archive: &Path, staging: &Path, app: &Path, version: &str) -> Result<()> {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn untar(archive: &Path, into: &Path) -> Result<()> {
     let out = std::process::Command::new("tar")
         .arg("-xzf")
         .arg(archive)
         .arg("-C")
-        .arg(staging)
+        .arg(into)
         .output()?;
     ensure!(
         out.status.success(),
         "unpack: {}",
         String::from_utf8_lossy(&out.stderr).trim()
     );
+    Ok(())
+}
+
+/// Move `app` to `old` and `new` into its place, putting it back if that
+/// fails.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn swap(app: &Path, new: &Path, old: &Path) -> Result<()> {
+    std::fs::rename(app, old).context("move the current app aside")?;
+    if let Err(e) = std::fs::rename(new, app) {
+        let _ = std::fs::rename(old, app);
+        return Err(e).context("move the new app into place");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn unpack_and_swap(archive: &Path, staging: &Path, app: &Path, version: &str) -> Result<()> {
+    untar(archive, staging)?;
     let new = staging.join(APP_NAME);
     let info = plist::Value::from_file(new.join("Contents/Info.plist"))?;
     let unpacked = info
@@ -323,16 +344,35 @@ fn unpack_and_swap(archive: &Path, staging: &Path, app: &Path, version: &str) ->
         unpacked == version,
         "the archive holds version {unpacked}, not {version}"
     );
-    let old = staging.join("previous.app");
-    std::fs::rename(app, &old).context("move the current app aside")?;
-    if let Err(e) = std::fs::rename(&new, app) {
-        let _ = std::fs::rename(&old, app);
-        return Err(e).context("move the new app into place");
-    }
-    Ok(())
+    swap(app, &new, &staging.join("previous.app"))
 }
 
-#[cfg(not(target_os = "macos"))]
+/// The new binary is run for its version, which also shows it runs on this
+/// system (the distro's GStreamer, say) before it replaces the old one.
+#[cfg(target_os = "linux")]
+fn unpack_and_swap(archive: &Path, staging: &Path, app: &Path, version: &str) -> Result<()> {
+    untar(archive, staging)?;
+    let new = staging.join(APP_NAME);
+    let out = std::process::Command::new(new.join("capture-room"))
+        .arg("--version")
+        .output()
+        .context("run the new version")?;
+    ensure!(
+        out.status.success(),
+        "the new version doesn't run here: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    // clap prints "capture-room 0.2.0".
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let unpacked = stdout.split_whitespace().nth(1).unwrap_or_default();
+    ensure!(
+        unpacked == version,
+        "the archive holds version {unpacked}, not {version}"
+    );
+    swap(app, &new, &staging.join("previous"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn unpack_and_swap(_: &Path, _: &Path, _: &Path, _: &str) -> Result<()> {
     bail!("updates aren't available on this OS yet")
 }
