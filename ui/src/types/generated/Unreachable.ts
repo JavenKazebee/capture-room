@@ -3,4 +3,4 @@
 /**
  * Why an approved node failed its health check.
  */
-export type Unreachable = { "kind": "offline" } | { "kind": "access-denied" } | { "kind": "key-changed", fingerprint: string, } | { "kind": "other-node", name: string, } | { "kind": "failing", error: string, };
+export type Unreachable = { "kind": "offline" } | { "kind": "access-denied" } | { "kind": "key-changed", fingerprint: string, } | { "kind": "other-node", name: string, } | { "kind": "failing", error: string, } | { "kind": "other-version", version: string, };

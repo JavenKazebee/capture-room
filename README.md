@@ -3,11 +3,9 @@
 > [!WARNING]
 > **Alpha.** Capture Room may be unstable, and you may run into bugs.
 
-Capture Room records, plays back and replays live video for productions with many
-cameras. Run it on a single computer, or on several working together, all controlled from
-one page in your browser. Record every feed at once, send video back out to screens and
-other systems, and cut instant replays while the show is on. It runs on macOS, Windows
-and Linux.
+Capture Room allows you to handle recording, playback, and instant replay for a multicam
+setup through one computer or several working together. It is controlled through your
+browser and supports installs on Linux, macOS, and Windows.
 
 ## Prerequisites
 

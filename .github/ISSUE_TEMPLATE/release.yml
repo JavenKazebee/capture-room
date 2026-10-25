@@ -1,0 +1,32 @@
+name: Release
+description: The checklist for making a release (maintainers).
+title: "Release vX.Y.Z"
+labels: [release]
+body:
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Testing on hardware
+      description: What this release needs tried on real machines before the tag. Keep the platform runs; add what's new.
+      value: |
+        - [ ] Mac (Apple Silicon): install, open the UI, pair a node, record NDI and WHIP from OBS, update, uninstall
+        - [ ] Intel Mac Pro with Decklinks: the same, plus Decklink inputs and outputs
+        - [ ] Linux (AMD desktop): the same
+        - [ ] Windows (AMD desktop): the same
+        - [ ] A controller and a node on different machines: approve over mDNS, record on both
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Making the release
+      value: |
+        - [ ] Everything in the milestone is merged or moved out of it
+        - [ ] Bump `version` in `node/Cargo.toml` (and `Cargo.lock`) in a PR, and merge it
+        - [ ] Tag `vX.Y.Z` on that commit and push the tag
+        - [ ] The release has every platform's archive and `.minisig`, `latest.json`, `install.sh` and `install.ps1`
+        - [ ] Write the highlights at the top of the release notes, above the generated list
+        - [ ] An installed node offers the update and installs it
+        - [ ] Close the milestone
+    validations:
+      required: true
