@@ -9,7 +9,7 @@ use futures_util::StreamExt;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::Ctx;
 
@@ -23,6 +23,9 @@ pub fn spawn(ctx: Ctx, node_id: String, cancel: CancellationToken) {
 }
 
 async fn run(ctx: Ctx, node_id: String) {
+    // Whether connecting failed last time: a node that's down warns once,
+    // not every 5 s, and says when it's back.
+    let mut failing = false;
     loop {
         let url = match ctx.registry.read().await.url_of(&node_id) {
             Some(u) => u,
@@ -50,7 +53,12 @@ async fn run(ctx: Ctx, node_id: String) {
             .await
         {
             Ok((stream, _)) => {
-                info!(node_id = %node_id, "WS relay connected");
+                if failing {
+                    info!(node_id = %node_id, "WS relay connected again");
+                    failing = false;
+                } else {
+                    info!(node_id = %node_id, "WS relay connected");
+                }
                 let (_, mut read) = stream.split();
                 while let Some(msg) = read.next().await {
                     match msg {
@@ -67,8 +75,12 @@ async fn run(ctx: Ctx, node_id: String) {
                 }
                 info!(node_id = %node_id, "WS relay disconnected, retrying in 5s");
             }
+            Err(e) if failing => {
+                debug!(node_id = %node_id, error = %e, "WS relay connect failed again");
+            }
             Err(e) => {
-                warn!(node_id = %node_id, error = %e, "WS relay connect failed, retrying in 5s");
+                warn!(node_id = %node_id, error = %e, "WS relay connect failed, retrying every 5s");
+                failing = true;
             }
         }
         tokio::time::sleep(Duration::from_secs(5)).await;

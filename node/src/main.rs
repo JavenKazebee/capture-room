@@ -119,18 +119,19 @@ async fn run(
     {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
+        use tracing_subscriber::{EnvFilter, Layer};
         tracing_subscriber::registry()
-            .with(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| "capture_room=debug,info".into()),
-            )
             .with(
                 tracing_subscriber::fmt::layer()
                     // No colour codes in a service's log file.
-                    .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout())),
+                    .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
+                    // The terminal and the service's log file: RUST_LOG for more.
+                    .with_filter(
+                        EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+                    ),
             )
-            // Kept for the Logs view.
-            .with(logs::layer())
+            // Kept for the Logs view, which can show debug lines too.
+            .with(logs::layer().with_filter(EnvFilter::new("capture_room=debug,info")))
             .init();
     }
     #[cfg(unix)]
@@ -257,10 +258,10 @@ async fn run(
     session::spawn_leg_file_recorder(Arc::clone(&state), leg_file_rx);
     session::spawn_quit_on_signal(Arc::clone(&state));
     update::spawn_checker(Arc::clone(&state));
+    // Without a menu bar, nothing else signs a browser in: print a link.
+    let print_sign_in_link = tray_actions.is_none();
     if let Some(actions) = tray_actions {
         tray::spawn(Arc::clone(&state), displays, actions);
-    } else {
-        auth::log_sign_in_link(&state).await;
     }
 
     if controller_enabled {
@@ -274,9 +275,12 @@ async fn run(
         .ok();
 
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
-    let router = api::build_router(state);
+    let router = api::build_router(Arc::clone(&state));
     let listener = tls::TlsListener::new(tokio::net::TcpListener::bind(addr).await?, tls_config)?;
     info!(addr = %addr, fingerprint = %identity.fingerprint, "listening");
+    if print_sign_in_link {
+        auth::print_sign_in_link(&state).await;
+    }
     // Connect info: whether a request came over TLS, and the address a
     // controller claims a node from (its clock is served from there).
     axum::serve(

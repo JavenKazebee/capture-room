@@ -436,11 +436,13 @@ pub async fn sign_in_link(pool: &SqlitePool, port: u16) -> anyhow::Result<String
 
 /// A node with no menu bar (run from a terminal, as `pnpm dev` does) prints
 /// a sign-in link instead: nothing else signs a browser in without the token.
-pub async fn log_sign_in_link(state: &AppState) {
+/// Printed, not logged, so it stands apart from the log lines and stays out
+/// of the Logs view.
+pub async fn print_sign_in_link(state: &AppState) {
     match make_sign_in_link(&state.db, state.port, TERMINAL_LINK_TTL_SECS).await {
-        Ok(url) => info!(
-            "sign in on this machine (once, within 10 minutes): {url} \
-             (or `capture-room access-token show` prints the token)"
+        Ok(url) => println!(
+            "\n  Sign in on this machine (once, within 10 minutes):\n  {url}\n  \
+             Or print the token: capture-room access-token show\n"
         ),
         Err(e) => warn!(error = %e, "couldn't make a sign-in link"),
     }
