@@ -1,3 +1,7 @@
+//! The event WebSocket. Events are JSON with a `type` ([`WsEvent`]) and the
+//! `node_id` they describe. `/api/v1/node/ws` sends this node's own; `/ws`
+//! adds those relayed from peers while it's a controller.
+
 use std::sync::Arc;
 use std::time::Duration;
 

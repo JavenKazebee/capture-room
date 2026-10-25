@@ -1,3 +1,5 @@
+//! [`AppState`]: everything an API handler can reach, shared as an `Arc`.
+
 use std::sync::Arc;
 use std::time::Instant;
 

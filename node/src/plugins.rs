@@ -1,3 +1,12 @@
+//! Which GStreamer elements this node has. The [`REQUIRED`] ones fail startup
+//! with a hint at the package to install; the rest only make a source type or
+//! stream protocol unavailable ([`source_types`]).
+//!
+//! NDI, fallbackswitch and WebRTC come from gst-plugins-rs, linked in
+//! statically and registered in `main`. A GStreamer install's own copies of
+//! them would clash, so the macOS bundle leaves them out. The NDI Runtime
+//! itself is never shipped: the node finds an installed one.
+
 use anyhow::{bail, Result};
 use gstreamer::{self as gst, prelude::*};
 

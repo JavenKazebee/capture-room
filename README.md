@@ -200,6 +200,10 @@ in `%LOCALAPPDATA%\Capture Room\data`; add `-Purge` to also remove it and the lo
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Security
+
+Report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
+
 ## License
 
 Copyright © 2026 Javen Kazebee.

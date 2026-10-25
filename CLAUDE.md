@@ -20,6 +20,8 @@ Axum, GStreamer, SQLite) serves a Vue 3 UI (`ui/`). Setup and dev workflow are i
 - Controllers send plain commands: a start carries its output settings inline, so nodes
   keep no preset store and nothing is synced.
 - Sources implement `InputSource`, outputs `OutputSink`; adding a type is additive.
+- UI state: one `/ws` connection feeds Pinia stores keyed by `(node_id, id)`. Components
+  never open sockets; stores and composables do.
 - Each consumer of a source (recording leg, output, replay buffer) runs in its own
   pipeline, so one failure never stops the source or the others.
 - Not a vision mixer, graphics system, asset manager or general automation system.

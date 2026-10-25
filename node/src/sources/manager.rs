@@ -1,3 +1,12 @@
+//! The [`SourceManager`]: every source on this node, its monitor, and what
+//! runs on it (recording sessions, channel outputs, replay buffers).
+//!
+//! A [`scan`](SourceManager::scan) rebuilds the source list from the
+//! configured sources, the NDI senders and the local devices. A source whose
+//! id and fingerprint are unchanged keeps its monitor; anything else is torn
+//! down and rebuilt. The manager never awaits GStreamer: waits come back to the
+//! caller as a [`StopJob`] or [`Teardown`] to run on a spawned task.
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

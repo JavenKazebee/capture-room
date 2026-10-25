@@ -1,4 +1,6 @@
-//! The service on macOS: a LaunchAgent in the user's login session.
+//! The service on macOS: a LaunchAgent in the user's login session. Not a
+//! LaunchDaemon: a daemon can't be granted camera, microphone or screen
+//! recording permission.
 //!
 //! The plist lives in Application Support and the service always loads from
 //! there; start-at-login is a copy in `~/Library/LaunchAgents`, so toggling it

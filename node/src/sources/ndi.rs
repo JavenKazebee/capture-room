@@ -1,3 +1,12 @@
+//! NDI sources. Unlike other types they're discovered, not configured: each
+//! sender on the network is a source. A node connects to every sender or only
+//! the chosen ones and those in use (`ndi_subscriptions`), and never to its own
+//! outputs.
+//!
+//! `ndisrc` timestamps in its `auto` mode, which puts two nodes receiving the
+//! same sender within about 2 ms of each other once settled, so replay nodes
+//! can each keep their own buffer of the same angle.
+
 use std::collections::HashSet;
 use std::time::Duration;
 
