@@ -1,4 +1,5 @@
-# Monthly, one grouped PR per ecosystem. Security updates come as they're found.
+# Monthly, one grouped PR per ecosystem. Security updates come as they're found, also
+# grouped: each PR rewrites the lockfile, so separate ones conflict once any is merged.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -16,6 +17,9 @@ updates:
     groups:
       npm:
         patterns: ["*"]
+      npm-security:
+        applies-to: security-updates
+        patterns: ["*"]
 
   - package-ecosystem: cargo
     directory: /
@@ -23,6 +27,9 @@ updates:
       interval: monthly
     groups:
       cargo:
+        patterns: ["*"]
+      cargo-security:
+        applies-to: security-updates
         patterns: ["*"]
     # gst-plugins-rs is pinned to one rev, and gstreamer-rs and glib must stay at the
     # versions that rev resolves to (see CLAUDE.md): they move together, by hand.
