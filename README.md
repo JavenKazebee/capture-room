@@ -32,3 +32,12 @@ pnpm build       # release build with the UI embedded
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how it works; module detail is in each module's
   `//!` docs.
 - [ROADMAP.md](ROADMAP.md) — open work.
+
+## License
+
+Copyright © 2026 Javen Kazebee.
+
+Capture Room is free software under the [GNU General Public License v3.0 or later](LICENSE).
+The macOS app bundles GStreamer, including GPL encoders (x264, x265);
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists what it ships with, under which
+licenses, and where to get the source.

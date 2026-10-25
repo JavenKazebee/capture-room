@@ -47,6 +47,11 @@ jobs:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
 
+      # Collects the Rust crates' licenses for the app's notices.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+
       # The updater only installs archives signed with the release key
       # (scripts/release-key.pub); its secret half is the MINISIGN_KEY secret.
       - name: Release key

@@ -10,6 +10,8 @@
 #        MINISIGN_KEY_FILE release key: signs the archive (.minisig), which
 #                          the updater requires
 #        SKIP_UI=1         use the existing ui/dist
+# Needs cargo-about (`cargo install cargo-about --locked --features cli`) for
+# the Rust crates' licenses.
 set -euo pipefail
 
 arch=${1:?architecture: aarch64 or x86_64}
@@ -27,6 +29,7 @@ identity=${CODESIGN_IDENTITY:--}
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' node/Cargo.toml | head -1)
 target=$arch-apple-darwin
 
+command -v cargo-about >/dev/null || { echo "needs cargo-about: cargo install cargo-about --locked --features cli" >&2; exit 1; }
 scripts/macos/gstreamer.sh "$gst_version" "$gst_dir"
 
 if [[ -z ${SKIP_UI:-} ]]; then
@@ -49,6 +52,17 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Frameworks"
 cp "target/$target/release/capture-room" "$app/Contents/MacOS/"
 sed "s/@VERSION@/$version/g" scripts/macos/Info.plist >"$app/Contents/Info.plist"
 ditto --arch "$lipo_arch" "$gst_dir/runtime/GStreamer.framework" "$app/Contents/Frameworks/GStreamer.framework"
+
+# Licenses of the app and of everything in it (THIRD_PARTY_NOTICES.md lists
+# them). The runtime framework has no license files, so GStreamer's come from
+# the SDK it was built with.
+licenses="$app/Contents/Resources/Licenses"
+mkdir -p "$licenses"
+cp LICENSE THIRD_PARTY_NOTICES.md "$licenses/"
+cp ui/dist/third-party-licenses.txt "$licenses/ui-packages.txt"
+cargo about generate --locked about.hbs -o "$licenses/rust-crates.txt"
+ditto "$gst_dir/sdk/GStreamer.framework/Versions/1.0/share/licenses" "$licenses/GStreamer"
+cp "$gst_dir/sdk/GStreamer.framework/Versions/1.0/share/versions.txt" "$licenses/GStreamer/"
 
 # The binary must not load any library from outside the bundle or the OS.
 if otool -L "$app/Contents/MacOS/capture-room" | tail -n +2 | grep -vE '^\s+(@rpath|/usr/lib|/System)/'; then

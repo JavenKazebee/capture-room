@@ -58,6 +58,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test
 
+      - uses: taiki-e/install-action@v2
+        if: ${{ !cancelled() }}
+        with:
+          tool: cargo-about
+
+      # Fails on a dependency whose license about.toml doesn't accept.
+      - name: Dependency licenses
+        if: ${{ !cancelled() }}
+        run: cargo about generate --locked about.hbs > /dev/null
+
       - name: Generated TS types are up to date
         if: ${{ !cancelled() }}
         run: |

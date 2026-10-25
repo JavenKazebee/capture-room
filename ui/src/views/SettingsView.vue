@@ -360,6 +360,17 @@ const about = computed(() => [
         <div class="px-4 py-3">
           <KeyValueList :items="about" />
         </div>
+        <p class="border-t border-border px-4 py-3 text-xs text-muted-foreground">
+          © 2026 Javen Kazebee. Capture Room is free software under the GNU General Public License v3.0 or later, and comes
+          with no warranty. Source code, third-party licenses and where to get their source:
+          <a
+            href="https://github.com/JavenKazebee/capture-room"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-foreground underline underline-offset-2 hover:text-primary"
+            >github.com/JavenKazebee/capture-room</a
+          >.
+        </p>
       </div>
     </section>
   </div>

@@ -1,6 +1,7 @@
 {
   "name": "capture-room",
   "private": true,
+  "license": "GPL-3.0-or-later",
   "scripts": {
     "dev": "concurrently \"pnpm dev:node\" \"pnpm dev:ui\"",
     "dev:node": "cargo watch -x 'run -p capture-room -- --controller'",
