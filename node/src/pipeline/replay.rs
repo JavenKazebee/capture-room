@@ -707,15 +707,15 @@ pub fn export(
 
 /// Drop everything on `pad` before the seek's segment to `from`, and all
 /// flushes: a flushing seek through a muxer spoils its file. Audio is trimmed
-/// to the segment start: qtdemux hands out ~0.5 s PCM chunks starting before
-/// the cut, and qtmux would drop such a chunk whole.
+/// to the segment: qtdemux hands out PCM in chunks that straddle the cuts,
+/// and qtmux would drop the first whole and write the last whole.
 fn gate(pad: &gst::Pad, from: gst::ClockTime) {
     // An accurate seek's segment starts where it was asked to.
     const NEAR: gst::ClockTime = gst::ClockTime::from_mseconds(1);
-    // The segment's start, once let through.
-    let start = Mutex::new(None::<gst::ClockTime>);
+    // The segment's start and stop, once let through.
+    let span = Mutex::new(None::<(gst::ClockTime, Option<gst::ClockTime>)>);
     pad.add_probe(gst::PadProbeType::DATA_DOWNSTREAM, move |pad, info| {
-        let open = *start.lock().unwrap();
+        let open = *span.lock().unwrap();
         match &mut info.data {
             Some(gst::PadProbeData::Event(e)) => match e.view() {
                 gst::EventView::FlushStart(_) | gst::EventView::FlushStop(_) => {
@@ -729,7 +729,9 @@ fn gate(pad: &gst::Pad, from: gst::ClockTime) {
                     if at
                         .is_some_and(|at| at.nseconds().abs_diff(from.nseconds()) < NEAR.nseconds())
                     {
-                        *start.lock().unwrap() = segment.and_then(|s| s.start());
+                        *span.lock().unwrap() = segment
+                            .and_then(|s| s.start())
+                            .map(|start| (start, segment.and_then(|s| s.stop())));
                         gst::PadProbeReturn::Ok
                     } else {
                         gst::PadProbeReturn::Drop
@@ -743,13 +745,27 @@ fn gate(pad: &gst::Pad, from: gst::ClockTime) {
                 gst::PadProbeReturn::Drop
             }
             Some(gst::PadProbeData::Buffer(buffer)) => {
-                let (Some(start), Some(pts)) = (open, buffer.pts()) else {
+                let (Some((start, stop)), Some(pts)) = (open, buffer.pts()) else {
                     return gst::PadProbeReturn::Ok;
                 };
-                if pts >= start || !pad.name().starts_with("audio") {
+                if !pad.name().starts_with("audio") {
                     return gst::PadProbeReturn::Ok;
                 }
-                match trim_audio(pad, buffer, start - pts) {
+                let end = buffer.duration().map(|d| pts + d);
+                let head = (pts < start).then(|| start - pts);
+                let tail = match (stop, end) {
+                    (Some(stop), Some(end)) if end > stop => Some(end - stop),
+                    _ => None,
+                };
+                if head.is_none() && tail.is_none() {
+                    return gst::PadProbeReturn::Ok;
+                }
+                match trim_audio(
+                    pad,
+                    buffer,
+                    head.unwrap_or_default(),
+                    tail.unwrap_or_default(),
+                ) {
                     Some(trimmed) => {
                         *buffer = trimmed;
                         gst::PadProbeReturn::Ok
@@ -762,9 +778,14 @@ fn gate(pad: &gst::Pad, from: gst::ClockTime) {
     });
 }
 
-/// `buffer` (raw PCM on `pad`) without its first `cut` of sound, rounded up
-/// to a whole sample; `None` if nothing's left.
-fn trim_audio(pad: &gst::Pad, buffer: &gst::Buffer, cut: gst::ClockTime) -> Option<gst::Buffer> {
+/// `buffer` (raw PCM on `pad`) without its first `head` and last `tail` of
+/// sound, each rounded up to a whole sample; `None` if nothing's left.
+fn trim_audio(
+    pad: &gst::Pad,
+    buffer: &gst::Buffer,
+    head: gst::ClockTime,
+    tail: gst::ClockTime,
+) -> Option<gst::Buffer> {
     let caps = pad.current_caps()?;
     let s = caps.structure(0)?;
     let rate = u64::try_from(s.get::<i32>("rate").ok()?).ok()?;
@@ -776,26 +797,35 @@ fn trim_audio(pad: &gst::Pad, buffer: &gst::Buffer, cut: gst::ClockTime) -> Opti
         "F64LE" | "F64BE" => 8,
         _ => return Some(buffer.clone()),
     };
-    let samples = cut
-        .nseconds()
-        .saturating_mul(rate)
-        .div_ceil(gst::ClockTime::SECOND.nseconds());
-    let offset = usize::try_from(samples).ok()? * channels * width;
-    if offset >= buffer.size() {
+    let frame = channels * width;
+    let samples = |t: gst::ClockTime| {
+        t.nseconds()
+            .saturating_mul(rate)
+            .div_ceil(gst::ClockTime::SECOND.nseconds())
+    };
+    let (skip, drop) = (samples(head), samples(tail));
+    let offset = usize::try_from(skip).ok()? * frame;
+    let end = buffer
+        .size()
+        .checked_sub(usize::try_from(drop).ok()? * frame)?;
+    if offset >= end {
         return None;
     }
     let mut trimmed = buffer
         .copy_region(
             gst::BufferCopyFlags::MEMORY | gst::BufferCopyFlags::FLAGS,
-            offset..,
+            offset..end,
         )
         .ok()?;
+    let kept = gst::ClockTime::from_nseconds(
+        ((end - offset) / frame) as u64 * gst::ClockTime::SECOND.nseconds() / rate,
+    );
     let skipped = gst::ClockTime::from_nseconds(
-        samples.saturating_mul(gst::ClockTime::SECOND.nseconds()) / rate,
+        skip.saturating_mul(gst::ClockTime::SECOND.nseconds()) / rate,
     );
     let b = trimmed.make_mut();
     b.set_pts(buffer.pts().map(|t| t + skipped));
-    b.set_duration(buffer.duration().map(|d| d.saturating_sub(skipped)));
+    b.set_duration(buffer.duration().map(|_| kept));
     Some(trimmed)
 }
 
