@@ -99,7 +99,6 @@ jobs:
           scripts/macos/package.sh aarch64
           scripts/macos/package.sh x86_64
           rm -f dist/latest.json
-          cp scripts/macos/install.sh dist/
 
       - uses: actions/upload-artifact@v7
         with:
@@ -127,6 +126,14 @@ jobs:
           pattern: capture-room-*
           merge-multiple: true
           path: dist
+
+      # One installer for every platform, so no platform job ships it.
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts/install.sh
+          sparse-checkout-cone-mode: false
+          path: source
+      - run: cp source/scripts/install.sh dist/
 
       - name: latest.json
         env:
