@@ -1,21 +1,13 @@
 # Capture Room
 
-> **Alpha.** v0.2.0 is the first public release and hasn't run a show yet. Expect bugs,
-> and don't rely on it for anything you can't record twice. Not yet tested on real
-> hardware: Decklink sources and outputs, PTP against a real grandmaster, NDI timing and
-> mDNS discovery between two machines. Linux and Windows are new in this release.
+> [!WARNING]
+> **Alpha.** Capture Room may be unstable, and you may run into bugs.
 
-Multi-feed video capture, playout and instant replay for live broadcast, on one machine
-or a cluster of nodes managed from one web UI. It records NDI, SDI (Decklink), cameras,
-streams, WHIP and files; plays out to NDI, SRT, RTSP, WHEP, a display or SDI; keeps
-rolling replay buffers; and runs schedules.
-
-## Platforms
-
-- **macOS 11 or later**, Apple Silicon and Intel (one build each). Tested on an Apple
-  Silicon laptop and an Intel Mac Pro.
-- **Linux and Windows** — coming in v0.2.0.
-  <!-- TODO(v0.2.0): supported distros and GStreamer minimum, Windows 10/11 x64, and their install commands once the installers exist. -->
+Capture Room records, plays back and replays live video for productions with many
+cameras. Run it on a single computer, or on several working together, all controlled from
+one page in your browser. Record every feed at once, send video back out to screens and
+other systems, and cut instant replays while the show is on. It runs on macOS, Windows
+and Linux.
 
 ## Prerequisites
 
@@ -23,6 +15,10 @@ rolling replay buffers; and runs schedules.
 starts but has no NDI sources or outputs.
 
 ## Install (macOS)
+
+Needs macOS 11 or later, on Apple Silicon or Intel.
+
+<!-- TODO(v0.2.0): Linux and Windows requirements (distros, GStreamer minimum, Windows 10/11 x64). -->
 
 ```
 curl -fsSL https://github.com/JavenKazebee/capture-room/releases/latest/download/install.sh | bash
@@ -117,23 +113,11 @@ logs in `~/Library/Logs/Capture Room`. Recordings in `~/capture-room` are never 
 
 ## Develop
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). With Rust, pnpm and GStreamer installed:
-
-```
-pnpm install && pnpm build:ui && pnpm dev   # node on :7700 as a controller, plus the Vite UI
-```
-
-## Docs
-
-- [ARCHITECTURE.md](ARCHITECTURE.md) — how it works; module detail is in each module's
-  `//!` docs.
-- [ROADMAP.md](ROADMAP.md) — open work.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
 Copyright © 2026 Javen Kazebee.
 
 Capture Room is free software under the [GNU General Public License v3.0 or later](LICENSE).
-The macOS app bundles GStreamer, including GPL encoders (x264, x265);
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists what it ships with, under which
-licenses, and where to get the source.
+The macOS app bundles GStreamer, including GPL encoders (x264, x265).
