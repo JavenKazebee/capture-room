@@ -2,8 +2,8 @@ name: Release
 
 # Pushing a tag vX.Y.Z (matching node/Cargo.toml's version) builds the apps,
 # signs them with the release key, and publishes them with latest.json (what
-# the updater checks) and install.sh as a GitHub release. Run by hand, it
-# builds the same files as one workflow artifact without releasing.
+# the updater checks), install.sh and install.ps1 as a GitHub release. Run by
+# hand, it builds the same files as one workflow artifact without releasing.
 #
 # Each platform job uploads its dist files as an artifact named
 # capture-room-<os>; publish, after all of them, merges those, writes
@@ -109,17 +109,92 @@ jobs:
           # Long enough to re-run a failed publish.
           retention-days: 7
 
-  # Linux and Windows jobs slot in here once their packaging scripts exist
-  # (ROADMAP v0.2.0 steps 2-4). Each one: needs: version; checks out, builds
-  # the UI, signs capture-room-<os>-<arch>.tar.gz (+ .sha256, and .minisig
-  # from MINISIGN_KEY, refusing an unsigned tag build like macOS does);
-  # uploads dist/* as the artifact capture-room-<os>; and is added to
-  # publish's needs. File names must not clash across platforms: the
+  windows:
+    name: Windows app
+    needs: version
+    runs-on: windows-2025
+    env:
+      # Not under Program Files: a space in the path breaks the flags
+      # pkg-config prints.
+      GST_DIR: C:\gstreamer\1.0\msvc_x86_64
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:ui
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+
+      # The official MSVC build, built against and bundled.
+      - name: GStreamer
+        shell: pwsh
+        run: scripts/windows/gstreamer.ps1 $env:GST_VERSION $env:GST_DIR
+
+      # As in the macOS job. minisign from its author's release.
+      - name: Release key
+        shell: pwsh
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+          MINISIGN_VERSION: "0.12"
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP minisign.zip
+          $url = "https://github.com/jedisct1/minisign/releases/download/$env:MINISIGN_VERSION/minisign-$env:MINISIGN_VERSION-win64.zip"
+          curl.exe -fsSL --retry 3 -o $zip $url
+          if ($LASTEXITCODE) { throw "download failed: $url" }
+          Expand-Archive $zip (Join-Path $env:RUNNER_TEMP minisign)
+          $exe = Get-ChildItem (Join-Path $env:RUNNER_TEMP minisign) -Recurse -Filter minisign.exe | Select-Object -First 1
+          Split-Path $exe.FullName >> $env:GITHUB_PATH
+          if (-not $env:MINISIGN_KEY) {
+            if ($env:GITHUB_REF_TYPE -eq 'tag') {
+              Write-Output "::error::The MINISIGN_KEY secret isn't set: a release must be signed."
+              exit 1
+            }
+            Write-Output "::warning::MINISIGN_KEY isn't set: this build is unsigned and nodes won't update to it."
+            exit 0
+          }
+          $key = Join-Path $env:RUNNER_TEMP release.key
+          [IO.File]::WriteAllText($key, "$env:MINISIGN_KEY`n")
+          "MINISIGN_KEY_FILE=$key" >> $env:GITHUB_ENV
+
+      - name: Package
+        shell: pwsh
+        env:
+          SKIP_UI: "1"
+        run: |
+          scripts/windows/package.ps1
+          Remove-Item dist/latest.json
+          Copy-Item scripts/windows/install.ps1 dist/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: capture-room-windows
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # The Linux job slots in here once its packaging script exists
+  # (ROADMAP v0.2.0 steps 2 and 4). Every platform job: needs: version;
+  # checks out, builds the UI, signs capture-room-<os>-<arch>.tar.gz
+  # (+ .sha256, and .minisig from MINISIGN_KEY, refusing an unsigned tag build
+  # like macOS does); uploads dist/* as the artifact capture-room-<os>; and is
+  # added to publish's needs. File names must not clash across platforms: the
   # artifacts are merged into one folder.
 
   publish:
     name: Publish
-    needs: [version, macos]
+    needs: [version, macos, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
