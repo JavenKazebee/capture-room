@@ -35,19 +35,34 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # plugins-bad's -dev package drags in OpenCV, VTK and Qt: about 240 MB,
+      # which the Azure mirror sometimes serves at under 100 kB/s (one run
+      # spent 48 minutes downloading). The .debs are cached and apt still
+      # installs them, so nothing is skipped the way cache-apt-pkgs-action's
+      # restored files were (the linker couldn't find some libraries).
+      - name: Cache apt packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: apt-${{ runner.os }}-
+
       # The -dev packages to build against (plugins-bad has WebRTC, which
       # gst-plugin-webrtc links), libssl for reqwest's native TLS, and the
-      # plugins the tests' pipelines use. One run spent 48 minutes here, most
-      # likely rebuilding the man-db index, so that's skipped.
-      # (cache-apt-pkgs-action was quick but left libraries the linker
-      # couldn't find.)
+      # plugins the tests' pipelines use. It takes about a minute: the timeout
+      # fails a crawling mirror fast so the job can be rerun.
       - name: Install GStreamer
+        timeout-minutes: 10
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo rm -f /var/lib/man-db/auto-update
+          archives=$RUNNER_TEMP/apt-archives
+          mkdir -p "$archives/partial"
           sudo apt-get update
+          # The runner owns the folder, so apt's _apt user can't write to it.
           sudo -E apt-get install -y --no-install-recommends \
+            -o Dir::Cache::Archives="$archives" -o APT::Sandbox::User=root \
             pkg-config libssl-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             libgstreamer-plugins-bad1.0-dev libgstrtspserver-1.0-dev \
@@ -202,8 +217,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
-        with:
-          version: 11
       - uses: actions/setup-node@v7
         with:
           node-version: 24
