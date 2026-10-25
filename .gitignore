@@ -22,7 +22,9 @@ ui/dist/
 .env
 .env.local
 
-# Claude Code (personal settings and memory)
+# Claude Code (personal settings, preview config, worktrees and memory)
 .claude/settings.local.json
+.claude/launch.json
+.claude/worktrees/
 .claude/projects/
 /dist/
