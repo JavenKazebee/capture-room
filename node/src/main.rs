@@ -90,9 +90,9 @@ fn main() -> Result<()> {
         return Ok(());
     }
     // Before the runtime's threads start: these set environment variables.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     let bundled_gst = plugins::use_bundled_gstreamer();
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let bundled_gst: Option<std::path::PathBuf> = None;
     let ndi_dir = plugins::locate_ndi_runtime();
     let (tray_tx, tray_rx) = tokio::sync::mpsc::unbounded_channel();
