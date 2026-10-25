@@ -12,7 +12,9 @@ You need:
 
 - **Rust**, stable, with `rustfmt` and `clippy`.
 - **cargo-watch**, for `pnpm dev`: `cargo install cargo-watch`.
-- **Node.js and pnpm** (CI uses Node 24 and pnpm 11).
+- **Node.js and pnpm** (CI uses Node 24). `packageManager` in `package.json` pins pnpm,
+  and pnpm or Corepack switch to that version for you; Corepack must be 0.36 or later to
+  run pnpm 11 (`npm install -g corepack@latest`).
 - **GStreamer** 1.x with its development files and `pkg-config` (per OS below).
 - **NDI Tools**, for the NDI Runtime (`libndi`), to use NDI sources and outputs. We never
   ship it; the node finds it at run time.
