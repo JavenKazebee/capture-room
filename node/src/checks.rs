@@ -49,6 +49,8 @@ pub async fn run(state: &AppState) -> anyhow::Result<NodeChecksDto> {
     }
     checks.push(tokio::task::spawn_blocking(storage_check).await?);
     checks.extend(clock_check(&clock));
+    #[cfg(target_os = "windows")]
+    checks.push(windows_firewall());
 
     Ok(NodeChecksDto {
         os: std::env::consts::OS.to_string(),
@@ -132,6 +134,18 @@ fn permission_check(
             c.fix = Some(settings(
                 "Ask macOS now, and allow it in the prompt on this machine.".into(),
                 true,
+            ));
+        }
+        Access::Denied if cfg!(target_os = "windows") => {
+            c.status = CheckStatus::Missing;
+            c.summary = "Turned off in Windows privacy settings.".into();
+            let what = pane.to_lowercase();
+            c.fix = Some(settings(
+                format!(
+                    "In Settings › Privacy & security › {pane}, turn on {pane} access, Let apps \
+                     access your {what} and Let desktop apps access your {what}."
+                ),
+                false,
             ));
         }
         Access::Denied => {
@@ -537,6 +551,37 @@ pub fn own_firewall() -> CheckDto {
                  a node that follows this one's clock."
         .into();
     c.required = false;
+    c
+}
+
+/// Windows Firewall asks once, the first time the node listens, and allowing
+/// it there needs an administrator; a rule for the program covers every port
+/// it opens, WebRTC's too. Whether one exists isn't read (listing the rules
+/// is slow): only a controller's probe can tell what gets through.
+#[cfg(target_os = "windows")]
+fn windows_firewall() -> CheckDto {
+    let mut c = check(
+        "windows_firewall",
+        CheckGroup::Network,
+        "Windows Firewall",
+        "Other machines reaching this one",
+    );
+    c.status = CheckStatus::Unknown;
+    c.required = false;
+    c.summary = "Windows asks once whether to let the node in, and needs an administrator to \
+                 allow it; if nobody did, other machines can't reach this one."
+        .into();
+    let exe = std::env::current_exe()
+        .map(|exe| exe.display().to_string())
+        .unwrap_or_else(|_| "capture-room.exe".into());
+    c.fix = Some(CheckFix {
+        steps: "Allow the node in for all its ports (in an administrator PowerShell):".into(),
+        command: Some(format!(
+            "New-NetFirewallRule -DisplayName \"Capture Room\" -Direction Inbound -Program \
+             \"{exe}\" -Action Allow"
+        )),
+        ..Default::default()
+    });
     c
 }
 

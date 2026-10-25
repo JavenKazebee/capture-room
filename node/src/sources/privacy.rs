@@ -1,6 +1,7 @@
-//! macOS privacy permissions for capture devices. `fallbacksrc` swallows
+//! Privacy permissions for capture devices. `fallbacksrc` swallows
 //! AVFoundation's denied error and retries forever, so check first to fail
-//! with a reason. Nothing is checked off macOS.
+//! with a reason. On Windows, the camera and microphone switches in Settings ›
+//! Privacy & security; nothing is checked on Linux.
 
 use anyhow::{bail, Result};
 
@@ -24,6 +25,13 @@ impl Permission {
     }
 
     pub fn settings_url(self) -> &'static str {
+        if cfg!(target_os = "windows") {
+            return match self {
+                Self::Camera => "ms-settings:privacy-webcam",
+                Self::Microphone => "ms-settings:privacy-microphone",
+                Self::ScreenRecording => "ms-settings:privacy",
+            };
+        }
         match self {
             Self::Camera => {
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera"
@@ -59,7 +67,8 @@ pub enum Access {
     NotAsked,
 }
 
-/// Whether macOS lets the node use `permission`; `None` off macOS.
+/// Whether the OS lets the node use `permission`; `None` where it isn't
+/// checked.
 pub fn access(permission: Permission) -> Option<Access> {
     imp::access(permission)
 }
@@ -82,6 +91,14 @@ pub fn check(kind: DeviceKind, device: &str) -> Result<()> {
         return Ok(());
     }
     let pane = permission.pane();
+    if cfg!(target_os = "windows") {
+        bail!(
+            "Windows privacy settings block {} access, needed for {device}: turn it on in \
+             Settings › Privacy & security › {pane}, with Let desktop apps access your {}",
+            pane.to_lowercase(),
+            pane.to_lowercase()
+        );
+    }
     match permission {
         Permission::ScreenRecording => bail!(
             "macOS hasn't allowed screen recording, needed for {device}: allow it in System \
@@ -163,7 +180,45 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Settings › Privacy & security › Camera (or Microphone) turns access off
+/// for the whole device (HKLM) or for desktop apps (`NonPackaged`), which the
+/// node is; unset means on. Its "Let apps access" switch isn't read: whether
+/// it covers desktop apps differs between Windows versions.
+#[cfg(target_os = "windows")]
+mod imp {
+    use super::{Access, Permission};
+    use crate::registry::{self, Root};
+
+    const STORE: &str =
+        r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore";
+
+    pub fn access(permission: Permission) -> Option<Access> {
+        let capability = match permission {
+            Permission::Camera => "webcam",
+            Permission::Microphone => "microphone",
+            Permission::ScreenRecording => return None,
+        };
+        let key = format!(r"{STORE}\{capability}");
+        let denied = [
+            (Root::LocalMachine, key.clone()),
+            (Root::CurrentUser, format!(r"{key}\NonPackaged")),
+        ]
+        .iter()
+        .any(|(root, key)| {
+            registry::string(*root, key, "Value").is_some_and(|v| v.eq_ignore_ascii_case("Deny"))
+        });
+        Some(if denied {
+            Access::Denied
+        } else {
+            Access::Granted
+        })
+    }
+
+    /// Windows has no prompt for desktop apps.
+    pub fn request(_: Permission) {}
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 mod imp {
     use super::{Access, Permission};
 

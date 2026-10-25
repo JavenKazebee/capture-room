@@ -10,6 +10,8 @@ mod display;
 mod logs;
 mod pipeline;
 mod plugins;
+#[cfg(target_os = "windows")]
+mod registry;
 mod service;
 mod session;
 mod sources;
