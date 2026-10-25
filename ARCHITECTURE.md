@@ -482,6 +482,31 @@ curl -fsSL https://github.com/JavenKazebee/capture-room/releases/latest/download
 - **Signing:** ad hoc until there's a Developer ID, so macOS re-asks permissions after each
   update. No hardened runtime: with ad hoc signing it refuses the plugins.
 
+## Deployment (Windows)
+
+```
+irm https://github.com/JavenKazebee/capture-room/releases/latest/download/install.ps1 | iex
+```
+
+- **Build:** `scripts/windows/package.ps1` against the official MSVC install
+  (`gstreamer.ps1`), as `capture-room-windows-x86_64.tar.gz`: one folder, `Capture Room`,
+  with the exe in GStreamer's own layout (`bin` beside its DLLs, `lib\gstreamer-1.0`,
+  `libexec`), trimmed like macOS, plus `version.txt`.
+- **App:** `%LOCALAPPDATA%\Capture Room\app`, with the database in `data` and the log in
+  `logs` beside it. `plugins::use_bundled_gstreamer` points GStreamer at the app's plugins
+  and its registry at `data`, and puts `bin` first on `PATH`.
+- **Service** (`service/windows.rs`): not a Windows service (no tray icon, no cameras).
+  `capture-room service run` supervises the node as launchd does on macOS: restarts it
+  after an error, not after Quit, writes its output to the log (rotating like macOS), and
+  on exit 75 starts a fresh supervisor from the new files. A lock file it holds says it's
+  running. Start at Login is a Task Scheduler logon task running it through
+  `capture-room-launcher.exe`, a GUI-subsystem stub, so no console window opens. Stopping
+  kills the processes.
+- **Updates:** as macOS, but a running exe or loaded DLL can't be replaced and a folder
+  holding one can't be renamed, so the app's files move aside one by one and the new ones
+  in (`update::move_files`, all or nothing); `install.ps1` does the same.
+- **Unsigned:** no Authenticode signature yet, so the README covers SmartScreen.
+
 **Plugins:** core GStreamer from the bundle (or distro packages); gst-plugins-rs (ndi,
 fallbackswitch, webrtc) statically linked at one pinned rev — adding one re-resolves
 gstreamer-rs, so pin back with `cargo update --precise`; the NDI Runtime is user-installed
@@ -499,7 +524,8 @@ since a machine can't test its own firewall.
 node/            Rust binary (api/, controller/, pipeline/, sources/, db/, migrations/)
 ui/              Vue 3 UI (views/, components/, stores/, types/generated/)
 scripts/macos/   packaging, install.sh
-.github/         CI (ci.yml: Linux and macOS) and releases (release.yml)
+scripts/windows/ packaging, install.ps1
+.github/         CI (ci.yml: Linux, macOS and Windows) and releases (release.yml)
 .githooks/       pre-commit formatting check
 ```
 

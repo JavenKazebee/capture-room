@@ -18,7 +18,7 @@ starts but has no NDI sources or outputs.
 
 Needs macOS 11 or later, on Apple Silicon or Intel.
 
-<!-- TODO(v0.2.0): Linux and Windows requirements (distros, GStreamer minimum, Windows 10/11 x64). -->
+<!-- TODO(v0.2.0): Linux requirements (distros, GStreamer minimum). -->
 
 ```
 curl -fsSL https://github.com/JavenKazebee/capture-room/releases/latest/download/install.sh | bash
@@ -35,13 +35,35 @@ curl -fsSL https://github.com/JavenKazebee/capture-room/releases/latest/download
 - `--port <n>` — API and UI port (default 7700)
 - `--version <tag>` — install that release instead of the latest, e.g. `v0.2.0`
 
-<!-- TODO(v0.2.0): Linux and Windows install. -->
+<!-- TODO(v0.2.0): Linux install. -->
+
+## Install (Windows)
+
+Needs Windows 10 or 11, x64. In PowerShell (not as administrator):
+
+```
+irm https://github.com/JavenKazebee/capture-room/releases/latest/download/install.ps1 | iex
+```
+
+It installs Capture Room for your user in `%LOCALAPPDATA%\Capture Room`, with GStreamer
+inside, starts it when you sign in (a Task Scheduler logon task) with a tray icon, adds it
+to the Start menu, and updates itself. With options:
+
+```
+& ([scriptblock]::Create((irm https://github.com/JavenKazebee/capture-room/releases/latest/download/install.ps1))) -Controller
+```
+
+- `-Controller`, `-Port <n>`, `-Version <tag>` — as for macOS above
+
+The first time it starts, Windows Firewall asks whether to let it in; allowing that takes
+an administrator. Without it other machines can't reach the node; Setup › Checks has the
+command that allows it.
 
 ## Getting started
 
-1. **Open the UI.** Click the menu bar icon › Open Capture Room; it opens the browser
-   already signed in. A node without a menu bar (run from a terminal) prints a one-time
-   sign-in link instead, good for 10 minutes. From another computer, go to
+1. **Open the UI.** Click the menu bar icon (the tray icon on Windows) › Open Capture
+   Room; it opens the browser already signed in. A node without a menu bar (run from a
+   terminal) prints a one-time sign-in link instead, good for 10 minutes. From another computer, go to
    `https://<machine>:7700`, accept the self-signed certificate, and sign in with the
    access token (menu bar › Copy Access Token, or `capture-room access-token show`, below).
 2. **Set the access token on the controller** (Settings › Access token) before adding
@@ -65,7 +87,11 @@ The app doesn't put `capture-room` on your `PATH`; from a terminal run it as
 "/Applications/Capture Room.app/Contents/MacOS/capture-room" access-token show
 ```
 
-(or from `~/Applications` if it was installed there).
+(or from `~/Applications` if it was installed there). On Windows:
+
+```
+& "$env:LOCALAPPDATA\Capture Room\app\bin\capture-room.exe" access-token show
+```
 
 Setup › Checks shows what a node is missing (permissions, NDI, the clock) and, from a
 controller, which of its ports are reachable.
@@ -99,6 +125,20 @@ Security › Open Anyway (on macOS 14 and earlier, right-click › Open also wor
 xattr -dr com.apple.quarantine "/Applications/Capture Room.app"
 ```
 
+## SmartScreen
+
+The Windows app isn't code-signed. Installed with the PowerShell command above it isn't
+marked as downloaded, so it starts without a prompt. If you downloaded the archive in a
+browser, Windows may stop it with "Windows protected your PC": click More info › Run
+anyway, or unblock the files first:
+
+```
+Get-ChildItem -Recurse "$env:LOCALAPPDATA\Capture Room\app" | Unblock-File
+```
+
+If Smart App Control is on (Windows 11), it may block the app however it was installed,
+because it isn't signed.
+
 ## Uninstall (macOS)
 
 ```
@@ -109,7 +149,17 @@ Stops the service and removes the app and its login item. The database stays in
 `~/Library/Application Support/Capture Room`; add `--purge` to also remove it and the
 logs in `~/Library/Logs/Capture Room`. Recordings in `~/capture-room` are never removed.
 
-<!-- TODO(v0.2.0): Linux and Windows uninstall. -->
+## Uninstall (Windows)
+
+```
+& ([scriptblock]::Create((irm https://github.com/JavenKazebee/capture-room/releases/latest/download/install.ps1))) -Uninstall
+```
+
+Stops it and removes the app, its logon task and Start menu shortcut. The database stays
+in `%LOCALAPPDATA%\Capture Room\data`; add `-Purge` to also remove it and the logs in
+`%LOCALAPPDATA%\Capture Room\logs`. Recordings in `~\capture-room` are never removed.
+
+<!-- TODO(v0.2.0): Linux uninstall. -->
 
 ## Develop
 
@@ -120,4 +170,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 Copyright © 2026 Javen Kazebee.
 
 Capture Room is free software under the [GNU General Public License v3.0 or later](LICENSE).
-The macOS app bundles GStreamer, including GPL encoders (x264, x265).
+The macOS and Windows apps bundle GStreamer, including GPL encoders (x264, x265).
