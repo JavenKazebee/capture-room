@@ -90,5 +90,7 @@ tar -C "$stage" -czf "$archive" "Capture Room.app"
 if [[ -n ${MINISIGN_KEY_FILE:-} ]]; then
     minisign -S -s "$MINISIGN_KEY_FILE" -m "$archive" -t "capture-room $version $arch" >/dev/null
 fi
+# Only so dist/ can be served as CAPTURE_ROOM_RELEASES to test the updater
+# locally; release.yml drops it and its publish job writes the release's.
 printf '{"version": "%s"}\n' "$version" >dist/latest.json
 echo "Built $archive ($(du -h "$archive" | cut -f1)), version $version"

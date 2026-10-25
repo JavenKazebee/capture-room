@@ -1,9 +1,14 @@
 name: Release
 
-# Pushing a tag vX.Y.Z (matching node/Cargo.toml's version) builds the macOS
-# apps, signs them with the release key, and publishes them with latest.json
-# (what the updater checks) and install.sh as a GitHub release. Run by hand,
-# it builds the same files as a workflow artifact without releasing.
+# Pushing a tag vX.Y.Z (matching node/Cargo.toml's version) builds the apps,
+# signs them with the release key, and publishes them with latest.json (what
+# the updater checks) and install.sh as a GitHub release. Run by hand, it
+# builds the same files as one workflow artifact without releasing.
+#
+# Each platform job uploads its dist files as an artifact named
+# capture-room-<os>; publish, after all of them, merges those, writes
+# latest.json once and makes the release, so a release never goes out with
+# one platform missing.
 on:
   push:
     tags: ["v*"]
@@ -17,20 +22,34 @@ env:
   GST_VERSION: 1.28.8
 
 jobs:
-  macos:
-    name: macOS apps
-    runs-on: macos-15
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          sparse-checkout: node/Cargo.toml
+          sparse-checkout-cone-mode: false
 
+      # Checked before any build so a mistagged release fails in seconds.
       - name: Tag matches the crate version
-        if: startsWith(github.ref, 'refs/tags/')
+        id: version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' node/Cargo.toml | head -1)
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
             echo "::error::Tag $GITHUB_REF_NAME doesn't match node/Cargo.toml version $version"
             exit 1
           fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  macos:
+    name: macOS apps
+    needs: version
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6
         with:
@@ -70,6 +89,8 @@ jobs:
           printf '%s\n' "$MINISIGN_KEY" > "$RUNNER_TEMP/release.key"
           echo "MINISIGN_KEY_FILE=$RUNNER_TEMP/release.key" >> "$GITHUB_ENV"
 
+      # package.sh's latest.json is for local tests only; publish writes the
+      # release's, once every platform has built.
       - name: Package
         env:
           SKIP_UI: "1"
@@ -77,17 +98,66 @@ jobs:
         run: |
           scripts/macos/package.sh aarch64
           scripts/macos/package.sh x86_64
+          rm -f dist/latest.json
           cp scripts/macos/install.sh dist/
 
-      - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
-
-      - name: Upload build
-        if: "!startsWith(github.ref, 'refs/tags/')"
-        uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7
         with:
           name: capture-room-macos
           path: dist/*
+          if-no-files-found: error
+          # Long enough to re-run a failed publish.
+          retention-days: 7
+
+  # Linux and Windows jobs slot in here once their packaging scripts exist
+  # (ROADMAP v0.2.0 steps 2-4). Each one: needs: version; checks out, builds
+  # the UI, signs capture-room-<os>-<arch>.tar.gz (+ .sha256, and .minisig
+  # from MINISIGN_KEY, refusing an unsigned tag build like macOS does);
+  # uploads dist/* as the artifact capture-room-<os>; and is added to
+  # publish's needs. File names must not clash across platforms: the
+  # artifacts are merged into one folder.
+
+  publish:
+    name: Publish
+    needs: [version, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: capture-room-*
+          merge-multiple: true
+          path: dist
+
+      - name: latest.json
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          printf '{"version": "%s"}\n' "$VERSION" > dist/latest.json
+
+      # The updater refuses unsigned archives, so a release without every
+      # signature would strand that platform's nodes.
+      - name: Every archive is signed
+        if: github.ref_type == 'tag'
+        run: |
+          for archive in dist/*.tar.gz; do
+            [ -f "$archive.minisig" ] || { echo "::error::$archive has no .minisig"; exit 1; }
+          done
+
+      - run: ls -l dist
+
+      # Not a pre-release: the updater and install.sh read releases/latest.
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+
+      # The same files as a release, flat, so the folder can be served as
+      # CAPTURE_ROOM_RELEASES to test the updater.
+      - name: Upload build
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: capture-room
+          path: dist/*
+          if-no-files-found: error
