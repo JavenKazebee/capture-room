@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { ChevronRight, TriangleAlert } from '@lucide/vue'
+import { ChevronRight, RefreshCw } from '@lucide/vue'
 import type { WhipSourceConfig } from '@/types/generated/WhipSourceConfig'
 import type { DeviceDto } from '@/types/generated/DeviceDto'
+import { generateToken } from '@/composables/useAuth'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import FormField from '@/components/FormField.vue'
@@ -29,6 +31,16 @@ const advancedOpen = ref(false)
       <Input v-model.number="cfg.port" type="number" min="1024" max="65535" class="w-32" />
     </FormField>
 
+    <FormField label="Bearer token">
+      <div class="flex items-center gap-2">
+        <Input v-model="cfg.token" class="font-mono text-xs" spellcheck="false" autocomplete="off" />
+        <CopyButton :value="cfg.token" label="Copy token" size="md" />
+        <Button type="button" variant="ghost" size="icon" class="size-7 shrink-0" title="Make a new token" @click="cfg.token = generateToken()">
+          <RefreshCw class="size-3.5" />
+        </Button>
+      </div>
+    </FormField>
+
     <div class="rounded-md border border-border bg-muted/40 px-2.5 py-2 text-xs flex flex-col gap-1">
       <span class="text-muted-foreground">Publish to</span>
       <span class="flex items-center gap-1 font-mono break-all">
@@ -36,13 +48,10 @@ const advancedOpen = ref(false)
         <CopyButton :value="endpoint" />
       </span>
       <span class="text-muted-foreground">
-        In OBS 30+: Settings › Stream, Service WHIP, Server set to this address. One publisher at a time.
+        In OBS 30+: Settings › Stream, Service WHIP, Server set to this address, Bearer Token set to the token.
+        Publishers without it are refused; a new token, once saved, drops the current one. One publisher at a time.
       </span>
     </div>
-    <p class="flex items-start gap-1.5 text-xs text-muted-foreground">
-      <TriangleAlert class="size-3.5 shrink-0 mt-px text-warning" />
-      No authentication yet: anyone who can reach this port can publish.
-    </p>
 
     <AudioPlanField v-model="cfg.audio" :devices="devices" source-label="From publisher" />
 

@@ -71,7 +71,7 @@ async function save(token: string) {
       <h2 class="text-base font-semibold tracking-tight">Access token</h2>
       <p class="text-xs text-muted-foreground">
         A shared secret every browser signs in with once; on the node's own Mac, Open Capture Room in the menu bar
-        signs in by itself. Changed here, it's changed on {{ scope }} too. WHEP and WHIP stay open.
+        signs in by itself. Changed here, it's changed on {{ scope }} too. WHEP stays open; WHIP sources have tokens of their own.
       </p>
     </div>
     <div class="rounded-lg border border-border bg-card overflow-hidden">

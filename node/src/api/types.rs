@@ -436,12 +436,15 @@ pub struct DecklinkProfileRequest {
 }
 
 /// WebRTC pushed to the node over WHIP (OBS 30+, browsers), at
-/// `http://<node>:<port>/whip/endpoint`. One publisher at a time; there's
-/// no authentication yet, so anyone who can reach the port can publish.
+/// `http://<node>:<port>/whip/endpoint`. One publisher at a time, and only
+/// one that sends `Authorization: Bearer <token>`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct WhipSourceConfig {
     pub port: u16,
+    /// Publishers' bearer token. Blank in a request: the node makes one.
+    #[serde(default)]
+    pub token: String,
     #[serde(default)]
     pub audio: AudioPlan,
     #[serde(default)]

@@ -426,7 +426,7 @@ key pinned and never pruned.
 **Access token** (`auth.rs`): one shared secret per cluster, stored in each node's config.
 Every node makes a random one (32 characters) the first time it starts, so none is ever
 open. Every `/api` route and `/ws/…` need it; the UI assets, `/api/v1/auth/…` and `/whep`
-stay open, and WHIP has its own port.
+stay open. WHIP sources have their own port and their own bearer token.
 
 - Browsers sign in once and get an HttpOnly, `SameSite=Strict` cookie named per port, so
   `<img>`, `<video>`, downloads and the WebSocket need no code of their own. A 401 shows
@@ -450,6 +450,11 @@ stay open, and WHIP has its own port.
 - **A lost token:** Open Capture Room or Copy Access Token in the menu bar (whoever is at
   the machine is trusted), or `capture-room access-token show | reset [--restart]` on the
   node's database (the installed service's by default).
+- **WHIP** (`sources/whip.rs`): each source has its own bearer token, made when it's
+  created, which OBS 30+ and browser clients send as `Authorization: Bearer`.
+  `whipserversrc` can't check one, so it listens on a loopback port and a small proxy on
+  the source's port refuses requests without the token (CORS preflights excepted) and
+  passes the rest on. A new token restarts the source, dropping the current publisher.
 
 ## Deployment (macOS)
 

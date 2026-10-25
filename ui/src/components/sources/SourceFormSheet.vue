@@ -7,6 +7,7 @@ import { nodeAddress, useNodesStore } from '@/stores/nodes'
 import { notifyError } from '@/lib/notify'
 import { errorMessage } from '@/composables/useApi'
 import { withPairedAudio } from '@/lib/deviceAudio'
+import { generateToken } from '@/composables/useAuth'
 import { useNodeDevices } from '@/composables/useNodeDevices'
 import { useNodeDecklink } from '@/composables/useNodeDecklink'
 import { subDeviceOptions } from '@/lib/decklink'
@@ -96,7 +97,7 @@ const fileMedia = ref<MediaInfo | null>(null)
 const stream = ref<StreamSourceConfig>({ url: '', latency_ms: 200, rtsp_transport: 'auto', audio: { from: 'source', channels: 2 }, format: null })
 const device = ref<DeviceSourceConfig>({ video_device: '', video_device_name: '', audio: { from: 'silence', channels: 2 }, format: null })
 const decklink = ref<DecklinkSourceConfig>({ device: '', device_name: '', connection: 'auto', mode: null, channels: 2, format: null })
-const whip = ref<WhipSourceConfig>({ port: 8890, audio: { from: 'source', channels: 2 }, format: null })
+const whip = ref<WhipSourceConfig>({ port: 8890, token: generateToken(), audio: { from: 'source', channels: 2 }, format: null })
 
 const node = computed(() => nodesStore.nodes.find((n) => n.id === nodeId.value))
 /** The node's address as senders on the network see it. */
@@ -194,9 +195,9 @@ function formProblem(): string | null {
     case 'decklink':
       return decklink.value.device ? null : 'Pick a Decklink input.'
     case 'whip':
-      return whip.value.port >= 1024 && whip.value.port <= 65535
-        ? audioProblem(whip.value.audio)
-        : 'Use a port from 1024 to 65535.'
+      if (whip.value.port < 1024 || whip.value.port > 65535) return 'Use a port from 1024 to 65535.'
+      if (whip.value.token.trim().length < 16) return 'The token needs at least 16 characters.'
+      return audioProblem(whip.value.audio)
     default:
       return null
   }

@@ -1140,7 +1140,8 @@ mod tests {
                 (1, "schema".to_string()),
                 (2, "node fingerprints".to_string()),
                 (3, "schedules".to_string()),
-                (4, "schedule monthly".to_string())
+                (4, "schedule monthly".to_string()),
+                (5, "whip tokens".to_string())
             ]
         );
 

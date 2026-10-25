@@ -4,7 +4,11 @@ import type { LiveVideoFormat } from "./LiveVideoFormat";
 
 /**
  * WebRTC pushed to the node over WHIP (OBS 30+, browsers), at
- * `http://<node>:<port>/whip/endpoint`. One publisher at a time; there's
- * no authentication yet, so anyone who can reach the port can publish.
+ * `http://<node>:<port>/whip/endpoint`. One publisher at a time, and only
+ * one that sends `Authorization: Bearer <token>`.
  */
-export type WhipSourceConfig = { port: number, audio: AudioPlan, format: LiveVideoFormat | null, };
+export type WhipSourceConfig = { port: number, 
+/**
+ * Publishers' bearer token. Blank in a request: the node makes one.
+ */
+token: string, audio: AudioPlan, format: LiveVideoFormat | null, };

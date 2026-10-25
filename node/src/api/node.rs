@@ -298,6 +298,10 @@ async fn validated(
                 .map_err(ApiError::bad)?;
         }
         SourceConfig::Whip(cfg) => {
+            cfg.token = cfg.token.trim().to_string();
+            if cfg.token.is_empty() {
+                cfg.token = crate::auth::new_token();
+            }
             crate::sources::whip::validate(cfg).map_err(ApiError::bad)?;
             crate::sources::device::validate_audio(&cfg.audio, &devices).map_err(ApiError::bad)?;
         }
