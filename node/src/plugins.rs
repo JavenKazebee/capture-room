@@ -212,6 +212,47 @@ pub fn use_bundled_gstreamer() -> Option<std::path::PathBuf> {
     Some(root)
 }
 
+/// From the installed Windows app, use the GStreamer beside it (`bin`,
+/// `lib\gstreamer-1.0`, `libexec`), not any other on the machine, and a
+/// registry of its own. The exe's own folder is searched first for the DLLs
+/// it links; `PATH` covers the plugin scanner and the plugins' dependencies.
+/// Call before any threads start: it sets environment variables.
+#[cfg(target_os = "windows")]
+pub fn use_bundled_gstreamer() -> Option<std::path::PathBuf> {
+    let root = crate::service::app_path()?;
+    let set = |var: &str, path: std::path::PathBuf| std::env::set_var(var, path);
+    set(
+        "GST_PLUGIN_SYSTEM_PATH_1_0",
+        root.join(r"lib\gstreamer-1.0"),
+    );
+    let libexec = root.join(r"libexec\gstreamer-1.0");
+    for (var, exe) in [
+        ("GST_PLUGIN_SCANNER_1_0", "gst-plugin-scanner.exe"),
+        ("GST_PTP_HELPER_1_0", "gst-ptp-helper.exe"),
+    ] {
+        if libexec.join(exe).is_file() {
+            set(var, libexec.join(exe));
+        }
+    }
+    set("GIO_MODULE_DIR", root.join(r"lib\gio\modules"));
+    set(
+        "GST_REGISTRY_1_0",
+        crate::service::data_dir().join("gstreamer-registry.bin"),
+    );
+    std::env::remove_var("GST_PLUGIN_PATH_1_0");
+    std::env::remove_var("GST_PLUGIN_PATH");
+    let mut path = vec![root.join("bin")];
+    path.extend(
+        std::env::var_os("PATH")
+            .iter()
+            .flat_map(std::env::split_paths),
+    );
+    if let Ok(joined) = std::env::join_paths(path) {
+        std::env::set_var("PATH", joined);
+    }
+    Some(root)
+}
+
 /// Check every required element is registered; the error lists what's missing
 /// and the packages that provide it.
 pub fn check_required_plugins() -> Result<()> {

@@ -43,12 +43,20 @@ pub async fn run(state: &AppState) -> anyhow::Result<NodeChecksDto> {
             ));
         }
     }
+    #[cfg(target_os = "linux")]
+    checks.push(video_devices_check(needing(
+        &configured,
+        &devices,
+        Permission::Camera,
+    )));
     checks.push(ndi_check(ndi_loaded, &configured));
     if ndi_loaded {
         checks.push(ndi_intake_check(&ndi));
     }
     checks.push(tokio::task::spawn_blocking(storage_check).await?);
     checks.extend(clock_check(&clock));
+    #[cfg(target_os = "windows")]
+    checks.push(windows_firewall());
 
     Ok(NodeChecksDto {
         os: std::env::consts::OS.to_string(),
@@ -132,6 +140,18 @@ fn permission_check(
             c.fix = Some(settings(
                 "Ask macOS now, and allow it in the prompt on this machine.".into(),
                 true,
+            ));
+        }
+        Access::Denied if cfg!(target_os = "windows") => {
+            c.status = CheckStatus::Missing;
+            c.summary = "Turned off in Windows privacy settings.".into();
+            let what = pane.to_lowercase();
+            c.fix = Some(settings(
+                format!(
+                    "In Settings › Privacy & security › {pane}, turn on {pane} access, Let apps \
+                     access your {what} and Let desktop apps access your {what}."
+                ),
+                false,
             ));
         }
         Access::Denied => {
@@ -245,6 +265,57 @@ fn permission_holder() -> Option<String> {
     None
 }
 
+/// Whether the node's user can open the V4L2 devices. A desktop session gets
+/// them from logind; a service running without one (lingering, headless)
+/// needs the `video` group.
+#[cfg(target_os = "linux")]
+fn video_devices_check(used_by: Vec<String>) -> CheckDto {
+    use std::os::unix::ffi::OsStrExt;
+    let mut c = check(
+        "video_devices",
+        CheckGroup::Permissions,
+        "Video devices",
+        "Capture cards, USB HDMI dongles and webcams (/dev/video*)",
+    );
+    c.required = !used_by.is_empty();
+    c.used_by = used_by;
+    let devices: Vec<PathBuf> = std::fs::read_dir("/dev")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.as_bytes().starts_with(b"video"))
+        })
+        .collect();
+    let can_open = |path: &PathBuf| {
+        std::ffi::CString::new(path.as_os_str().as_bytes())
+            .is_ok_and(|p| unsafe { libc::access(p.as_ptr(), libc::R_OK | libc::W_OK) } == 0)
+    };
+    let blocked = devices.iter().filter(|p| !can_open(p)).count();
+    if devices.is_empty() {
+        c.summary = "No video devices found.".into();
+    } else if blocked == 0 {
+        c.summary = format!("Can open all {} video devices.", devices.len());
+    } else {
+        let user = std::env::var("USER").unwrap_or_else(|_| "\"$USER\"".into());
+        c.status = CheckStatus::Missing;
+        c.summary = format!(
+            "Can't open {blocked} of the {} video devices.",
+            devices.len()
+        );
+        c.fix = Some(CheckFix {
+            steps: "Add the node's user to the video group, then restart the machine: the \
+                    service keeps the groups it started with."
+                .into(),
+            command: Some(format!("sudo usermod -aG video {user}")),
+            ..Default::default()
+        });
+    }
+    c
+}
+
 fn ndi_check(loaded: bool, configured: &[ConfiguredSourceDto]) -> CheckDto {
     let mut c = check(
         "ndi_runtime",
@@ -271,15 +342,30 @@ fn ndi_check(loaded: bool, configured: &[ConfiguredSourceDto]) -> CheckDto {
     } else {
         c.status = CheckStatus::Missing;
         c.summary = "The NDI library couldn't be loaded.".into();
-        c.fix = Some(CheckFix {
-            steps: "Install NDI Tools (or the NDI Runtime) on this machine, then restart the \
-                    node: it only looks for the library when it starts."
-                .into(),
-            link: Some(CheckLink {
-                url: "https://ndi.video/tools/".into(),
-                label: "Download NDI Tools".into(),
-            }),
-            ..Default::default()
+        c.fix = Some(if cfg!(target_os = "linux") {
+            // NDI Tools isn't made for Linux; the SDK has the library.
+            CheckFix {
+                steps: "Install the NDI SDK for Linux and copy its libndi.so.6 where the \
+                        system finds libraries (/usr/local/lib, then sudo ldconfig), then \
+                        restart the node: it only looks for the library when it starts."
+                    .into(),
+                link: Some(CheckLink {
+                    url: "https://ndi.video/for-developers/ndi-sdk/".into(),
+                    label: "Download the NDI SDK".into(),
+                }),
+                ..Default::default()
+            }
+        } else {
+            CheckFix {
+                steps: "Install NDI Tools (or the NDI Runtime) on this machine, then restart \
+                        the node: it only looks for the library when it starts."
+                    .into(),
+                link: Some(CheckLink {
+                    url: "https://ndi.video/tools/".into(),
+                    label: "Download NDI Tools".into(),
+                }),
+                ..Default::default()
+            }
         });
     }
     c
@@ -540,6 +626,37 @@ pub fn own_firewall() -> CheckDto {
     c
 }
 
+/// Windows Firewall asks once, the first time the node listens, and allowing
+/// it there needs an administrator; a rule for the program covers every port
+/// it opens, WebRTC's too. Whether one exists isn't read (listing the rules
+/// is slow): only a controller's probe can tell what gets through.
+#[cfg(target_os = "windows")]
+fn windows_firewall() -> CheckDto {
+    let mut c = check(
+        "windows_firewall",
+        CheckGroup::Network,
+        "Windows Firewall",
+        "Other machines reaching this one",
+    );
+    c.status = CheckStatus::Unknown;
+    c.required = false;
+    c.summary = "Windows asks once whether to let the node in, and needs an administrator to \
+                 allow it; if nobody did, other machines can't reach this one."
+        .into();
+    let exe = std::env::current_exe()
+        .map(|exe| exe.display().to_string())
+        .unwrap_or_else(|_| "capture-room.exe".into());
+    c.fix = Some(CheckFix {
+        steps: "Allow the node in for all its ports (in an administrator PowerShell):".into(),
+        command: Some(format!(
+            "New-NetFirewallRule -DisplayName \"Capture Room\" -Direction Inbound -Program \
+             \"{exe}\" -Action Allow"
+        )),
+        ..Default::default()
+    });
+    c
+}
+
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Probe a node's ports from this machine (a controller): `host` is how
@@ -612,7 +729,11 @@ fn firewall_fix(os: &str, p: &NodePortDto) -> CheckFix {
             ..Default::default()
         },
         _ => CheckFix {
-            steps: "Allow it in through the firewall, e.g. with ufw:".into(),
+            steps: format!(
+                "Allow it in through the firewall, e.g. with ufw (with firewalld: sudo \
+                 firewall-cmd --permanent --add-port={port}/{proto}, then sudo firewall-cmd \
+                 --reload):"
+            ),
             command: Some(format!("sudo ufw allow {port}/{proto}")),
             ..Default::default()
         },

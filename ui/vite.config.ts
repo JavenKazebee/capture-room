@@ -11,7 +11,7 @@ const node = process.env.CAPTURE_ROOM_NODE ?? 'localhost:7700'
 /**
  * Writes `third-party-licenses.txt` into the build: every npm package with code
  * in the bundle, with its license text. The app ships it with its other
- * notices (scripts/macos/package.sh).
+ * notices (each platform's package.sh in scripts/).
  */
 function thirdPartyLicenses(): Plugin {
   return {

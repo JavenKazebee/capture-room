@@ -8,8 +8,12 @@
 //! manager to start it. Only the installed service updates, never to an older
 //! version or while recording or playing. The old app is kept until the new
 //! one starts.
+//!
+//! Windows won't replace a running exe or loaded DLL, nor rename a folder with
+//! one open, but renames the files themselves: the update moves the app's
+//! files aside one by one and the new ones in.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -29,6 +33,12 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const STAGING: &str = ".capture-room-update";
 #[cfg(target_os = "macos")]
 const APP_NAME: &str = "Capture Room.app";
+/// The folder in the Linux archive: the binary and its licenses.
+#[cfg(target_os = "linux")]
+const APP_NAME: &str = "capture-room";
+/// The archive's folder, which becomes the app folder (`…\Capture Room\app`).
+#[cfg(target_os = "windows")]
+const APP_NAME: &str = "Capture Room";
 
 pub struct Updater {
     status: Mutex<UpdateStatusDto>,
@@ -67,11 +77,15 @@ impl Updater {
 
 /// Why this process can't update itself, if it can't.
 fn unsupported() -> Option<String> {
-    if !cfg!(target_os = "macos") {
+    if !cfg!(any(
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    )) {
         return Some("Updates aren't available on this OS yet.".into());
     }
     if service::app_path().is_none() || !service::running_as_service() {
-        return Some("Only the installed app updates itself (install.sh).".into());
+        return Some("Only the installed app updates itself.".into());
     }
     None
 }
@@ -299,19 +313,37 @@ fn verify(file: &Path, signature: &str) -> Result<()> {
         .context("the download isn't signed with the release key")
 }
 
-#[cfg(target_os = "macos")]
-fn unpack_and_swap(archive: &Path, staging: &Path, app: &Path, version: &str) -> Result<()> {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn untar(archive: &Path, into: &Path) -> Result<()> {
     let out = std::process::Command::new("tar")
         .arg("-xzf")
         .arg(archive)
         .arg("-C")
-        .arg(staging)
+        .arg(into)
         .output()?;
     ensure!(
         out.status.success(),
         "unpack: {}",
         String::from_utf8_lossy(&out.stderr).trim()
     );
+    Ok(())
+}
+
+/// Move `app` to `old` and `new` into its place, putting it back if that
+/// fails.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn swap(app: &Path, new: &Path, old: &Path) -> Result<()> {
+    std::fs::rename(app, old).context("move the current app aside")?;
+    if let Err(e) = std::fs::rename(new, app) {
+        let _ = std::fs::rename(old, app);
+        return Err(e).context("move the new app into place");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn unpack_and_swap(archive: &Path, staging: &Path, app: &Path, version: &str) -> Result<()> {
+    untar(archive, staging)?;
     let new = staging.join(APP_NAME);
     let info = plist::Value::from_file(new.join("Contents/Info.plist"))?;
     let unpacked = info
@@ -323,16 +355,138 @@ fn unpack_and_swap(archive: &Path, staging: &Path, app: &Path, version: &str) ->
         unpacked == version,
         "the archive holds version {unpacked}, not {version}"
     );
-    let old = staging.join("previous.app");
-    std::fs::rename(app, &old).context("move the current app aside")?;
-    if let Err(e) = std::fs::rename(&new, app) {
-        let _ = std::fs::rename(&old, app);
+    swap(app, &new, &staging.join("previous.app"))
+}
+
+/// The new binary is run for its version, which also shows it runs on this
+/// system (the distro's GStreamer, say) before it replaces the old one.
+#[cfg(target_os = "linux")]
+fn unpack_and_swap(archive: &Path, staging: &Path, app: &Path, version: &str) -> Result<()> {
+    untar(archive, staging)?;
+    let new = staging.join(APP_NAME);
+    let out = std::process::Command::new(new.join("capture-room"))
+        .arg("--version")
+        .output()
+        .context("run the new version")?;
+    ensure!(
+        out.status.success(),
+        "the new version doesn't run here: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    // clap prints "capture-room 0.2.0".
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let unpacked = stdout.split_whitespace().nth(1).unwrap_or_default();
+    ensure!(
+        unpacked == version,
+        "the archive holds version {unpacked}, not {version}"
+    );
+    swap(app, &new, &staging.join("previous"))
+}
+
+#[cfg(target_os = "windows")]
+fn unpack_and_swap(archive: &Path, staging: &Path, app: &Path, version: &str) -> Result<()> {
+    // Windows' own tar (bsdtar): a Git for Windows tar earlier on PATH would
+    // read `C:` as a remote host.
+    let tar = std::env::var_os("SystemRoot")
+        .map(|root| Path::new(&root).join(r"System32\tar.exe"))
+        .unwrap_or_else(|| "tar".into());
+    let out = std::process::Command::new(tar)
+        .arg("-xzf")
+        .arg(archive)
+        .arg("-C")
+        .arg(staging)
+        .output()?;
+    ensure!(
+        out.status.success(),
+        "unpack: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    let new = staging.join(APP_NAME);
+    let unpacked = std::fs::read_to_string(new.join("version.txt")).unwrap_or_default();
+    let unpacked = unpacked.trim();
+    ensure!(
+        unpacked == version,
+        "the archive holds version {unpacked}, not {version}"
+    );
+    let old = staging.join("previous");
+    move_files(app, &old).context("move the current app aside")?;
+    if let Err(e) = move_files(&new, app) {
+        let _ = move_files(&old, app);
         return Err(e).context("move the new app into place");
     }
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn unpack_and_swap(_: &Path, _: &Path, _: &Path, _: &str) -> Result<()> {
     bail!("updates aren't available on this OS yet")
+}
+
+/// Move every file under `from` to the same place under `to`, one rename
+/// each (folders are made as needed, and left behind empty). All or
+/// nothing: on an error the files moved so far go back.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn move_files(from: &Path, to: &Path) -> Result<()> {
+    let mut files = Vec::new();
+    files_in(from, &mut files).with_context(|| format!("list {}", from.display()))?;
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for file in files {
+        let dest = to.join(file.strip_prefix(from)?);
+        let result = dest
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::rename(&file, &dest));
+        if let Err(e) = result {
+            for (back, moved_to) in moved.iter().rev() {
+                let _ = std::fs::rename(moved_to, back);
+            }
+            return Err(e).with_context(|| format!("move {}", file.display()));
+        }
+        moved.push((file, dest));
+    }
+    Ok(())
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn files_in(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            files_in(&entry.path(), files)?;
+        } else {
+            files.push(entry.path());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn move_files_moves_all_or_nothing() {
+        let dir = std::env::temp_dir().join(format!("move-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (from, to) = (dir.join("from"), dir.join("to"));
+        std::fs::create_dir_all(from.join("lib/plugins")).unwrap();
+        std::fs::write(from.join("app.exe"), "app").unwrap();
+        std::fs::write(from.join("lib/plugins/a.dll"), "a").unwrap();
+
+        move_files(&from, &to).unwrap();
+        let read = |path: PathBuf| std::fs::read_to_string(path).unwrap();
+        assert_eq!(read(to.join("app.exe")), "app");
+        assert_eq!(read(to.join("lib/plugins/a.dll")), "a");
+        assert!(!from.join("app.exe").exists());
+
+        // `lib` is a file where the move needs a folder: nothing moves.
+        let blocked = dir.join("blocked");
+        std::fs::create_dir_all(&blocked).unwrap();
+        std::fs::write(blocked.join("lib"), "").unwrap();
+        assert!(move_files(&to, &blocked).is_err());
+        assert!(to.join("app.exe").exists());
+        assert!(to.join("lib/plugins/a.dll").exists());
+        assert!(!blocked.join("app.exe").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
