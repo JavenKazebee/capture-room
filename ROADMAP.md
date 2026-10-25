@@ -39,15 +39,23 @@ and the release job; a check that `/dev/video*` can be opened. Left:
 
 ### 3. Windows
 
-- **Package** — the exe plus the GStreamer MSVC runtime. Its notices differ from macOS
-  (cargo-about plus GStreamer's licenses).
-- **Service** — a per-user logon task (so the tray icon works), data under
-  `%LOCALAPPDATA%`.
-- **Updater** — rename the running exe, put the new one in place, relaunch. The archive
-  format has to match what `update.rs` downloads (`.tar.gz` today; Windows' `tar` reads it).
-- **Tray** — the menu `tray.rs` already gates on for Windows.
-- **Install** — `install.ps1` with the same options as `install.sh`.
-- **Checks** — camera and microphone privacy toggles, firewall rule.
+Written, compiled only by CI; nothing has run on Windows yet. Try on the AMD desktop:
+
+- **Package** (`scripts/windows/package.ps1`) — the exe and the GStreamer MSVC runtime in
+  one folder, trimmed like macOS. Check that every required plugin loads from it (the
+  smoke test only runs `--version`), and its size.
+- **Service** (`service/windows.rs`) — a supervisor (`service run`) that restarts the node
+  and writes and rotates its log, started at sign-in by a logon task through the windowless
+  `capture-room-launcher.exe`. Check: no console window at sign-in; the tray icon (white,
+  black on a light taskbar); Quit stays quit; a killed node comes back; Start at Login.
+  Stopping kills the node, so recordings in progress aren't finalised: find a graceful
+  stop.
+- **Updater** — moves the app's files aside one by one (a running exe and its DLLs can be
+  renamed, not replaced) and the new ones in, then the supervisor restarts from them.
+- **Install** — `install.ps1`: install, `-Version`, `-Uninstall`, `-Purge`, reinstall over
+  a running node, the Start menu shortcut.
+- **Checks** — camera and microphone privacy switches (read from the registry), and a
+  Windows Firewall hint with the command allowing the exe.
 
 ### 4. Release pipeline
 

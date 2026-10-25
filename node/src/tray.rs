@@ -281,6 +281,28 @@ mod imp {
         tray.set_icon(Some(icon(false)))
     }
 
+    #[cfg(target_os = "macos")]
+    fn idle_colour() -> [u8; 3] {
+        [0, 0, 0]
+    }
+
+    /// Black on a light taskbar, white on a dark one (the default), as the
+    /// theme was when the icon was last drawn.
+    #[cfg(target_os = "windows")]
+    fn idle_colour() -> [u8; 3] {
+        use crate::registry::{self, Root};
+        let light = registry::dword(
+            Root::CurrentUser,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            "SystemUsesLightTheme",
+        ) == Some(1);
+        if light {
+            [0, 0, 0]
+        } else {
+            [255, 255, 255]
+        }
+    }
+
     fn plural(n: usize, what: &str) -> String {
         if n == 1 {
             format!("1 {what}")
@@ -290,10 +312,15 @@ mod imp {
     }
 
     /// A record symbol (a ring round a dot), drawn at 2x for an 18 pt menu
-    /// bar: black for a template image when idle, red when recording.
+    /// bar: red when recording; when idle, black for a template image on
+    /// macOS, and on Windows whatever stands out on the taskbar.
     fn icon(recording: bool) -> Icon {
         const SIZE: u32 = 36;
-        let colour: [u8; 3] = if recording { [229, 72, 77] } else { [0, 0, 0] };
+        let colour: [u8; 3] = if recording {
+            [229, 72, 77]
+        } else {
+            idle_colour()
+        };
         let centre = (SIZE as f32 - 1.0) / 2.0;
         let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
         for y in 0..SIZE {

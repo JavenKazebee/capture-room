@@ -3,20 +3,27 @@
 //! [`MAX_BYTES`] the node renames it to `.1` (shifting older ones up to
 //! [`KEEP`]) and points stdout and stderr at a fresh file, which catches
 //! GStreamer's and the SDKs' own output as well as `tracing`'s.
+//!
+//! On Windows the service's supervisor writes the node's output to the file
+//! itself, so it rotates with [`rotate`] as it goes.
 
 use std::fs::{File, OpenOptions};
 use std::io;
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::time::Duration;
 
-const MAX_BYTES: u64 = 20 * 1024 * 1024;
+pub const MAX_BYTES: u64 = 20 * 1024 * 1024;
 /// Old files kept beside the current one.
-const KEEP: u32 = 4;
+pub const KEEP: u32 = 4;
+#[cfg(unix)]
 const CHECK_EVERY: Duration = Duration::from_secs(60);
 
 /// Check the log file now and every minute, while the node runs as the
 /// service.
+#[cfg(unix)]
 pub fn spawn() {
     let Some(path) = super::log_file() else {
         return;
@@ -32,6 +39,7 @@ pub fn spawn() {
     });
 }
 
+#[cfg(unix)]
 fn rotate_if_full(path: &Path) -> io::Result<()> {
     if std::fs::metadata(path)?.len() < MAX_BYTES {
         return Ok(());
@@ -49,7 +57,7 @@ fn rotate_if_full(path: &Path) -> io::Result<()> {
 
 /// Shift `path` to `path.1`, `.1` to `.2` and so on, dropping what's past
 /// `keep`, and open a new, empty `path` for appending.
-fn rotate(path: &Path, keep: u32) -> io::Result<File> {
+pub fn rotate(path: &Path, keep: u32) -> io::Result<File> {
     for n in (1..keep).rev() {
         match std::fs::rename(numbered(path, n), numbered(path, n + 1)) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
