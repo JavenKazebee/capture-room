@@ -1,5 +1,5 @@
 # cargo-about: the license texts of every crate built into the node, for the
-# notices shipped in the app (scripts/macos/package.sh). Generating fails if a
+# notices shipped in the app (scripts/*/package.sh). Generating fails if a
 # crate's license isn't accepted here, so a new dependency can't bring in a
 # license that conflicts with the GPL unnoticed. Earlier entries are preferred
 # when a crate offers a choice.

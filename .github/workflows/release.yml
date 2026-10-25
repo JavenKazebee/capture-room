@@ -108,6 +108,78 @@ jobs:
           # Long enough to re-run a failed publish.
           retention-days: 7
 
+  linux:
+    name: Linux app
+    needs: version
+    # The oldest supported distro, so the binary runs on all of them.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      # The same packages as ci.yml's Linux job, and the same man-db skip.
+      - name: Install GStreamer
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -f /var/lib/man-db/auto-update
+          sudo apt-get update
+          sudo -E apt-get install -y --no-install-recommends \
+            pkg-config libssl-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev libgstrtspserver-1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-nice
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:ui
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+
+      # As for macOS: the updater only installs archives signed with the
+      # release key.
+      - name: Release key
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get install -y --no-install-recommends minisign
+          if [ -z "$MINISIGN_KEY" ]; then
+            if [ "$GITHUB_REF_TYPE" = tag ]; then
+              echo "::error::The MINISIGN_KEY secret isn't set: a release must be signed."
+              exit 1
+            fi
+            echo "::warning::MINISIGN_KEY isn't set: this build is unsigned and nodes won't update to it."
+            exit 0
+          fi
+          printf '%s\n' "$MINISIGN_KEY" > "$RUNNER_TEMP/release.key"
+          echo "MINISIGN_KEY_FILE=$RUNNER_TEMP/release.key" >> "$GITHUB_ENV"
+
+      - name: Package
+        env:
+          SKIP_UI: "1"
+        run: |
+          scripts/linux/package.sh
+          rm -f dist/latest.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: capture-room-linux
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
   # Linux and Windows jobs slot in here once their packaging scripts exist
   # (ROADMAP v0.2.0 steps 2-4). Each one: needs: version; checks out, builds
   # the UI, signs capture-room-<os>-<arch>.tar.gz (+ .sha256, and .minisig
@@ -118,7 +190,7 @@ jobs:
 
   publish:
     name: Publish
-    needs: [version, macos]
+    needs: [version, macos, linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
