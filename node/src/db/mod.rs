@@ -3,7 +3,10 @@
 //! names and formats they used, so history survives renames and deletes.
 
 use anyhow::{Context, Result};
-use sqlx::{sqlite::SqliteConnectOptions, types::Json, FromRow, Sqlite, SqlitePool, Transaction};
+use sqlx::{
+    sqlite::SqliteConnectOptions, types::Json, AssertSqlSafe, FromRow, Sqlite, SqlitePool,
+    Transaction,
+};
 use std::collections::HashMap;
 use std::str::FromStr;
 use tracing::info;
@@ -67,7 +70,7 @@ async fn refuse_pre_baseline(
 }
 
 /// Run a `DELETE ... WHERE <key> = ?` for `id`: whether it removed a row.
-async fn delete_one(pool: &SqlitePool, sql: &str, id: &str) -> Result<bool> {
+async fn delete_one(pool: &SqlitePool, sql: &'static str, id: &str) -> Result<bool> {
     let res = sqlx::query(sql).bind(id).execute(pool).await?;
     Ok(res.rows_affected() > 0)
 }
@@ -124,7 +127,10 @@ pub async fn monitor_settings_set(pool: &SqlitePool, m: &MonitorSettingsDto) -> 
     Ok(())
 }
 
-const SESSION_SELECT: &str = "SELECT id, source_id, preset_id, source_name, preset_name, started_at, stopped_at,
+// The `*_SELECT` column lists are spliced into queries with `format!`, which sqlx
+// only accepts wrapped in `AssertSqlSafe`. That holds because they are constants:
+// every value from outside still goes through `.bind()`.
+const SESSION_SELECT: &str ="SELECT id, source_id, preset_id, source_name, preset_name, started_at, stopped_at,
                                      outputs, output_paths, dropped_frames, files, status, error_message,
                                      clock
                               FROM recording_sessions";
@@ -210,9 +216,9 @@ pub async fn sessions_list(
     before: Option<&str>,
     limit: u32,
 ) -> Result<Vec<RecordingSessionDto>> {
-    let rows = sqlx::query_as::<_, RecordingSessionDto>(&format!(
+    let rows = sqlx::query_as::<_, RecordingSessionDto>(AssertSqlSafe(format!(
         "{SESSION_SELECT} WHERE (?1 IS NULL OR started_at < ?1) ORDER BY started_at DESC LIMIT ?2"
-    ))
+    )))
     .bind(before)
     .bind(limit)
     .fetch_all(pool)
@@ -227,10 +233,12 @@ pub async fn session_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
 }
 
 pub async fn session_get(pool: &SqlitePool, id: &str) -> Result<Option<RecordingSessionDto>> {
-    let row = sqlx::query_as::<_, RecordingSessionDto>(&format!("{SESSION_SELECT} WHERE id = ?"))
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
+    let row = sqlx::query_as::<_, RecordingSessionDto>(AssertSqlSafe(format!(
+        "{SESSION_SELECT} WHERE id = ?"
+    )))
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
     Ok(row)
 }
 
@@ -390,9 +398,9 @@ const CONFIGURED_SOURCE_SELECT: &str =
     "SELECT id, name, config, created_at FROM configured_sources";
 
 pub async fn configured_sources_list(pool: &SqlitePool) -> Result<Vec<ConfiguredSourceDto>> {
-    let rows = sqlx::query_as::<_, ConfiguredSourceDto>(&format!(
+    let rows = sqlx::query_as::<_, ConfiguredSourceDto>(AssertSqlSafe(format!(
         "{CONFIGURED_SOURCE_SELECT} ORDER BY created_at"
-    ))
+    )))
     .fetch_all(pool)
     .await?;
     Ok(rows)
@@ -402,9 +410,9 @@ pub async fn configured_source_get(
     pool: &SqlitePool,
     id: &str,
 ) -> Result<Option<ConfiguredSourceDto>> {
-    let row = sqlx::query_as::<_, ConfiguredSourceDto>(&format!(
+    let row = sqlx::query_as::<_, ConfiguredSourceDto>(AssertSqlSafe(format!(
         "{CONFIGURED_SOURCE_SELECT} WHERE id = ?"
-    ))
+    )))
     .bind(id)
     .fetch_optional(pool)
     .await?;
@@ -462,15 +470,16 @@ pub async fn configured_source_delete(pool: &SqlitePool, id: &str) -> Result<boo
 const MEDIA_SELECT: &str = "SELECT id, path, name, info, origin, session_id, added_at FROM media";
 
 pub async fn media_list(pool: &SqlitePool) -> Result<Vec<MediaItemDto>> {
-    let rows = sqlx::query_as::<_, MediaItemDto>(&format!("{MEDIA_SELECT} ORDER BY name"))
-        .fetch_all(pool)
-        .await?;
+    let rows =
+        sqlx::query_as::<_, MediaItemDto>(AssertSqlSafe(format!("{MEDIA_SELECT} ORDER BY name")))
+            .fetch_all(pool)
+            .await?;
     Ok(rows)
 }
 
 pub async fn media_get(pool: &SqlitePool, id: &str) -> Result<Option<MediaItemDto>> {
     Ok(
-        sqlx::query_as::<_, MediaItemDto>(&format!("{MEDIA_SELECT} WHERE id = ?"))
+        sqlx::query_as::<_, MediaItemDto>(AssertSqlSafe(format!("{MEDIA_SELECT} WHERE id = ?")))
             .bind(id)
             .fetch_optional(pool)
             .await?,
@@ -629,20 +638,20 @@ const REPLAY_CLIP_SELECT: &str = "SELECT c.id, c.source_id, c.source_name, c.nam
 
 /// Newest first; a group's clips in the order they were saved.
 pub async fn replay_clips_list(pool: &SqlitePool) -> Result<Vec<ReplayClipRow>> {
-    Ok(sqlx::query_as::<_, ReplayClipRow>(&format!(
+    Ok(sqlx::query_as::<_, ReplayClipRow>(AssertSqlSafe(format!(
         "{REPLAY_CLIP_SELECT} ORDER BY COALESCE(g.created_at, c.created_at) DESC, c.rowid"
-    ))
+    )))
     .fetch_all(pool)
     .await?)
 }
 
 pub async fn replay_clip_get(pool: &SqlitePool, id: &str) -> Result<Option<ReplayClipRow>> {
-    Ok(
-        sqlx::query_as::<_, ReplayClipRow>(&format!("{REPLAY_CLIP_SELECT} WHERE c.id = ?"))
-            .bind(id)
-            .fetch_optional(pool)
-            .await?,
-    )
+    Ok(sqlx::query_as::<_, ReplayClipRow>(AssertSqlSafe(format!(
+        "{REPLAY_CLIP_SELECT} WHERE c.id = ?"
+    )))
+    .bind(id)
+    .fetch_optional(pool)
+    .await?)
 }
 
 /// A group's clips, in the order they were saved.
@@ -650,9 +659,9 @@ pub async fn replay_clip_group_clips(
     pool: &SqlitePool,
     group_id: &str,
 ) -> Result<Vec<ReplayClipRow>> {
-    Ok(sqlx::query_as::<_, ReplayClipRow>(&format!(
+    Ok(sqlx::query_as::<_, ReplayClipRow>(AssertSqlSafe(format!(
         "{REPLAY_CLIP_SELECT} WHERE c.group_id = ? ORDER BY c.rowid"
-    ))
+    )))
     .bind(group_id)
     .fetch_all(pool)
     .await?)
@@ -892,7 +901,7 @@ const SCHEDULE_SELECT: &str = "SELECT id, name, enabled, kind, date, weekdays, m
 
 pub async fn schedules_list(pool: &SqlitePool) -> Result<Vec<ScheduleDto>> {
     Ok(
-        sqlx::query_as::<_, ScheduleDto>(&format!("{SCHEDULE_SELECT} ORDER BY name"))
+        sqlx::query_as::<_, ScheduleDto>(AssertSqlSafe(format!("{SCHEDULE_SELECT} ORDER BY name")))
             .fetch_all(pool)
             .await?,
     )
@@ -900,7 +909,7 @@ pub async fn schedules_list(pool: &SqlitePool) -> Result<Vec<ScheduleDto>> {
 
 pub async fn schedule_get(pool: &SqlitePool, id: &str) -> Result<Option<ScheduleDto>> {
     Ok(
-        sqlx::query_as::<_, ScheduleDto>(&format!("{SCHEDULE_SELECT} WHERE id = ?"))
+        sqlx::query_as::<_, ScheduleDto>(AssertSqlSafe(format!("{SCHEDULE_SELECT} WHERE id = ?")))
             .bind(id)
             .fetch_optional(pool)
             .await?,
@@ -999,10 +1008,12 @@ pub async fn schedule_run_exists(
 
 pub async fn schedule_runs_running(pool: &SqlitePool) -> Result<Vec<ScheduleRunDto>> {
     Ok(
-        sqlx::query_as::<_, ScheduleRunDto>(&format!("{RUN_SELECT} WHERE status = ?"))
-            .bind(ScheduleRunStatus::Running)
-            .fetch_all(pool)
-            .await?,
+        sqlx::query_as::<_, ScheduleRunDto>(AssertSqlSafe(format!(
+            "{RUN_SELECT} WHERE status = ?"
+        )))
+        .bind(ScheduleRunStatus::Running)
+        .fetch_all(pool)
+        .await?,
     )
 }
 
@@ -1012,9 +1023,9 @@ pub async fn schedule_runs(
     schedule_id: &str,
     limit: u32,
 ) -> Result<Vec<ScheduleRunDto>> {
-    Ok(sqlx::query_as::<_, ScheduleRunDto>(&format!(
+    Ok(sqlx::query_as::<_, ScheduleRunDto>(AssertSqlSafe(format!(
         "{RUN_SELECT} WHERE schedule_id = ? ORDER BY planned_start DESC LIMIT ?"
-    ))
+    )))
     .bind(schedule_id)
     .bind(limit)
     .fetch_all(pool)
@@ -1027,9 +1038,9 @@ mod tests {
     use crate::api::types::{AudioTestSignal, SourceConfig, VideoTestPattern};
 
     async fn count(pool: &SqlitePool, table: &str, column: &str) -> i64 {
-        sqlx::query_scalar(&format!(
+        sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT COUNT(*) FROM {table} WHERE {column} = 'c'"
-        ))
+        )))
         .fetch_one(pool)
         .await
         .unwrap()
