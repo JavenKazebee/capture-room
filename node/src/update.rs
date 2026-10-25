@@ -9,7 +9,7 @@
 //! version or while recording or playing. The old app is kept until the new
 //! one starts.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -323,7 +323,7 @@ fn unpack_and_swap(archive: &Path, staging: &Path, app: &Path, version: &str) ->
         unpacked == version,
         "the archive holds version {unpacked}, not {version}"
     );
-    let old: PathBuf = staging.join("previous.app");
+    let old = staging.join("previous.app");
     std::fs::rename(app, &old).context("move the current app aside")?;
     if let Err(e) = std::fs::rename(&new, app) {
         let _ = std::fs::rename(&old, app);

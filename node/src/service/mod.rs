@@ -115,12 +115,15 @@ pub fn log_file() -> Option<PathBuf> {
     running_as_service().then(platform::log_file).flatten()
 }
 
-/// Whether the service starts the node when the user logs in.
+/// Whether the service starts the node when the user logs in. For the menu
+/// bar icon, which Linux doesn't have yet.
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub fn start_at_login() -> bool {
     platform::start_at_login()
 }
 
 /// Turn starting at login on or off; the running node carries on.
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub fn set_start_at_login(on: bool) -> Result<()> {
     platform::set_start_at_login(on)
 }

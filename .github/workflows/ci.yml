@@ -35,11 +35,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The -dev packages to build against (plugins-bad has WebRTC, which
+      # gst-plugin-webrtc links), libssl for reqwest's native TLS, and the
+      # plugins the tests' pipelines use.
       - name: Install GStreamer
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstrtspserver-1.0-dev
+            pkg-config libssl-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev libgstrtspserver-1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-nice
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -108,6 +115,74 @@ jobs:
 
       - run: mkdir -p ui/dist
 
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Tests
+        if: ${{ !cancelled() }}
+        run: cargo test
+
+  # Not shipped yet: keeps the Windows-only code (the tray icon, display
+  # windows) compiling, linted and tested.
+  windows:
+    name: Node on Windows (clippy, tests)
+    runs-on: windows-2025
+    env:
+      # Not under Program Files: a space in the path breaks the flags
+      # pkg-config prints.
+      GST_DIR: C:\gstreamer\1.0\msvc_x86_64
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache GStreamer
+        id: gst-cache
+        uses: actions/cache@v6
+        with:
+          path: C:\gstreamer
+          key: gstreamer-windows-${{ env.GST_VERSION }}
+
+      # The official MSVC installer (one .exe since 1.28), runtime and
+      # development files.
+      - name: Install GStreamer
+        if: steps.gst-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $exe = "gstreamer-1.0-msvc-x86_64-$env:GST_VERSION.exe"
+          $url = "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GST_VERSION/msvc/$exe"
+          $path = Join-Path $env:RUNNER_TEMP $exe
+          curl.exe -fsSL --retry 3 -o $path $url
+          $sum = (curl.exe -fsSL --retry 3 "$url.sha256sum").Split(' ')[0]
+          if ((Get-FileHash $path -Algorithm SHA256).Hash -ne $sum) { throw "$exe doesn't match its checksum" }
+          $setup = Start-Process $path -Wait -PassThru -ArgumentList `
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/ALLUSERS', '/TYPE=devel', "/DIR=$env:GST_DIR"
+          if ($setup.ExitCode -ne 0) { throw "the installer exited with $($setup.ExitCode)" }
+          # Plugins the node links in itself (gst-plugins-rs, statically): the
+          # install's copies would clash with them.
+          foreach ($plugin in 'gstndi', 'gstfallbackswitch', 'gstrswebrtc') {
+            Remove-Item "$env:GST_DIR\lib\gstreamer-1.0\$plugin.dll" -ErrorAction SilentlyContinue
+          }
+
+      # Its bin has pkg-config and the DLLs the tests load.
+      - name: Point the build at GStreamer
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:GST_DIR\bin;$env:PATH"
+          $env:PKG_CONFIG_PATH = "$env:GST_DIR\lib\pkgconfig"
+          "$env:GST_DIR\bin" >> $env:GITHUB_PATH
+          "PKG_CONFIG_PATH=$env:PKG_CONFIG_PATH" >> $env:GITHUB_ENV
+          (Get-Command pkg-config).Source
+          pkg-config --modversion gstreamer-1.0 gstreamer-webrtc-1.0 gstreamer-rtsp-server-1.0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: mkdir -p ui/dist
+        shell: bash
+
+      # Each check runs even if an earlier one failed, so one run reports them all.
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 

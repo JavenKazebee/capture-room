@@ -81,7 +81,8 @@ enum Command {
     },
     Show(WindowId, bool),
     Close(WindowId),
-    /// The node's status, for the menu bar icon.
+    /// The node's status, for the menu bar icon (none on Linux yet).
+    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
     Tray(crate::tray::Status),
     /// A menu bar item was picked.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -187,6 +188,7 @@ pub fn run<T: Send + 'static>(
         .expect("start the node thread");
     let mut window_loop = WindowLoop {
         tray_config: tray,
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         proxy: Some(event_loop.create_proxy()),
         ..WindowLoop::default()
     };
@@ -239,6 +241,7 @@ struct WindowLoop {
     tray_config: Option<crate::tray::Config>,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     tray: Option<crate::tray::Tray>,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     proxy: Option<EventLoopProxy<Command>>,
 }
 

@@ -47,6 +47,8 @@ impl Permission {
     }
 }
 
+/// Only macOS reports it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
     Granted,

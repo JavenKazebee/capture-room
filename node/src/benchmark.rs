@@ -1059,7 +1059,6 @@ impl MemoryBudget {
 /// [`MemoryBudget`] over the machine's available memory.
 struct MemoryWatch {
     system: System,
-    total: u64,
     budget: MemoryBudget,
 }
 
@@ -1070,7 +1069,6 @@ impl MemoryWatch {
         let total = system.total_memory();
         let mut watch = Self {
             system,
-            total,
             budget: MemoryBudget::new(total, 0),
         };
         watch.budget = MemoryBudget::new(total, watch.available());
@@ -1083,7 +1081,7 @@ impl MemoryWatch {
     fn available(&mut self) -> u64 {
         #[cfg(target_os = "macos")]
         if let Some(pct) = macos_free_pct() {
-            return self.total / 100 * pct;
+            return self.system.total_memory() / 100 * pct;
         }
         self.system.refresh_memory();
         self.system.available_memory()

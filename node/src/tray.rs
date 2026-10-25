@@ -31,7 +31,8 @@ pub enum UpdateState {
     Failed(String),
 }
 
-/// What the menu asks the node to do.
+/// What the menu asks the node to do. There's no menu on Linux yet.
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 #[derive(Debug, Clone, Copy)]
 pub enum Action {
     /// Open the UI in the browser, signed in.
@@ -44,6 +45,7 @@ pub enum Action {
     CopyAccessToken,
 }
 
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub struct Config {
     pub actions: UnboundedSender<Action>,
 }
@@ -175,11 +177,14 @@ mod imp {
                 &quit,
             ])?;
             MenuEvent::set_event_handler(Some(move |event: MenuEvent| on_menu(event.id)));
-            let icon = TrayIconBuilder::new()
+            let builder = TrayIconBuilder::new()
                 .with_menu(Box::new(menu))
-                .with_icon_templated(icon(false))
-                .with_tooltip("Capture Room")
-                .build()?;
+                .with_tooltip("Capture Room");
+            #[cfg(target_os = "macos")]
+            let builder = builder.with_icon_templated(icon(false));
+            #[cfg(not(target_os = "macos"))]
+            let builder = builder.with_icon(icon(false));
+            let icon = builder.build()?;
             Ok(Self {
                 config,
                 icon,
@@ -261,11 +266,19 @@ mod imp {
                 let _ = if recording {
                     self.icon.set_icon(Some(icon(true)))
                 } else {
-                    self.icon.set_icon_templated(Some(icon(false)))
+                    set_idle_icon(&self.icon)
                 };
             }
             self.status = status;
         }
+    }
+
+    /// On macOS a template image, which the menu bar draws in its own colour.
+    fn set_idle_icon(tray: &TrayIcon) -> tray_icon::Result<()> {
+        #[cfg(target_os = "macos")]
+        return tray.set_icon_templated(Some(icon(false)));
+        #[cfg(not(target_os = "macos"))]
+        tray.set_icon(Some(icon(false)))
     }
 
     fn plural(n: usize, what: &str) -> String {

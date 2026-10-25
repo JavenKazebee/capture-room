@@ -62,6 +62,9 @@ semver = "1"
 plist = "1"
 objc2 = "0.6"
 block2 = "0.6"
+
+# Log rotation (`service::log_rotation`) on any Unix, sysctls on macOS.
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
