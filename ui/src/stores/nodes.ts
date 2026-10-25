@@ -4,6 +4,7 @@ import { api, nodeApi } from '@/composables/useApi'
 import type { NodeDto } from '@/types/generated/NodeDto'
 import type { NodeSettingsDto } from '@/types/generated/NodeSettingsDto'
 import type { AddNodeRequest } from '@/types/generated/AddNodeRequest'
+import type { PairingCodeRequest } from '@/types/generated/PairingCodeRequest'
 import type { FoundNodeDto } from '@/types/generated/FoundNodeDto'
 import type { ControllerToggleRequest } from '@/types/generated/ControllerToggleRequest'
 import type { UpdateNodeSettingsRequest } from '@/types/generated/UpdateNodeSettingsRequest'
@@ -59,13 +60,27 @@ export const useNodesStore = defineStore('nodes', () => {
     await load()
   }
 
-  async function add(url: string) {
-    await api('/nodes', { method: 'POST', body: { url } satisfies AddNodeRequest })
+  /** Without a pairing code, a node that doesn't use this controller's token yet fails with 409. */
+  async function add(url: string, pairingCode?: string) {
+    await api('/nodes', { method: 'POST', body: { url, pairing_code: pairingCode || null } satisfies AddNodeRequest })
     await load()
   }
 
-  async function approve(id: string) {
-    await api(`/found-nodes/${encodeURIComponent(id)}/approve`, { method: 'POST' })
+  /** Without a pairing code, a node that doesn't use this controller's token yet fails with 409. */
+  async function approve(id: string, pairingCode?: string) {
+    await api(`/found-nodes/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+      body: { pairing_code: pairingCode || null } satisfies PairingCodeRequest,
+    })
+    await load()
+  }
+
+  /** Give an approved node that refuses this controller's token the token, with its pairing code. */
+  async function pair(id: string, pairingCode: string) {
+    await api(`/pairings/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      body: { pairing_code: pairingCode } satisfies PairingCodeRequest,
+    })
     await load()
   }
 
@@ -105,5 +120,5 @@ export const useNodesStore = defineStore('nodes', () => {
     return id === self.value?.node_id ? `${name} (this node)` : name
   }
 
-  return { nodes, found, self, isController, reachable, load, setController, add, approve, dismiss, remove, rename, nameOf, labelOf }
+  return { nodes, found, self, isController, reachable, load, setController, add, approve, pair, dismiss, remove, rename, nameOf, labelOf }
 })

@@ -270,6 +270,16 @@ impl Peers {
         })
     }
 
+    /// A client that trusts only the key `fingerprint`: for a node being
+    /// added, before it's approved. Its requests carry no token.
+    pub fn trusting(&self, fingerprint: &str) -> Result<reqwest::Client> {
+        let pins = Arc::new(Pins::default());
+        pins.insert(fingerprint);
+        Ok(reqwest::Client::builder()
+            .use_preconfigured_tls((*client_config(Some(pins))).clone())
+            .build()?)
+    }
+
     /// For WebSockets to approved nodes.
     pub fn ws_connector(&self) -> tokio_tungstenite::Connector {
         tokio_tungstenite::Connector::Rustls(Arc::clone(&self.ws))

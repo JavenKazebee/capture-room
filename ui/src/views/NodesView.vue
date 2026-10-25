@@ -64,8 +64,16 @@ async function setController(on: boolean) {
   }
 }
 
+/** The controller asks for a node's pairing code when the node doesn't use its token yet. */
+function needsPairingCode(e: unknown) {
+  return e instanceof FetchError && e.statusCode === 409
+}
+
 const addOpen = ref(false)
 const addUrl = ref('')
+const addCode = ref('')
+/** Shown once the node turns out to need its pairing code. */
+const addNeedsCode = ref(false)
 const addError = ref('')
 const adding = ref(false)
 
@@ -81,6 +89,11 @@ function onAddOpen(open: boolean) {
   if (open) addError.value = ''
 }
 
+watch(addUrl, () => {
+  addNeedsCode.value = false
+  addCode.value = ''
+})
+
 async function addNode() {
   const url = addUrl.value.trim()
   if (!url || adding.value) return
@@ -88,13 +101,18 @@ async function addNode() {
   adding.value = true
   const before = new Set(store.nodes.map((n) => n.id))
   try {
-    await store.add(url)
+    await store.add(url, addCode.value.trim())
     addUrl.value = ''
     addOpen.value = false
     const added = store.nodes.find((n) => !before.has(n.id))
     toast.success(added ? `Added ${added.name}` : 'Node already listed')
     await refresh()
   } catch (e) {
+    if (needsPairingCode(e)) {
+      addNeedsCode.value = true
+      addError.value = ''
+      return
+    }
     // 502: the controller couldn't reach the address; its message is reqwest's, not for people.
     addError.value =
       e instanceof FetchError && e.statusCode === 502
@@ -107,20 +125,29 @@ async function addNode() {
 
 /** Found nodes with an approve or dismiss on its way. */
 const deciding = ref(new Set<string>())
+/** The found node asking for its pairing code, and the code typed so far. */
+const codeFor = ref<string | null>(null)
+const foundCode = ref('')
 
 async function decide(node: FoundNodeDto, approve: boolean) {
   if (deciding.value.has(node.id)) return
   deciding.value.add(node.id)
   try {
     if (approve) {
-      await store.approve(node.id)
+      await store.approve(node.id, codeFor.value === node.id ? foundCode.value.trim() : undefined)
+      codeFor.value = null
       toast.success(`Approved ${node.name}`)
       await refresh()
     } else {
       await store.dismiss(node.id)
     }
   } catch (e) {
-    notifyError(`Couldn't ${approve ? 'approve' : 'dismiss'} ${node.name}`, e)
+    if (approve && needsPairingCode(e) && codeFor.value !== node.id) {
+      codeFor.value = node.id
+      foundCode.value = ''
+    } else {
+      notifyError(`Couldn't ${approve ? 'approve' : 'dismiss'} ${node.name}`, e)
+    }
   } finally {
     deciding.value.delete(node.id)
   }
@@ -186,9 +213,31 @@ async function removeNode() {
                 :disabled="adding"
                 :aria-invalid="!!addError || undefined"
               />
-              <Button type="submit" size="sm" class="h-8 w-16" :disabled="adding || !addUrl.trim()">
+              <Button
+                type="submit"
+                size="sm"
+                class="h-8 w-16"
+                :disabled="adding || !addUrl.trim() || (addNeedsCode && !addCode.trim())"
+              >
                 {{ adding ? 'Adding…' : 'Add' }}
               </Button>
+            </div>
+            <div v-if="addNeedsCode" class="space-y-1">
+              <Input
+                v-model="addCode"
+                placeholder="Pairing code"
+                aria-label="Pairing code"
+                class="h-8 font-mono text-xs uppercase"
+                maxlength="12"
+                spellcheck="false"
+                autocomplete="off"
+                :disabled="adding"
+                autofocus
+              />
+              <p class="text-xs text-muted-foreground">
+                It uses another access token. Enter the pairing code from its menu bar (or
+                <code class="num">capture-room access-token show</code> on it).
+              </p>
             </div>
             <p class="text-xs text-destructive min-h-4">{{ addError }}</p>
           </form>
@@ -216,8 +265,8 @@ async function removeNode() {
       <header class="px-3 pt-3 pb-2">
         <h2 class="text-sm font-medium">Found on the network</h2>
         <p class="text-xs text-muted-foreground">
-          Approve a node to control it from here; it gets this controller's access token. Check its key
-          matches the one under Settings › About on that machine first.
+          Approve a node to control it from here with its pairing code, from its menu bar; it gets this
+          controller's access token. Check its key matches the one under Settings › About on that machine first.
         </p>
       </header>
       <ul class="divide-y divide-border border-t border-border">
@@ -237,7 +286,23 @@ async function removeNode() {
           >
             Dismiss
           </Button>
-          <Button size="sm" class="h-7 text-xs" :disabled="deciding.has(f.id)" @click="decide(f, true)">
+          <form v-if="codeFor === f.id" class="contents" @submit.prevent="decide(f, true)">
+            <Input
+              v-model="foundCode"
+              placeholder="Pairing code"
+              aria-label="Pairing code"
+              class="h-7 w-32 font-mono text-xs uppercase"
+              maxlength="12"
+              spellcheck="false"
+              autocomplete="off"
+              :disabled="deciding.has(f.id)"
+              autofocus
+            />
+            <Button type="submit" size="sm" class="h-7 text-xs" :disabled="deciding.has(f.id) || !foundCode.trim()">
+              Approve
+            </Button>
+          </form>
+          <Button v-else size="sm" class="h-7 text-xs" :disabled="deciding.has(f.id)" @click="decide(f, true)">
             Approve
           </Button>
         </li>
@@ -248,8 +313,8 @@ async function removeNode() {
     </div>
     <p class="text-xs text-muted-foreground">
       <template v-if="store.isController">
-        Nodes on this network appear automatically: approved at once while this controller has no access
-        token, else listed above for you to approve. Approved nodes stay listed until removed.
+        Nodes on this network appear above for you to approve with their pairing code. Approved nodes stay
+        listed until removed.
       </template>
       <template v-else>
         This machine records its own sources. Turn on Controller to find other nodes on the network and

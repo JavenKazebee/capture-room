@@ -2171,6 +2171,10 @@ pub struct FoundNodeDto {
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct AddNodeRequest {
     pub url: String,
+    /// The pairing code the node shows; not needed if it already uses this
+    /// controller's token.
+    #[serde(default)]
+    pub pairing_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2426,11 +2430,37 @@ pub struct SignInRequest {
     pub token: String,
 }
 
-/// A new access token; `null` (or blank) turns it off.
+/// A new access token. There's always one: it can be changed, not removed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct AccessTokenRequest {
-    pub token: Option<String>,
+    pub token: String,
+}
+
+/// This node's access token and pairing code, for a browser signed in to it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct AccessTokenDto {
+    pub token: String,
+    /// What a controller needs to add this node (`ABCD-EFGH`).
+    pub pairing_code: String,
+}
+
+/// A controller adding a node: the code the node shows, and the token it
+/// should use from now on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairRequest {
+    pub code: String,
+    pub token: String,
+}
+
+/// Approving a found node, or pairing an approved one that refuses this
+/// controller's token. A node already using the token needs no code.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct PairingCodeRequest {
+    #[serde(default)]
+    pub pairing_code: Option<String>,
 }
 
 /// Nodes the token couldn't be set on; they keep their old one.

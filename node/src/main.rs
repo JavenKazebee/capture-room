@@ -66,7 +66,7 @@ enum Cmd {
         #[command(subcommand)]
         command: service::Command,
     },
-    /// Show or clear a node's access token, when it's been lost.
+    /// Show a node's access token and pairing code, or replace them.
     AccessToken {
         #[command(subcommand)]
         command: auth::Command,
@@ -96,10 +96,8 @@ fn main() -> Result<()> {
     let bundled_gst: Option<std::path::PathBuf> = None;
     let ndi_dir = plugins::locate_ndi_runtime();
     let (tray_tx, tray_rx) = tokio::sync::mpsc::unbounded_channel();
-    let tray = (args.tray || service::running_as_service()).then(|| tray::Config {
-        port: args.port,
-        actions: tray_tx,
-    });
+    let tray =
+        (args.tray || service::running_as_service()).then(|| tray::Config { actions: tray_tx });
     let tray_rx = tray.is_some().then_some(tray_rx);
     // The main thread runs the window loop for display outputs and the menu
     // bar icon, where there's a window system; the node runs beside it.

@@ -338,11 +338,13 @@ Local only; ids are local to the node.
 |---|---|
 | `/controller`, `/controller/clock` | toggle, clock mode |
 | `/nodes`, `/nodes/{id}`, `/reachability/{id}` | registry, port probes |
+| `/found-nodes[/{id}[/approve]]`, `/pairings/{id}` | nodes found over mDNS; approving or re-pairing with a pairing code |
 | `/nodes/{id}/{*path}` | forwarded to that node's `/api/v1/node/{path}` |
 | `/presets` | presets |
 | `/schedules[/{id}[/stop \| /runs]]` | schedules (controller only), ending a run, run history |
-| `/access-token` | set the token here and on every registered node |
-| `/auth`, `/auth/sign-in`, `/auth/sign-out` | open: whether a token is needed, browser sign-in |
+| `/access-token` | this node's token and pairing code; set the token here and on every registered node |
+| `/auth`, `/auth/sign-in`, `/auth/sign-out`, `/auth/link` | open: whether signed in, browser sign-in, one-time sign-in links |
+| `/auth/identity`, `/auth/pair` | open: who a node is, a controller pairing it |
 | `/ws`, `/ws/thumbnails`, `/ws/logs` | own events + every peer's; thumbnails and log lines from any node |
 
 ### Events
@@ -394,10 +396,12 @@ is the SHA-256 of the key, so renewing keeps it; Settings › About shows it.
 
 - One port: a connection's first byte tells a TLS handshake from plain HTTP. Plain HTTP
   is answered from loopback and for `/whep` (players can't trust a self-signed
-  certificate); anything else gets a 308 to HTTPS. The menu bar opens `http://localhost`.
+  certificate); anything else gets a 308 to HTTPS. The menu bar opens `http://localhost`
+  with a sign-in link.
 - Nodes always reach each other over HTTPS. The peer client (HTTP and WebSockets) trusts
   only the keys of approved nodes; a separate client takes any key, only for the open
-  `/api/v1/auth/identity`, and never sends the token.
+  `/api/v1/auth/identity`, and never sends the token. Pairing a node trusts only the key
+  it was identified with.
 - Browsers accept one certificate warning, for the controller: the UI reaches nodes only
   through it, WHEP too (`/api/v1/nodes/{id}/whep/…`; the media itself is WebRTC).
 
@@ -406,35 +410,46 @@ reads its key from the handshake before trusting it. Approved nodes are stored w
 key pinned and never pruned.
 
 - An mDNS announcement for an approved node moves it to a new URL only if it holds the
-  pinned key. An unknown node is approved at once while the controller has no access
-  token (nothing to protect; zero setup), else listed under Found on the network until
-  approved or dismissed. Found nodes drop off after ~15 s unreachable.
-- Adding by address approves. Approving gives the node this controller's token; one with
-  another token refuses and shows as `access_denied`. An address that claims an approved
+  pinned key. An unknown node is listed under Found on the network until approved or
+  dismissed; found nodes drop off after ~15 s unreachable.
+- Approving a found node or adding one by address pairs it, unless it already accepts
+  this controller's token: the controller sends the node's **pairing code** (typed in by
+  the operator, from the node's menu bar) and its own token to `/api/v1/auth/pair`, over
+  a client that trusts only the key it identified, and the node takes the token. Without
+  a code the API answers 409, and the UI asks for one. An approved node that refuses the
+  token shows as `access_denied`, with a Pair action. An address that claims an approved
   node's ID with another key is refused.
 - Removing a node unpins it and stops it being offered again until the controller
   restarts. Nodes stored before TLS have their key pinned at their stored URL on first
   contact.
 
 **Access token** (`auth.rs`): one shared secret per cluster, stored in each node's config.
-With none set the API is open (Setup › Checks warns). Once set, every `/api` route and
-`/ws/…` need it; the UI assets, `/api/v1/auth/…` and `/whep` stay open, and WHIP has its own
-port.
+Every node makes a random one (32 characters) the first time it starts, so none is ever
+open. Every `/api` route and `/ws/…` need it; the UI assets, `/api/v1/auth/…` and `/whep`
+stay open, and WHIP has its own port.
 
 - Browsers sign in once and get an HttpOnly, `SameSite=Strict` cookie named per port, so
   `<img>`, `<video>`, downloads and the WebSocket need no code of their own. A 401 shows
   the sign-in; a changed token closes open WebSockets so pages notice.
-- Nodes send it as `Authorization: Bearer` (health polls, clock claims, the forwarder, the
-  relay, port probes). The forwarder never passes the browser's cookie on, and turns a
-  peer's 401 into a 502 so the browser isn't signed out. A peer that refuses the token
-  shows as `access_denied`.
-- Setting it on a controller sets it on each registered node first (with the old one),
-  then itself. Unreachable nodes keep their old token and are listed.
+- **Sign-in links:** the menu bar's Open Capture Room, and opening the app from the
+  Finder, open `http://localhost:<port>/api/v1/auth/link?secret=…`: one use, within a
+  minute, and only from this machine. Links are stored hashed in the node's config, so the
+  Finder-launched process can make one for the running service.
+- **Pairing code:** 8 characters (about 40 bits), shown in the menu bar, Settings ›
+  Access token and `capture-room access-token show`. After 5 wrong tries, or once used,
+  the node makes a new one; wrong tries also wait a second.
+- Nodes send the token as `Authorization: Bearer` (health polls, clock claims, the
+  forwarder, the relay, port probes). The forwarder never passes the browser's cookie on,
+  and turns a peer's 401 into a 502 so the browser isn't signed out. A peer that refuses
+  the token shows as `access_denied`.
+- Changing it on a controller changes it on each registered node first (with the old
+  one), then itself. Unreachable nodes keep their old token and are listed; they need
+  pairing again. It can be changed, never removed.
 - The cookie is `Secure` when signed in over HTTPS (plain HTTP is only answered from this
   machine).
-- **A lost token:** the menu bar's Copy Access Token (whoever is at the machine is
-  trusted), or `capture-room access-token show | clear [--restart]` on the node's
-  database (the installed service's by default).
+- **A lost token:** Open Capture Room or Copy Access Token in the menu bar (whoever is at
+  the machine is trusted), or `capture-room access-token show | reset [--restart]` on the
+  node's database (the installed service's by default).
 
 ## Deployment (macOS)
 

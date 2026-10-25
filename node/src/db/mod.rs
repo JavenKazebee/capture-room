@@ -139,14 +139,6 @@ pub async fn config_set(pool: &SqlitePool, key: &str, value: &str) -> Result<()>
     Ok(())
 }
 
-pub async fn config_delete(pool: &SqlitePool, key: &str) -> Result<()> {
-    sqlx::query("DELETE FROM node_config WHERE key = ?")
-        .bind(key)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 /// Stored settings, with defaults for anything missing or unparsable.
 pub async fn monitor_settings_get(pool: &SqlitePool) -> Result<MonitorSettingsDto> {
     async fn get<T: FromStr>(pool: &SqlitePool, key: &str) -> Result<Option<T>> {

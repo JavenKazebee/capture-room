@@ -11,8 +11,7 @@ use tracing::{debug, info, warn};
 use super::registry::NodeEntry;
 use super::{relay, Ctx};
 use crate::api::types::{
-    AccessTokenRequest, ClockClaim, ClockMode, FoundNodeDto, IdentityDto, NodeStatus, Unreachable,
-    WsEvent,
+    ClockClaim, ClockMode, FoundNodeDto, IdentityDto, NodeStatus, PairRequest, Unreachable, WsEvent,
 };
 use crate::auth::AccessDenied;
 use crate::db;
@@ -96,9 +95,8 @@ pub fn https_url(url: &str) -> String {
 }
 
 /// An mDNS announcement. Anything on the LAN can make one, so it only
-/// moves an approved node that holds its pinned key. A new node is approved
-/// at once while this controller has no access token (nothing to protect),
-/// else offered for approval.
+/// moves an approved node that holds its pinned key. A new node is offered
+/// for approval, which takes its pairing code.
 async fn announced(ctx: &Ctx, url: &str) -> Result<()> {
     let (identity, fingerprint) = ctx.state.peers.identify(url).await?;
     if identity.id == ctx.state.node_id {
@@ -125,9 +123,6 @@ async fn announced(ctx: &Ctx, url: &str) -> Result<()> {
         // Up to date; or approved before TLS, pinned at its stored URL only.
         Some(_) => {}
         None if ctx.registry.read().await.is_ignored(&fingerprint) => {}
-        None if !ctx.state.access_token.is_set() => {
-            approve(ctx, url, &identity, fingerprint).await?;
-        }
         None => {
             let found = FoundNodeDto {
                 id: identity.id,
@@ -162,9 +157,78 @@ impl std::fmt::Display for KeyMismatch {
 
 impl std::error::Error for KeyMismatch {}
 
-/// Add the node at `url`, typed in by the operator: approving it. Returns
-/// who it is; `None` if `url` is this node.
-pub async fn add_by_url(ctx: &Ctx, url: &str) -> Result<Option<IdentityDto>> {
+/// A node to add doesn't use this controller's token, and no pairing code
+/// came with it.
+#[derive(Debug)]
+pub struct NeedsPairingCode;
+
+impl std::fmt::Display for NeedsPairingCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("enter the pairing code from the node's menu bar")
+    }
+}
+
+impl std::error::Error for NeedsPairingCode {}
+
+#[derive(Debug)]
+pub struct WrongPairingCode;
+
+impl std::fmt::Display for WrongPairingCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "that isn't the node's pairing code: check its menu bar (it makes a new one after \
+             a few wrong tries)",
+        )
+    }
+}
+
+impl std::error::Error for WrongPairingCode {}
+
+/// Make sure the node at `url`, holding the key `fingerprint`, uses this
+/// controller's token: it does already, or `code` (its pairing code) gets it
+/// to. Only that key is trusted, so the token goes to no other machine.
+async fn pair(ctx: &Ctx, url: &str, fingerprint: &str, code: Option<&str>) -> Result<()> {
+    let token = ctx
+        .state
+        .access_token
+        .get()
+        .ok_or_else(|| anyhow!("this controller has no access token yet"))?;
+    let client = ctx.state.peers.trusting(fingerprint)?;
+    let resp = client
+        .get(format!("{url}/api/v1/node/status"))
+        .bearer_auth(&token)
+        .timeout(STATUS_TIMEOUT)
+        .send()
+        .await?;
+    if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+        resp.error_for_status()?;
+        return Ok(());
+    }
+    let code = code
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .ok_or(NeedsPairingCode)?;
+    let resp = client
+        .post(format!("{url}/api/v1/auth/pair"))
+        .json(&PairRequest {
+            code: code.to_string(),
+            token,
+        })
+        .timeout(STATUS_TIMEOUT)
+        .send()
+        .await?;
+    if resp.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err(WrongPairingCode.into());
+    }
+    resp.error_for_status()?;
+    info!(url, "paired a node");
+    Ok(())
+}
+
+/// Add the node at `url`, typed in by the operator, pairing it with `code`
+/// unless it uses this controller's token already. Returns who it is;
+/// `None` if `url` is this node.
+pub async fn add_by_url(ctx: &Ctx, url: &str, code: Option<&str>) -> Result<Option<IdentityDto>> {
     let (identity, fingerprint) = ctx.state.peers.identify(url).await?;
     if identity.id == ctx.state.node_id {
         return Ok(None);
@@ -179,13 +243,14 @@ pub async fn add_by_url(ctx: &Ctx, url: &str) -> Result<Option<IdentityDto>> {
         warn!(id = %identity.id, url, %pinned, presented = %fingerprint, "refused a node with another key");
         return Err(KeyMismatch(name).into());
     }
+    pair(ctx, url, &fingerprint, code).await?;
     approve(ctx, url, &identity, fingerprint).await?;
-    share_token(ctx, url).await;
     Ok(Some(identity))
 }
 
-/// Approve a found node. `false` if it isn't (or is no longer) found.
-pub async fn approve_found(ctx: &Ctx, id: &str) -> Result<bool> {
+/// Approve a found node, pairing it with `code` unless it uses this
+/// controller's token already. `false` if it isn't (or is no longer) found.
+pub async fn approve_found(ctx: &Ctx, id: &str, code: Option<&str>) -> Result<bool> {
     let Some(found) = ctx
         .registry
         .read()
@@ -202,8 +267,27 @@ pub async fn approve_found(ctx: &Ctx, id: &str) -> Result<bool> {
         version: found.version,
         fingerprint: found.fingerprint.clone(),
     };
+    pair(ctx, &found.url, &found.fingerprint, code).await?;
     approve(ctx, &found.url, &identity, found.fingerprint).await?;
-    share_token(ctx, &found.url).await;
+    Ok(true)
+}
+
+/// Pair an approved node that refuses this controller's token: one paired
+/// with another controller, or that made a new token. `false` if there's no
+/// such node.
+pub async fn pair_approved(ctx: &Ctx, id: &str, code: &str) -> Result<bool> {
+    let Some((url, fingerprint)) = ctx
+        .registry
+        .read()
+        .await
+        .get(id)
+        .map(|n| (n.url.clone(), n.fingerprint.clone()))
+    else {
+        return Ok(false);
+    };
+    let fingerprint =
+        fingerprint.ok_or_else(|| anyhow!("its key isn't pinned yet: try again shortly"))?;
+    pair(ctx, &url, &fingerprint, Some(code)).await?;
     Ok(true)
 }
 
@@ -254,31 +338,6 @@ async fn approve(ctx: &Ctx, url: &str, identity: &IdentityDto, fingerprint: Stri
     // It shows as approved now, and online after its first health check.
     ctx.state.emit_controller(&WsEvent::NodeUpdated);
     Ok(())
-}
-
-/// Give a just-approved node this controller's token, so it's protected
-/// too. One that has another token refuses, and shows as refusing ours.
-async fn share_token(ctx: &Ctx, url: &str) {
-    let Some(token) = ctx.state.access_token.get() else {
-        return;
-    };
-    let result = async {
-        ctx.state
-            .peer(
-                reqwest::Method::PUT,
-                &format!("{url}/api/v1/node/access-token"),
-            )
-            .json(&AccessTokenRequest { token: Some(token) })
-            .timeout(STATUS_TIMEOUT)
-            .send()
-            .await?
-            .error_for_status()?;
-        anyhow::Ok(())
-    }
-    .await;
-    if let Err(e) = result {
-        warn!(url, error = %e, "couldn't give an approved node the access token");
-    }
 }
 
 async fn send_claim(ctx: &Ctx, url: &str, claim: &ClockClaim) -> Result<()> {
@@ -347,25 +406,16 @@ async fn pin(ctx: &Ctx, id: &str, url: &str) -> Result<()> {
     approve(ctx, url, &identity, fingerprint).await
 }
 
-/// Ask each found node who it is again: drop those gone for a while, and
-/// approve them all while this controller has no access token (it may have
-/// just been turned off).
+/// Ask each found node who it is again, dropping those gone for a while.
 async fn check_found(ctx: &Ctx, found: Vec<(String, String)>) {
     let results = join_all(found.into_iter().map(|(id, url)| async move {
         let result = ctx.state.peers.identify(&url).await;
         (id, url, result)
     }))
     .await;
-    let open = !ctx.state.access_token.is_set();
     for (id, url, result) in results {
         match result {
             Ok((identity, fingerprint)) if identity.id == id => {
-                if open {
-                    if let Err(e) = approve(ctx, &url, &identity, fingerprint).await {
-                        warn!(id, error = %e, "couldn't approve a found node");
-                    }
-                    continue;
-                }
                 let found = FoundNodeDto {
                     id: identity.id,
                     name: identity.name,

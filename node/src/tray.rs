@@ -17,8 +17,8 @@ pub struct Status {
     pub recordings: usize,
     pub playing: usize,
     pub update: UpdateState,
-    /// Whether the node has an access token to copy.
-    pub token_set: bool,
+    /// What a controller adds this node with (`ABCD-EFGH`).
+    pub pairing_code: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -34,6 +34,8 @@ pub enum UpdateState {
 /// What the menu asks the node to do.
 #[derive(Debug, Clone, Copy)]
 pub enum Action {
+    /// Open the UI in the browser, signed in.
+    Open,
     Quit,
     Update,
     CheckForUpdates,
@@ -43,7 +45,6 @@ pub enum Action {
 }
 
 pub struct Config {
-    pub port: u16,
     pub actions: UnboundedSender<Action>,
 }
 
@@ -77,7 +78,7 @@ pub fn spawn(state: Arc<AppState>, displays: Displays, mut actions: UnboundedRec
                 recordings: activity.recordings,
                 playing: activity.playing,
                 update: (&watched.updater.status()).into(),
-                token_set: watched.access_token.is_set(),
+                pairing_code: watched.access_token.pairing_code(),
             });
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
@@ -85,6 +86,15 @@ pub fn spawn(state: Arc<AppState>, displays: Displays, mut actions: UnboundedRec
     tokio::spawn(async move {
         while let Some(action) = actions.recv().await {
             match action {
+                Action::Open => {
+                    let url = crate::auth::sign_in_link(&state.db, state.port)
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(error = %e, "couldn't make a sign-in link");
+                            format!("http://localhost:{}", state.port)
+                        });
+                    crate::service::open_url(&url);
+                }
                 Action::Quit => crate::session::quit(&state, 0).await,
                 Action::Update => {
                     if let Err(e) = crate::update::start(&state).await {
@@ -123,6 +133,7 @@ mod imp {
         status_item: MenuItem,
         open: MenuItem,
         update: MenuItem,
+        pairing: MenuItem,
         copy_token: MenuItem,
         at_login: CheckMenuItem,
         quit: MenuItem,
@@ -144,7 +155,9 @@ mod imp {
             let status_item = MenuItem::new("Idle", false, None);
             let open = MenuItem::new("Open Capture Room", true, None);
             let update = MenuItem::new("Check for Updates", true, None);
-            let copy_token = MenuItem::new("Copy Access Token", false, None);
+            // Shown, not clickable: read it off here into the controller.
+            let pairing = MenuItem::new("Pairing Code", false, None);
+            let copy_token = MenuItem::new("Copy Access Token", true, None);
             let at_login =
                 CheckMenuItem::new("Start at Login", true, service::start_at_login(), None);
             let quit = MenuItem::new("Quit Capture Room", true, None);
@@ -154,6 +167,8 @@ mod imp {
                 &PredefinedMenuItem::separator(),
                 &open,
                 &update,
+                &PredefinedMenuItem::separator(),
+                &pairing,
                 &copy_token,
                 &at_login,
                 &PredefinedMenuItem::separator(),
@@ -171,6 +186,7 @@ mod imp {
                 status_item,
                 open,
                 update,
+                pairing,
                 copy_token,
                 at_login,
                 quit,
@@ -183,7 +199,7 @@ mod imp {
                 let _ = self.config.actions.send(action);
             };
             if id == self.open.id() {
-                service::open_url(&format!("http://localhost:{}", self.config.port));
+                send(Action::Open);
             } else if id == self.update.id() {
                 match self.status.update {
                     UpdateState::Available(_) => send(Action::Update),
@@ -231,7 +247,8 @@ mod imp {
             };
             self.update.set_text(text);
             self.update.set_enabled(enabled);
-            self.copy_token.set_enabled(status.token_set);
+            self.pairing
+                .set_text(format!("Pairing Code: {}", status.pairing_code));
 
             self.quit.set_text(if recording {
                 format!("Quit (stops {})", plural(status.recordings, "recording"))

@@ -32,7 +32,9 @@ async function submit() {
           <h1 class="text-base font-semibold tracking-tight">Capture Room</h1>
         </div>
         <p class="text-xs text-muted-foreground">
-          This node needs its access token. Whoever set it up has it; it's the same on every node of a controller.
+          This node needs its access token. On its own Mac, use Open Capture Room in the menu bar instead. Elsewhere,
+          get the token from Copy Access Token in its menu bar, or Settings on a browser that's signed in; it's the
+          same on every node of a controller.
         </p>
       </div>
       <Input

@@ -149,7 +149,7 @@ pub fn launched_from_desktop() -> Result<bool> {
         }
         None => platform::install(false, None)?.port,
     };
-    open_url(&format!("http://localhost:{port}"));
+    open_url(&crate::auth::installed_sign_in_url(port));
     Ok(true)
 }
 

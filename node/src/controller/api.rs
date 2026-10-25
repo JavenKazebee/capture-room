@@ -17,8 +17,8 @@ use super::{clock_mode, discovery, forward, Controller, CLOCK_MODE_KEY, CONFIG_K
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     AddNodeRequest, CheckDto, ClockMode, ControllerClockDto, ControllerToggleRequest, FoundNodeDto,
-    NodeChecksDto, NodeDto, PresetCreateRequest, PresetDto, PresetOutputInput, ScheduleAction,
-    ScheduleDto, ScheduleInput, ScheduleKind, ScheduleRunDto, WsEvent,
+    NodeChecksDto, NodeDto, PairingCodeRequest, PresetCreateRequest, PresetDto, PresetOutputInput,
+    ScheduleAction, ScheduleDto, ScheduleInput, ScheduleKind, ScheduleRunDto, WsEvent,
 };
 use crate::db;
 use crate::pipeline::profile::{plan_legs, unknown_token};
@@ -39,6 +39,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/api/v1/found-nodes", get(get_found_nodes))
         .route("/api/v1/found-nodes/{id}", delete(delete_found_node))
         .route("/api/v1/found-nodes/{id}/approve", post(post_approve_found))
+        .route("/api/v1/pairings/{id}", post(post_pairing))
         .route("/api/v1/reachability/{id}", get(get_reachability))
         .route("/api/v1/presets", get(get_presets).post(post_preset))
         .route(
@@ -175,14 +176,27 @@ async fn post_node(
     Json(req): Json<AddNodeRequest>,
 ) -> ApiResult<StatusCode> {
     let ctx = with_controller(&state, |c| c.ctx(&state)).await?;
-    discovery::add_by_url(&ctx, &discovery::https_url(&req.url))
-        .await
-        .map_err(|e| match e.downcast::<discovery::KeyMismatch>() {
-            Ok(mismatch) => ApiError::bad(mismatch),
-            Err(e) => ApiError::BadGateway(format!("{e:#}")),
-        })?
-        .ok_or_else(|| ApiError::bad("that address is this node"))?;
+    discovery::add_by_url(
+        &ctx,
+        &discovery::https_url(&req.url),
+        req.pairing_code.as_deref(),
+    )
+    .await
+    .map_err(adding_error)?
+    .ok_or_else(|| ApiError::bad("that address is this node"))?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Why adding, approving or pairing a node failed. A 409 asks the UI for
+/// the node's pairing code; a 502 is the node not answering.
+fn adding_error(e: anyhow::Error) -> ApiError {
+    if e.is::<discovery::NeedsPairingCode>() {
+        ApiError::Conflict("enter the pairing code from the node's menu bar")
+    } else if e.is::<discovery::WrongPairingCode>() || e.is::<discovery::KeyMismatch>() {
+        ApiError::bad(e)
+    } else {
+        ApiError::BadGateway(format!("{e:#}"))
+    }
 }
 
 /// Nodes that announced themselves and wait to be approved.
@@ -205,10 +219,31 @@ async fn get_found_nodes(State(state): State<Arc<AppState>>) -> Json<Vec<FoundNo
 async fn post_approve_found(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Json(req): Json<PairingCodeRequest>,
 ) -> ApiResult<StatusCode> {
     let ctx = with_controller(&state, |c| c.ctx(&state)).await?;
-    if !discovery::approve_found(&ctx, &id).await? {
+    if !discovery::approve_found(&ctx, &id, req.pairing_code.as_deref())
+        .await
+        .map_err(adding_error)?
+    {
         return Err(ApiError::NotFound("that node isn't waiting to be approved"));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Pair an approved node that refuses this controller's token.
+async fn post_pairing(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<PairingCodeRequest>,
+) -> ApiResult<StatusCode> {
+    let ctx = with_controller(&state, |c| c.ctx(&state)).await?;
+    let code = req.pairing_code.unwrap_or_default();
+    if !discovery::pair_approved(&ctx, &id, &code)
+        .await
+        .map_err(adding_error)?
+    {
+        return Err(ApiError::NotFound("no such node"));
     }
     Ok(StatusCode::NO_CONTENT)
 }

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::api::types::{
-    AudioPlan, CheckDto, CheckFix, CheckGroup, CheckLink, CheckRoute, CheckStatus, ClockSourceDto,
+    AudioPlan, CheckDto, CheckFix, CheckGroup, CheckLink, CheckStatus, ClockSourceDto,
     ClockStatusDto, ConfiguredSourceDto, DeviceDto, DeviceKind, NdiConnect, NdiSubscriptionsDto,
     NodeChecksDto, NodePortDto, OutputConfig, PortProtocol, SourceConfig,
 };
@@ -49,7 +49,6 @@ pub async fn run(state: &AppState) -> anyhow::Result<NodeChecksDto> {
     }
     checks.push(tokio::task::spawn_blocking(storage_check).await?);
     checks.extend(clock_check(&clock));
-    checks.push(access_token_check(state.access_token.is_set()));
 
     Ok(NodeChecksDto {
         os: std::env::consts::OS.to_string(),
@@ -317,36 +316,6 @@ fn ndi_intake_check(ndi: &NdiSubscriptionsDto) -> CheckDto {
             steps: "If this node only needs some of them (a replay node, say), set it to connect \
                     only to those in Setup › Sources › NDI senders."
                 .into(),
-            ..Default::default()
-        });
-    }
-    c
-}
-
-/// An access token keeps the API to those who know it.
-fn access_token_check(set: bool) -> CheckDto {
-    let mut c = check(
-        "access_token",
-        CheckGroup::Network,
-        "Access token",
-        "Keeping others on the network from controlling this node",
-    );
-    c.required = false;
-    if set {
-        c.summary = "Set: the API needs it.".into();
-    } else {
-        c.status = CheckStatus::Missing;
-        c.summary = "None set: anyone who can reach this node can record, delete files or \
-                     update it."
-            .into();
-        c.fix = Some(CheckFix {
-            steps: "Turn one on, then sign in with it once in each browser. Set on a \
-                    controller, it's set on every node too."
-                .into(),
-            route: Some(CheckRoute {
-                path: "/setup/settings#access-token".into(),
-                label: "Open Settings › Access token".into(),
-            }),
             ..Default::default()
         });
     }

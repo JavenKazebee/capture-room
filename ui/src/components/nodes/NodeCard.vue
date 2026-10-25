@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, type ComponentPublicInstance } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
+import { toast } from 'vue-sonner'
 import { Check, Clock, Pencil, Radio, Trash2, TriangleAlert, Video, X } from '@lucide/vue'
 import { clockSummary } from '@/lib/clock'
 import { formatFingerprint, formatUptime } from '@/lib/format'
@@ -54,7 +55,10 @@ const down = computed(() => {
   const u = props.node.unreachable
   switch (u?.kind) {
     case 'access-denied':
-      return { label: 'Refuses access token', detail: 'Refuses this controller’s access token: set the same one on it.' }
+      return {
+        label: 'Not paired',
+        detail: 'Uses another access token. Pair it with the pairing code from its menu bar.',
+      }
     case 'key-changed':
       return {
         label: 'Key changed',
@@ -78,6 +82,25 @@ const volumes = computed(() => storage.volumes.get(props.node.id))
 function openInRecord() {
   desk.nodeFilter = props.node.id
   router.push('/record')
+}
+
+/** Pairing a node that refuses this controller's token. */
+const pairCode = ref('')
+const pairing = ref(false)
+
+async function pair() {
+  const code = pairCode.value.trim()
+  if (!code || pairing.value) return
+  pairing.value = true
+  try {
+    await nodes.pair(props.node.id, code)
+    pairCode.value = ''
+    toast.success(`Paired ${props.node.name}`)
+  } catch (e) {
+    notifyError(`Couldn't pair ${props.node.name}`, e, props.node.id)
+  } finally {
+    pairing.value = false
+  }
 }
 
 const editing = ref(false)
@@ -227,6 +250,25 @@ async function saveRename() {
       >
         {{ down.detail }}
       </p>
+      <form
+        v-if="!node.healthy && node.unreachable?.kind === 'access-denied' && nodes.isController"
+        class="flex gap-2"
+        @submit.prevent="pair"
+      >
+        <Input
+          v-model="pairCode"
+          placeholder="Pairing code"
+          aria-label="Pairing code"
+          class="h-7 font-mono text-xs uppercase"
+          maxlength="12"
+          spellcheck="false"
+          autocomplete="off"
+          :disabled="pairing"
+        />
+        <Button type="submit" size="sm" class="h-7 text-xs" :disabled="pairing || !pairCode.trim()">
+          {{ pairing ? 'Pairing…' : 'Pair' }}
+        </Button>
+      </form>
       <p v-else-if="volumes === undefined" class="text-xs text-muted-foreground h-[1.625rem] flex items-center">Loading…</p>
       <p v-else-if="volumes === null" class="text-xs text-destructive h-[1.625rem] flex items-center">Couldn't read storage.</p>
       <StorageVolumeBar v-for="v in node.healthy ? volumes ?? [] : []" :key="v.mount_point" :volume="v" />
