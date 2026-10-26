@@ -11,14 +11,16 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import BenchmarkRunsDialog from './BenchmarkRunsDialog.vue'
 import BenchmarkDialog from './BenchmarkDialog.vue'
+import LoadError from '@/components/common/LoadError.vue'
 
 /** A node card's Capacity section: what each benchmarked setup sustains, current load and the running benchmark. */
 const props = defineProps<{ node: NodeDto; recording: number }>()
 
 const store = useCapacityStore()
 
-/** `undefined` while loading, `null` if it failed. */
+/** The last good reading; `undefined` until one loads. */
 const cap = computed(() => store.capacity.get(props.node.id))
+const capError = computed(() => store.errors.get(props.node.id))
 const running = computed(() => cap.value?.running ?? null)
 
 // Load when the node is reachable, and again whenever its recordings change
@@ -129,9 +131,13 @@ const startBlocked = computed(() => {
     </div>
 
     <p v-if="!node.healthy" class="text-xs text-muted-foreground">Not available while unreachable.</p>
-    <p v-else-if="cap === undefined" class="text-xs text-muted-foreground">Loading…</p>
-    <p v-else-if="cap === null" class="text-xs text-destructive">Couldn't read capacity.</p>
-    <template v-else>
+    <p v-else-if="cap === undefined && !capError" class="text-xs text-muted-foreground">Loading…</p>
+    <LoadError
+      v-if="node.healthy"
+      :error="capError && `Couldn’t read capacity: ${capError}`"
+      :retry="() => store.load(node.id)"
+    />
+    <template v-if="node.healthy && cap">
       <div v-if="running" class="rounded-md border border-primary/30 bg-primary/5 p-2.5 space-y-1.5 text-xs">
         <div class="flex items-center gap-2">
           <Loader2 class="size-3.5 animate-spin text-primary" />

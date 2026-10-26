@@ -1,7 +1,10 @@
+import { FetchError } from 'ofetch'
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { api } from '@/composables/useApi'
+import { api, errorMessage } from '@/composables/useApi'
+import { loadState } from '@/lib/loadState'
 import { onReconnect } from '@/lib/reconnect'
+import { useEventsStore } from '@/stores/events'
 import { useNodesStore } from '@/stores/nodes'
 import type { ScheduleDto } from '@/types/generated/ScheduleDto'
 import type { ScheduleInput } from '@/types/generated/ScheduleInput'
@@ -13,7 +16,7 @@ export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as con
 export const useSchedulesStore = defineStore('schedules', () => {
   const nodes = useNodesStore()
   const schedules = ref<ScheduleDto[]>([])
-  const loaded = ref(false)
+  const { loaded, error, track } = loadState('schedules')
 
   function upsert(s: ScheduleDto) {
     const idx = schedules.value.findIndex((x) => x.id === s.id)
@@ -23,13 +26,12 @@ export const useSchedulesStore = defineStore('schedules', () => {
   }
 
   async function load() {
-    if (!nodes.isController) {
-      schedules.value = []
-      loaded.value = true
-      return
-    }
-    schedules.value = await api<ScheduleDto[]>('/schedules').catch(() => [])
-    loaded.value = true
+    await track(async () => {
+      // Without its settings this instance may be a controller: don't report "no schedules".
+      if (!nodes.self) await nodes.load()
+      if (!nodes.self) throw new Error('this node’s settings are unknown')
+      schedules.value = nodes.isController ? await api<ScheduleDto[]>('/schedules') : []
+    })
   }
 
   onReconnect(load)
@@ -64,10 +66,17 @@ export const useSchedulesStore = defineStore('schedules', () => {
     if (!loaded.value) return
     try {
       upsert(await api<ScheduleDto>(`/schedules/${id}`))
-    } catch {
-      schedules.value = schedules.value.filter((s) => s.id !== id)
+    } catch (e) {
+      // A 404 means the schedule is gone: drop it. Anything else is transient:
+      // keep the last known state until the next event or reload.
+      if (e instanceof FetchError && e.statusCode === 404) {
+        schedules.value = schedules.value.filter((s) => s.id !== id)
+      } else {
+        const detail = errorMessage(e, '')
+        useEventsStore().log('warn', `Failed to refresh schedule ${id}`, { detail: detail || undefined })
+      }
     }
   }
 
-  return { schedules, loaded, load, create, update, remove, stop, runs, refresh }
+  return { schedules, loaded, error, load, create, update, remove, stop, runs, refresh }
 })

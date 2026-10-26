@@ -20,6 +20,7 @@ import { Input } from '@/components/ui/input'
 import CopyButton from '@/components/common/CopyButton.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import StorageVolumeBar from '@/components/common/StorageVolumeBar.vue'
+import LoadError from '@/components/common/LoadError.vue'
 import NodeCapacity from './NodeCapacity.vue'
 import NodeUpdate from './NodeUpdate.vue'
 
@@ -84,8 +85,9 @@ const down = computed(() => {
 })
 const problems = computed(() => (props.node.healthy ? checks.problems(props.node.id) : 0))
 
-/** `undefined` while loading, `null` if it failed. */
+/** The last good reading; `undefined` until one loads. */
 const volumes = computed(() => storage.volumes.get(props.node.id))
+const storageError = computed(() => storage.errors.get(props.node.id))
 
 function openInRecord() {
   desk.nodeFilter = props.node.id
@@ -277,9 +279,13 @@ async function saveRename() {
           {{ pairing ? 'Pairing…' : 'Pair' }}
         </Button>
       </form>
-      <p v-else-if="volumes === undefined" class="text-xs text-muted-foreground h-[1.625rem] flex items-center">Loading…</p>
-      <p v-else-if="volumes === null" class="text-xs text-destructive h-[1.625rem] flex items-center">Couldn't read storage.</p>
+      <p v-else-if="volumes === undefined && !storageError" class="text-xs text-muted-foreground h-[1.625rem] flex items-center">Loading…</p>
       <StorageVolumeBar v-for="v in node.healthy ? volumes ?? [] : []" :key="v.mount_point" :volume="v" />
+      <LoadError
+        v-if="node.healthy"
+        :error="storageError && `Couldn’t read storage: ${storageError}`"
+        :retry="() => storage.loadForNode(node.id)"
+      />
     </section>
 
     <NodeCapacity :node="node" :recording="stats.recording" />

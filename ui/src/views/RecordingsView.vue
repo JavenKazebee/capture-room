@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { useStorage } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
 import { registerCommands } from '@/composables/useCommands'
+import { reloadAll } from '@/composables/useWebSocket'
 import { useSecondClock } from '@/composables/useSecondClock'
 import { useViewKeys } from '@/composables/useViewKeys'
 import { Download, History, ListChecks, Play, Trash2, X } from '@lucide/vue'
@@ -30,6 +31,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import type { RecordingStatus } from '@/types/generated/RecordingStatus'
 import type { Column } from '@/components/common/dataTable'
 import StatusDot from '@/components/common/StatusDot.vue'
+import LoadError from '@/components/common/LoadError.vue'
 import RecordingDetail from '@/components/recordings/RecordingDetail.vue'
 
 const recordings = useRecordingsStore()
@@ -265,6 +267,7 @@ async function loadOlder() {
     <ResizablePanelGroup direction="vertical" auto-save-id="cr.recordings.layout" class="flex-1 min-h-0">
       <ResizablePanel id="table" :order="1" :min-size="20">
         <div class="h-full overflow-y-auto p-4 space-y-3">
+          <LoadError :error="recordings.error" :retry="reloadAll" />
           <DataTable
             ref="table"
             table-id="recordings"
@@ -311,7 +314,8 @@ async function loadOlder() {
               <span :class="totalDropped(row) > 0 && 'text-warning'">{{ totalDropped(row).toLocaleString() }}</span>
             </template>
             <template #empty>
-              <template v-if="filter || statusFilter !== 'all' || nodeFilter !== 'all'">No recordings match the filters.</template>
+              <template v-if="recordings.error && !recordings.sessions.length">No recordings to show.</template>
+              <template v-else-if="filter || statusFilter !== 'all' || nodeFilter !== 'all'">No recordings match the filters.</template>
               <template v-else>No recordings yet. Sessions from every node appear here once they start.</template>
             </template>
           </DataTable>

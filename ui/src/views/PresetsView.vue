@@ -20,6 +20,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import PageHeader from '@/components/common/PageHeader.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import LoadError from '@/components/common/LoadError.vue'
 import OutputCard from '@/components/presets/OutputCard.vue'
 
 const store = usePresetsStore()
@@ -260,6 +261,7 @@ watch(selected, (p) => p && !dirty.value && p.id === selectedId.value && loadPre
           <Search class="absolute left-4 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
           <Input v-model="query" placeholder="Filter presets…" class="h-7 pl-7 text-xs" />
         </div>
+        <LoadError :error="store.error" :retry="store.load" class="px-3 py-2 border-b border-border" />
         <nav class="flex-1 overflow-y-auto p-1.5 space-y-0.5">
           <button
             class="preset-item"

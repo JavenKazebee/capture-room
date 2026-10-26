@@ -21,6 +21,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import ToolbarField from '@/components/common/ToolbarField.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import NodeCard from '@/components/nodes/NodeCard.vue'
+import LoadError from '@/components/common/LoadError.vue'
 
 const store = useNodesStore()
 const storage = useStorageStore()
@@ -261,6 +262,7 @@ async function removeNode() {
   </PageHeader>
 
   <div class="p-4 space-y-3">
+    <LoadError :error="store.error" :retry="reloadAll" />
     <section v-if="store.isController && store.found.length" class="rounded-lg border border-border bg-card">
       <header class="px-3 pt-3 pb-2">
         <h2 class="text-sm font-medium">Found on the network</h2>
