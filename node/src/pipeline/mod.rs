@@ -18,7 +18,7 @@ pub mod rtsp;
 pub mod whep;
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use anyhow::{Context, Result};
 use gstreamer::{self as gst, prelude::*};
@@ -172,9 +172,33 @@ pub(crate) fn set_state(
 /// shutdown racing another element's start (pipelines start on several
 /// threads) leaves that one with an invalid socket. Call before building an
 /// SRT element.
+///
+/// It's let go at exit, before the library's own static destructors run:
+/// left running, its threads outlive them and the process crashes on the way
+/// out.
 pub(crate) fn hold_srt() {
-    static HELD: OnceLock<Option<gst::Element>> = OnceLock::new();
-    HELD.get_or_init(|| gst::ElementFactory::make("srtsink").build().ok());
+    let mut held = SRT_HELD.lock().unwrap();
+    if held.is_some() {
+        return;
+    }
+    *held = gst::ElementFactory::make("srtsink").build().ok();
+    #[cfg(unix)]
+    if held.is_some() {
+        static RELEASE: std::sync::Once = std::sync::Once::new();
+        // Registered after the library loaded, so it runs before its destructors.
+        RELEASE.call_once(|| unsafe {
+            libc::atexit(release_srt);
+        });
+    }
+}
+
+static SRT_HELD: Mutex<Option<gst::Element>> = Mutex::new(None);
+
+#[cfg(unix)]
+extern "C" fn release_srt() {
+    if let Ok(mut held) = SRT_HELD.lock() {
+        held.take();
+    }
 }
 
 pub(crate) fn make_el(factory: &str, name: &str) -> Result<gst::Element> {
