@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { api, nodeApi } from '@/composables/useApi'
+import { loadState } from '@/lib/loadState'
 import type { NodeDto } from '@/types/generated/NodeDto'
 import type { NodeSettingsDto } from '@/types/generated/NodeSettingsDto'
 import type { AddNodeRequest } from '@/types/generated/AddNodeRequest'
@@ -40,21 +41,34 @@ export const useNodesStore = defineStore('nodes', () => {
   /** The version of the instance the UI is connected to: every node must run it. */
   const version = computed(() => nodes.value.find((n) => n.is_self)?.version ?? '')
 
+  const { loaded, error, track } = loadState('nodes')
+
+  /**
+   * Each part is kept until a load of it succeeds: an empty list after a failed
+   * `/nodes` would leave no node reachable, so every per-node load would fetch nothing.
+   * Never throws, so an action that reloads afterwards isn't reported as failed.
+   */
   async function load() {
-    const [list, settings, waiting] = await Promise.all([
-      api<NodeDto[]>('/nodes').catch(() => [] as NodeDto[]),
-      api<NodeSettingsDto>('/node/settings').catch(() => null),
-      api<FoundNodeDto[]>('/found-nodes').catch(() => [] as FoundNodeDto[]),
-    ])
-    found.value = waiting
-    for (const n of list) {
-      const r = renamed.get(n.id)
-      if (!r) continue
-      if (n.name === r.name || Date.now() > r.until) renamed.delete(n.id)
-      else n.name = r.name
-    }
-    nodes.value = list
-    self.value = settings
+    await track(async () => {
+      const [list, settings, waiting] = await Promise.allSettled([
+        api<NodeDto[]>('/nodes'),
+        api<NodeSettingsDto>('/node/settings'),
+        api<FoundNodeDto[]>('/found-nodes'),
+      ])
+      if (waiting.status === 'fulfilled') found.value = waiting.value
+      if (settings.status === 'fulfilled') self.value = settings.value
+      if (list.status === 'fulfilled') {
+        for (const n of list.value) {
+          const r = renamed.get(n.id)
+          if (!r) continue
+          if (n.name === r.name || Date.now() > r.until) renamed.delete(n.id)
+          else n.name = r.name
+        }
+        nodes.value = list.value
+      }
+      const failed = [list, settings, waiting].find((r) => r.status === 'rejected')
+      if (failed) throw failed.reason
+    })
   }
 
   async function setController(enabled: boolean) {
@@ -122,5 +136,5 @@ export const useNodesStore = defineStore('nodes', () => {
     return id === self.value?.node_id ? `${name} (this node)` : name
   }
 
-  return { nodes, found, self, isController, reachable, version, load, setController, add, approve, pair, dismiss, remove, rename, nameOf, labelOf }
+  return { nodes, found, self, loaded, error, isController, reachable, version, load, setController, add, approve, pair, dismiss, remove, rename, nameOf, labelOf }
 })

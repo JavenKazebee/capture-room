@@ -5,6 +5,7 @@ import { defaultAdvanced } from '@/lib/advanced'
 import type { PresetCreateRequest } from '@/types/generated/PresetCreateRequest'
 import type { PresetDto } from '@/types/generated/PresetDto'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
+import { loadState } from '@/lib/loadState'
 import { onReconnect } from '@/lib/reconnect'
 
 /** The built-in preset: one H.264 leg ([`blankLeg`]). Not stored; every node has it. */
@@ -35,8 +36,10 @@ export const usePresetsStore = defineStore('presets', () => {
     else presets.value[idx] = preset
   }
 
+  const { loaded, error, track } = loadState('presets')
+
   async function load() {
-    presets.value = await api<PresetDto[]>('/presets').catch(() => [])
+    await track(async () => (presets.value = await api<PresetDto[]>('/presets')))
   }
 
   onReconnect(load)
@@ -64,5 +67,5 @@ export const usePresetsStore = defineStore('presets', () => {
     ...presets.value.map((p) => ({ value: p.id, label: p.name })),
   ])
 
-  return { presets, options, upsert, load, create, update, remove }
+  return { presets, loaded, error, options, upsert, load, create, update, remove }
 })

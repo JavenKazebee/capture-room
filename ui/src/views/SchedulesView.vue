@@ -22,6 +22,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
+import LoadError from '@/components/common/LoadError.vue'
 import ToolbarSearch from '@/components/common/ToolbarSearch.vue'
 import ScheduleFormSheet from '@/components/schedules/ScheduleFormSheet.vue'
 import type { Column } from '@/components/common/dataTable'
@@ -173,7 +174,9 @@ async function stop(s: ScheduleDto) {
       <ToolbarSearch v-if="nodes.isController" v-model="filter" />
     </PageHeader>
 
-    <div v-if="!nodes.isController" class="flex-1 grid place-items-center p-8">
+    <LoadError :error="store.error" :retry="store.load" class="px-4 pt-4" />
+
+    <div v-if="nodes.self && !nodes.isController" class="flex-1 grid place-items-center p-8">
       <div class="max-w-sm text-center space-y-2">
         <CalendarClock class="size-8 mx-auto text-muted-foreground" />
         <p class="text-sm font-medium">Schedules run on the controller</p>
@@ -243,8 +246,12 @@ async function stop(s: ScheduleDto) {
           </template>
           <template #empty>
             <div class="py-8 text-center space-y-2">
-              <p class="text-sm text-muted-foreground">No schedules yet.</p>
-              <Button size="sm" variant="outline" @click="editing = 'new'"><Plus /> New schedule</Button>
+              <p v-if="store.error" class="text-sm text-muted-foreground">No schedules to show.</p>
+              <p v-else-if="!store.loaded" class="text-sm text-muted-foreground">Loading schedules…</p>
+              <template v-else>
+                <p class="text-sm text-muted-foreground">No schedules yet.</p>
+                <Button size="sm" variant="outline" @click="editing = 'new'"><Plus /> New schedule</Button>
+              </template>
             </div>
           </template>
         </DataTable>

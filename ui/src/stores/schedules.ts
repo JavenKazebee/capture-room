@@ -2,6 +2,7 @@ import { FetchError } from 'ofetch'
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api, errorMessage } from '@/composables/useApi'
+import { loadState } from '@/lib/loadState'
 import { onReconnect } from '@/lib/reconnect'
 import { useEventsStore } from '@/stores/events'
 import { useNodesStore } from '@/stores/nodes'
@@ -15,7 +16,7 @@ export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as con
 export const useSchedulesStore = defineStore('schedules', () => {
   const nodes = useNodesStore()
   const schedules = ref<ScheduleDto[]>([])
-  const loaded = ref(false)
+  const { loaded, error, track } = loadState('schedules')
 
   function upsert(s: ScheduleDto) {
     const idx = schedules.value.findIndex((x) => x.id === s.id)
@@ -25,13 +26,12 @@ export const useSchedulesStore = defineStore('schedules', () => {
   }
 
   async function load() {
-    if (!nodes.isController) {
-      schedules.value = []
-      loaded.value = true
-      return
-    }
-    schedules.value = await api<ScheduleDto[]>('/schedules').catch(() => [])
-    loaded.value = true
+    await track(async () => {
+      // Without its settings this instance may be a controller: don't report "no schedules".
+      if (!nodes.self) await nodes.load()
+      if (!nodes.self) throw new Error('this node’s settings are unknown')
+      schedules.value = nodes.isController ? await api<ScheduleDto[]>('/schedules') : []
+    })
   }
 
   onReconnect(load)
@@ -78,5 +78,5 @@ export const useSchedulesStore = defineStore('schedules', () => {
     }
   }
 
-  return { schedules, loaded, load, create, update, remove, stop, runs, refresh }
+  return { schedules, loaded, error, load, create, update, remove, stop, runs, refresh }
 })

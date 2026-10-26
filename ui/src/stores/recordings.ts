@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nodeApi, sourceKey } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
+import { nodeLoadErrors } from '@/lib/loadState'
 import { blankLeg, DEFAULT_PRESET, usePresetsStore } from '@/stores/presets'
 import { useSourcesStore } from '@/stores/sources'
 import type { ClockTimeDto } from '@/types/generated/ClockTimeDto'
@@ -41,6 +42,9 @@ export const useRecordingsStore = defineStore('recordings', () => {
   /** Nodes whose history is fully loaded. */
   const complete = ref(new Set<string>())
   const loadingOlder = ref(false)
+  const failed = nodeLoadErrors()
+  /** Why the history may be incomplete or stale: the node list, or some nodes' sessions, failed to load. */
+  const error = computed(() => nodes.error ?? failed.message('recordings', nodes.nameOf))
 
   const activeSessions = computed(() => sessions.value.filter((s) => s.status === 'active'))
 
@@ -124,8 +128,8 @@ export const useRecordingsStore = defineStore('recordings', () => {
 
   /** A node's newest page (and its active sessions), replacing what was loaded. */
   async function loadForNode(nodeId: string) {
-    const list = await nodeApi(nodeId)<RecordingSessionDto[]>('/recordings', { query: { limit: PAGE } }).catch(
-      () => null,
+    const list = await failed.track(nodeId, () =>
+      nodeApi(nodeId)<RecordingSessionDto[]>('/recordings', { query: { limit: PAGE } }),
     )
     if (!list) return
     // A short page is the whole history. A full one replaces only its span, so a
@@ -207,6 +211,7 @@ export const useRecordingsStore = defineStore('recordings', () => {
 
   async function load() {
     if (nodes.nodes.length === 0) await nodes.load()
+    failed.prune(nodes.reachable.map((n) => n.id))
     await Promise.all(nodes.reachable.map((n) => loadForNode(n.id)))
   }
 
@@ -244,6 +249,7 @@ export const useRecordingsStore = defineStore('recordings', () => {
 
   return {
     sessions,
+    error,
     activeSessions,
     history,
     hasOlder,
