@@ -220,9 +220,11 @@ async fn run(
         replay_root(".replay", &node_id),
         replay_root(".replay-clips", &node_id),
     );
-    source_manager.scan(&configured);
+    let (_, work) = source_manager.scan(&configured);
+    source_manager.run_now(work);
     for (source_id, config) in db::replay_buffers_list(&pool).await? {
-        source_manager.set_replay(&source_id, Some(config));
+        let work = source_manager.set_replay(&source_id, Some(config));
+        source_manager.run_now(work);
     }
 
     for source in source_manager.sources() {

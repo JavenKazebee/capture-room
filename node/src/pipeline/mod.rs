@@ -18,7 +18,7 @@ pub mod rtsp;
 pub mod whep;
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use anyhow::{Context, Result};
 use gstreamer::{self as gst, prelude::*};
@@ -165,6 +165,16 @@ pub(crate) fn set_state(
             .join()
             .unwrap_or(Err(gst::StateChangeError))
     })
+}
+
+/// Keep the SRT library running for the life of the process. The SRT plugin
+/// starts it with its first element and shuts it down with its last, and a
+/// shutdown racing another element's start (pipelines start on several
+/// threads) leaves that one with an invalid socket. Call before building an
+/// SRT element.
+pub(crate) fn hold_srt() {
+    static HELD: OnceLock<Option<gst::Element>> = OnceLock::new();
+    HELD.get_or_init(|| gst::ElementFactory::make("srtsink").build().ok());
 }
 
 pub(crate) fn make_el(factory: &str, name: &str) -> Result<gst::Element> {

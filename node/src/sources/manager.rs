@@ -4,8 +4,25 @@
 //! A [`scan`](SourceManager::scan) rebuilds the source list from the
 //! configured sources, the NDI senders and the local devices. A source whose
 //! id and fingerprint are unchanged keeps its monitor; anything else is torn
-//! down and rebuilt. The manager never awaits GStreamer: waits come back to the
-//! caller as a [`StopJob`] or [`Teardown`] to run on a spawned task.
+//! down and rebuilt.
+//!
+//! The manager lives behind an `RwLock` shared by every API call and the WS
+//! emitter, so nothing here blocks or awaits. Starting or stopping a pipeline,
+//! or deleting a replay folder, is planned under the lock and handed back to
+//! the caller to run off it:
+//!
+//! - [`Work`] starts monitors, channel outputs and replay legs (and stops what
+//!   they replace). The caller runs it, then hands the result to
+//!   [`SourceManager::apply`] under a second, short lock, which rejects
+//!   anything that went stale meanwhile (its monitor was replaced, its buffer
+//!   removed).
+//! - [`RecordingStart`] starts a session's legs the same way: the session is
+//!   reserved first, so no other start takes its source or paths, and
+//!   [`SourceManager::finish_start_recording`] adds it.
+//! - [`StopJob`] and [`Teardown`] drain recordings and stop monitors.
+//!
+//! [`Work::run`] starts each source's pipelines on their own thread, so a
+//! slow source doesn't hold up the others.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -22,8 +39,8 @@ use uuid::Uuid;
 use crate::api::types::{
     ChannelLevelDto, ConfiguredSourceDto, LinkState, MonitorSettingsDto, NdiConnect, NdiSenderDto,
     NdiSubscriptionsDto, NdiSubscriptionsInput, OutputConfig, OutputStatusDto, RecordingSessionDto,
-    RecordingStatus, ReplayBufferDto, ReplayConfigInput, SessionClockDto, StartRecordingRequest,
-    TransportState,
+    RecordingStatus, ReplayBufferDto, ReplayCodec, ReplayConfigInput, SessionClockDto,
+    StartRecordingRequest, TransportState,
 };
 use crate::pipeline::monitor::{MonitorPipeline, SourceFormat};
 use crate::pipeline::output::{self, OutputLeg, Program};
@@ -95,6 +112,241 @@ pub struct Teardown {
     pub stops: Vec<StopJob>,
 }
 
+/// The monitor a job runs on.
+enum Feed {
+    Running(Arc<MonitorPipeline>),
+    /// The one the same [`Work`] starts for the source.
+    Starting,
+}
+
+/// A channel's outputs, started on its monitor.
+struct OutputJob {
+    feed: Feed,
+    name: String,
+    program: Program,
+    /// Each output's identity and config, and its leg if it keeps running.
+    legs: Vec<(OutputConfig, OutputConfig, Option<OutputLeg>)>,
+}
+
+struct ReplayJob {
+    /// `None`: there's nothing to record from yet.
+    feed: Option<Feed>,
+    codec: ReplayCodec,
+    index: ReplayIndex,
+    /// Delete what a previous run left in its folder.
+    clear: bool,
+}
+
+/// One source's part of a [`Work`], run on a thread of its own.
+#[derive(Default)]
+struct SourceJob {
+    monitor: Option<Arc<dyn InputSource>>,
+    outputs: Option<OutputJob>,
+    replay: Option<ReplayJob>,
+}
+
+/// Pipelines to stop and start, planned under the manager's lock. Run it off
+/// the lock with [`Work::run`], which blocks, and hand the result to
+/// [`SourceManager::apply`].
+#[must_use]
+pub struct Work {
+    /// Stopped before anything starts: an NDI name can only be sent once,
+    /// and an SRT port bound once.
+    drops: Vec<Box<dyn Send>>,
+    jobs: HashMap<String, SourceJob>,
+    config: MonitorSettingsDto,
+    clock: gst::Clock,
+    displays: Displays,
+    devices: Arc<LocalDevices>,
+}
+
+impl Work {
+    pub fn is_empty(&self) -> bool {
+        self.drops.is_empty() && self.jobs.is_empty()
+    }
+
+    fn job(&mut self, source_id: &str) -> &mut SourceJob {
+        self.jobs.entry(source_id.to_string()).or_default()
+    }
+
+    fn starts_monitor(&self, source_id: &str) -> bool {
+        self.jobs
+            .get(source_id)
+            .is_some_and(|j| j.monitor.is_some())
+    }
+
+    /// Stop what it replaces, then start each source's pipelines, a thread
+    /// per source so a slow one holds up only its own.
+    pub fn run(self) -> Done {
+        let Work {
+            drops,
+            jobs,
+            config,
+            clock,
+            displays,
+            devices,
+        } = self;
+        drop(drops);
+        // A monitor watches its bus on a task.
+        let runtime = tokio::runtime::Handle::try_current().ok();
+        let context = output::OutputContext {
+            displays: &displays,
+            devices: &devices,
+        };
+        let started = std::thread::scope(|s| {
+            let threads: Vec<_> = jobs
+                .into_iter()
+                .map(|(id, job)| {
+                    let (runtime, config, clock, context) = (&runtime, &config, &clock, &context);
+                    s.spawn(move || {
+                        let _entered = runtime.as_ref().map(|r| r.enter());
+                        job.run(id, config, clock, context)
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|t| t.join().expect("a source's start panicked"))
+                .collect()
+        });
+        Done(started)
+    }
+}
+
+impl SourceJob {
+    fn run(
+        self,
+        id: String,
+        config: &MonitorSettingsDto,
+        clock: &gst::Clock,
+        context: &output::OutputContext,
+    ) -> Started {
+        let monitor = self.monitor.map(|source| {
+            let pipeline = MonitorPipeline::new(source.as_ref(), config, clock)
+                .map(Arc::new)
+                .map_err(|e| {
+                    let error = format!("{e:#}");
+                    warn!(source = %id, error = %error, "failed to start monitor");
+                    error
+                });
+            if pipeline.is_ok() {
+                info!(source = %id, "monitor started");
+            }
+            (source, pipeline)
+        });
+        let started = monitor
+            .as_ref()
+            .and_then(|(_, pipeline)| pipeline.as_ref().ok())
+            .cloned();
+        let resolve = |feed: Feed| match feed {
+            Feed::Running(monitor) => Some(monitor),
+            Feed::Starting => started.clone(),
+        };
+
+        let outputs = self.outputs.and_then(|job| {
+            let monitor = resolve(job.feed)?;
+            let legs = job
+                .legs
+                .into_iter()
+                .map(|(identity, config, kept)| {
+                    if let Some(leg) = kept {
+                        return (identity, Ok(leg));
+                    }
+                    let sink = output::sink(&config, &job.name, job.program, context);
+                    let leg = OutputLeg::start(&monitor, sink.as_ref()).map_err(|e| {
+                        let error = format!("{e:#}");
+                        warn!(channel = %id, error = %error, "output failed to start");
+                        (sink.label(), error)
+                    });
+                    (identity, leg)
+                })
+                .collect();
+            Some((monitor, legs))
+        });
+
+        let replay = self.replay.map(|job| {
+            if job.clear {
+                Index::clear(&job.index);
+            }
+            let leg = job.feed.and_then(resolve).map(|monitor| {
+                let leg = ReplayLeg::start(&monitor, job.codec, &job.index, &id).map_err(|e| {
+                    let error = format!("{e:#}");
+                    warn!(source = %id, error = %error, "replay buffer failed to start");
+                    error
+                });
+                (leg, monitor)
+            });
+            (job.index, job.codec, leg)
+        });
+
+        Started {
+            id,
+            monitor,
+            outputs,
+            replay,
+        }
+    }
+}
+
+type StartedMonitor = (Arc<dyn InputSource>, Result<Arc<MonitorPipeline>, String>);
+type StartedOutputs = (Arc<MonitorPipeline>, Vec<(OutputConfig, Leg)>);
+type StartedReplayLeg = (Result<ReplayLeg, String>, Arc<MonitorPipeline>);
+
+/// What a [`SourceJob`] started.
+struct Started {
+    id: String,
+    monitor: Option<StartedMonitor>,
+    outputs: Option<StartedOutputs>,
+    replay: Option<(ReplayIndex, ReplayCodec, Option<StartedReplayLeg>)>,
+}
+
+/// What a [`Work`] started, for [`SourceManager::apply`].
+#[must_use]
+pub struct Done(Vec<Started>);
+
+/// A recording reserved by [`SourceManager::begin_start_recording`]: no
+/// other start takes its source or paths until it's finished.
+struct Reservation {
+    source_id: String,
+    paths: Vec<PathBuf>,
+}
+
+/// A recording's legs to start off the lock with [`RecordingStart::run`].
+#[must_use]
+pub struct RecordingStart {
+    monitor: Arc<MonitorPipeline>,
+    legs: Vec<(PathBuf, RecordingProfile)>,
+    on_error: OnLegError,
+    on_file: OnLegFile,
+    start_at: Option<gst::ClockTime>,
+    utc_offset_us: Option<i64>,
+    dto: RecordingSessionDto,
+    outputs_key: String,
+}
+
+impl RecordingStart {
+    /// Start the legs. Blocks.
+    pub fn run(self) -> StartedRecording {
+        let legs = recording::start_legs(
+            &self.monitor,
+            &self.dto.id[..8],
+            &self.legs,
+            &self.on_error,
+            &self.on_file,
+            self.start_at,
+            self.utc_offset_us,
+        );
+        StartedRecording { start: self, legs }
+    }
+}
+
+/// For [`SourceManager::finish_start_recording`].
+#[must_use]
+pub struct StartedRecording {
+    start: RecordingStart,
+    legs: Result<Vec<RecordingLeg>>,
+}
+
 /// What runs on a node, each as its capacity key and source format.
 pub struct RunningLoad {
     pub feeds: Vec<(String, SourceFormat)>,
@@ -155,6 +407,8 @@ struct Replay {
     index: ReplayIndex,
     /// Why it couldn't start recording.
     error: Option<String>,
+    /// A [`Work`] is starting its leg; no other may until it's applied.
+    starting: bool,
 }
 
 fn keep(config: &ReplayConfigInput) -> gst::ClockTime {
@@ -162,20 +416,22 @@ fn keep(config: &ReplayConfigInput) -> gst::ClockTime {
 }
 
 /// Owns the sources, their monitor pipelines and active recording sessions.
-/// Nothing here awaits: it lives behind an `RwLock` shared by every API call
-/// and the WS emitter, so GStreamer waits are handed back as a [`StopJob`] or [`Teardown`].
+/// Nothing here blocks: see the module doc for how pipeline work is handed
+/// back to the caller.
 pub struct SourceManager {
     config: MonitorSettingsDto,
     /// The node clock new monitors run on.
     clock: gst::Clock,
     /// Its domain (see `ClockStatusDto::domain`), for synchronized starts.
     clock_domain: String,
-    sources: Vec<Box<dyn InputSource>>,
+    sources: Vec<Arc<dyn InputSource>>,
     monitors: HashMap<String, Arc<MonitorPipeline>>,
     /// Why a source's monitor couldn't be started, until a later start works
     /// or the source goes away. A running monitor reports its own errors.
     start_errors: HashMap<String, String>,
     sessions: HashMap<String, ActiveSession>, // session_id → session
+    /// Recordings whose legs are starting, by session id.
+    reserved: HashMap<String, Reservation>,
     /// Playout channels' outputs, by source id: their config, and each
     /// output's leg (or why it couldn't start).
     outputs: HashMap<String, ChannelOutputs>,
@@ -214,6 +470,7 @@ impl SourceManager {
             monitors: HashMap::new(),
             start_errors: HashMap::new(),
             sessions: HashMap::new(),
+            reserved: HashMap::new(),
             outputs: HashMap::new(),
             stopping: HashMap::new(),
             ndi_monitor,
@@ -263,7 +520,7 @@ impl SourceManager {
         &self.displays
     }
 
-    pub fn sources(&self) -> &[Box<dyn InputSource>] {
+    pub fn sources(&self) -> &[Arc<dyn InputSource>] {
         &self.sources
     }
 
@@ -309,7 +566,7 @@ impl SourceManager {
             || self
                 .replays
                 .iter()
-                .any(|(id, r)| self.monitors.contains_key(id) && !Self::recording(r))
+                .any(|(id, r)| self.monitors.contains_key(id) && !r.starting && !Self::recording(r))
     }
 
     /// Monitors started from now on use `clock`; running ones move to it as
@@ -345,9 +602,10 @@ impl SourceManager {
     /// Rebuild the source list from configs and visible NDI senders. A source
     /// with unchanged id and fingerprint keeps its monitor and recordings unless
     /// the monitor failed, never started, or is idle on an old clock. Torn-down
-    /// sources are returned for the caller to run. Candidates are only
-    /// descriptions, so a no-op scan builds no GStreamer elements.
-    pub fn scan(&mut self, configs: &[ConfiguredSourceDto]) -> Vec<Teardown> {
+    /// sources are returned for the caller to run, with the [`Work`] that
+    /// starts what's new. Candidates are only descriptions, so a no-op scan
+    /// builds no GStreamer elements.
+    pub fn scan(&mut self, configs: &[ConfiguredSourceDto]) -> (Vec<Teardown>, Work) {
         let mut candidates: Vec<Box<dyn InputSource>> = configs
             .iter()
             .map(|c| configured(c, &self.devices))
@@ -373,7 +631,7 @@ impl SourceManager {
             })
             .collect();
 
-        let mut old: HashMap<String, Box<dyn InputSource>> = self
+        let mut old: HashMap<String, Arc<dyn InputSource>> = self
             .sources
             .drain(..)
             .map(|s| (s.id().to_string(), s))
@@ -392,7 +650,11 @@ impl SourceManager {
                         && self.is_healthy(&id)
                         && !self.should_migrate(existing.as_ref()) =>
                 {
-                    existing.set_name(candidate.display_name());
+                    // Only a Work starting its monitor shares a source.
+                    match Arc::get_mut(&mut existing) {
+                        Some(source) => source.set_name(candidate.display_name()),
+                        None => warn!(id = %id, "source is starting; keeping its old name"),
+                    }
                     self.sources.push(existing);
                     continue;
                 }
@@ -403,39 +665,134 @@ impl SourceManager {
                 None => {}
             }
             added.push(id);
-            self.sources.push(candidate);
+            self.sources.push(Arc::from(candidate));
         }
         gone.extend(old.into_keys());
 
         // Tear down first: a changed source restarts under the same id.
-        let teardowns = gone.iter().filter_map(|id| self.disconnect(id)).collect();
+        let mut work = self.work();
+        let teardowns = gone
+            .iter()
+            .filter_map(|id| self.disconnect(id, &mut work))
+            .collect();
         for id in &gone {
             self.start_errors.remove(id);
         }
         for id in &added {
-            self.outputs.remove(id);
-        }
-        for id in added {
-            match self.start_monitor(&id) {
-                Ok(()) => {
-                    self.start_errors.remove(&id);
-                }
-                Err(e) => {
-                    let error = format!("{e:#}");
-                    warn!(source = %id, error = %error, "failed to start monitor");
-                    self.start_errors.insert(id, error);
-                }
+            if let Some(outputs) = self.outputs.remove(id) {
+                work.drops.push(Box::new(outputs));
+            }
+            if let Some(source) = self.sources.iter().find(|s| s.id() == id) {
+                work.job(id).monitor = Some(Arc::clone(source));
             }
         }
 
-        self.outputs.retain(|id, _| wanted_outputs.contains_key(id));
+        let unwanted: Vec<String> = self
+            .outputs
+            .keys()
+            .filter(|id| !wanted_outputs.contains_key(*id))
+            .cloned()
+            .collect();
+        for id in unwanted {
+            work.drops.extend(
+                self.outputs
+                    .remove(&id)
+                    .map(|o| Box::new(o) as Box<dyn Send>),
+            );
+        }
         for (id, (name, configs, program)) in wanted_outputs {
-            self.reconcile_outputs(&id, &name, configs, program);
+            self.reconcile_outputs(&id, &name, configs, program, &mut work);
         }
 
-        self.sync_replays();
+        self.sync_replays(&mut work);
         info!(count = self.sources.len(), "source scan complete");
-        teardowns
+        (teardowns, work)
+    }
+
+    fn work(&self) -> Work {
+        Work {
+            drops: Vec::new(),
+            jobs: HashMap::new(),
+            config: self.config,
+            clock: self.clock.clone(),
+            displays: self.displays.clone(),
+            devices: Arc::clone(&self.devices),
+        }
+    }
+
+    /// Put in place what `done` started, unless it went stale while the lock
+    /// was free: its source or monitor was replaced, or its replay buffer
+    /// removed or given another codec. Returns what was turned away, to drop
+    /// off the lock.
+    pub fn apply(&mut self, done: Done) -> Vec<Box<dyn Send>> {
+        let mut rejected: Vec<Box<dyn Send>> = Vec::new();
+        for started in done.0 {
+            let Started {
+                id,
+                monitor,
+                outputs,
+                replay,
+            } = started;
+            if let Some((source, pipeline)) = monitor {
+                let listed = self.sources.iter().any(|s| Arc::ptr_eq(s, &source));
+                match pipeline {
+                    Ok(pipeline) if listed && !self.monitors.contains_key(&id) => {
+                        self.monitors.insert(id.clone(), pipeline);
+                        self.start_errors.remove(&id);
+                    }
+                    Ok(pipeline) => rejected.push(Box::new(pipeline)),
+                    Err(error) if listed => {
+                        self.start_errors.insert(id.clone(), error);
+                    }
+                    Err(_) => {}
+                }
+            }
+            if let Some((monitor, legs)) = outputs {
+                if self.is_current(&id, &monitor) && !self.outputs.contains_key(&id) {
+                    self.outputs.insert(id.clone(), ChannelOutputs { legs });
+                } else {
+                    rejected.push(Box::new(legs));
+                }
+            }
+            if let Some((index, codec, leg)) = replay {
+                let current = leg
+                    .as_ref()
+                    .is_none_or(|(_, monitor)| self.is_current(&id, monitor));
+                match self.replays.get_mut(&id) {
+                    Some(r) if Arc::ptr_eq(&r.index, &index) => {
+                        r.starting = false;
+                        match leg {
+                            Some((Ok(leg), monitor)) if current && r.config.codec == codec => {
+                                rejected.extend(
+                                    r.leg
+                                        .replace((leg, monitor))
+                                        .map(|old| Box::new(old) as Box<dyn Send>),
+                                );
+                                r.error = None;
+                            }
+                            Some((Err(error), _)) if current => r.error = Some(error),
+                            leg => rejected.push(Box::new(leg)),
+                        }
+                    }
+                    _ => rejected.push(Box::new(leg)),
+                }
+                rejected.push(Box::new(index));
+            }
+        }
+        rejected
+    }
+
+    /// Run `work` and apply it in place, blocking: before the manager is
+    /// shared, at startup.
+    pub fn run_now(&mut self, work: Work) {
+        let done = work.run();
+        drop(self.apply(done));
+    }
+
+    fn is_current(&self, source_id: &str, monitor: &Arc<MonitorPipeline>) -> bool {
+        self.monitors
+            .get(source_id)
+            .is_some_and(|m| Arc::ptr_eq(m, monitor))
     }
 
     /// Connect to these NDI senders from the next scan.
@@ -500,24 +857,29 @@ impl SourceManager {
 
     fn is_recording(&self, id: &str) -> bool {
         self.sessions.values().any(|s| s.dto.source_id == id)
+            || self.reserved.values().any(|r| r.source_id == id)
     }
 
     /// Add, change, or with `None` remove a source's replay buffer (deleting
-    /// what it recorded). A new codec starts it afresh.
-    pub fn set_replay(&mut self, source_id: &str, config: Option<ReplayConfigInput>) {
+    /// what it recorded, when the [`Work`] runs). A new codec starts it afresh.
+    pub fn set_replay(&mut self, source_id: &str, config: Option<ReplayConfigInput>) -> Work {
+        let mut work = self.work();
         let Some(config) = config else {
-            if self.replays.remove(source_id).is_some() {
+            if let Some(replay) = self.replays.remove(source_id) {
                 info!(source = source_id, "replay buffer removed");
+                work.drops.push(Box::new(replay));
             }
-            return;
+            return work;
         };
-        match self.replays.get_mut(source_id) {
+        let new = match self.replays.get_mut(source_id) {
             Some(replay) => {
                 if replay.config.codec != config.codec {
-                    replay.leg = None;
+                    work.drops
+                        .extend(replay.leg.take().map(|l| Box::new(l) as Box<dyn Send>));
                 }
                 replay.index.lock().unwrap().set_keep(keep(&config));
                 replay.config = config;
+                false
             }
             None => {
                 let index = Index::create(&self.replay_root.join(source_id), keep(&config));
@@ -528,11 +890,26 @@ impl SourceManager {
                         config,
                         index,
                         error: None,
+                        starting: false,
                     },
                 );
+                true
             }
+        };
+        self.sync_replays(&mut work);
+        // What a previous run left goes now, even before there's a source to
+        // record.
+        let replay = self.replays.get_mut(source_id).unwrap();
+        if new && !replay.starting {
+            replay.starting = true;
+            work.job(source_id).replay = Some(ReplayJob {
+                feed: None,
+                codec: replay.config.codec,
+                index: Arc::clone(&replay.index),
+                clear: true,
+            });
         }
-        self.sync_replays();
+        work
     }
 
     fn recording(replay: &Replay) -> bool {
@@ -543,32 +920,38 @@ impl SourceManager {
     }
 
     /// Start each replay buffer on its source's current monitor unless it
-    /// already records from it; stop those whose source has none.
-    fn sync_replays(&mut self) {
+    /// already records from it; stop those whose source has none. Skips any
+    /// already starting: the recovery loop catches one that's then left
+    /// behind.
+    fn sync_replays(&mut self, work: &mut Work) {
         for (id, replay) in &mut self.replays {
-            let Some(monitor) = self.monitors.get(id) else {
-                replay.leg = None;
+            if replay.starting {
+                continue;
+            }
+            let feed = if work.starts_monitor(id) {
+                Some(Feed::Starting)
+            } else {
+                self.monitors.get(id).cloned().map(Feed::Running)
+            };
+            let Some(feed) = feed else {
+                work.drops
+                    .extend(replay.leg.take().map(|l| Box::new(l) as Box<dyn Send>));
                 continue;
             };
-            let current = replay
-                .leg
-                .as_ref()
-                .is_some_and(|(_, m)| Arc::ptr_eq(m, monitor));
+            let current = matches!(&feed, Feed::Running(monitor)
+                if replay.leg.as_ref().is_some_and(|(_, m)| Arc::ptr_eq(m, monitor)));
             if current && Self::recording(replay) {
                 continue;
             }
-            replay.leg = None;
-            match ReplayLeg::start(monitor, replay.config.codec, &replay.index, id) {
-                Ok(leg) => {
-                    replay.leg = Some((leg, Arc::clone(monitor)));
-                    replay.error = None;
-                }
-                Err(e) => {
-                    let error = format!("{e:#}");
-                    warn!(source = %id, error = %error, "replay buffer failed to start");
-                    replay.error = Some(error);
-                }
-            }
+            work.drops
+                .extend(replay.leg.take().map(|l| Box::new(l) as Box<dyn Send>));
+            replay.starting = true;
+            work.job(id).replay = Some(ReplayJob {
+                feed: Some(feed),
+                codec: replay.config.codec,
+                index: Arc::clone(&replay.index),
+                clear: false,
+            });
         }
     }
 
@@ -651,6 +1034,7 @@ impl SourceManager {
         name: &str,
         configs: Vec<OutputConfig>,
         program: Program,
+        work: &mut Work,
     ) {
         let wanted: Vec<OutputConfig> = configs.iter().map(|c| output::identity(c, name)).collect();
         let mut old = self.outputs.remove(id).map(|o| o.legs).unwrap_or_default();
@@ -661,7 +1045,7 @@ impl SourceManager {
         }
         // Stop unwanted legs before starting new ones: an NDI name can only be
         // sent once, and an SRT port bound once.
-        let mut kept: Vec<Option<OutputLeg>> = wanted
+        let kept: Vec<Option<OutputLeg>> = wanted
             .iter()
             .map(|w| {
                 let i = old.iter().position(|(identity, leg)| {
@@ -670,41 +1054,50 @@ impl SourceManager {
                 old.remove(i).1.ok()
             })
             .collect();
-        drop(old);
-        let Some(monitor) = self.monitors.get(id) else {
+        work.drops.push(Box::new(old));
+        let feed = if work.starts_monitor(id) {
+            Feed::Starting
+        } else if let Some(monitor) = self.monitors.get(id) {
+            Feed::Running(Arc::clone(monitor))
+        } else {
+            work.drops.push(Box::new(kept));
             return;
         };
-        let legs = configs
-            .iter()
-            .zip(wanted)
-            .zip(kept.iter_mut())
-            .map(|((config, identity), kept)| {
-                if let Some(leg) = kept.take() {
-                    return (identity, Ok(leg));
-                }
-                let context = output::OutputContext {
-                    displays: &self.displays,
-                    devices: &self.devices,
-                };
-                let sink = output::sink(config, name, program, &context);
-                let leg = OutputLeg::start(monitor, sink.as_ref()).map_err(|e| {
-                    let error = format!("{e:#}");
-                    warn!(channel = %id, error = %error, "output failed to start");
-                    (sink.label(), error)
-                });
-                (identity, leg)
-            })
-            .collect();
-        self.outputs.insert(id.to_string(), ChannelOutputs { legs });
+        work.job(id).outputs = Some(OutputJob {
+            feed,
+            name: name.to_string(),
+            program,
+            legs: wanted
+                .into_iter()
+                .zip(configs)
+                .zip(kept)
+                .map(|((identity, config), kept)| (identity, config, kept))
+                .collect(),
+        });
     }
 
-    /// Drop channels' Decklink outputs so the next scan restarts them (with a card's new profile).
-    pub fn reset_decklink_outputs(&mut self) {
-        self.outputs.retain(|_, o| {
-            !o.legs
-                .iter()
-                .any(|(identity, _)| matches!(identity, OutputConfig::Decklink { .. }))
-        });
+    /// Drop channels' Decklink outputs so the next scan restarts them (with
+    /// a card's new profile). The [`Work`] stops them.
+    pub fn reset_decklink_outputs(&mut self) -> Work {
+        let mut work = self.work();
+        let decklink: Vec<String> = self
+            .outputs
+            .iter()
+            .filter(|(_, o)| {
+                o.legs
+                    .iter()
+                    .any(|(identity, _)| matches!(identity, OutputConfig::Decklink { .. }))
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in decklink {
+            work.drops.extend(
+                self.outputs
+                    .remove(&id)
+                    .map(|o| Box::new(o) as Box<dyn Send>),
+            );
+        }
+        work
     }
 
     /// Tell a channel's outputs whether it has something loaded.
@@ -761,16 +1154,17 @@ impl SourceManager {
             .unwrap_or_default()
     }
 
-    /// Start recording `req.source_id` with `legs`, one per `req.outputs`.
-    /// With `req.start_at` on this node's clock domain, legs begin at the first
-    /// frame due at or after it; otherwise now. `utc_offset_us` maps the domain
-    /// to UTC, for timecode.
-    pub fn start_recording(
+    /// Reserve a recording of `req.source_id` with `legs`, one per
+    /// `req.outputs`, for [`RecordingStart::run`] to start off the lock and
+    /// [`Self::finish_start_recording`] to add. With `req.start_at` on this
+    /// node's clock domain, legs begin at the first frame due at or after it;
+    /// otherwise now. `utc_offset_us` maps the domain to UTC, for timecode.
+    pub fn begin_start_recording(
         &mut self,
         req: &StartRecordingRequest,
         legs: &[(PathBuf, RecordingProfile)],
         utc_offset_us: Option<i64>,
-    ) -> Result<RecordingSessionDto> {
+    ) -> Result<RecordingStart> {
         let source_id = req.source_id.as_str();
         let outputs = &req.outputs;
         if self.is_recording(source_id) {
@@ -780,14 +1174,16 @@ impl SourceManager {
             .monitors
             .get(source_id)
             .ok_or_else(|| anyhow::anyhow!("no monitor running for source {source_id}"))?;
-        // Another start may have taken a path since it was picked. Starting
-        // under this lock opens the files, so the check can't race. Recording
-        // into a file truncates it; a failed start deletes it.
+        // Another start may have taken a path since it was picked. Paths are
+        // reserved under this lock until the files are open, so the check
+        // can't race. Recording into a file truncates it; a failed start
+        // deletes it.
         for (path, _) in legs {
             let active = self
                 .sessions
                 .values()
-                .any(|s| s.dto.output_paths.iter().any(|p| Path::new(p) == path));
+                .any(|s| s.dto.output_paths.iter().any(|p| Path::new(p) == path))
+                || self.reserved.values().any(|r| r.paths.contains(path));
             if active || path.exists() {
                 bail!("{} already exists", path.display());
             }
@@ -852,15 +1248,6 @@ impl SourceManager {
         let on_file: OnLegFile = Arc::new(move || {
             let _ = files_tx.send(files_session.clone());
         });
-        let recording_legs = recording::start_legs(
-            monitor,
-            &id[..8],
-            legs,
-            &on_error,
-            &on_file,
-            start_at,
-            utc_offset_us,
-        )?;
 
         let dto = RecordingSessionDto {
             id,
@@ -879,20 +1266,65 @@ impl SourceManager {
                 .collect(),
             output_paths: legs.iter().map(|(p, _)| p.display().to_string()).collect(),
             dropped_frames: vec![0; legs.len()],
-            files: recording_legs.iter().map(RecordingLeg::files).collect(),
+            files: Vec::new(),
             status: RecordingStatus::Active,
             error_message: None,
             clock: session_clock,
         };
+        self.reserved.insert(
+            dto.id.clone(),
+            Reservation {
+                source_id: source_id.to_string(),
+                paths: legs.iter().map(|(p, _)| p.clone()).collect(),
+            },
+        );
+        Ok(RecordingStart {
+            monitor: Arc::clone(monitor),
+            legs: legs.to_vec(),
+            on_error,
+            on_file,
+            start_at,
+            utc_offset_us,
+            dto,
+            outputs_key: crate::capacity::outputs_key(outputs),
+        })
+    }
 
-        info!(id = %dto.id, source = source_id, legs = legs.len(), ?start_at, "recording started");
+    /// Add a recording whose legs have started, and release its reservation.
+    /// If its source's monitor was replaced meanwhile, nothing would feed
+    /// them: the legs come back with the error, to discard off the lock.
+    pub fn finish_start_recording(
+        &mut self,
+        started: StartedRecording,
+    ) -> Result<RecordingSessionDto, (anyhow::Error, Vec<RecordingLeg>)> {
+        let StartedRecording { start, legs } = started;
+        self.reserved.remove(&start.dto.id);
+        let legs = legs.map_err(|e| (e, Vec::new()))?;
+        let source_id = start.dto.source_id.clone();
+        if !self.is_current(&source_id, &start.monitor) {
+            return Err((
+                anyhow::anyhow!("source {source_id} restarted while its recording started"),
+                legs,
+            ));
+        }
+        let dto = RecordingSessionDto {
+            files: legs.iter().map(RecordingLeg::files).collect(),
+            ..start.dto
+        };
+        info!(
+            id = %dto.id,
+            source = %source_id,
+            legs = legs.len(),
+            start_at = ?start.start_at,
+            "recording started"
+        );
         self.sessions.insert(
             dto.id.clone(),
             ActiveSession {
-                legs: recording_legs,
+                legs,
                 dto: dto.clone(),
                 failed_legs: 0,
-                outputs_key: crate::capacity::outputs_key(outputs),
+                outputs_key: start.outputs_key,
                 started: Instant::now(),
             },
         );
@@ -1015,16 +1447,6 @@ impl SourceManager {
         }
     }
 
-    fn start_monitor(&mut self, source_id: &str) -> Result<()> {
-        let source = self
-            .get_source(source_id)
-            .ok_or_else(|| anyhow::anyhow!("source {source_id} not found"))?;
-        let pipeline = Arc::new(MonitorPipeline::new(source, &self.config, &self.clock)?);
-        self.monitors.insert(source_id.to_string(), pipeline);
-        info!(source = source_id, "monitor started");
-        Ok(())
-    }
-
     fn take_session(&mut self, session_id: &str) -> Option<StopJob> {
         let session = self.sessions.remove(session_id)?;
         // Nothing is fed to the legs once they're stopping, so this is final.
@@ -1040,10 +1462,14 @@ impl SourceManager {
         Some(StopJob { legs, dto, tx })
     }
 
-    fn disconnect(&mut self, source_id: &str) -> Option<Teardown> {
-        self.outputs.remove(source_id);
-        if let Some(replay) = self.replays.get_mut(source_id) {
-            replay.leg = None;
+    /// Take a source's monitor and what runs on it; its outputs and replay
+    /// leg stop with `work`.
+    fn disconnect(&mut self, source_id: &str, work: &mut Work) -> Option<Teardown> {
+        if let Some(outputs) = self.outputs.remove(source_id) {
+            work.drops.push(Box::new(outputs));
+        }
+        if let Some(leg) = self.replays.get_mut(source_id).and_then(|r| r.leg.take()) {
+            work.drops.push(Box::new(leg));
         }
         let pipeline = self.monitors.remove(source_id)?;
         let session_ids: Vec<String> = self
@@ -1067,7 +1493,10 @@ impl SourceManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::types::{ChannelConfig, LiveVideoFormat, ReplayCodec, SourceConfig};
+    use crate::api::types::{
+        ChannelConfig, ChromaSubsampling, Container, LiveVideoFormat, OutputAdvanced,
+        PresetOutputInput, ReplayCodec, SourceConfig, VideoCodec,
+    };
     use crate::pipeline::rtsp;
     use std::collections::HashSet;
 
@@ -1075,7 +1504,7 @@ mod tests {
         gst::init().unwrap();
         let (failures, _) = mpsc::unbounded_channel();
         let (files, _) = mpsc::unbounded_channel();
-        SourceManager::new(
+        let mut mgr = SourceManager::new(
             MonitorSettingsDto::default(),
             (gst::SystemClock::obtain(), "test".into()),
             NdiMonitor::start(),
@@ -1083,12 +1512,18 @@ mod tests {
             Displays::none(),
             failures,
             files,
-        )
+        );
+        let root = std::env::temp_dir()
+            .join("capture-room-manager-tests")
+            .join(Uuid::new_v4().to_string());
+        mgr.set_replay_root(root.join("buffers"), root.join("clips"));
+        mgr
     }
 
-    fn channel(name: &str) -> ConfiguredSourceDto {
+    /// A channel `id` with an SRT output on `port` and an RTSP mount.
+    fn channel(id: &str, name: &str, port: u16) -> ConfiguredSourceDto {
         ConfiguredSourceDto {
-            id: "c".into(),
+            id: id.into(),
             name: name.into(),
             config: SourceConfig::Channel(ChannelConfig {
                 format: LiveVideoFormat {
@@ -1100,7 +1535,7 @@ mod tests {
                 audio_channels: 2,
                 outputs: vec![
                     OutputConfig::Srt {
-                        url: "srt://:9311".into(),
+                        url: format!("srt://:{port}"),
                         latency_ms: 120,
                         bitrate_kbps: 2000,
                         passphrase: None,
@@ -1115,12 +1550,33 @@ mod tests {
         }
     }
 
-    fn leg_keys(mgr: &SourceManager) -> Vec<Option<usize>> {
-        mgr.outputs["c"]
+    /// The same channel at another size: its monitor is rebuilt.
+    fn resized(mut config: ConfiguredSourceDto) -> ConfiguredSourceDto {
+        if let SourceConfig::Channel(c) = &mut config.config {
+            c.format.width = 320;
+            c.format.height = 180;
+        }
+        config
+    }
+
+    fn scan_now(mgr: &mut SourceManager, configs: &[ConfiguredSourceDto]) -> Vec<Teardown> {
+        let (teardowns, work) = mgr.scan(configs);
+        mgr.run_now(work);
+        teardowns
+    }
+
+    fn leg_keys(mgr: &SourceManager, id: &str) -> Vec<Option<usize>> {
+        mgr.outputs[id]
             .legs
             .iter()
             .map(|(_, leg)| leg.as_ref().ok().map(OutputLeg::key))
             .collect()
+    }
+
+    fn stop(teardowns: Vec<Teardown>) {
+        for t in teardowns {
+            let _ = t.pipeline.stop();
+        }
     }
 
     /// A rename keeps the program running (and whatever records it), and
@@ -1128,20 +1584,20 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn rename_keeps_program() {
         let mut mgr = manager();
-        assert!(mgr.scan(&[channel("One")]).is_empty());
+        assert!(scan_now(&mut mgr, &[channel("c", "One", 9311)]).is_empty());
         let monitor = mgr.monitors["c"].clone();
-        let before = leg_keys(&mgr);
+        let before = leg_keys(&mgr, "c");
         assert!(
             before.iter().all(Option::is_some),
             "{:?}",
             mgr.output_status("c")
         );
 
-        let teardowns = mgr.scan(&[channel("Two")]);
+        let teardowns = scan_now(&mut mgr, &[channel("c", "Two", 9311)]);
         assert!(teardowns.is_empty(), "the program restarted");
         assert!(Arc::ptr_eq(&monitor, &mgr.monitors["c"]));
         assert_eq!(mgr.get_source("c").unwrap().display_name(), "Two");
-        let after = leg_keys(&mgr);
+        let after = leg_keys(&mgr, "c");
         assert_eq!(after[0], before[0], "the SRT output restarted");
         assert_ne!(after[1], before[1], "the RTSP mount kept the old name");
         assert_eq!(
@@ -1150,6 +1606,108 @@ mod tests {
         );
 
         let _ = monitor.stop();
+    }
+
+    /// Each source starts on its own thread, its outputs on its own monitor.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sources_start_side_by_side() {
+        let mut mgr = manager();
+        let configs = [channel("a", "A", 9312), channel("b", "B", 9313)];
+        let (_, work) = mgr.scan(&configs);
+        assert_eq!(work.jobs.len(), 2);
+        assert!(!mgr.is_monitored("a"), "started under the lock");
+        mgr.run_now(work);
+        for id in ["a", "b"] {
+            assert!(mgr.is_monitored(id), "{id} has no monitor");
+            let status = mgr.output_status(id);
+            assert!(status.iter().all(|o| o.error.is_none()), "{status:?}");
+        }
+        for monitor in mgr.monitors.values() {
+            let _ = monitor.stop();
+        }
+    }
+
+    /// Outputs started on a monitor that has since been replaced are turned
+    /// away, not put on a channel that no longer feeds them.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stale_outputs_rejected() {
+        let mut mgr = manager();
+        scan_now(&mut mgr, &[channel("c", "One", 9314)]);
+        let (_, renamed) = mgr.scan(&[channel("c", "Two", 9314)]);
+        let done = renamed.run();
+        let (teardowns, rebuilt) = mgr.scan(&[resized(channel("c", "Two", 9314))]);
+        assert!(!mgr.apply(done).is_empty(), "stale outputs were kept");
+        assert!(!mgr.outputs.contains_key("c"));
+        mgr.run_now(rebuilt);
+        assert_eq!(mgr.output_status("c").len(), 2);
+        stop(teardowns);
+        let _ = mgr.monitors["c"].stop();
+    }
+
+    /// A replay leg that starts after its buffer was removed is turned away.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn removed_replay_rejected() {
+        let mut mgr = manager();
+        scan_now(&mut mgr, &[channel("c", "One", 9315)]);
+        let buffer = ReplayConfigInput {
+            codec: ReplayCodec::Mjpeg,
+            minutes: 1,
+        };
+        let added = mgr.set_replay("c", Some(buffer));
+        let done = added.run();
+        let removed = mgr.set_replay("c", None);
+        mgr.run_now(removed);
+        assert!(!mgr.apply(done).is_empty(), "the leg was kept");
+        assert!(mgr.replays.is_empty());
+        let _ = mgr.monitors["c"].stop();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recording_start_reserves_its_source() {
+        let mut mgr = manager();
+        scan_now(&mut mgr, &[channel("c", "One", 9316)]);
+        let dir = mgr.replay_root.parent().unwrap().join("recordings");
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = PresetOutputInput {
+            name: "a".into(),
+            codec: VideoCodec::H264,
+            container: Container::Mkv,
+            resolution: None,
+            framerate: None,
+            bitrate_kbps: None,
+            chroma: ChromaSubsampling::Yuv420,
+            path_template: String::new(),
+            preview: false,
+            advanced: OutputAdvanced::default(),
+        };
+        let profile = RecordingProfile::from_output(&output).unwrap();
+        let req = StartRecordingRequest {
+            source_id: "c".into(),
+            preset_id: None,
+            preset_name: None,
+            outputs: vec![output],
+            start_at: None,
+        };
+        let start = mgr
+            .begin_start_recording(&req, &[(dir.join("a.mkv"), profile.clone())], None)
+            .unwrap();
+        assert!(
+            mgr.begin_start_recording(&req, &[(dir.join("b.mkv"), profile.clone())], None)
+                .is_err(),
+            "a second start took the source"
+        );
+        let started = start.run();
+
+        // The source goes while its legs start.
+        let teardowns = scan_now(&mut mgr, &[]);
+        let Err((_, legs)) = mgr.finish_start_recording(started) else {
+            panic!("a recording was added with no source");
+        };
+        assert_eq!(legs.len(), 1);
+        legs.into_iter().for_each(RecordingLeg::discard);
+        assert!(mgr.reserved.is_empty());
+        assert!(mgr.active_sessions().is_empty());
+        stop(teardowns);
     }
 
     #[test]
@@ -1178,9 +1736,11 @@ mod tests {
             codec: ReplayCodec::Mjpeg,
             minutes: 1,
         };
-        mgr.set_replay(cam2.id(), Some(buffer));
+        let work = mgr.set_replay(cam2.id(), Some(buffer));
+        mgr.run_now(work);
         assert!(mgr.wants_ndi(&cam2, &own));
-        mgr.set_replay(cam2.id(), None);
+        let work = mgr.set_replay(cam2.id(), None);
+        mgr.run_now(work);
         assert!(!mgr.wants_ndi(&cam2, &own));
     }
 }

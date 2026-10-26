@@ -1,5 +1,6 @@
 //! Session and monitor lifecycle work that waits on GStreamer, so always runs
-//! on spawned tasks: finishing recordings, reporting failed legs, restarting
+//! on spawned tasks, off the source manager's lock: finishing recordings,
+//! running the [`Work`] the manager plans, reporting failed legs, restarting
 //! failed monitors.
 
 use std::sync::Arc;
@@ -11,7 +12,7 @@ use tracing::{error, info, warn};
 
 use crate::api::types::{RecordingStatus, WsEvent};
 use crate::db;
-use crate::sources::manager::{LegFailure, StopJob, StopOutcome, Teardown};
+use crate::sources::manager::{LegFailure, StopJob, StopOutcome, Teardown, Work};
 use crate::state::AppState;
 
 /// How long a leg may take to drain to EOS and close its file.
@@ -181,17 +182,43 @@ pub fn spawn_teardowns(state: &Arc<AppState>, teardowns: Vec<Teardown>) {
     }
 }
 
+/// One rebuild at a time: one with an older config list would otherwise bring
+/// back a source another request just deleted, and two would each start a
+/// changed source.
+static REBUILD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Rebuild the source list, tearing down whatever went away, changed or
 /// failed.
 pub async fn rebuild_sources(state: &Arc<AppState>) -> anyhow::Result<()> {
-    // Read the configs under the lock: a concurrent rebuild with an older list
-    // would otherwise bring back a source another request just deleted.
-    let mut mgr = state.source_manager.write().await;
-    let configs = db::configured_sources_list(&state.db).await?;
-    let teardowns = mgr.scan(&configs);
-    drop(mgr);
-    spawn_teardowns(state, teardowns);
-    Ok(())
+    let state = Arc::clone(state);
+    // Spawned so a dropped request can't leave the work started but not applied.
+    tokio::spawn(async move {
+        let _rebuild = REBUILD.lock().await;
+        let configs = db::configured_sources_list(&state.db).await?;
+        let (teardowns, work) = state.source_manager.write().await.scan(&configs);
+        spawn_teardowns(&state, teardowns);
+        run_work(&state, work).await
+    })
+    .await?
+}
+
+/// Run what the source manager planned off its lock, then apply the result
+/// under a second, short one.
+pub async fn run_work(state: &Arc<AppState>, work: Work) -> anyhow::Result<()> {
+    if work.is_empty() {
+        return Ok(());
+    }
+    let state = Arc::clone(state);
+    // Spawned so a dropped request can't leave the work started but not applied.
+    tokio::spawn(async move {
+        let done = tokio::task::spawn_blocking(move || work.run()).await?;
+        let rejected = state.source_manager.write().await.apply(done);
+        if !rejected.is_empty() {
+            tokio::task::spawn_blocking(move || drop(rejected)).await?;
+        }
+        Ok(())
+    })
+    .await?
 }
 
 /// Rescan whenever a source lacks a healthy monitor. This also ends a failed
