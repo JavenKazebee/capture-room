@@ -25,7 +25,7 @@ use super::monitor::MonitorPipeline;
 use super::profile::{segment_number, AudioFormat, RecordingProfile, VideoEncoder, PCM_MAX_FILE};
 use super::{
     audio_hold_queue, capsfilter, describe_error, make_el, mark_prores_keyframes, pcm_audiorate,
-    set_mix_matrix, start_or_reason, ConsumerPipeline,
+    set_mix_matrix, set_property, start_or_reason, ConsumerPipeline,
 };
 use crate::api::types::{Container, RateControl};
 
@@ -782,19 +782,6 @@ fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Res
         }
     }
     Ok(venc)
-}
-
-/// `set_property_from_str` panics on an unknown property; encoder builds
-/// differ between platforms, so a missing one is an error instead.
-pub(crate) fn set_property(el: &gst::Element, name: &str, value: &str) -> Result<()> {
-    if el.find_property(name).is_none() {
-        anyhow::bail!(
-            "{} has no `{name}` property",
-            el.factory().map(|f| f.name()).unwrap_or_default()
-        );
-    }
-    el.set_property_from_str(name, value);
-    Ok(())
 }
 
 #[cfg(test)]

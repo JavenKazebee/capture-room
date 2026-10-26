@@ -27,7 +27,7 @@ use crate::api::types::{
 };
 use crate::pipeline::monitor::MonitorPipeline;
 use crate::pipeline::output::{OutputPipeline, OutputSink, PipelineOutput, Program, RunningOutput};
-use crate::pipeline::{capsfilter, make_el, set_mix_matrix};
+use crate::pipeline::{capsfilter, make_el, set_mix_matrix, set_property};
 
 pub const SOURCE_ELEMENTS: &[&str] = &["decklinkvideosrc", "decklinkaudiosrc"];
 pub const OUTPUT_ELEMENTS: &[&str] = &["decklinkvideosink", "decklinkaudiosink"];
@@ -235,7 +235,7 @@ impl SubDevice {
             None => el.set_property("device-number", self.device_number),
         }
         if profile != DecklinkProfile::Default && el.find_property("profile").is_some() {
-            el.set_property_from_str("profile", profile_nick(profile));
+            set_property(&el, "profile", profile_nick(profile))?;
         }
         Ok(el)
     }
@@ -547,10 +547,10 @@ impl DecklinkSource {
         let profile = self.devices.decklink_profiles.get(&d.card);
         let vsrc = d.element("decklinkvideosrc", &format!("decklink-v-{id}"), profile)?;
         match cfg.mode.as_deref().filter(|m| !m.is_empty()) {
-            Some(nick) => vsrc.set_property_from_str("mode", nick),
+            Some(nick) => set_property(&vsrc, "mode", nick)?,
             None => {
-                vsrc.set_property_from_str("mode", "auto");
-                vsrc.set_property_from_str("video-format", "auto");
+                set_property(&vsrc, "mode", "auto")?;
+                set_property(&vsrc, "video-format", "auto")?;
             }
         }
         let connection = match cfg.connection {
@@ -559,14 +559,14 @@ impl DecklinkSource {
             DecklinkConnection::Hdmi => "hdmi",
             DecklinkConnection::OpticalSdi => "optical-sdi",
         };
-        vsrc.set_property_from_str("connection", connection);
-        vsrc.set_property_from_str("timecode-format", "rp188any");
+        set_property(&vsrc, "connection", connection)?;
+        set_property(&vsrc, "timecode-format", "rp188any")?;
         let asrc = d.element(
             "decklinkaudiosrc",
             &format!("decklink-a-{id}"),
             DecklinkProfile::Default,
         )?;
-        asrc.set_property_from_str("channels", &cfg.channels.to_string());
+        set_property(&asrc, "channels", &cfg.channels.to_string())?;
 
         let bin = gst::Bin::with_name(&format!("decklink-{id}"));
         bin.add_many([&vsrc, &asrc])
@@ -724,7 +724,7 @@ impl DecklinkOutput {
         let consumer = &output.consumer;
         let profile = self.devices.decklink_profiles.get(&d.card);
         let vsink = d.element("decklinkvideosink", "vsink", profile)?;
-        vsink.set_property_from_str("mode", mode.nick);
+        set_property(&vsink, "mode", mode.nick)?;
         let asink = d.element("decklinkaudiosink", "asink", DecklinkProfile::Default)?;
         let channels = self.program.audio_channels.max(1);
         let embedded = embedded_channels(channels);
@@ -887,7 +887,7 @@ mod tests {
             return;
         };
         for m in MODES {
-            el.set_property_from_str("mode", m.nick);
+            set_property(&el, "mode", m.nick).unwrap();
         }
     }
 }

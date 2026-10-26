@@ -162,7 +162,7 @@ impl Lanes {
             &format!("channel-src-{tag}-{}", self.id),
             gst::ClockTime::ZERO,
             QueueLimit::Time(gst::ClockTime::from_mseconds(500)),
-        );
+        )?;
         bin.add(&src).context("add lane")?;
         src.static_pad("src")
             .context("lane src pad")?

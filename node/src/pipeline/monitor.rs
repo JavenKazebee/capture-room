@@ -21,8 +21,8 @@ use crate::api::types::MonitorSettingsDto;
 use crate::sources::InputSource;
 
 use super::{
-    capsfilter, handle_level_message, link_tee, make_el, set_state, share_clock, AudioMeter,
-    FirstError, ThumbnailStore,
+    capsfilter, handle_level_message, link_tee, make_el, set_property, set_state, share_clock,
+    AudioMeter, FirstError, ThumbnailStore,
 };
 
 /// The always-on pipeline for one source: thumbnails, audio levels, and the
@@ -304,7 +304,7 @@ fn add_thumbnail_branch(
 
     // Leaky, so a slow thumbnail never holds up the other branches.
     let tq = make_el("queue", "tq")?;
-    tq.set_property_from_str("leaky", "downstream");
+    set_property(&tq, "leaky", "downstream")?;
     tq.set_property("max-size-buffers", 2u32);
     let chain = [
         tq,

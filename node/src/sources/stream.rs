@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Result};
 use gstreamer::{self as gst, prelude::*};
+use tracing::warn;
 
 use super::device::LocalDevices;
 use super::live::{self, LinkTracker, LiveInput};
@@ -9,7 +10,7 @@ use super::InputSource;
 use crate::api::types::{
     AudioPlan, LinkState, RtspTransport, SourceCapabilitiesDto, SourceType, StreamSourceConfig,
 };
-use crate::pipeline::make_el;
+use crate::pipeline::{make_el, set_property};
 
 /// URL schemes a stream source accepts, and the element each one needs.
 pub const PROTOCOLS: &[(&str, &str)] = &[
@@ -81,7 +82,9 @@ impl InputSource for StreamSource {
         let (latency, transport) = (cfg.latency_ms, cfg.rtsp_transport);
         decode.connect("source-setup", false, move |args| {
             if let Ok(src) = args[1].get::<gst::Element>() {
-                configure(&src, latency, transport);
+                if let Err(e) = configure(&src, latency, transport) {
+                    warn!(error = %e, "stream source settings not applied");
+                }
             }
             None
         });
@@ -103,22 +106,23 @@ impl InputSource for StreamSource {
 }
 
 /// Apply the source's settings to the protocol element `uridecodebin3` made.
-fn configure(src: &gst::Element, latency_ms: u32, transport: RtspTransport) {
+fn configure(src: &gst::Element, latency_ms: u32, transport: RtspTransport) -> Result<()> {
     let factory = src
         .factory()
         .map(|f| f.name().to_string())
         .unwrap_or_default();
     if src.find_property("latency").is_some() {
         // rtspsrc's is unsigned, srtsrc's signed: parse from a string.
-        src.set_property_from_str("latency", &latency_ms.to_string());
+        set_property(src, "latency", &latency_ms.to_string())?;
     }
     if factory == "rtspsrc" {
         match transport {
             RtspTransport::Auto => {}
-            RtspTransport::Tcp => src.set_property_from_str("protocols", "tcp"),
-            RtspTransport::Udp => src.set_property_from_str("protocols", "udp+udp-mcast"),
+            RtspTransport::Tcp => set_property(src, "protocols", "tcp")?,
+            RtspTransport::Udp => set_property(src, "protocols", "udp+udp-mcast")?,
         }
     }
+    Ok(())
 }
 
 pub fn scheme(url: &str) -> Option<String> {
