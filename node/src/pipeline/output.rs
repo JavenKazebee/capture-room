@@ -963,4 +963,32 @@ mod tests {
         assert_eq!(video.load(Ordering::Relaxed), 0);
         mon.stop().unwrap();
     }
+
+    /// A mount whose channel has gone says why its viewers get nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "real-time (~3 s); uses port 8554; run with --ignored"]
+    async fn rtsp_output_reports_an_unfed_viewer() {
+        gst::init().unwrap();
+        let mon = channel_monitor();
+        let config = OutputConfig::Rtsp {
+            path: Some("cr-test-unfed".into()),
+            bitrate_kbps: 2000,
+        };
+        let leg = OutputLeg::start(&mon, test_sink(&config).as_ref()).unwrap();
+        mon.stop().unwrap();
+        drop(mon);
+        assert_eq!(leg.error(), None);
+
+        let url = format!("rtsp://127.0.0.1:{}/cr-test-unfed", rtsp::RTSP_PORT);
+        let (recv, video, _) = rtsp_receiver(&url);
+        recv.set_state(gst::State::Playing).unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        recv.set_state(gst::State::Null).unwrap();
+
+        assert_eq!(video.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            leg.error().as_deref(),
+            Some("viewers get nothing: the channel stopped")
+        );
+    }
 }
