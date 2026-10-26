@@ -35,39 +35,31 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # plugins-bad's -dev package drags in OpenCV, VTK and Qt: about 240 MB,
-      # which the Azure mirror sometimes serves at under 100 kB/s (one run
-      # spent 48 minutes downloading). The .debs are cached and apt still
-      # installs them, so nothing is skipped the way cache-apt-pkgs-action's
-      # restored files were (the linker couldn't find some libraries).
-      - name: Cache apt packages
-        uses: actions/cache@v6
+      # The .debs are cached and apt still installs them, so nothing is
+      # skipped the way cache-apt-pkgs-action's restored files were (the
+      # linker couldn't find some libraries).
+      - name: Restore apt packages
+        id: apt
+        uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/apt-archives
-          key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/ci.yml') }}
+          key: apt-${{ runner.os }}-${{ hashFiles('scripts/linux/gstreamer.sh') }}
           restore-keys: apt-${{ runner.os }}-
 
-      # The -dev packages to build against (plugins-bad has WebRTC, which
-      # gst-plugin-webrtc links), libssl for reqwest's native TLS, and the
-      # plugins the tests' pipelines use. It takes about a minute: the timeout
-      # fails a crawling mirror fast so the job can be rerun.
+      # About a minute, or seconds from the cache. The timeout is a backstop
+      # for the script's own: three mirrors at a few minutes each.
       - name: Install GStreamer
-        timeout-minutes: 10
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          sudo rm -f /var/lib/man-db/auto-update
-          archives=$RUNNER_TEMP/apt-archives
-          mkdir -p "$archives/partial"
-          sudo apt-get update
-          # The runner owns the folder, so apt's _apt user can't write to it.
-          sudo -E apt-get install -y --no-install-recommends \
-            -o Dir::Cache::Archives="$archives" -o APT::Sandbox::User=root \
-            pkg-config libssl-dev \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            libgstreamer-plugins-bad1.0-dev libgstrtspserver-1.0-dev \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-            gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-nice
+        timeout-minutes: 20
+        run: scripts/linux/gstreamer.sh "$RUNNER_TEMP/apt-archives"
+
+      # Saved here rather than at the end of the job, which only saves when
+      # every check passes.
+      - name: Save apt packages
+        if: steps.apt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          key: ${{ steps.apt.outputs.cache-primary-key }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
