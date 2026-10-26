@@ -50,13 +50,8 @@ export const useNodesStore = defineStore('nodes', () => {
    */
   async function load() {
     await track(async () => {
-      const [list, settings, waiting] = await Promise.allSettled([
-        api<NodeDto[]>('/nodes'),
-        api<NodeSettingsDto>('/node/settings'),
-        api<FoundNodeDto[]>('/found-nodes'),
-      ])
+      const [list, waiting] = await Promise.allSettled([api<NodeDto[]>('/nodes'), api<FoundNodeDto[]>('/found-nodes')])
       if (waiting.status === 'fulfilled') found.value = waiting.value
-      if (settings.status === 'fulfilled') self.value = settings.value
       if (list.status === 'fulfilled') {
         for (const n of list.value) {
           const r = renamed.get(n.id)
@@ -66,7 +61,16 @@ export const useNodesStore = defineStore('nodes', () => {
         }
         nodes.value = list.value
       }
-      const failed = [list, settings, waiting].find((r) => r.status === 'rejected')
+      // Settings are read through this node's entry, so they wait for the list (or the last one that loaded).
+      const selfId = nodes.value.find((n) => n.is_self)?.id
+      const settings = selfId
+        ? await nodeApi(selfId)<NodeSettingsDto>('/settings').then(
+            (value) => ({ status: 'fulfilled', value }) as const,
+            (reason: unknown) => ({ status: 'rejected', reason }) as const,
+          )
+        : null
+      if (settings?.status === 'fulfilled') self.value = settings.value
+      const failed = [list, settings, waiting].find((r) => r?.status === 'rejected')
       if (failed) throw failed.reason
     })
   }
