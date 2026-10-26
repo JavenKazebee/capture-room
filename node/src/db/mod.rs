@@ -4,11 +4,14 @@
 
 use anyhow::{Context, Result};
 use sqlx::{
-    sqlite::SqliteConnectOptions, types::Json, AssertSqlSafe, FromRow, Sqlite, SqlitePool,
-    Transaction,
+    sqlite::{SqliteConnectOptions, SqliteJournalMode},
+    types::Json,
+    AssertSqlSafe, FromRow, Sqlite, SqlitePool, Transaction,
 };
 use std::collections::HashMap;
+use std::path::Path;
 use std::str::FromStr;
+use std::time::Duration;
 use tracing::info;
 
 use crate::api::types::{
@@ -18,12 +21,18 @@ use crate::api::types::{
     ScheduleRunStatus,
 };
 
-pub async fn init(db_path: &str) -> Result<SqlitePool> {
-    let opts = SqliteConnectOptions::from_str(db_path)
-        .context("parse db path")?
+pub async fn init(db_path: &Path) -> Result<SqlitePool> {
+    // By filename: `from_str` would parse the path as a URL, percent-decoding
+    // it and cutting it at `?`.
+    let opts = SqliteConnectOptions::new()
+        .filename(db_path)
         .create_if_missing(true)
         // Preset outputs cascade-delete with their preset.
-        .foreign_keys(true);
+        .foreign_keys(true)
+        // The service, the CLI and the app opened from the desktop all open
+        // this file: readers don't block the writer, and a busy one waits.
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(5));
 
     let pool = SqlitePool::connect_with(opts)
         .await
@@ -33,7 +42,7 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
     refuse_pre_baseline(&pool, &migrator, db_path).await?;
     migrator.run(&pool).await.context("run migrations")?;
 
-    info!(path = db_path, "database ready");
+    info!(path = %db_path.display(), "database ready");
     Ok(pool)
 }
 
@@ -44,7 +53,7 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
 async fn refuse_pre_baseline(
     pool: &SqlitePool,
     migrator: &sqlx::migrate::Migrator,
-    db_path: &str,
+    db_path: &Path,
 ) -> Result<()> {
     let applied: Option<Vec<u8>> =
         match sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = 1")
@@ -61,9 +70,10 @@ async fn refuse_pre_baseline(
         .context("no 0001 migration")?;
     match applied {
         Some(checksum) if checksum != *baseline.checksum => anyhow::bail!(
-            "{db_path} is from Capture Room 0.1 or a development build before 0.2, \
+            "{} is from Capture Room 0.1 or a development build before 0.2, \
              which this version can't upgrade: move it aside or delete it, and the node \
-             starts with a new database"
+             starts with a new database",
+            db_path.display()
         ),
         _ => Ok(()),
     }
@@ -1050,11 +1060,10 @@ mod tests {
     async fn refuses_a_database_from_before_the_baseline() {
         let path = std::env::temp_dir().join(format!("capture-room-old-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
-        let url = format!("sqlite://{}", path.display());
-        let pool = init(&url).await.unwrap();
+        let pool = init(&path).await.unwrap();
         pool.close().await;
         // Opening it again is fine.
-        let pool = init(&url).await.unwrap();
+        let pool = init(&path).await.unwrap();
 
         // 0.1's 0001_schema.sql had another checksum.
         sqlx::query("UPDATE _sqlx_migrations SET checksum = x'00' WHERE version = 1")
@@ -1062,9 +1071,36 @@ mod tests {
             .await
             .unwrap();
         pool.close().await;
-        let err = init(&url).await.unwrap_err().to_string();
+        let err = init(&path).await.unwrap_err().to_string();
         assert!(err.contains("Capture Room 0.1"), "{err}");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn opens_the_path_as_given_in_wal_mode() {
+        let dir = std::env::temp_dir().join(format!("capture-room-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A URL parser would decode `%41` and cut at `#` or `?`; Windows
+        // forbids `?` in file names.
+        let name = if cfg!(windows) {
+            "a%41b#c.db"
+        } else {
+            "a%41b#c?mode=ro.db"
+        };
+        let pool = init(&dir.join(name)).await.unwrap();
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(mode, "wal");
+        pool.close().await;
+        let files: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(files, [name]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -1072,7 +1108,7 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("capture-room-fresh-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
-        let pool = init(&format!("sqlite://{}", path.display())).await.unwrap();
+        let pool = init(&path).await.unwrap();
         let sources = configured_sources_list(&pool).await.unwrap();
         assert_eq!(sources.len(), 1);
         let s = &sources[0];
@@ -1092,7 +1128,7 @@ mod tests {
     #[tokio::test]
     async fn source_delete_takes_its_playlist_and_buffer() {
         let path = std::env::temp_dir().join(format!("capture-room-db-{}.db", std::process::id()));
-        let pool = init(&format!("sqlite://{}", path.display())).await.unwrap();
+        let pool = init(&path).await.unwrap();
         for sql in [
             "INSERT INTO configured_sources (id, name, config, created_at) VALUES ('c', 'c', '{}', '')",
             "INSERT INTO playlists (channel_id, loop_playlist) VALUES ('c', 0)",
@@ -1117,7 +1153,7 @@ mod tests {
     async fn preset_outputs_keep_their_order() {
         let path =
             std::env::temp_dir().join(format!("capture-room-presets-{}.db", std::process::id()));
-        let pool = init(&format!("sqlite://{}", path.display())).await.unwrap();
+        let pool = init(&path).await.unwrap();
         let leg = |name: &str| -> PresetOutputInput {
             serde_json::from_value(serde_json::json!({
                 "name": name, "codec": "h264", "container": "mov", "resolution": null,
@@ -1153,7 +1189,7 @@ mod tests {
     #[tokio::test]
     async fn ndi_subscriptions_round_trip() {
         let path = std::env::temp_dir().join(format!("capture-room-ndi-{}.db", std::process::id()));
-        let pool = init(&format!("sqlite://{}", path.display())).await.unwrap();
+        let pool = init(&path).await.unwrap();
         assert_eq!(
             ndi_subscriptions_get(&pool).await.unwrap(),
             NdiSubscriptionsInput::default()
@@ -1177,7 +1213,7 @@ mod tests {
     async fn clip_groups_list_together_and_go_with_their_last_clip() {
         let path =
             std::env::temp_dir().join(format!("capture-room-clips-{}.db", std::process::id()));
-        let pool = init(&format!("sqlite://{}", path.display())).await.unwrap();
+        let pool = init(&path).await.unwrap();
         let clip = |id: &str, group: Option<&str>, created_at: &str| ReplayClipRow {
             id: id.into(),
             source_id: id.into(),

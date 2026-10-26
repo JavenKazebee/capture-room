@@ -58,7 +58,7 @@ struct Args {
     clock_port: Option<u16>,
 
     #[arg(long, default_value = "capture-room.db")]
-    db: String,
+    db: std::path::PathBuf,
 
     /// Show the menu bar icon (the installed service always does).
     #[arg(long)]
