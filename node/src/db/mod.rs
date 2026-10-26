@@ -1095,9 +1095,13 @@ mod tests {
             .unwrap();
         assert_eq!(mode, "wal");
         pool.close().await;
+        // SQLite removes `-wal` and `-shm` only if the last connection to
+        // close sees no other open, and the pool closes its connections
+        // concurrently.
         let files: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
-            .map(|e| e.unwrap().file_name())
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|f| !f.ends_with("-wal") && !f.ends_with("-shm"))
             .collect();
         assert_eq!(files, [name]);
         let _ = std::fs::remove_dir_all(&dir);
