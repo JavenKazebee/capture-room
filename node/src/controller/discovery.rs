@@ -511,6 +511,11 @@ pub fn start_health_poller(ctx: Ctx) {
                     }
                     .await;
                     let result = match result {
+                        Ok(status) if status.version != env!("CARGO_PKG_VERSION") => {
+                            Err(Unreachable::OtherVersion {
+                                version: status.version,
+                            })
+                        }
                         Ok(status) => Ok(status),
                         Err(e) => Err(diagnose(ctx, &id, &url, pinned.as_deref(), e).await),
                     };

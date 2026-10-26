@@ -3,7 +3,10 @@
 //! names and formats they used, so history survives renames and deletes.
 
 use anyhow::{Context, Result};
-use sqlx::{sqlite::SqliteConnectOptions, types::Json, FromRow, Sqlite, SqlitePool, Transaction};
+use sqlx::{
+    sqlite::SqliteConnectOptions, types::Json, AssertSqlSafe, FromRow, Sqlite, SqlitePool,
+    Transaction,
+};
 use std::collections::HashMap;
 use std::str::FromStr;
 use tracing::info;
@@ -27,98 +30,47 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
         .context("open sqlite")?;
 
     let migrator = sqlx::migrate!("./migrations");
-    let fresh = is_fresh(&pool).await;
-    adopt_squashed_schema(&pool, &migrator).await?;
+    refuse_pre_baseline(&pool, &migrator, db_path).await?;
     migrator.run(&pool).await.context("run migrations")?;
-    if fresh {
-        seed_fresh(&pool).await.context("seed a new database")?;
-    }
 
     info!(path = db_path, "database ready");
     Ok(pool)
 }
 
-/// Nothing has been migrated yet: no migrations table, or an empty one.
-async fn is_fresh(pool: &SqlitePool) -> bool {
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM _sqlx_migrations")
-        .fetch_one(pool)
-        .await
-        .map_or(true, |n| n == 0)
-}
-
-/// `0001_schema.sql` seeds two test sources, and can't be changed without
-/// breaking its checksum. A new install starts with one instead; databases
-/// that already have the two keep them.
-async fn seed_fresh(pool: &SqlitePool) -> Result<()> {
-    let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM configured_sources WHERE id IN ('test-1', 'test-2')")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query(
-        "INSERT INTO configured_sources (id, name, config, created_at) VALUES \
-         ('test-1', 'Test Source', ?, datetime('now'))",
-    )
-    .bind(
-        r#"{"type":"test","pattern":"smpte","width":1920,"height":1080,"fps_num":30,"fps_den":1,"audio_signal":"pink-noise","frequency":0.0,"channels":2}"#,
-    )
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(())
-}
-
-/// The last of the development migrations squashed into `0001_schema.sql`.
-const SQUASHED_LAST: (i64, &str) = (20, "replay clip groups");
-
-/// A database from before the squash has all 20 development migrations
-/// applied, and the same schema `0001_schema.sql` creates: record it as that
-/// one migration instead, so sqlx doesn't refuse it. Remove once no node
-/// predates the squash.
-async fn adopt_squashed_schema(
+/// `0001_schema.sql` was rewritten for 0.2, so a database from 0.1 or an
+/// earlier development build has a migration 1 with another checksum. sqlx
+/// would refuse it with "previously applied but has been modified"; say what
+/// it is and what to do instead.
+async fn refuse_pre_baseline(
     pool: &SqlitePool,
     migrator: &sqlx::migrate::Migrator,
+    db_path: &str,
 ) -> Result<()> {
-    let applied: Vec<(i64, String)> = match sqlx::query_as(
-        "SELECT version, description FROM _sqlx_migrations WHERE success ORDER BY version",
-    )
-    .fetch_all(pool)
-    .await
-    {
-        Ok(rows) => rows,
-        // A new database: no migrations table yet.
-        Err(_) => return Ok(()),
-    };
-    if !matches!(applied.first(), Some((1, d)) if d == "baseline") {
-        return Ok(());
-    }
-    if applied.last().map(|(v, d)| (*v, d.as_str())) != Some(SQUASHED_LAST)
-        || applied.len() as i64 != SQUASHED_LAST.0
-    {
-        anyhow::bail!(
-            "this database is from a development build older than its last schema change; \
-             start that build once to bring it up to date, or delete the database"
-        );
-    }
-    let schema = migrator
+    let applied: Option<Vec<u8>> =
+        match sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = 1")
+            .fetch_optional(pool)
+            .await
+        {
+            Ok(checksum) => checksum,
+            // A new database: no migrations table yet.
+            Err(_) => return Ok(()),
+        };
+    let baseline = migrator
         .iter()
         .find(|m| m.version == 1)
         .context("no 0001 migration")?;
-    let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM _sqlx_migrations WHERE version > 1")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("UPDATE _sqlx_migrations SET description = ?, checksum = ? WHERE version = 1")
-        .bind(schema.description.as_ref())
-        .bind(schema.checksum.as_ref())
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
-    info!("recorded the development migrations as the squashed schema");
-    Ok(())
+    match applied {
+        Some(checksum) if checksum != *baseline.checksum => anyhow::bail!(
+            "{db_path} is from Capture Room 0.1 or a development build before 0.2, \
+             which this version can't upgrade: move it aside or delete it, and the node \
+             starts with a new database"
+        ),
+        _ => Ok(()),
+    }
 }
 
 /// Run a `DELETE ... WHERE <key> = ?` for `id`: whether it removed a row.
-async fn delete_one(pool: &SqlitePool, sql: &str, id: &str) -> Result<bool> {
+async fn delete_one(pool: &SqlitePool, sql: &'static str, id: &str) -> Result<bool> {
     let res = sqlx::query(sql).bind(id).execute(pool).await?;
     Ok(res.rows_affected() > 0)
 }
@@ -175,7 +127,10 @@ pub async fn monitor_settings_set(pool: &SqlitePool, m: &MonitorSettingsDto) -> 
     Ok(())
 }
 
-const SESSION_SELECT: &str = "SELECT id, source_id, preset_id, source_name, preset_name, started_at, stopped_at,
+// The `*_SELECT` column lists are spliced into queries with `format!`, which sqlx
+// only accepts wrapped in `AssertSqlSafe`. That holds because they are constants:
+// every value from outside still goes through `.bind()`.
+const SESSION_SELECT: &str ="SELECT id, source_id, preset_id, source_name, preset_name, started_at, stopped_at,
                                      outputs, output_paths, dropped_frames, files, status, error_message,
                                      clock
                               FROM recording_sessions";
@@ -261,9 +216,9 @@ pub async fn sessions_list(
     before: Option<&str>,
     limit: u32,
 ) -> Result<Vec<RecordingSessionDto>> {
-    let rows = sqlx::query_as::<_, RecordingSessionDto>(&format!(
+    let rows = sqlx::query_as::<_, RecordingSessionDto>(AssertSqlSafe(format!(
         "{SESSION_SELECT} WHERE (?1 IS NULL OR started_at < ?1) ORDER BY started_at DESC LIMIT ?2"
-    ))
+    )))
     .bind(before)
     .bind(limit)
     .fetch_all(pool)
@@ -278,10 +233,12 @@ pub async fn session_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
 }
 
 pub async fn session_get(pool: &SqlitePool, id: &str) -> Result<Option<RecordingSessionDto>> {
-    let row = sqlx::query_as::<_, RecordingSessionDto>(&format!("{SESSION_SELECT} WHERE id = ?"))
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
+    let row = sqlx::query_as::<_, RecordingSessionDto>(AssertSqlSafe(format!(
+        "{SESSION_SELECT} WHERE id = ?"
+    )))
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
     Ok(row)
 }
 
@@ -441,9 +398,9 @@ const CONFIGURED_SOURCE_SELECT: &str =
     "SELECT id, name, config, created_at FROM configured_sources";
 
 pub async fn configured_sources_list(pool: &SqlitePool) -> Result<Vec<ConfiguredSourceDto>> {
-    let rows = sqlx::query_as::<_, ConfiguredSourceDto>(&format!(
+    let rows = sqlx::query_as::<_, ConfiguredSourceDto>(AssertSqlSafe(format!(
         "{CONFIGURED_SOURCE_SELECT} ORDER BY created_at"
-    ))
+    )))
     .fetch_all(pool)
     .await?;
     Ok(rows)
@@ -453,9 +410,9 @@ pub async fn configured_source_get(
     pool: &SqlitePool,
     id: &str,
 ) -> Result<Option<ConfiguredSourceDto>> {
-    let row = sqlx::query_as::<_, ConfiguredSourceDto>(&format!(
+    let row = sqlx::query_as::<_, ConfiguredSourceDto>(AssertSqlSafe(format!(
         "{CONFIGURED_SOURCE_SELECT} WHERE id = ?"
-    ))
+    )))
     .bind(id)
     .fetch_optional(pool)
     .await?;
@@ -513,15 +470,16 @@ pub async fn configured_source_delete(pool: &SqlitePool, id: &str) -> Result<boo
 const MEDIA_SELECT: &str = "SELECT id, path, name, info, origin, session_id, added_at FROM media";
 
 pub async fn media_list(pool: &SqlitePool) -> Result<Vec<MediaItemDto>> {
-    let rows = sqlx::query_as::<_, MediaItemDto>(&format!("{MEDIA_SELECT} ORDER BY name"))
-        .fetch_all(pool)
-        .await?;
+    let rows =
+        sqlx::query_as::<_, MediaItemDto>(AssertSqlSafe(format!("{MEDIA_SELECT} ORDER BY name")))
+            .fetch_all(pool)
+            .await?;
     Ok(rows)
 }
 
 pub async fn media_get(pool: &SqlitePool, id: &str) -> Result<Option<MediaItemDto>> {
     Ok(
-        sqlx::query_as::<_, MediaItemDto>(&format!("{MEDIA_SELECT} WHERE id = ?"))
+        sqlx::query_as::<_, MediaItemDto>(AssertSqlSafe(format!("{MEDIA_SELECT} WHERE id = ?")))
             .bind(id)
             .fetch_optional(pool)
             .await?,
@@ -680,20 +638,20 @@ const REPLAY_CLIP_SELECT: &str = "SELECT c.id, c.source_id, c.source_name, c.nam
 
 /// Newest first; a group's clips in the order they were saved.
 pub async fn replay_clips_list(pool: &SqlitePool) -> Result<Vec<ReplayClipRow>> {
-    Ok(sqlx::query_as::<_, ReplayClipRow>(&format!(
+    Ok(sqlx::query_as::<_, ReplayClipRow>(AssertSqlSafe(format!(
         "{REPLAY_CLIP_SELECT} ORDER BY COALESCE(g.created_at, c.created_at) DESC, c.rowid"
-    ))
+    )))
     .fetch_all(pool)
     .await?)
 }
 
 pub async fn replay_clip_get(pool: &SqlitePool, id: &str) -> Result<Option<ReplayClipRow>> {
-    Ok(
-        sqlx::query_as::<_, ReplayClipRow>(&format!("{REPLAY_CLIP_SELECT} WHERE c.id = ?"))
-            .bind(id)
-            .fetch_optional(pool)
-            .await?,
-    )
+    Ok(sqlx::query_as::<_, ReplayClipRow>(AssertSqlSafe(format!(
+        "{REPLAY_CLIP_SELECT} WHERE c.id = ?"
+    )))
+    .bind(id)
+    .fetch_optional(pool)
+    .await?)
 }
 
 /// A group's clips, in the order they were saved.
@@ -701,9 +659,9 @@ pub async fn replay_clip_group_clips(
     pool: &SqlitePool,
     group_id: &str,
 ) -> Result<Vec<ReplayClipRow>> {
-    Ok(sqlx::query_as::<_, ReplayClipRow>(&format!(
+    Ok(sqlx::query_as::<_, ReplayClipRow>(AssertSqlSafe(format!(
         "{REPLAY_CLIP_SELECT} WHERE c.group_id = ? ORDER BY c.rowid"
-    ))
+    )))
     .bind(group_id)
     .fetch_all(pool)
     .await?)
@@ -943,7 +901,7 @@ const SCHEDULE_SELECT: &str = "SELECT id, name, enabled, kind, date, weekdays, m
 
 pub async fn schedules_list(pool: &SqlitePool) -> Result<Vec<ScheduleDto>> {
     Ok(
-        sqlx::query_as::<_, ScheduleDto>(&format!("{SCHEDULE_SELECT} ORDER BY name"))
+        sqlx::query_as::<_, ScheduleDto>(AssertSqlSafe(format!("{SCHEDULE_SELECT} ORDER BY name")))
             .fetch_all(pool)
             .await?,
     )
@@ -951,7 +909,7 @@ pub async fn schedules_list(pool: &SqlitePool) -> Result<Vec<ScheduleDto>> {
 
 pub async fn schedule_get(pool: &SqlitePool, id: &str) -> Result<Option<ScheduleDto>> {
     Ok(
-        sqlx::query_as::<_, ScheduleDto>(&format!("{SCHEDULE_SELECT} WHERE id = ?"))
+        sqlx::query_as::<_, ScheduleDto>(AssertSqlSafe(format!("{SCHEDULE_SELECT} WHERE id = ?")))
             .bind(id)
             .fetch_optional(pool)
             .await?,
@@ -1050,10 +1008,12 @@ pub async fn schedule_run_exists(
 
 pub async fn schedule_runs_running(pool: &SqlitePool) -> Result<Vec<ScheduleRunDto>> {
     Ok(
-        sqlx::query_as::<_, ScheduleRunDto>(&format!("{RUN_SELECT} WHERE status = ?"))
-            .bind(ScheduleRunStatus::Running)
-            .fetch_all(pool)
-            .await?,
+        sqlx::query_as::<_, ScheduleRunDto>(AssertSqlSafe(format!(
+            "{RUN_SELECT} WHERE status = ?"
+        )))
+        .bind(ScheduleRunStatus::Running)
+        .fetch_all(pool)
+        .await?,
     )
 }
 
@@ -1063,9 +1023,9 @@ pub async fn schedule_runs(
     schedule_id: &str,
     limit: u32,
 ) -> Result<Vec<ScheduleRunDto>> {
-    Ok(sqlx::query_as::<_, ScheduleRunDto>(&format!(
+    Ok(sqlx::query_as::<_, ScheduleRunDto>(AssertSqlSafe(format!(
         "{RUN_SELECT} WHERE schedule_id = ? ORDER BY planned_start DESC LIMIT ?"
-    ))
+    )))
     .bind(schedule_id)
     .bind(limit)
     .fetch_all(pool)
@@ -1078,81 +1038,32 @@ mod tests {
     use crate::api::types::{AudioTestSignal, SourceConfig, VideoTestPattern};
 
     async fn count(pool: &SqlitePool, table: &str, column: &str) -> i64 {
-        sqlx::query_scalar(&format!(
+        sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT COUNT(*) FROM {table} WHERE {column} = 'c'"
-        ))
+        )))
         .fetch_one(pool)
         .await
         .unwrap()
     }
 
-    /// Make `pool` look like a database from before the squash: the squashed
-    /// schema (without later migrations' changes), with `upto` development
-    /// migrations recorded.
-    async fn record_old_migrations(pool: &SqlitePool, upto: i64) {
-        sqlx::query("DELETE FROM _sqlx_migrations")
-            .execute(pool)
-            .await
-            .unwrap();
-        // Undo 0002, if it's there.
-        let _ = sqlx::query("ALTER TABLE nodes DROP COLUMN fingerprint")
-            .execute(pool)
-            .await;
-        // And 0003.
-        for table in ["schedule_runs", "schedules"] {
-            sqlx::query(&format!("DROP TABLE IF EXISTS {table}"))
-                .execute(pool)
-                .await
-                .unwrap();
-        }
-        for v in 1..=upto {
-            let description = match v {
-                1 => "baseline",
-                20 => "replay clip groups",
-                _ => "old",
-            };
-            sqlx::query(
-                "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) \
-                 VALUES (?, ?, 1, x'00', 0)",
-            )
-            .bind(v)
-            .bind(description)
-            .execute(pool)
-            .await
-            .unwrap();
-        }
-    }
-
     #[tokio::test]
-    async fn adopts_a_database_from_before_the_squash() {
-        let path =
-            std::env::temp_dir().join(format!("capture-room-squash-{}.db", std::process::id()));
+    async fn refuses_a_database_from_before_the_baseline() {
+        let path = std::env::temp_dir().join(format!("capture-room-old-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
         let url = format!("sqlite://{}", path.display());
         let pool = init(&url).await.unwrap();
-        record_old_migrations(&pool, 20).await;
         pool.close().await;
-
+        // Opening it again is fine.
         let pool = init(&url).await.unwrap();
-        let rows: Vec<(i64, String)> =
-            sqlx::query_as("SELECT version, description FROM _sqlx_migrations")
-                .fetch_all(&pool)
-                .await
-                .unwrap();
-        assert_eq!(
-            rows,
-            [
-                (1, "schema".to_string()),
-                (2, "node fingerprints".to_string()),
-                (3, "schedules".to_string()),
-                (4, "schedule monthly".to_string()),
-                (5, "whip tokens".to_string())
-            ]
-        );
 
-        // Short of the last development migration it can't be adopted.
-        record_old_migrations(&pool, 19).await;
+        // 0.1's 0001_schema.sql had another checksum.
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = x'00' WHERE version = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
         pool.close().await;
-        assert!(init(&url).await.is_err());
+        let err = init(&url).await.unwrap_err().to_string();
+        assert!(err.contains("Capture Room 0.1"), "{err}");
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1174,33 +1085,6 @@ mod tests {
             (VideoTestPattern::Smpte, 1920, 1080, 30, 1, 2)
         );
         assert_eq!(t.audio_signal, AudioTestSignal::PinkNoise);
-        pool.close().await;
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[tokio::test]
-    async fn an_existing_database_keeps_its_test_sources() {
-        let path =
-            std::env::temp_dir().join(format!("capture-room-seed-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let url = format!("sqlite://{}", path.display());
-        // Migrated by an earlier build, which kept the schema's two seeds.
-        let opts = SqliteConnectOptions::from_str(&url)
-            .unwrap()
-            .create_if_missing(true);
-        let pool = SqlitePool::connect_with(opts).await.unwrap();
-        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-        pool.close().await;
-
-        let pool = init(&url).await.unwrap();
-        let mut ids: Vec<String> = configured_sources_list(&pool)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|s| s.id)
-            .collect();
-        ids.sort();
-        assert_eq!(ids, ["test-1", "test-2"]);
         pool.close().await;
         let _ = std::fs::remove_file(path);
     }

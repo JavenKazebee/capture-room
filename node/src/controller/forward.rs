@@ -62,16 +62,51 @@ pub async fn forward(
         // The node router's paths are relative to `/api/v1/node`.
         return forward_local(&state, req, &format!("/{path}{query}")).await;
     }
-    let local_path = format!("/api/v1/node/{path}{query}");
-
-    let url = match state.controller.read().await.as_ref() {
-        Some(c) => c.registry.read().await.url_of(&node_id),
-        None => None,
-    };
-    match url {
-        Some(url) => forward_peer(&state, req, &format!("{url}{local_path}")).await,
-        None => (StatusCode::NOT_FOUND, "unknown node").into_response(),
+    match peer_url(&state, &node_id, &path).await {
+        Ok(url) => forward_peer(&state, req, &format!("{url}/api/v1/node/{path}{query}")).await,
+        Err(refused) => refused.into_response(),
     }
+}
+
+/// A peer's URL, unless it's unknown, or runs another version than this
+/// controller and `path` (relative to its `/api/v1/node`) isn't its update:
+/// a request from this version could mean something else to it.
+async fn peer_url(
+    state: &AppState,
+    node_id: &str,
+    path: &str,
+) -> Result<String, (StatusCode, String)> {
+    let unknown = || (StatusCode::NOT_FOUND, "unknown node".to_string());
+    let controller = state.controller.read().await;
+    let registry = controller
+        .as_ref()
+        .ok_or_else(unknown)?
+        .registry
+        .read()
+        .await;
+    let node = registry.get(node_id).ok_or_else(unknown)?;
+    if let Some(version) = registry.other_version(node_id) {
+        if !is_update(path) {
+            return Err((
+                StatusCode::CONFLICT,
+                format!(
+                    "{} runs {version} and this controller {}: update them to the same version",
+                    node.name,
+                    env!("CARGO_PKG_VERSION")
+                ),
+            ));
+        }
+    }
+    Ok(node.url.clone())
+}
+
+/// Whether `path` is a node's update, which it answers on any version.
+fn is_update(path: &str) -> bool {
+    let path = path.trim_start_matches('/');
+    matches!(
+        path.split('?').next().unwrap_or_default(),
+        "update" | "update/check"
+    )
 }
 
 /// Call a node's API (`path` relative to its `/api/v1/node`) from this
@@ -94,13 +129,7 @@ pub async fn call_node(
     let resp = if node_id == state.node_id {
         forward_local(state, req, path).await
     } else {
-        let url = match state.controller.read().await.as_ref() {
-            Some(c) => c.registry.read().await.url_of(node_id),
-            None => None,
-        };
-        let Some(url) = url else {
-            return Err("unknown node".into());
-        };
+        let url = peer_url(state, node_id, path).await.map_err(|(_, e)| e)?;
         forward_peer(state, req, &format!("{url}/api/v1/node{path}")).await
     };
     let status = resp.status();
@@ -182,4 +211,19 @@ async fn forward_peer(state: &AppState, req: Request, url: &str) -> Response {
     builder
         .body(Body::from_stream(resp.bytes_stream()))
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_update;
+
+    #[test]
+    fn only_the_update_reaches_another_version() {
+        for path in ["update", "/update", "update/check", "/update?x=1"] {
+            assert!(is_update(path), "{path}");
+        }
+        for path in ["status", "/recordings", "update/other", "updates"] {
+            assert!(!is_update(path), "{path}");
+        }
+    }
 }

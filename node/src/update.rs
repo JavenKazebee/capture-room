@@ -6,8 +6,8 @@
 //! version-checked, swapped in, and the node exits with
 //! [`RESTART_EXIT_CODE`](crate::service::RESTART_EXIT_CODE) for the service
 //! manager to start it. Only the installed service updates, never to an older
-//! version or while recording or playing. The old app is kept until the new
-//! one starts.
+//! version or while recording or playing (a controller, nor while its nodes
+//! are). The old app is kept until the new one starts.
 //!
 //! Windows won't replace a running exe or loaded DLL, nor rename a folder with
 //! one open, but renames the files themselves: the update moves the app's
@@ -113,8 +113,9 @@ fn url(version: Option<&str>, file: &str) -> String {
     }
 }
 
-/// Why the node can't update right now, if it can't.
-pub async fn busy_reason(state: &AppState) -> Option<String> {
+/// What this node is doing that an update would interrupt, if anything
+/// ("recording and a channel is playing").
+pub async fn own_work(state: &AppState) -> Option<String> {
     let activity = crate::session::activity(state).await;
     let mut doing = Vec::new();
     if activity.recordings > 0 {
@@ -126,7 +127,19 @@ pub async fn busy_reason(state: &AppState) -> Option<String> {
     if crate::benchmark::running_id(state).is_some() {
         doing.push("a benchmark is running");
     }
-    (!doing.is_empty()).then(|| format!("Not while {}.", doing.join(" and ")))
+    (!doing.is_empty()).then(|| doing.join(" and "))
+}
+
+/// Why the node can't update right now, if it can't: its own work, or on a
+/// controller, any of its nodes' (as of their last health check), since the
+/// controller on a new version can't reach them until they're updated too.
+pub async fn busy_reason(state: &AppState) -> Option<String> {
+    if let Some(doing) = own_work(state).await {
+        return Some(format!("Not while {doing}."));
+    }
+    let controller = state.controller.read().await;
+    let busy = controller.as_ref()?.registry.read().await.busy();
+    (!busy.is_empty()).then(|| format!("Not while nodes are busy ({}).", busy.join("; ")))
 }
 
 /// The status with its `busy` reason filled in.
@@ -192,9 +205,9 @@ pub async fn check(state: &AppState) {
     });
 }
 
-/// Start updating to the newest release, in the background. Fails at once
-/// if this node can't update now.
-pub async fn start(state: &Arc<AppState>) -> Result<()> {
+/// Start updating to `version`, or the newest release, in the background.
+/// Fails at once if this node can't update now.
+pub async fn start(state: &Arc<AppState>, version: Option<String>) -> Result<()> {
     let status = status(state).await;
     if let Some(why) = status.unsupported.or(status.busy) {
         bail!(why);
@@ -203,8 +216,19 @@ pub async fn start(state: &Arc<AppState>) -> Result<()> {
         status.phase == UpdatePhase::Idle,
         "An update or check is already running."
     );
-    let Some(version) = status.latest.filter(|_| status.available) else {
-        bail!("This is the newest version.");
+    let version = match version {
+        Some(v) => {
+            ensure!(
+                semver::Version::parse(&v)? > semver::Version::parse(env!("CARGO_PKG_VERSION"))?,
+                "This node runs {}, not older than {v}.",
+                env!("CARGO_PKG_VERSION")
+            );
+            v
+        }
+        None => match status.latest.filter(|_| status.available) {
+            Some(v) => v,
+            None => bail!("This is the newest version."),
+        },
     };
     state.updater.set(|s| {
         s.phase = UpdatePhase::Downloading;

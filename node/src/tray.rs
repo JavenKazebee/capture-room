@@ -99,7 +99,7 @@ pub fn spawn(state: Arc<AppState>, displays: Displays, mut actions: UnboundedRec
                 }
                 Action::Quit => crate::session::quit(&state, 0).await,
                 Action::Update => {
-                    if let Err(e) = crate::update::start(&state).await {
+                    if let Err(e) = crate::update::start(&state, None).await {
                         state.updater.fail(e.to_string());
                     }
                 }

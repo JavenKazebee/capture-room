@@ -37,6 +37,8 @@ export const useNodesStore = defineStore('nodes', () => {
   const isController = computed(() => self.value?.is_controller ?? false)
   /** Nodes that can currently be reached. */
   const reachable = computed(() => nodes.value.filter((n) => n.healthy))
+  /** The version of the instance the UI is connected to: every node must run it. */
+  const version = computed(() => nodes.value.find((n) => n.is_self)?.version ?? '')
 
   async function load() {
     const [list, settings, waiting] = await Promise.all([
@@ -120,5 +122,5 @@ export const useNodesStore = defineStore('nodes', () => {
     return id === self.value?.node_id ? `${name} (this node)` : name
   }
 
-  return { nodes, found, self, isController, reachable, load, setController, add, approve, pair, dismiss, remove, rename, nameOf, labelOf }
+  return { nodes, found, self, isController, reachable, version, load, setController, add, approve, pair, dismiss, remove, rename, nameOf, labelOf }
 })
