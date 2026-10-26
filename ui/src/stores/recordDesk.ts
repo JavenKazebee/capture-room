@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useStorage } from '@vueuse/core'
 import { toast } from 'vue-sonner'
-import { api } from '@/composables/useApi'
+import { nodeApi } from '@/composables/useApi'
 import { useSelection } from '@/composables/useSelection'
 import { formatTimeLeft, plural } from '@/lib/format'
 import { notifyError, notifyWarn } from '@/lib/notify'
@@ -122,7 +122,9 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
 
   /** A shared-clock start far enough ahead for every node to build its legs; `null` if the clock can't be read. */
   async function syncedStartTime(): Promise<ClockTimeDto | null> {
-    const now = await api<ClockTimeDto>('/node/clock/now').catch(() => null)
+    const selfId = nodes.self?.node_id
+    if (!selfId) return null
+    const now = await nodeApi(selfId)<ClockTimeDto>('/clock/now').catch(() => null)
     return now && { ...now, time_us: now.time_us + SYNC_LEAD_US }
   }
 

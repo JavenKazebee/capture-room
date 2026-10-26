@@ -41,11 +41,12 @@ export const useNodesStore = defineStore('nodes', () => {
   const version = computed(() => nodes.value.find((n) => n.is_self)?.version ?? '')
 
   async function load() {
-    const [list, settings, waiting] = await Promise.all([
+    const [list, waiting] = await Promise.all([
       api<NodeDto[]>('/nodes').catch(() => [] as NodeDto[]),
-      api<NodeSettingsDto>('/node/settings').catch(() => null),
       api<FoundNodeDto[]>('/found-nodes').catch(() => [] as FoundNodeDto[]),
     ])
+    const selfId = list.find((n) => n.is_self)?.id
+    const settings = selfId ? await nodeApi(selfId)<NodeSettingsDto>('/settings').catch(() => null) : null
     found.value = waiting
     for (const n of list) {
       const r = renamed.get(n.id)
