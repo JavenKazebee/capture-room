@@ -134,10 +134,11 @@ impl OutputSink for RtspOutput {
         let media: Arc<Mutex<Vec<glib::WeakRef<rtsp::RTSPMedia>>>> = Arc::default();
         let monitor_ref = Arc::downgrade(monitor);
         let media_ref = media.clone();
+        let error: Arc<Mutex<Option<String>>> = Arc::default();
+        let error_ref = error.clone();
         let path = self.path.clone();
         factory.connect_media_configure(move |_, m| {
-            if let Err(e) = connect_media(m, &monitor_ref) {
-                warn!(path = %path, error = %format!("{e:#}"), "RTSP viewer couldn't be fed");
+            if !note_feed(&error_ref, &path, connect_media(m, &monitor_ref)) {
                 return;
             }
             let mut media = media_ref.lock().unwrap();
@@ -149,6 +150,7 @@ impl OutputSink for RtspOutput {
             server,
             path: self.path.clone(),
             media,
+            error,
         }))
     }
 }
@@ -186,16 +188,34 @@ fn connect_media(media: &rtsp::RTSPMedia, monitor: &Weak<MonitorPipeline>) -> Re
     Ok(())
 }
 
+/// Keep why `fed` failed in `error`, or clear it: whether it succeeded.
+fn note_feed(error: &Mutex<Option<String>>, path: &str, fed: Result<()>) -> bool {
+    match fed {
+        Ok(()) => {
+            error.lock().unwrap().take();
+            true
+        }
+        Err(e) => {
+            let e = format!("{e:#}");
+            warn!(path = %path, error = %e, "RTSP viewer couldn't be fed");
+            *error.lock().unwrap() = Some(format!("viewers get nothing: {e}"));
+            false
+        }
+    }
+}
+
 /// Dropping it unmounts and stops its viewers' streams.
 struct RtspMount {
     server: rtsp::RTSPServer,
     path: String,
     media: Arc<Mutex<Vec<glib::WeakRef<rtsp::RTSPMedia>>>>,
+    /// Why the last media couldn't be fed from the monitor, until one is.
+    error: Arc<Mutex<Option<String>>>,
 }
 
 impl RunningOutput for RtspMount {
     fn error(&self) -> Option<String> {
-        None
+        self.error.lock().unwrap().clone()
     }
 
     fn receivers(&self) -> Option<u32> {
@@ -238,5 +258,21 @@ mod tests {
         assert_eq!(mount_path(Some("cam_1.hd"), "x"), "/cam_1.hd");
         assert_eq!(mount_path(Some("Café!!"), "x"), "/caf");
         assert_eq!(mount_path(None, "!!!"), "/channel");
+    }
+
+    #[test]
+    fn feed_errors_last_until_a_feed_works() {
+        let error = Mutex::new(None);
+        assert!(!note_feed(
+            &error,
+            "/x",
+            Err(anyhow!("the channel stopped"))
+        ));
+        assert_eq!(
+            error.lock().unwrap().as_deref(),
+            Some("viewers get nothing: the channel stopped")
+        );
+        assert!(note_feed(&error, "/x", Ok(())));
+        assert_eq!(*error.lock().unwrap(), None);
     }
 }
