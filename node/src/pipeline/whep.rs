@@ -37,11 +37,6 @@ pub fn hide_unsupported_encoders() {
     }
 }
 
-fn free_port() -> Result<u16> {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).context("find a port for WHEP")?;
-    Ok(listener.local_addr()?.port())
-}
-
 /// Served at `/whep<path>` on the node's API port.
 pub struct WhepOutput {
     pub path: String,
@@ -57,7 +52,7 @@ impl OutputSink for WhepOutput {
         if port(&self.path).is_some() {
             anyhow::bail!("another channel serves {} over WHEP", self.path);
         }
-        let port = free_port()?;
+        let port = super::loopback_port().context("find a port for WHEP")?;
         let output = PipelineOutput::start(monitor, self.label(), self.build(port)?)?;
         MOUNTS.lock().unwrap().insert(self.path.clone(), port);
         Ok(Box::new(WhepMount {
@@ -208,7 +203,7 @@ mod tests {
 
         // Answers once the signaller is up (it starts with the stream).
         let endpoint = format!("http://127.0.0.1:{api}/whep/whep-test");
-        let http = reqwest::Client::new();
+        let http = crate::pipeline::loopback_http();
         let mut ready = false;
         for _ in 0..50 {
             let resp = http

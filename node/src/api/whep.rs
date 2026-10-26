@@ -3,7 +3,6 @@
 //! `/whep/<path>/resource/<id>` (PATCH for ICE, DELETE to leave). Any origin
 //! is allowed: these only ever give out the program, like RTSP.
 
-use std::sync::LazyLock;
 use std::time::Duration;
 
 use axum::{
@@ -15,13 +14,11 @@ use axum::{
     Router,
 };
 
-use crate::pipeline::whep;
+use crate::pipeline::{loopback_http, whep};
 
 /// Longer than the signaller takes to answer an offer.
 const TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_BODY: usize = 64 * 1024;
-
-static HTTP: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
 pub fn router<S: Clone + Send + Sync + 'static>() -> Router<S> {
     Router::new().route("/whep/{*path}", any(proxy))
@@ -55,7 +52,7 @@ async fn proxy(Path(path): Path<String>, req: Request) -> Response {
         Ok(b) => b,
         Err(e) => return cors((StatusCode::BAD_REQUEST, e.to_string()).into_response()),
     };
-    let mut out = HTTP
+    let mut out = loopback_http()
         .request(method, format!("http://127.0.0.1:{port}{upstream}"))
         .body(body);
     for name in [header::CONTENT_TYPE, header::IF_MATCH] {
