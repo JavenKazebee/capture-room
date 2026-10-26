@@ -722,7 +722,7 @@ pub fn run_command(command: Command) -> anyhow::Result<()> {
         .enable_all()
         .build()?;
     let (token, code) = runtime.block_on(async {
-        let pool = db::init(&db.display().to_string()).await?;
+        let pool = db::init(&db).await?;
         if reset {
             db::config_set(&pool, CONFIG_KEY, &new_token()).await?;
             replace_pairing_code(&pool).await?;
@@ -852,9 +852,7 @@ mod tests {
     async fn a_sign_in_link_works_once() {
         let path =
             std::env::temp_dir().join(format!("capture-room-link-{}.db", std::process::id()));
-        let pool = db::init(&format!("sqlite://{}", path.display()))
-            .await
-            .unwrap();
+        let pool = db::init(&path).await.unwrap();
         let link = sign_in_link(&pool, 7700).await.unwrap();
         let secret = link.split("secret=").nth(1).unwrap();
         assert!(link.starts_with("http://localhost:7700/api/v1/auth/link?"));
