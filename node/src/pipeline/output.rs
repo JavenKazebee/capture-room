@@ -218,7 +218,14 @@ pub fn sink(
 pub struct OutputLeg {
     label: String,
     running: Box<dyn RunningOutput>,
+    #[cfg(test)]
+    key: usize,
 }
+
+// Not the leg's address: a restarted leg is allocated just after the old one is
+// freed, and the allocator can hand it the same address.
+#[cfg(test)]
+static NEXT_KEY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 impl OutputLeg {
     /// Start sending `monitor`'s program to `sink`. Errors don't repeat the
@@ -227,7 +234,12 @@ impl OutputLeg {
         let label = sink.label();
         let running = sink.start(monitor)?;
         info!(output = %label, "output started");
-        Ok(Self { label, running })
+        Ok(Self {
+            label,
+            running,
+            #[cfg(test)]
+            key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
+        })
     }
 
     pub fn label(&self) -> &str {
@@ -257,7 +269,7 @@ impl OutputLeg {
     /// Tells running legs apart: a restarted one has a new key.
     #[cfg(test)]
     pub fn key(&self) -> usize {
-        &*self.running as *const dyn RunningOutput as *const () as usize
+        self.key
     }
 }
 

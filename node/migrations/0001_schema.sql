@@ -1,18 +1,21 @@
--- The whole schema, squashed from the development migrations before the first
--- release. Add changes as new numbered migrations after this one.
+-- The whole schema as of 0.2, the first release databases upgrade from. A
+-- released migration never changes (sqlx checks its checksum): add changes as
+-- new numbered migrations after this one.
 
 CREATE TABLE node_config (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 
--- Nodes registered manually on a controller (mDNS-discovered nodes are not
--- persisted; they re-announce themselves).
+-- Nodes on a controller: added by address, or found over mDNS and approved.
+-- The fingerprint is the SHA-256 of the node's TLS key (NULL for one added
+-- before TLS, until it's pinned).
 CREATE TABLE nodes (
-    id       TEXT PRIMARY KEY,
-    name     TEXT NOT NULL,
-    url      TEXT NOT NULL,
-    added_at TEXT NOT NULL
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    url         TEXT NOT NULL,
+    added_at    TEXT NOT NULL,
+    fingerprint TEXT
 );
 
 CREATE TABLE presets (
@@ -74,11 +77,8 @@ CREATE TABLE configured_sources (
 );
 
 INSERT INTO configured_sources (id, name, config, created_at) VALUES
-    ('test-1', 'Test Source 1',
-     '{"type":"test","pattern":"smpte","width":1920,"height":1080,"fps_num":30,"fps_den":1,"audio_signal":"tone","frequency":440.0,"channels":2}',
-     datetime('now')),
-    ('test-2', 'Test Source 2',
-     '{"type":"test","pattern":"ball","width":1920,"height":1080,"fps_num":30,"fps_den":1,"audio_signal":"pink-noise","frequency":0.0,"channels":2}',
+    ('test-1', 'Test Source',
+     '{"type":"test","pattern":"smpte","width":1920,"height":1080,"fps_num":30,"fps_den":1,"audio_signal":"pink-noise","frequency":0.0,"channels":2}',
      datetime('now'));
 
 -- Benchmark runs, each stored whole as JSON (BenchmarkRunDto), with the
@@ -163,3 +163,38 @@ CREATE TABLE replay_clips (
 CREATE TABLE ndi_subscriptions (
     ndi_name TEXT PRIMARY KEY
 );
+
+-- Schedules start and stop recordings and playout at set times (controller
+-- only). A monthly one runs on a day of the month (`month_day`), or on the
+-- nth (or last) of a weekday (`month_week`), which is the one bit set in
+-- `weekdays`; both are NULL otherwise.
+CREATE TABLE schedules (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    kind        TEXT NOT NULL,
+    date        TEXT,
+    weekdays    INTEGER NOT NULL DEFAULT 0,
+    month_day   INTEGER,
+    month_week  INTEGER,
+    start_time  TEXT NOT NULL,
+    duration_s  INTEGER,
+    actions     TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+-- One row per occurrence that came due: run, failed or skipped. The unique
+-- key keeps an occurrence from running twice.
+CREATE TABLE schedule_runs (
+    id            TEXT PRIMARY KEY,
+    schedule_id   TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+    planned_start TEXT NOT NULL,
+    planned_end   TEXT,
+    started_at    TEXT,
+    stopped_at    TEXT,
+    status        TEXT NOT NULL,
+    targets       TEXT NOT NULL,
+    UNIQUE (schedule_id, planned_start)
+);
+CREATE INDEX schedule_runs_by_schedule ON schedule_runs (schedule_id, planned_start);

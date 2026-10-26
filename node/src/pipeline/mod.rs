@@ -188,6 +188,25 @@ pub(crate) fn set_property(el: &gst::Element, name: &str, value: &str) -> Result
     Ok(())
 }
 
+/// A free loopback port for a signaller (`whipserversrc`, `whepserversink`).
+pub(crate) fn loopback_port() -> std::io::Result<u16> {
+    Ok(std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port())
+}
+
+/// For requests to the node's own signallers on loopback. A system or env
+/// proxy would otherwise be sent them.
+pub(crate) fn loopback_http() -> &'static reqwest::Client {
+    static HTTP: LazyLock<reqwest::Client> = LazyLock::new(|| {
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("build the loopback HTTP client")
+    });
+    &HTTP
+}
+
 pub(crate) fn capsfilter(name: &str, caps: gst::Caps) -> Result<gst::Element> {
     gst::ElementFactory::make("capsfilter")
         .name(name)

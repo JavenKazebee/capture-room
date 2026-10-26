@@ -52,8 +52,6 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6
-        with:
-          version: 11
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -116,23 +114,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # The same packages as ci.yml's Linux job, and the same man-db skip.
+      # Uncached: releases are rare.
       - name: Install GStreamer
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          sudo rm -f /var/lib/man-db/auto-update
-          sudo apt-get update
-          sudo -E apt-get install -y --no-install-recommends \
-            pkg-config libssl-dev \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            libgstreamer-plugins-bad1.0-dev libgstrtspserver-1.0-dev \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-            gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-nice
+        timeout-minutes: 20
+        run: scripts/linux/gstreamer.sh
 
       - uses: pnpm/action-setup@v6
-        with:
-          version: 11
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -192,8 +179,6 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6
-        with:
-          version: 11
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -225,8 +210,10 @@ jobs:
           curl.exe -fsSL --retry 3 -o $zip $url
           if ($LASTEXITCODE) { throw "download failed: $url" }
           Expand-Archive $zip (Join-Path $env:RUNNER_TEMP minisign)
-          $exe = Get-ChildItem (Join-Path $env:RUNNER_TEMP minisign) -Recurse -Filter minisign.exe | Select-Object -First 1
-          Split-Path $exe.FullName >> $env:GITHUB_PATH
+          # The zip has an aarch64 and an x86_64 build side by side.
+          $exe = Join-Path $env:RUNNER_TEMP minisign\minisign-win64\x86_64\minisign.exe
+          if (-not (Test-Path $exe)) { throw "no x86_64 minisign.exe in $zip" }
+          Split-Path $exe >> $env:GITHUB_PATH
           if (-not $env:MINISIGN_KEY) {
             if ($env:GITHUB_REF_TYPE -eq 'tag') {
               Write-Output "::error::The MINISIGN_KEY secret isn't set: a release must be signed."

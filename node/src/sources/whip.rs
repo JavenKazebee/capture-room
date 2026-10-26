@@ -12,7 +12,7 @@ use super::device::LocalDevices;
 use super::live::{self, LinkTracker, LiveInput};
 use super::InputSource;
 use crate::api::types::{LinkState, SourceCapabilitiesDto, SourceType, WhipSourceConfig};
-use crate::pipeline::make_el;
+use crate::pipeline::{loopback_http, loopback_port, make_el};
 
 /// A WHIP ingest at `http://<node>:<port>/whip/endpoint`. `whipserversrc`
 /// can't check a token, so it listens on loopback behind a [`Gate`].
@@ -112,7 +112,6 @@ struct Gate {
 struct GateState {
     token: String,
     upstream: Arc<AtomicU16>,
-    http: reqwest::Client,
 }
 
 impl Gate {
@@ -122,7 +121,6 @@ impl Gate {
         let state = Arc::new(GateState {
             token,
             upstream: upstream.clone(),
-            http: reqwest::Client::builder().no_proxy().build()?,
         });
         let app = axum::Router::new().fallback(forward).with_state(state);
         let task = rt.spawn(async move {
@@ -184,8 +182,7 @@ async fn forward(State(gate): State<Arc<GateState>>, req: Request) -> Response {
         gate.upstream.load(Ordering::Relaxed),
         parts.uri.path_and_query().map_or("/", |p| p.as_str())
     );
-    let resp = match gate
-        .http
+    let resp = match loopback_http()
         .request(parts.method, url)
         .headers(headers)
         .body(body)
@@ -211,13 +208,6 @@ fn authorized(headers: &HeaderMap, token: &str) -> bool {
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .is_some_and(|p| crate::auth::constant_time_eq(p.trim().as_bytes(), token.as_bytes()))
-}
-
-/// A free loopback port for `whipserversrc`.
-fn loopback_port() -> std::io::Result<u16> {
-    Ok(std::net::TcpListener::bind("127.0.0.1:0")?
-        .local_addr()?
-        .port())
 }
 
 pub fn validate(cfg: &WhipSourceConfig) -> Result<(), String> {
@@ -316,7 +306,7 @@ mod tests {
         sleep(2).await;
         assert_eq!(src.link(), Some(LinkState::Waiting));
         let offer = |auth: Option<&str>| {
-            let mut req = reqwest::Client::new()
+            let mut req = loopback_http()
                 .post(format!("http://127.0.0.1:{port}/whip/endpoint"))
                 .header("content-type", "application/sdp")
                 .body("v=0\r\n");

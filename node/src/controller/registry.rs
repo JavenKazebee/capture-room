@@ -131,6 +131,31 @@ impl NodeRegistry {
         self.entries.get(id).map(|n| n.url.clone())
     }
 
+    /// What the reachable nodes are doing that an update would interrupt,
+    /// as of their last health check: "Studio B: recording", by name.
+    pub fn busy(&self) -> Vec<String> {
+        let mut busy: Vec<String> = self
+            .entries
+            .values()
+            .filter(|n| n.healthy)
+            .filter_map(|n| {
+                let status = n.status.as_ref()?;
+                Some(format!("{}: {}", status.name, status.busy.as_ref()?))
+            })
+            .collect();
+        busy.sort();
+        busy
+    }
+
+    /// The version a node runs, if it last answered with one other than
+    /// this controller's.
+    pub fn other_version(&self, id: &str) -> Option<String> {
+        match &self.entries.get(id)?.unreachable {
+            Some(Unreachable::OtherVersion { version }) => Some(version.clone()),
+            _ => None,
+        }
+    }
+
     /// Note a node waiting for approval. Returns whether the list changed
     /// in a way the UI shows.
     pub fn set_found(&mut self, dto: FoundNodeDto) -> bool {
@@ -284,5 +309,33 @@ mod tests {
         r.record_success(&NodeStatus::unanswered("node".into(), "Node".into()));
         let e = r.get("node").unwrap();
         assert!(e.healthy && e.unreachable.is_none() && e.fail_count == 0);
+    }
+
+    #[test]
+    fn busy_lists_what_reachable_nodes_are_doing() {
+        let mut r = NodeRegistry::new(Arc::default());
+        r.upsert(entry(Some("k1")));
+        assert!(r.busy().is_empty());
+        let mut status = NodeStatus::unanswered("node".into(), "Studio B".into());
+        status.busy = Some("recording".into());
+        r.record_success(&status);
+        assert_eq!(r.busy(), ["Studio B: recording"]);
+        // Unreachable, it can't be counted on either way.
+        r.record_failure("node", Unreachable::Offline);
+        assert!(r.busy().is_empty());
+    }
+
+    #[test]
+    fn another_version_is_known_until_it_matches() {
+        let mut r = NodeRegistry::new(Arc::default());
+        r.upsert(entry(Some("k1")));
+        assert_eq!(r.other_version("node"), None);
+        let other = Unreachable::OtherVersion {
+            version: "9.9.9".into(),
+        };
+        r.record_failure("node", other);
+        assert_eq!(r.other_version("node").as_deref(), Some("9.9.9"));
+        r.record_success(&NodeStatus::unanswered("node".into(), "Node".into()));
+        assert_eq!(r.other_version("node"), None);
     }
 }

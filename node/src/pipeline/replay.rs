@@ -709,11 +709,21 @@ pub fn export(
 /// flushes: a flushing seek through a muxer spoils its file. Audio is trimmed
 /// to the segment: qtdemux hands out PCM in chunks that straddle the cuts,
 /// and qtmux would drop the first whole and write the last whole.
+///
+/// splitmuxsrc (seen in 1.24) can flush again after the segment and resend
+/// the in point's buffers under the same segment. With that flush dropped,
+/// the repeats would reach qtmux: extra frames, extra sound, or "Could not
+/// multiplex stream". So nothing goes back over what's been let through:
+/// pictures at or before the last one are dropped, and sound is trimmed to
+/// start where the last buffer ended (which also takes out any overlap
+/// where two files meet).
 fn gate(pad: &gst::Pad, from: gst::ClockTime) {
     // An accurate seek's segment starts where it was asked to.
     const NEAR: gst::ClockTime = gst::ClockTime::from_mseconds(1);
     // The segment's start and stop, once let through.
     let span = Mutex::new(None::<(gst::ClockTime, Option<gst::ClockTime>)>);
+    // The last picture's PTS, or where the last sound ended.
+    let reached = Mutex::new(None::<gst::ClockTime>);
     pad.add_probe(gst::PadProbeType::DATA_DOWNSTREAM, move |pad, info| {
         let open = *span.lock().unwrap();
         match &mut info.data {
@@ -748,16 +758,23 @@ fn gate(pad: &gst::Pad, from: gst::ClockTime) {
                 let (Some((start, stop)), Some(pts)) = (open, buffer.pts()) else {
                     return gst::PadProbeReturn::Ok;
                 };
+                let mut reached = reached.lock().unwrap();
                 if !pad.name().starts_with("audio") {
+                    if reached.is_some_and(|r| pts <= r) {
+                        return gst::PadProbeReturn::Drop;
+                    }
+                    *reached = Some(pts);
                     return gst::PadProbeReturn::Ok;
                 }
+                let floor = reached.map_or(start, |r| r.max(start));
                 let end = buffer.duration().map(|d| pts + d);
-                let head = (pts < start).then(|| start - pts);
+                let head = (pts < floor).then(|| floor - pts);
                 let tail = match (stop, end) {
                     (Some(stop), Some(end)) if end > stop => Some(end - stop),
                     _ => None,
                 };
                 if head.is_none() && tail.is_none() {
+                    *reached = Some(end.unwrap_or(pts));
                     return gst::PadProbeReturn::Ok;
                 }
                 match trim_audio(
@@ -767,6 +784,8 @@ fn gate(pad: &gst::Pad, from: gst::ClockTime) {
                     tail.unwrap_or_default(),
                 ) {
                     Some(trimmed) => {
+                        let at = trimmed.pts().unwrap_or(pts);
+                        *reached = Some(trimmed.duration().map_or(at, |d| at + d));
                         *buffer = trimmed;
                         gst::PadProbeReturn::Ok
                     }
