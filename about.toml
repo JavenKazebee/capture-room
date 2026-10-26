@@ -18,7 +18,14 @@ accepted = [
     "CDLA-Permissive-2.0",
     "MPL-2.0",
 ]
-targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+# Every platform we ship, so crates built on only one of them are checked too.
+# Each package's notices therefore cover all platforms' crates, not just its own.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
 ignore-build-dependencies = true
 ignore-dev-dependencies = true
 # Capture Room itself (GPL; its license is LICENSE).
