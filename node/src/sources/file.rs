@@ -11,7 +11,7 @@ use tracing::warn;
 use super::player::{self, Kind, QueueLimit};
 use super::{add_chain, InputSource};
 use crate::api::types::{FileSourceConfig, MediaInfo, SourceCapabilitiesDto, SourceType};
-use crate::pipeline::{capsfilter, make_el};
+use crate::pipeline::{capsfilter, make_el, set_property};
 
 /// Extensions the file browser lists as media files.
 pub const MEDIA_EXTENSIONS: &[&str] = &[
@@ -135,20 +135,20 @@ fn build_bin(id: &str, path: &str, media: &MediaInfo) -> Result<gst::Bin> {
         .flatten()
         .unwrap_or(gst::ClockTime::ZERO);
 
-    let vsrc = live_appsrc(&format!("file-vsrc-{id}"), latency);
+    let vsrc = live_appsrc(&format!("file-vsrc-{id}"), latency)?;
     let vconv = make_el("videoconvert", &format!("file-vconv-{id}"))?;
     add_chain(&bin, &[vsrc.upcast_ref(), &vconv], "video")?;
 
     // Silence if the file has no audio.
     let asrc = if media.audio_channels > 0 {
-        let asrc = live_appsrc(&format!("file-asrc-{id}"), latency);
+        let asrc = live_appsrc(&format!("file-asrc-{id}"), latency)?;
         let aconv = make_el("audioconvert", &format!("file-aconv-{id}"))?;
         add_chain(&bin, &[asrc.upcast_ref(), &aconv], "audio")?;
         Some(asrc)
     } else {
         let silence = make_el("audiotestsrc", &format!("file-silence-{id}"))?;
         silence.set_property("is-live", true);
-        silence.set_property_from_str("wave", "silence");
+        set_property(&silence, "wave", "silence")?;
         let caps = capsfilter(
             &format!("file-acaps-{id}"),
             gst::Caps::builder("audio/x-raw")
@@ -197,7 +197,7 @@ fn build_bin(id: &str, path: &str, media: &MediaInfo) -> Result<gst::Bin> {
     Ok(bin)
 }
 
-fn live_appsrc(name: &str, latency: gst::ClockTime) -> gst_app::AppSrc {
+fn live_appsrc(name: &str, latency: gst::ClockTime) -> Result<gst_app::AppSrc> {
     // Drop the oldest buffers if the monitor falls behind, as a live source would.
     player::live_appsrc(name, latency, QueueLimit::Buffers(4))
 }

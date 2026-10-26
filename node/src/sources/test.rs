@@ -6,7 +6,7 @@ use super::{add_chain, InputSource};
 use crate::api::types::{
     AudioTestSignal, SourceCapabilitiesDto, SourceType, TestSourceConfig, VideoTestPattern,
 };
-use crate::pipeline::{capsfilter, make_el};
+use crate::pipeline::{capsfilter, make_el, set_property};
 
 pub struct TestSource {
     id: String,
@@ -25,7 +25,7 @@ fn build_bin(id: &str, cfg: &TestSourceConfig) -> Result<gst::Bin> {
 
     let vsrc = make_el("videotestsrc", &format!("vsrc-{id}"))?;
     vsrc.set_property("is-live", true);
-    vsrc.set_property_from_str("pattern", pattern_gst_name(cfg.pattern));
+    set_property(&vsrc, "pattern", pattern_gst_name(cfg.pattern))?;
     let vcaps = capsfilter(
         &format!("vcaps-{id}"),
         // videotestsrc draws limited range whatever it negotiates; unlabelled,
@@ -46,7 +46,7 @@ fn build_bin(id: &str, cfg: &TestSourceConfig) -> Result<gst::Bin> {
 
     let asrc = make_el("audiotestsrc", &format!("asrc-{id}"))?;
     asrc.set_property("is-live", true);
-    asrc.set_property_from_str("wave", signal_gst_wave(cfg.audio_signal));
+    set_property(&asrc, "wave", signal_gst_wave(cfg.audio_signal))?;
     if cfg.audio_signal == AudioTestSignal::Tone && cfg.frequency > 0.0 {
         asrc.set_property("freq", cfg.frequency);
     }

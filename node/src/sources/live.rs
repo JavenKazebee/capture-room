@@ -17,7 +17,7 @@ use tracing::{info, warn};
 
 use super::add_chain;
 use crate::api::types::{LinkState, LiveVideoFormat};
-use crate::pipeline::{capsfilter, make_el, set_mix_matrix};
+use crate::pipeline::{capsfilter, make_el, set_mix_matrix, set_property};
 
 /// Rate every live source's audio is resampled to.
 pub const AUDIO_RATE: i32 = 48_000;
@@ -213,7 +213,7 @@ pub(crate) fn video_output(
     caps: gst::Caps,
 ) -> Result<(Inputs, Arc<Mutex<VideoFormat>>)> {
     let compositor = make_el("compositor", &format!("live-vsync-{id}"))?;
-    compositor.set_property_from_str("background", "black");
+    set_property(&compositor, "background", "black")?;
     let timecode = LastTimecode::default();
     stamp_timecode(
         &compositor.static_pad("src").context("compositor src pad")?,
@@ -247,7 +247,7 @@ pub(crate) fn audio_output(
     let out_acaps = capsfilter(&format!("live-acaps-{id}"), audio_caps.clone())?;
     let silence = make_el("audiotestsrc", &format!("live-silence-{id}"))?;
     silence.set_property("is-live", true);
-    silence.set_property_from_str("wave", "silence");
+    set_property(&silence, "wave", "silence")?;
     let silence_caps = capsfilter(&format!("live-scaps-{id}"), audio_caps.clone())?;
     add_chain(bin, &[&silence, &silence_caps, &mixer, &out_acaps], "audio")?;
     Ok(Inputs {
@@ -657,7 +657,7 @@ fn restart(src: gst::Element) {
 pub(crate) fn add_background(bin: &gst::Bin, id: &str, compositor: &gst::Element) -> Result<()> {
     let src = make_el("videotestsrc", &format!("live-bg-{id}"))?;
     src.set_property("is-live", true);
-    src.set_property_from_str("pattern", "black");
+    set_property(&src, "pattern", "black")?;
     let caps = capsfilter(
         &format!("live-bgcaps-{id}"),
         gst::Caps::builder("video/x-raw")

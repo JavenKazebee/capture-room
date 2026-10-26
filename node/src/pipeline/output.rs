@@ -21,10 +21,9 @@ use gstreamer_video::{self as gst_video, prelude::*};
 use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
-use super::recording::set_property;
 use super::rtsp::{self, RtspOutput};
 use super::whep::WhepOutput;
-use super::{make_el, start_or_reason, ConsumerPipeline};
+use super::{make_el, set_property, start_or_reason, ConsumerPipeline};
 use crate::api::types::{DisplayIdle, OutputConfig, SourceCapabilitiesDto};
 use crate::display::{DisplayWindow, Displays, WantedFormat};
 use crate::sources::decklink::DecklinkOutput;

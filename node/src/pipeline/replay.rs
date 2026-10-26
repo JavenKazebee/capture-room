@@ -21,10 +21,10 @@ use gstreamer::{self as gst, prelude::*};
 use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
-use super::recording::{set_property, stamp_timecode};
+use super::recording::stamp_timecode;
 use super::{
-    audio_hold_queue, capsfilter, make_el, mark_prores_keyframes, pcm_audiorate, share_clock,
-    start_or_reason, ConsumerPipeline,
+    audio_hold_queue, capsfilter, make_el, mark_prores_keyframes, pcm_audiorate, set_property,
+    share_clock, start_or_reason, ConsumerPipeline,
 };
 use crate::api::types::ReplayCodec;
 

@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use anyhow::{Context, Result};
-use gstreamer::{self as gst, prelude::*};
+use gstreamer::{self as gst, glib, prelude::*};
 use gstreamer_app as gst_app;
 use gstreamer_utils::{ConsumptionLink, StreamProducer};
 use tokio::sync::watch;
@@ -172,6 +172,20 @@ pub(crate) fn make_el(factory: &str, name: &str) -> Result<gst::Element> {
         .name(name)
         .build()
         .with_context(|| format!("create {factory} (is its GStreamer plugin installed?)"))
+}
+
+/// Set a property from its string form. `set_property_from_str` panics on an
+/// unknown property or value, and plugin builds differ between versions and
+/// platforms (encoder options, enum nicks), so either is an error instead.
+pub(crate) fn set_property(el: &gst::Element, name: &str, value: &str) -> Result<()> {
+    let factory = el.factory().map(|f| f.name()).unwrap_or_default();
+    let pspec = el
+        .find_property(name)
+        .with_context(|| format!("{factory} has no `{name}` property"))?;
+    let value = glib::Value::deserialize(value, pspec.value_type())
+        .map_err(|_| anyhow::anyhow!("{factory} can't set `{name}` to `{value}`"))?;
+    el.set_property_from_value(name, &value);
+    Ok(())
 }
 
 /// A free loopback port for a signaller (`whipserversrc`, `whepserversink`).
@@ -394,4 +408,18 @@ pub(super) fn handle_level_message(s: &gst::StructureRef, meter: &AudioMeter) {
         .collect();
 
     meter.set(channels);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_property_checks_name_and_value() {
+        gst::init().unwrap();
+        let queue = make_el("queue", "q").unwrap();
+        set_property(&queue, "leaky", "downstream").unwrap();
+        assert!(set_property(&queue, "nope", "1").is_err());
+        assert!(set_property(&queue, "leaky", "sideways").is_err());
+    }
 }

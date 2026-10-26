@@ -6,7 +6,7 @@ use gstreamer::{self as gst, glib, prelude::*};
 use gstreamer_app as gst_app;
 use tracing::{debug, warn};
 
-use crate::pipeline::make_el;
+use crate::pipeline::{make_el, set_property};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -45,7 +45,11 @@ pub enum QueueLimit {
 
 /// A live appsrc in time format that drops its oldest buffers past `limit`
 /// rather than block the player.
-pub fn live_appsrc(name: &str, min_latency: gst::ClockTime, limit: QueueLimit) -> gst_app::AppSrc {
+pub fn live_appsrc(
+    name: &str,
+    min_latency: gst::ClockTime,
+    limit: QueueLimit,
+) -> Result<gst_app::AppSrc> {
     let (max_buffers, max_time) = match limit {
         QueueLimit::Buffers(n) => (n, None),
         QueueLimit::Time(t) => (0, Some(t)),
@@ -62,8 +66,8 @@ pub fn live_appsrc(name: &str, min_latency: gst::ClockTime, limit: QueueLimit) -
         .max_latency(-1)
         .build();
     src.set_property("max-buffers", max_buffers);
-    src.set_property_from_str("leaky-type", "downstream");
-    src
+    set_property(src.upcast_ref(), "leaky-type", "downstream")?;
+    Ok(src)
 }
 
 /// Add `kind`'s branch to `player`: converters → clock-paced appsink feeding
