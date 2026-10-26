@@ -634,6 +634,7 @@ impl SrtOutput {
         let mux = make_el("mpegtsmux", "mux")?;
         // 7 TS packets per buffer: one SRT payload (1316 bytes).
         set_property(&mux, "alignment", "7")?;
+        super::hold_srt();
         let sink = make_el("srtsink", "srtsink")?;
         sink.set_property("uri", stream::uri(&self.url)?);
         set_property(&sink, "latency", &self.latency_ms.to_string())?;

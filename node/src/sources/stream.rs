@@ -77,6 +77,10 @@ impl InputSource for StreamSource {
 
     fn build_bin(&self) -> Result<gst::Element> {
         let cfg = &self.config;
+        if cfg.url.starts_with("srt:") {
+            // uridecodebin3 makes the srtsrc.
+            crate::pipeline::hold_srt();
+        }
         let decode = make_el("uridecodebin3", &format!("stream-decode-{}", self.id))?;
         decode.set_property("uri", uri(&cfg.url)?);
         let (latency, transport) = (cfg.latency_ms, cfg.rtsp_transport);

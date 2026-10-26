@@ -462,10 +462,18 @@ async fn put_replay(
     {
         tracing::info!("benchmark cancelled for a replay buffer");
     }
+    let work = state
+        .source_manager
+        .write()
+        .await
+        .set_replay(&source_id, Some(req));
+    crate::session::run_work(&state, work).await?;
     let utc = state.clock.utc_offset_us();
-    let mut mgr = state.source_manager.write().await;
-    mgr.set_replay(&source_id, Some(req));
-    mgr.replay_buffers(utc)
+    state
+        .source_manager
+        .read()
+        .await
+        .replay_buffers(utc)
         .into_iter()
         .find(|r| r.source_id == source_id)
         .map(Json)
@@ -480,11 +488,12 @@ async fn delete_replay(
     if !db::replay_buffer_delete(&state.db, &source_id).await? {
         return Err(ApiError::NotFound("no replay buffer for that source"));
     }
-    state
+    let work = state
         .source_manager
         .write()
         .await
         .set_replay(&source_id, None);
+    crate::session::run_work(&state, work).await?;
     // An NDI sender kept only for its buffer goes (see NDI subscriptions).
     if let Err(e) = crate::session::rebuild_sources(&state).await {
         tracing::error!(error = %e, "rebuild sources after removing a replay buffer");

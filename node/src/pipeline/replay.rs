@@ -109,13 +109,9 @@ pub struct Index {
 }
 
 impl Index {
-    /// A new index over `dir`, deleting what a previous run left there.
+    /// A new index over `dir`. It touches no files: what a previous run left
+    /// there goes with [`Index::clear`], or when the first leg starts.
     pub fn create(dir: &Path, keep: gst::ClockTime) -> ReplayIndex {
-        if dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(dir) {
-                warn!(dir = ?dir, error = %e, "can't clear old replay segments");
-            }
-        }
         Arc::new(Mutex::new(Self {
             dir: dir.to_path_buf(),
             codec: None,
@@ -164,17 +160,22 @@ impl Index {
 
     /// Delete everything; only while no leg records. Removes the whole
     /// folder, since a leg stopped just after naming a file leaves an
-    /// unindexed one.
-    fn clear(&mut self) {
+    /// unindexed one. The folder goes once `index` is unlocked: a large one
+    /// takes a while, and the manager reads the index to list buffers.
+    pub fn clear(index: &ReplayIndex) {
+        let dir = {
+            let mut index = index.lock().unwrap();
+            index.forget();
+            index.dir.clone()
+        };
+        remove_dir(&dir);
+    }
+
+    fn forget(&mut self) {
         self.segments.clear();
         self.open = None;
         self.codec = None;
         self.clock = None;
-        if self.dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&self.dir) {
-                warn!(dir = ?self.dir, error = %e, "can't clear replay segments");
-            }
-        }
     }
 
     /// Delete segments past `keep`, except from the oldest hold on.
@@ -345,7 +346,16 @@ impl Drop for Index {
     /// Clips only hold a weak reference; files they have open stay readable
     /// until closed.
     fn drop(&mut self) {
-        self.clear();
+        self.forget();
+        remove_dir(&self.dir);
+    }
+}
+
+fn remove_dir(dir: &Path) {
+    if dir.exists() {
+        if let Err(e) = std::fs::remove_dir_all(dir) {
+            warn!(dir = ?dir, error = %e, "can't clear replay segments");
+        }
     }
 }
 
@@ -375,16 +385,20 @@ impl ReplayLeg {
         let (Some(clock), Some(base)) = monitor.timing() else {
             return Err(anyhow!("the source isn't running"));
         };
-        {
-            let mut i = index.lock().unwrap();
-            if i.codec != Some(codec) || i.clock.as_ref() != Some(&clock) {
-                i.clear();
-                i.codec = Some(codec);
-                i.clock = Some(clock.clone());
-            }
-            std::fs::create_dir_all(&i.dir)
-                .with_context(|| format!("can't create {}", i.dir.display()))?;
+        let stale = {
+            let i = index.lock().unwrap();
+            i.codec != Some(codec) || i.clock.as_ref() != Some(&clock)
+        };
+        if stale {
+            Index::clear(index);
         }
+        let dir = {
+            let mut i = index.lock().unwrap();
+            i.codec = Some(codec);
+            i.clock = Some(clock.clone());
+            i.dir.clone()
+        };
+        std::fs::create_dir_all(&dir).with_context(|| format!("can't create {}", dir.display()))?;
         let mut last_err = None;
         for &encoder in codec.encoders() {
             match Self::build(codec, encoder, index, name, &clock, base) {

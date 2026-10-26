@@ -443,7 +443,10 @@ async fn delete_configured_source(
     if !db::configured_source_delete(&state.db, &id).await? {
         return Err(ApiError::NotFound("source not found"));
     }
-    state.source_manager.write().await.set_replay(&id, None);
+    let work = state.source_manager.write().await.set_replay(&id, None);
+    if let Err(e) = session::run_work(&state, work).await {
+        error!(error = %e, "remove a deleted source's replay buffer");
+    }
     rescan_after(&state, "delete").await;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -499,7 +502,8 @@ async fn put_decklink_profile(
     }
     devices.decklink_profiles.set(&card, req.profile);
     db::decklink_profiles_set(&state.db, &devices.decklink_profiles.all()).await?;
-    state.source_manager.write().await.reset_decklink_outputs();
+    let work = state.source_manager.write().await.reset_decklink_outputs();
+    session::run_work(&state, work).await?;
     rescan_after(&state, "Decklink profile change").await;
     Ok(Json(crate::sources::decklink::status(&devices, &configs)))
 }
@@ -840,11 +844,31 @@ async fn post_recording(
         info!("benchmark cancelled for a recording");
     }
 
-    let session = state.source_manager.write().await.start_recording(
+    let start = state.source_manager.write().await.begin_start_recording(
         &req,
         &legs,
         state.clock.utc_offset_us(),
     )?;
+    // The legs start off the lock. Spawned so a dropped request can't leave
+    // them running but not added, or the reservation held.
+    let task_state = Arc::clone(&state);
+    let session = tokio::spawn(async move {
+        let started = tokio::task::spawn_blocking(move || start.run()).await?;
+        let finished = task_state
+            .source_manager
+            .write()
+            .await
+            .finish_start_recording(started);
+        match finished {
+            Ok(session) => Ok(session),
+            Err((e, legs)) => {
+                tokio::task::spawn_blocking(move || legs.into_iter().for_each(|l| l.discard()))
+                    .await?;
+                Err(e)
+            }
+        }
+    })
+    .await??;
 
     if let Err(e) = db::session_insert(&state.db, &session).await {
         error!(error = %e, "persist session start");
