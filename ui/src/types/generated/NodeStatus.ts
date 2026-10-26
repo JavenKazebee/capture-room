@@ -22,4 +22,9 @@ clock: ClockStatusDto | null,
 /**
  * The codecs it can keep replay buffers in, the default first.
  */
-replay_codecs: Array<ReplayCodec>, };
+replay_codecs: Array<ReplayCodec>, 
+/**
+ * What it's doing that an update would interrupt, if anything: its
+ * controller doesn't update itself meanwhile.
+ */
+busy: string | null, };

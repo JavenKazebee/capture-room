@@ -27,6 +27,10 @@ pub struct NodeStatus {
     /// The codecs it can keep replay buffers in, the default first.
     #[serde(default)]
     pub replay_codecs: Vec<ReplayCodec>,
+    /// What it's doing that an update would interrupt, if anything: its
+    /// controller doesn't update itself meanwhile.
+    #[serde(default)]
+    pub busy: Option<String>,
 }
 
 impl NodeStatus {
@@ -42,6 +46,7 @@ impl NodeStatus {
             source_types: Vec::new(),
             clock: None,
             replay_codecs: Vec::new(),
+            busy: None,
         }
     }
 }
@@ -2155,6 +2160,17 @@ pub enum Unreachable {
     OtherNode { name: String },
     /// It answers with its pinned key, but the check failed.
     Failing { error: String },
+    /// It runs another version than the controller. Only its update is
+    /// forwarded until the two match.
+    OtherVersion { version: String },
+}
+
+/// Which release a node updates to (`/update`). `None` is the newest.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct UpdateRequest {
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 /// A node that announced itself over mDNS, waiting to be approved.

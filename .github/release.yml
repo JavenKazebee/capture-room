@@ -1,0 +1,14 @@
+# The "All changes" list GitHub generates for a release, grouped by the merged PRs'
+# labels. The highlights above it are written by hand when the release is made.
+changelog:
+  categories:
+    - title: New
+      labels: [enhancement]
+    - title: Fixes
+      labels: [bug]
+    - title: Docs
+      labels: [documentation]
+    - title: Dependencies
+      labels: [dependencies]
+    - title: Other changes
+      labels: ["*"]

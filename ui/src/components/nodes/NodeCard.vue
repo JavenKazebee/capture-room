@@ -6,6 +6,7 @@ import { Check, Clock, Pencil, Radio, Trash2, TriangleAlert, Video, X } from '@l
 import { clockSummary } from '@/lib/clock'
 import { formatFingerprint, formatUptime } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
+import { olderThan } from '@/lib/version'
 import { useNodesStore } from '@/stores/nodes'
 import { useSourcesStore } from '@/stores/sources'
 import { useRecordingsStore } from '@/stores/recordings'
@@ -70,6 +71,13 @@ const down = computed(() => {
       return { label: 'Not answering', detail: `Answers, but its check failed: ${u.error}` }
     case 'offline':
       return { label: 'Offline', detail: 'Nothing answers at this address: check it’s on and on the network.' }
+    case 'other-version':
+      return {
+        label: `On v${u.version}`,
+        detail: olderThan(u.version, nodes.version)
+          ? `Runs ${u.version}, older than this controller’s ${nodes.version}. Update it to use it.`
+          : `Runs ${u.version}, newer than this controller’s ${nodes.version}. Update the controller to use it.`,
+      }
     default:
       return { label: 'Unreachable', detail: 'Not available while unreachable.' }
   }

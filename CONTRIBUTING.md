@@ -12,7 +12,9 @@ You need:
 
 - **Rust**, stable, with `rustfmt` and `clippy`.
 - **cargo-watch**, for `pnpm dev`: `cargo install cargo-watch`.
-- **Node.js and pnpm** (CI uses Node 24 and pnpm 11).
+- **Node.js and pnpm** (CI uses Node 24). `packageManager` in `package.json` pins pnpm,
+  and pnpm or Corepack switch to that version for you; Corepack must be 0.36 or later to
+  run pnpm 11 (`npm install -g corepack@latest`).
 - **GStreamer** 1.x with its development files and `pkg-config` (per OS below).
 - **NDI Tools**, for the NDI Runtime (`libndi`), to use NDI sources and outputs. We never
   ship it; the node finds it at run time.
@@ -113,6 +115,40 @@ CI fails if they're stale.
 `scripts/macos/package.sh <aarch64|x86_64>`, the Linux one by `scripts/linux/package.sh`
 (on Ubuntu 24.04 with the packages above, as `release.yml` does). `scripts/install.sh`
 installs either; `--archive dist/capture-room-<os>-<arch>.tar.gz` installs a local build.
+
+## Branches and pull requests
+
+`main` is the only long-lived branch. Releases are tags on it, so what's merged reaches no
+one until the next release.
+
+- Work on a short-lived branch (from a fork, unless you have write access) and open a pull
+  request against `main`. Everyone does, maintainers too: nothing is pushed to `main`
+  directly.
+- A fix, a typo or docs can go straight to a pull request. For anything bigger, open an
+  issue first so we agree on the shape before you build it.
+- CI must pass on every platform before a pull request merges. Say in it how you tested,
+  and on what OS and hardware: much of this can only be checked on real devices.
+- Pull requests are squash-merged, and the title becomes the commit on `main`, so write it
+  like the history: `area: what changed`, e.g. `replay: trim an export's sound at the out
+  point too`.
+- Migrations in a release never change (sqlx checks their checksums). A schema change
+  goes in a new migration; while a release is in progress, keep its changes in one.
+
+A fix for an older release, once `main` has moved on, goes on a `release/X.Y` branch made
+from its tag, and is tagged there.
+
+## Issues and releases
+
+Each release has a milestone; issues without one are the backlog. Labels say what an issue
+is (`bug`, `enhancement`, `documentation`), where (`area: …`), on which OS
+(`platform: …`), and what it waits for (`needs-repro`, `needs-hardware`). Questions go to
+[Discussions](https://github.com/JavenKazebee/capture-room/discussions).
+
+Versions follow semver; before 1.0, a minor release may break things. A controller and
+its nodes must run the same version: it won't use a node on another one until it's
+updated. Release notes are the
+pull requests' titles, grouped by label, under highlights written for the people running
+the shows.
 
 ## Licenses of dependencies
 

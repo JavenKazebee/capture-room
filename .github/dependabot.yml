@@ -1,0 +1,48 @@
+# Monthly, one grouped PR per ecosystem. Security updates come as they're found, also
+# grouped: each PR rewrites the lockfile, so separate ones conflict once any is merged.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      npm:
+        patterns: ["*"]
+      npm-security:
+        applies-to: security-updates
+        patterns: ["*"]
+    # vue-tsc drives TypeScript's JS compiler, which TypeScript 7 (the native port)
+    # doesn't ship: lift this when a vue-tsc release supports 7, and move them together.
+    # @types/node majors follow the Node that CI and releases run on.
+    ignore:
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      cargo:
+        patterns: ["*"]
+      cargo-security:
+        applies-to: security-updates
+        patterns: ["*"]
+    # gst-plugins-rs is pinned to one rev, and gstreamer-rs and glib must stay at the
+    # versions that rev resolves to (see CLAUDE.md): they move together, by hand.
+    ignore:
+      - dependency-name: "gstreamer*"
+      - dependency-name: "gst-plugin-*"
+      - dependency-name: "glib*"
+      - dependency-name: "gio*"

@@ -27,7 +27,7 @@ use crate::api::types::{
     DisplayDto, NdiSubscriptionsDto, NdiSubscriptionsInput, NodeCapacityDto, NodeChecksDto,
     NodeSettingsDto, NodeStatus, OutputConfig, RecordingSessionDto, RecordingStatus,
     RecordingsQuery, SourceConfig, SourceDto, StartRecordingRequest, StorageVolumeDto,
-    UpdateNodeSettingsRequest, UpdateStatusDto, VolumeCheckDto, WsEvent,
+    UpdateNodeSettingsRequest, UpdateRequest, UpdateStatusDto, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
 use crate::capacity::{Capacity, Load, Setup};
@@ -122,6 +122,7 @@ pub async fn local_status(state: &AppState) -> NodeStatus {
         ),
         clock: Some(state.clock_status().await),
         replay_codecs: crate::api::types::ReplayCodec::usable(),
+        busy: crate::update::own_work(state).await,
     }
 }
 
@@ -134,10 +135,17 @@ async fn post_update_check(State(state): State<Arc<AppState>>) -> Json<UpdateSta
     Json(crate::update::status(&state).await)
 }
 
-/// Update to the newest release: answers once it has started; the node
-/// restarts into the new version when it's installed.
-async fn post_update(State(state): State<Arc<AppState>>) -> ApiResult<Json<UpdateStatusDto>> {
-    crate::update::start(&state).await.map_err(ApiError::bad)?;
+/// Update to the newest release, or the one asked for (a controller brings a
+/// node to its own version): answers once it has started; the node restarts
+/// into the new version when it's installed.
+async fn post_update(
+    State(state): State<Arc<AppState>>,
+    body: Option<Json<UpdateRequest>>,
+) -> ApiResult<Json<UpdateStatusDto>> {
+    let version = body.and_then(|Json(b)| b.version);
+    crate::update::start(&state, version)
+        .await
+        .map_err(ApiError::bad)?;
     Ok(Json(crate::update::status(&state).await))
 }
 
