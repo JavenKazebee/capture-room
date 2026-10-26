@@ -418,13 +418,22 @@ fn link_hash(secret: &str) -> String {
     hex::encode(Sha256::digest(secret.as_bytes()))
 }
 
-async fn stored_links(pool: &SqlitePool) -> anyhow::Result<Vec<Link>> {
-    let now = unix_secs();
-    let links: Vec<Link> = match db::config_get(pool, LINKS_KEY).await? {
-        Some(json) => serde_json::from_str(&json).unwrap_or_default(),
-        None => Vec::new(),
-    };
-    Ok(links.into_iter().filter(|l| l.expires > now).collect())
+/// Change the current sign-in links. The service and the app opened from the
+/// desktop both do, so each change is one transaction.
+async fn update_links<T>(
+    pool: &SqlitePool,
+    update: impl FnOnce(&mut Vec<Link>) -> T,
+) -> anyhow::Result<T> {
+    db::config_update(pool, LINKS_KEY, |json| {
+        let now = unix_secs();
+        let mut links: Vec<Link> = json
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default();
+        links.retain(|l| l.expires > now);
+        let out = update(&mut links);
+        Ok((serde_json::to_string(&links)?, out))
+    })
+    .await
 }
 
 /// A link that signs a browser on this machine in once, within a minute:
@@ -450,15 +459,17 @@ pub async fn print_sign_in_link(state: &AppState) {
 
 async fn make_sign_in_link(pool: &SqlitePool, port: u16, ttl_secs: u64) -> anyhow::Result<String> {
     let secret = new_token();
-    let mut links = stored_links(pool).await?;
-    links.push(Link {
+    let link = Link {
         hash: link_hash(&secret),
         expires: unix_secs() + ttl_secs,
-    });
-    // A few at once is plenty: the menu clicked again before the first opened.
-    let excess = links.len().saturating_sub(8);
-    links.drain(..excess);
-    db::config_set(pool, LINKS_KEY, &serde_json::to_string(&links)?).await?;
+    };
+    update_links(pool, |links| {
+        links.push(link);
+        // A few at once is plenty: the menu clicked again before the first opened.
+        let excess = links.len().saturating_sub(8);
+        links.drain(..excess);
+    })
+    .await?;
     Ok(format!(
         "http://localhost:{port}/api/v1/auth/link?secret={secret}"
     ))
@@ -467,11 +478,12 @@ async fn make_sign_in_link(pool: &SqlitePool, port: u16, ttl_secs: u64) -> anyho
 /// Use up the link with `secret`: whether it was there and still current.
 async fn take_sign_in_link(pool: &SqlitePool, secret: &str) -> anyhow::Result<bool> {
     let hash = link_hash(secret);
-    let mut links = stored_links(pool).await?;
-    let before = links.len();
-    links.retain(|l| !constant_time_eq(l.hash.as_bytes(), hash.as_bytes()));
-    db::config_set(pool, LINKS_KEY, &serde_json::to_string(&links)?).await?;
-    Ok(links.len() < before)
+    update_links(pool, |links| {
+        let before = links.len();
+        links.retain(|l| !constant_time_eq(l.hash.as_bytes(), hash.as_bytes()));
+        links.len() < before
+    })
+    .await
 }
 
 #[derive(Deserialize)]
@@ -655,11 +667,9 @@ pub fn installed_sign_in_url(port: u16) -> String {
         return plain;
     };
     let link = async {
-        // Not db::init: the starting service may be migrating this database.
-        let opts = sqlx::sqlite::SqliteConnectOptions::new().filename(&path);
         for _ in 0..20 {
             if path.exists() {
-                if let Ok(pool) = SqlitePool::connect_with(opts.clone()).await {
+                if let Ok(pool) = db::open_existing(&path).await {
                     let ready = matches!(db::config_get(&pool, CONFIG_KEY).await, Ok(Some(_)));
                     let link = if ready {
                         sign_in_link(&pool, port).await.ok()
@@ -715,14 +725,13 @@ pub fn run_command(command: Command) -> anyhow::Result<()> {
     let installed = crate::service::installed_db();
     let is_service = db.is_none() && installed.is_some();
     let db = db.or(installed).unwrap_or_else(|| "capture-room.db".into());
-    // Opening it would create an empty one.
     anyhow::ensure!(db.exists(), "no database at {}", db.display());
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     let (token, code) = runtime.block_on(async {
-        let pool = db::init(&db).await?;
+        let pool = db::open_existing(&db).await?;
         if reset {
             db::config_set(&pool, CONFIG_KEY, &new_token()).await?;
             replace_pairing_code(&pool).await?;
