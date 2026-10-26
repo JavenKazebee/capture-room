@@ -1,8 +1,10 @@
+import { FetchError } from 'ofetch'
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { api } from '@/composables/useApi'
+import { api, errorMessage } from '@/composables/useApi'
 import { loadState } from '@/lib/loadState'
 import { onReconnect } from '@/lib/reconnect'
+import { useEventsStore } from '@/stores/events'
 import { useNodesStore } from '@/stores/nodes'
 import type { ScheduleDto } from '@/types/generated/ScheduleDto'
 import type { ScheduleInput } from '@/types/generated/ScheduleInput'
@@ -64,8 +66,15 @@ export const useSchedulesStore = defineStore('schedules', () => {
     if (!loaded.value) return
     try {
       upsert(await api<ScheduleDto>(`/schedules/${id}`))
-    } catch {
-      schedules.value = schedules.value.filter((s) => s.id !== id)
+    } catch (e) {
+      // A 404 means the schedule is gone: drop it. Anything else is transient:
+      // keep the last known state until the next event or reload.
+      if (e instanceof FetchError && e.statusCode === 404) {
+        schedules.value = schedules.value.filter((s) => s.id !== id)
+      } else {
+        const detail = errorMessage(e, '')
+        useEventsStore().log('warn', `Failed to refresh schedule ${id}`, { detail: detail || undefined })
+      }
     }
   }
 
