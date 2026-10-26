@@ -82,7 +82,7 @@ enum Command {
     Show(WindowId, bool),
     Close(WindowId),
     /// The node's status, for the menu bar icon (none on Linux yet).
-    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     Tray(crate::tray::Status),
     /// A menu bar item was picked.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -102,6 +102,7 @@ impl Displays {
     }
 
     /// Show the node's status on its menu bar icon, if it has one.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub fn show_status(&self, status: crate::tray::Status) {
         if let Some(proxy) = &self.proxy {
             let _ = proxy.send_event(Command::Tray(status));
@@ -273,7 +274,7 @@ impl ApplicationHandler<Command> for WindowLoop {
             }
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        drop(config);
+        match config {}
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, command: Command) {
@@ -314,8 +315,6 @@ impl ApplicationHandler<Command> for WindowLoop {
                     tray.show(status);
                 }
             }
-            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-            Command::Tray(_) => {}
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             Command::Menu(id) => {
                 if let Some(tray) = &mut self.tray {

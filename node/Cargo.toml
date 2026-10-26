@@ -9,6 +9,11 @@ publish = false
 name = "capture-room"
 path = "src/main.rs"
 
+# Windows only: a no-op elsewhere, and only the Windows package ships it.
+[[bin]]
+name = "capture-room-launcher"
+path = "src/bin/capture-room-launcher.rs"
+
 [features]
 export-types = ["dep:ts-rs"]
 

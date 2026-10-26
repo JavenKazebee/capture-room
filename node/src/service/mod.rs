@@ -22,6 +22,8 @@ use linux as platform;
 #[cfg(target_os = "windows")]
 mod windows;
 #[cfg(target_os = "windows")]
+mod windows_flags;
+#[cfg(target_os = "windows")]
 use windows as platform;
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -135,13 +137,13 @@ pub fn log_file() -> Option<PathBuf> {
 
 /// Whether the service starts the node when the user logs in. For the menu
 /// bar icon, which Linux doesn't have yet.
-#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn start_at_login() -> bool {
     platform::start_at_login()
 }
 
 /// Turn starting at login on or off; the running node carries on.
-#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn set_start_at_login(on: bool) -> Result<()> {
     platform::set_start_at_login(on)
 }
@@ -191,15 +193,14 @@ pub fn open_url(url: &str) {
     }
 }
 
-/// Put `text` on the clipboard.
+/// Put `text` on the clipboard, for the menu bar icon.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn copy_to_clipboard(text: &str) -> Result<()> {
     use std::io::Write;
     #[cfg(target_os = "macos")]
     let copier = "pbcopy";
     #[cfg(target_os = "windows")]
     let copier = "clip";
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let copier = "wl-copy";
     let mut child = std::process::Command::new(copier)
         .stdin(std::process::Stdio::piped())
         .spawn()?;
