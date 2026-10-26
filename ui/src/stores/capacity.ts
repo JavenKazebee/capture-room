@@ -11,6 +11,7 @@ import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import type { ReplayCodec } from '@/types/generated/ReplayCodec'
 import { DEFAULT_PRESET } from '@/stores/presets'
 import { CODECS } from '@/stores/replay'
+import { nodeLoadErrors } from '@/lib/loadState'
 import { onReconnect } from '@/lib/reconnect'
 import type { CapacityCheckRequest } from '@/types/generated/CapacityCheckRequest'
 
@@ -42,13 +43,15 @@ export function setupLabel(s: { preset_name: string | null; replay: ReplayCodec 
 
 /** Benchmarks and capacity per node: what each setup sustains, current load, the running benchmark and past runs. */
 export const useCapacityStore = defineStore('capacity', () => {
-  /** Per node id; `null` = failed to load. */
-  const capacity = reactive(new Map<string, NodeCapacityDto | null>())
+  /** Per node id, the last good reading; a failed load keeps it and sets `errors`. */
+  const capacity = reactive(new Map<string, NodeCapacityDto>())
+  const { errors, track } = nodeLoadErrors()
   /** Past runs per node, newest first; loaded on demand. */
   const runs = reactive(new Map<string, BenchmarkRunDto[]>())
 
   async function load(nodeId: string) {
-    capacity.set(nodeId, await nodeApi(nodeId)<NodeCapacityDto>('/capacity').catch(() => null))
+    const cap = await track(nodeId, () => nodeApi(nodeId)<NodeCapacityDto>('/capacity'))
+    if (cap) capacity.set(nodeId, cap)
   }
 
   async function loadRuns(nodeId: string) {
@@ -117,12 +120,12 @@ export const useCapacityStore = defineStore('capacity', () => {
   /** Fetch again whatever was loaded: after a reconnect, when events may have been missed. */
   async function reloadLoaded() {
     await Promise.all([
-      ...[...capacity.keys()].map((id) => load(id)),
+      ...[...new Set([...capacity.keys(), ...errors.keys()])].map((id) => load(id)),
       ...[...runs.keys()].map((id) => loadRuns(id).catch(() => {})),
     ])
   }
 
   onReconnect(reloadLoaded)
 
-  return { capacity, runs, load, loadRuns, applyRun, start, cancel, remove, check, checkReplay, checkChannel }
+  return { capacity, errors, runs, load, loadRuns, applyRun, start, cancel, remove, check, checkReplay, checkChannel }
 })

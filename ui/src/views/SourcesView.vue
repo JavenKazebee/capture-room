@@ -9,6 +9,7 @@ import { useRecordingsStore } from '@/stores/recordings'
 import { useRecordDeskStore } from '@/stores/recordDesk'
 import { notifyError } from '@/lib/notify'
 import { registerCommands } from '@/composables/useCommands'
+import { reloadAll } from '@/composables/useWebSocket'
 import { useSelection } from '@/composables/useSelection'
 import { BulkSkip, bulkToast, runBulk } from '@/lib/bulk'
 import { plural } from '@/lib/format'
@@ -27,6 +28,7 @@ import type { Column } from '@/components/common/dataTable'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
+import LoadError from '@/components/common/LoadError.vue'
 import SourceFormSheet from '@/components/sources/SourceFormSheet.vue'
 import NdiSendersSheet from '@/components/sources/NdiSendersSheet.vue'
 import { LINK } from '@/lib/linkState'
@@ -200,7 +202,8 @@ onMounted(() => store.ensureLoaded())
     </template>
   </PageHeader>
 
-  <div class="p-4">
+  <div class="p-4 space-y-3">
+    <LoadError :error="store.error" :retry="reloadAll" />
     <DataTable
       ref="table"
       table-id="sources"
@@ -285,6 +288,7 @@ onMounted(() => store.ensureLoaded())
       </template>
       <template #empty>
         <template v-if="!store.loaded">Loading sources…</template>
+        <template v-else-if="store.error && !store.sources.length">No sources to show.</template>
         <template v-else-if="filter">No sources match the filter.</template>
         <template v-else>
           No sources yet. <button class="text-primary hover:underline" @click="scan">Scan for NDI sources</button>

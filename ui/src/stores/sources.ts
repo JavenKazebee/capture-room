@@ -1,10 +1,11 @@
 import { defineStore } from 'pinia'
-import { ref, shallowReactive } from 'vue'
+import { computed, ref, shallowReactive } from 'vue'
 import { toast } from 'vue-sonner'
 import { plural } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
 import { nodeApi, sourceKey } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
+import { nodeLoadErrors } from '@/lib/loadState'
 import type { ChannelLevelDto } from '@/types/generated/ChannelLevelDto'
 import type { ConfiguredSourceDto } from '@/types/generated/ConfiguredSourceDto'
 import type { ConfiguredSourceRequest } from '@/types/generated/ConfiguredSourceRequest'
@@ -63,15 +64,21 @@ export const useSourcesStore = defineStore('sources', () => {
 
   /** Whether every reachable node's sources have been fetched once. */
   const loaded = ref(false)
+  const failed = nodeLoadErrors()
+  /** Why the list may be incomplete or stale: the node list, or some nodes' sources, failed to load. */
+  const error = computed(() => nodes.error ?? failed.message('sources', nodes.nameOf))
   let pending: Promise<void> | null = null
 
   function loadSources() {
     const load = (async () => {
       if (nodes.nodes.length === 0) await nodes.load()
+      failed.prune(nodes.reachable.map((n) => n.id))
       const results = await Promise.all(
-        nodes.reachable.map(async (n) =>
-          tag(n.id, await nodeApi(n.id)<SourceDto[]>('/sources').catch(() => [])),
-        ),
+        nodes.reachable.map(async (n) => {
+          const list = await failed.track(n.id, () => nodeApi(n.id)<SourceDto[]>('/sources'))
+          // A node that failed keeps the sources it had.
+          return list ? tag(n.id, list) : sources.value.filter((s) => s.node_id === n.id)
+        }),
       )
       sources.value = results.flat()
       loaded.value = true
@@ -185,6 +192,7 @@ export const useSourcesStore = defineStore('sources', () => {
   return {
     sources,
     loaded,
+    error,
     ensureLoaded,
     listDevices,
     listDisplays,

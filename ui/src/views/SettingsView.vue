@@ -6,6 +6,7 @@ import { AlertTriangle, RotateCcw } from '@lucide/vue'
 import { api, nodeApi } from '@/composables/useApi'
 import { usePreferences } from '@/composables/usePreferences'
 import { formatFingerprint, formatUptime, plural } from '@/lib/format'
+import { loadState, nodeLoadErrors } from '@/lib/loadState'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
 import type { ClockMode } from '@/types/generated/ClockMode'
@@ -18,25 +19,34 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import OptionSelect from '@/components/OptionSelect.vue'
 import PageHeader from '@/components/common/PageHeader.vue'
 import KeyValueList from '@/components/common/KeyValueList.vue'
+import LoadError from '@/components/common/LoadError.vue'
 import AccessTokenSettings from '@/components/auth/AccessTokenSettings.vue'
 import type { UpdateNodeSettingsRequest } from '@/types/generated/UpdateNodeSettingsRequest'
 
 const { colorMode, density } = usePreferences()
 const nodes = useNodesStore()
 
-/** Each reachable node's current settings; `null` = couldn't read them. */
-const nodeMonitors = reactive(new Map<string, MonitorSettingsDto | null>())
+/** Each reachable node's monitoring settings, as last read. */
+const nodeMonitors = reactive(new Map<string, MonitorSettingsDto>())
+const monitorErrors = nodeLoadErrors()
 
 async function loadNodeMonitors() {
   const ids = nodes.reachable.map((n) => n.id)
   for (const id of nodeMonitors.keys()) if (!ids.includes(id)) nodeMonitors.delete(id)
+  monitorErrors.prune(ids)
   await Promise.all(
     ids.map(async (id) => {
-      const s = await nodeApi(id)<NodeSettingsDto>('/settings').catch(() => null)
-      nodeMonitors.set(id, s?.monitor ?? null)
+      const s = await monitorErrors.track(id, () => nodeApi(id)<NodeSettingsDto>('/settings'))
+      if (s) nodeMonitors.set(id, s.monitor)
     }),
   )
 }
+
+/** Without this node's settings there's nothing to edit; without a peer's, its drift is unknown. */
+const monitorError = computed(
+  () => (!nodes.self && nodes.error) || monitorErrors.message('settings', nodes.nameOf),
+)
+const retryMonitoring = () => (nodes.self ? loadNodeMonitors() : nodes.load())
 
 // `nodes.load()` replaces the list on every node event, including another
 // client changing settings, so this keeps the drift check current.
@@ -143,11 +153,18 @@ const meterRates = computed(() =>
 
 /** `null` until loaded, or while this instance isn't a controller. */
 const clockSettings = ref<ControllerClockDto | null>(null)
+const clockLoad = loadState('clock settings')
+const clockError = computed(() => (nodes.isController ? clockLoad.error.value : null))
 const ptpDomain = ref(0)
 const savingClock = ref(false)
 
 async function loadClock() {
-  clockSettings.value = nodes.isController ? await api<ControllerClockDto>('/controller/clock').catch(() => null) : null
+  if (!nodes.isController) {
+    clockSettings.value = null
+    return
+  }
+  const clock = await clockLoad.track(() => api<ControllerClockDto>('/controller/clock'))
+  if (clock) clockSettings.value = clock
   if (clockSettings.value?.mode.kind === 'ptp') ptpDomain.value = clockSettings.value.mode.domain
 }
 watch(() => nodes.nodes, loadClock, { immediate: true })
@@ -243,6 +260,7 @@ const about = computed(() => [
         <h2 class="text-base font-semibold tracking-tight">Monitoring</h2>
         <p class="text-xs text-muted-foreground">How each source's thumbnail and audio meter are sampled for the Record view. Shared by every node.</p>
       </div>
+      <LoadError :error="monitorError" :retry="retryMonitoring" />
       <div class="rounded-lg border border-border bg-card overflow-hidden">
         <div class="divide-y divide-border">
           <div class="flex items-center justify-between gap-4 px-4 py-3">
@@ -290,14 +308,15 @@ const about = computed(() => [
       </div>
     </section>
 
-    <section v-if="clockSettings" id="clock-sync" class="space-y-2 scroll-mt-4">
+    <section v-if="clockSettings || clockError" id="clock-sync" class="space-y-2 scroll-mt-4">
       <div>
         <h2 class="text-base font-semibold tracking-tight">Clock sync</h2>
         <p class="text-xs text-muted-foreground">
           What this controller's nodes run on, so their timestamps agree. Each node shows its sync on the Nodes page.
         </p>
       </div>
-      <div class="rounded-lg border border-border bg-card overflow-hidden">
+      <LoadError :error="clockError" :retry="loadClock" />
+      <div v-if="clockSettings" class="rounded-lg border border-border bg-card overflow-hidden">
         <div class="divide-y divide-border">
           <div class="flex items-center justify-between gap-4 px-4 py-3">
             <div>
