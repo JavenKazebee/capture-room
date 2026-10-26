@@ -38,8 +38,9 @@ jobs:
       # The .debs are cached and apt still installs them, so nothing is
       # skipped the way cache-apt-pkgs-action's restored files were (the
       # linker couldn't find some libraries).
-      - name: Cache apt packages
-        uses: actions/cache@v6
+      - name: Restore apt packages
+        id: apt
+        uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/apt-archives
           key: apt-${{ runner.os }}-${{ hashFiles('scripts/linux/gstreamer.sh') }}
@@ -50,6 +51,15 @@ jobs:
       - name: Install GStreamer
         timeout-minutes: 20
         run: scripts/linux/gstreamer.sh "$RUNNER_TEMP/apt-archives"
+
+      # Saved here rather than at the end of the job, which only saves when
+      # every check passes.
+      - name: Save apt packages
+        if: steps.apt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          key: ${{ steps.apt.outputs.cache-primary-key }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
