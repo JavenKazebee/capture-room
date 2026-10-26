@@ -21,20 +21,22 @@ use crate::api::types::{
     ScheduleRunStatus,
 };
 
-pub async fn init(db_path: &Path) -> Result<SqlitePool> {
+fn connect_options(db_path: &Path) -> SqliteConnectOptions {
     // By filename: `from_str` would parse the path as a URL, percent-decoding
     // it and cutting it at `?`.
-    let opts = SqliteConnectOptions::new()
+    SqliteConnectOptions::new()
         .filename(db_path)
-        .create_if_missing(true)
         // Preset outputs cascade-delete with their preset.
         .foreign_keys(true)
         // The service, the CLI and the app opened from the desktop all open
         // this file: readers don't block the writer, and a busy one waits.
         .journal_mode(SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_secs(5));
+        .busy_timeout(Duration::from_secs(5))
+}
 
-    let pool = SqlitePool::connect_with(opts)
+/// Open this node's database, creating and migrating it as needed.
+pub async fn init(db_path: &Path) -> Result<SqlitePool> {
+    let pool = SqlitePool::connect_with(connect_options(db_path).create_if_missing(true))
         .await
         .context("open sqlite")?;
 
@@ -44,6 +46,16 @@ pub async fn init(db_path: &Path) -> Result<SqlitePool> {
 
     info!(path = %db_path.display(), "database ready");
     Ok(pool)
+}
+
+/// Open another process's database (the installed service's, from the CLI or
+/// the app opened from the desktop) as it is: its node migrates it, maybe
+/// right now, and another build's migrations would leave it one that node
+/// can't open.
+pub async fn open_existing(db_path: &Path) -> Result<SqlitePool> {
+    SqlitePool::connect_with(connect_options(db_path))
+        .await
+        .with_context(|| format!("open {}", db_path.display()))
 }
 
 /// `0001_schema.sql` was rewritten for 0.2, so a database from 0.1 or an
@@ -103,6 +115,32 @@ pub async fn config_set(pool: &SqlitePool, key: &str, value: &str) -> Result<()>
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Replace `key`'s value with what `update` makes of it, returning the rest
+/// of `update`'s result. Other processes write `node_config` too: `BEGIN
+/// IMMEDIATE` takes the write lock before the read, so none writes in between.
+pub async fn config_update<T>(
+    pool: &SqlitePool,
+    key: &str,
+    update: impl FnOnce(Option<String>) -> Result<(String, T)>,
+) -> Result<T> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let old = sqlx::query_scalar::<_, String>("SELECT value FROM node_config WHERE key = ?")
+        .bind(key)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let (value, out) = update(old)?;
+    sqlx::query(
+        "INSERT INTO node_config (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(out)
 }
 
 /// Stored settings, with defaults for anything missing or unparsable.
@@ -1073,6 +1111,54 @@ mod tests {
         pool.close().await;
         let err = init(&path).await.unwrap_err().to_string();
         assert!(err.contains("Capture Room 0.1"), "{err}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn open_existing_neither_creates_nor_migrates() {
+        let path =
+            std::env::temp_dir().join(format!("capture-room-other-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        assert!(open_existing(&path).await.is_err());
+        assert!(!path.exists());
+
+        let pool = init(&path).await.unwrap();
+        // As if it were from a build with none of this one's migrations.
+        sqlx::query("DELETE FROM _sqlx_migrations")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        let pool = open_existing(&path).await.unwrap();
+        let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(applied, 0);
+        pool.close().await;
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn config_updates_from_two_pools_all_land() {
+        let path =
+            std::env::temp_dir().join(format!("capture-room-update-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let a = init(&path).await.unwrap();
+        let b = open_existing(&path).await.unwrap();
+        let add = |pool: SqlitePool| async move {
+            config_update(&pool, "n", |v| {
+                let n: u32 = v.and_then(|v| v.parse().ok()).unwrap_or(0);
+                Ok(((n + 1).to_string(), ()))
+            })
+            .await
+            .unwrap()
+        };
+        let adds = (0..20).map(|i| add(if i % 2 == 0 { a.clone() } else { b.clone() }));
+        futures_util::future::join_all(adds).await;
+        assert_eq!(config_get(&a, "n").await.unwrap().as_deref(), Some("20"));
+        a.close().await;
+        b.close().await;
         let _ = std::fs::remove_file(&path);
     }
 
