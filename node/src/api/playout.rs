@@ -25,6 +25,7 @@ use crate::api::types::{
 };
 use crate::benchmark;
 use crate::db::{self, ReplayClipRow};
+use crate::pipeline::profile;
 use crate::pipeline::replay::{self, ReplaySpan};
 use crate::sources::channel::{
     check_rate, ClipRequest, PlaylistItem, Playout, PlayoutStatus, ReplayClip,
@@ -832,18 +833,8 @@ async fn delete_clip_group(
 /// `name.mov` in `dir`, or `name_2.mov`, … : never an existing file, nor
 /// one the library still lists (a deleted export shows there as missing).
 fn free_path(dir: &Path, name: &str, listed: &HashSet<String>) -> std::path::PathBuf {
-    let stem: String = name
-        .chars()
-        .map(|c| {
-            if c == '/' || c == ':' || c == '\\' || c.is_control() {
-                '-'
-            } else {
-                c
-            }
-        })
-        .collect();
-    let stem = stem.trim().trim_start_matches('.');
-    let stem = if stem.is_empty() { "Replay clip" } else { stem };
+    let stem = name.trim().trim_start_matches('.');
+    let stem = profile::sanitize(if stem.is_empty() { "Replay clip" } else { stem });
     let mut path = dir.join(format!("{stem}.mov"));
     let mut n = 2;
     while path.exists() || listed.contains(&*path.to_string_lossy()) {
@@ -983,5 +974,14 @@ mod tests {
         let listed = HashSet::from([dir.join("Goal.mov").to_string_lossy().into_owned()]);
         assert_eq!(free_path(&dir, "Goal", &listed), dir.join("Goal_2.mov"));
         assert_eq!(free_path(&dir, "Save", &listed), dir.join("Save.mov"));
+        assert_eq!(
+            free_path(&dir, "a*b?<c>|", &listed),
+            dir.join("a-b--c--.mov")
+        );
+        assert_eq!(free_path(&dir, "NUL", &listed), dir.join("_NUL.mov"));
+        assert_eq!(
+            free_path(&dir, " .. ", &listed),
+            dir.join("Replay clip.mov")
+        );
     }
 }

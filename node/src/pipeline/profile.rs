@@ -173,8 +173,9 @@ pub fn plan_legs(
 }
 
 /// A name made safe to use as one path component: separators and characters
-/// Windows or macOS reject become `-`.
-fn sanitize(value: &str) -> String {
+/// Windows or macOS reject become `-`, and a name Windows reserves for a
+/// device gets a `_` in front.
+pub(crate) fn sanitize(value: &str) -> String {
     let s: String = value
         .trim()
         .chars()
@@ -188,7 +189,22 @@ fn sanitize(value: &str) -> String {
         .collect();
     match s.as_str() {
         "" | "." | ".." => "_".into(),
+        _ if windows_reserved(&s) => format!("_{s}"),
         _ => s,
+    }
+}
+
+/// `CON`, `nul.txt`, `Com1.tar.gz`…: Windows opens the device instead,
+/// whatever the extension.
+fn windows_reserved(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name).trim_end();
+    let upper = stem.to_ascii_uppercase();
+    match upper.as_str() {
+        "CON" | "PRN" | "AUX" | "NUL" => true,
+        _ => upper
+            .strip_prefix("COM")
+            .or_else(|| upper.strip_prefix("LPT"))
+            .is_some_and(|n| matches!(n.as_bytes(), [b'1'..=b'9'])),
     }
 }
 
@@ -214,7 +230,7 @@ fn with_segment(path: &str) -> String {
 /// `path` with `tag` added to its file name, before the extension (or at the
 /// end when there isn't one).
 fn before_extension(path: &str, tag: &str) -> String {
-    let name_start = path.rfind('/').map_or(0, |i| i + 1);
+    let name_start = path.rfind(['/', '\\']).map_or(0, |i| i + 1);
     match path[name_start..].rfind('.') {
         Some(dot) if dot > 0 => {
             let at = name_start + dot;
@@ -229,11 +245,11 @@ pub fn segment_number(index: u32) -> String {
     format!("{:03}", index + 1)
 }
 
-/// `~` or `~/…` → this node's home directory.
+/// `~`, `~/…` or `~\\…` → this node's home directory.
 fn expand_home(path: &str) -> PathBuf {
     let rest = match path.strip_prefix('~') {
         Some("") => "",
-        Some(rest) if rest.starts_with('/') => rest.trim_start_matches('/'),
+        Some(rest) if rest.starts_with(['/', '\\']) => rest.trim_start_matches(['/', '\\']),
         _ => return PathBuf::from(path),
     };
     match std::env::home_dir() {
@@ -1018,6 +1034,13 @@ mod tests {
         );
         assert_eq!(expand_home("/abs/~x"), PathBuf::from("/abs/~x"));
         assert_eq!(expand_home("~user/x"), PathBuf::from("~user/x"));
+        let home = std::env::home_dir().unwrap();
+        assert_eq!(expand_home("~\\Videos\\x"), home.join("Videos\\x"));
+        assert_eq!(before_extension("D:\\v1.2\\cam", "_2"), "D:\\v1.2\\cam_2");
+        assert_eq!(
+            before_extension("D:\\v1.2\\cam.mov", "_2"),
+            "D:\\v1.2\\cam_2.mov"
+        );
     }
 
     #[test]
@@ -1177,6 +1200,12 @@ mod tests {
         assert_eq!(sanitize(" a/b:c "), "a-b-c");
         assert_eq!(sanitize(".."), "_");
         assert_eq!(sanitize(""), "_");
+        assert_eq!(sanitize("a*b?\"c<>|"), "a-b--c---");
+        assert_eq!(sanitize("CON"), "_CON");
+        assert_eq!(sanitize("con.txt"), "_con.txt");
+        assert_eq!(sanitize("Lpt3"), "_Lpt3");
+        assert_eq!(sanitize("COM0"), "COM0");
+        assert_eq!(sanitize("Console"), "Console");
     }
 
     #[test]
