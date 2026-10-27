@@ -580,7 +580,7 @@ async fn get_schedule_runs(
     axum::extract::Query(q): axum::extract::Query<RunsQuery>,
 ) -> ApiResult<Json<Vec<ScheduleRunDto>>> {
     scheduler(&state).await?;
-    let limit = q.limit.unwrap_or(20).min(200);
+    let limit = q.limit.unwrap_or(20).min(db::SCHEDULE_RUNS_KEPT);
     Ok(Json(db::schedule_runs(&state.db, &id, limit).await?))
 }
 

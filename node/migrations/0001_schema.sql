@@ -157,6 +157,8 @@ CREATE TABLE replay_clips (
     group_id      TEXT REFERENCES replay_clip_groups (id) ON DELETE CASCADE
 );
 
+CREATE INDEX replay_clips_group_id ON replay_clips (group_id);
+
 -- The NDI senders a node connects to when it's set to connect only to
 -- chosen ones (node_config `ndi_connect` = 'chosen'), by NDI name. A sender
 -- that's gone keeps its row: it can come back.
@@ -185,7 +187,8 @@ CREATE TABLE schedules (
 );
 
 -- One row per occurrence that came due: run, failed or skipped. The unique
--- key keeps an occurrence from running twice.
+-- key (which is also the index runs are listed by) keeps an occurrence from
+-- running twice. Only a schedule's newest runs are kept.
 CREATE TABLE schedule_runs (
     id            TEXT PRIMARY KEY,
     schedule_id   TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
@@ -197,4 +200,3 @@ CREATE TABLE schedule_runs (
     targets       TEXT NOT NULL,
     UNIQUE (schedule_id, planned_start)
 );
-CREATE INDEX schedule_runs_by_schedule ON schedule_runs (schedule_id, planned_start);
