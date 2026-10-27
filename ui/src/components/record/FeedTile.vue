@@ -8,6 +8,7 @@ import { useRecordDeskStore } from '@/stores/recordDesk'
 import { useNodesStore } from '@/stores/nodes'
 import { useEventsStore } from '@/stores/events'
 import { usePreferences } from '@/composables/usePreferences'
+import { useThumbnail } from '@/composables/useThumbnail'
 import { elapsedMs, formatDuration } from '@/lib/format'
 import { formatLabel } from '@/lib/sourceFormat'
 import { LINK } from '@/lib/linkState'
@@ -17,7 +18,6 @@ import AudioMeter from '@/components/AudioMeter.vue'
 import PresetSelect from './PresetSelect.vue'
 import FeedInfo from './FeedInfo.vue'
 import TallyBadge from '@/components/common/TallyBadge.vue'
-import { useThumbnail } from './useThumbnail'
 
 const props = defineProps<{ source: Source }>()
 

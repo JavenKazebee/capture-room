@@ -83,7 +83,8 @@ pub fn run_command(command: Command) -> Result<()> {
         Command::Uninstall { purge } => {
             platform::uninstall(purge)?;
             println!(
-                "Removed the service and the app. Recordings in ~/capture-room are untouched."
+                "Removed the service and the app. Recordings in {} are untouched.",
+                crate::storage::default_folder().display()
             );
             if !purge {
                 println!(

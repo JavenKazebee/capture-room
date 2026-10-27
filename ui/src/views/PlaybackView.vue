@@ -21,7 +21,7 @@ import MediaLibrary from '@/components/playback/MediaLibrary.vue'
 import PlaylistPanel from '@/components/playback/PlaylistPanel.vue'
 import ChannelSheet from '@/components/playback/ChannelSheet.vue'
 import ItemSetup from '@/components/playback/ItemSetup.vue'
-import { useChannelChoice } from '@/components/playback/useChannelChoice'
+import { useChannelChoice } from '@/composables/useChannelChoice'
 import { TRANSPORT } from '@/components/playback/transport'
 
 const sources = useSourcesStore()

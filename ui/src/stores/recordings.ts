@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { nodeApi, sourceKey } from '@/composables/useApi'
+import { nodeApi } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
 import { nodeLoadErrors } from '@/lib/loadState'
 import { blankLeg, DEFAULT_PRESET, usePresetsStore } from '@/stores/presets'
@@ -196,11 +196,7 @@ export const useRecordingsStore = defineStore('recordings', () => {
 
   /** The source's name when it recorded, else its current name. */
   function sourceNameOf(s: RecordingSession) {
-    return (
-      s.source_name ??
-      sources.sources.find((x) => x.key === sourceKey(s.node_id, s.source_id))?.display_name ??
-      s.source_id
-    )
+    return s.source_name ?? sources.nameOf(s.node_id, s.source_id)
   }
 
   function presetNameOf(s: RecordingSession) {

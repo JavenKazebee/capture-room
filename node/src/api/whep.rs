@@ -92,6 +92,9 @@ async fn proxy(Path(path): Path<String>, req: Request) -> Response {
         let endpoint = mount.rsplit('/').next().unwrap_or_default();
         builder = builder.header(header::LOCATION, format!("{endpoint}/resource/{id}"));
     }
+    // gst-plugins-rs's WHEP server sends the standard Accept-Post header
+    // misspelt as Access-Post (whep_signaller/server.rs); pass it on as the
+    // header clients look for.
     if let Some(v) = resp.headers().get(HeaderName::from_static("access-post")) {
         builder = builder.header("accept-post", v);
     }

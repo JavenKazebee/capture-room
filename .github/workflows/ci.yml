@@ -35,31 +35,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # The .debs are cached and apt still installs them, so nothing is
-      # skipped the way cache-apt-pkgs-action's restored files were (the
-      # linker couldn't find some libraries).
-      - name: Restore apt packages
-        id: apt
-        uses: actions/cache/restore@v6
-        with:
-          path: ${{ runner.temp }}/apt-archives
-          key: apt-${{ runner.os }}-${{ hashFiles('scripts/linux/gstreamer.sh') }}
-          restore-keys: apt-${{ runner.os }}-
-
       # About a minute, or seconds from the cache. The timeout is a backstop
       # for the script's own: three mirrors at a few minutes each.
-      - name: Install GStreamer
+      - name: GStreamer
+        uses: ./.github/actions/gstreamer-linux
         timeout-minutes: 20
-        run: scripts/linux/gstreamer.sh "$RUNNER_TEMP/apt-archives"
-
-      # Saved here rather than at the end of the job, which only saves when
-      # every check passes.
-      - name: Save apt packages
-        if: steps.apt.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ runner.temp }}/apt-archives
-          key: ${{ steps.apt.outputs.cache-primary-key }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -98,7 +78,7 @@ jobs:
             exit 1
           fi
 
-  # The platform the node ships on: lints the macOS-only code Linux never compiles.
+  # Lints and tests the macOS-only code Linux never compiles.
   macos:
     name: Node on macOS (clippy, tests)
     runs-on: macos-15
@@ -135,56 +115,20 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test
 
-  # Not shipped yet: keeps the Windows-only code (the tray icon, display
-  # windows) compiling, linted and tested.
+  # Lints and tests the Windows-only code (the service, the tray icon,
+  # display windows) Linux never compiles.
   windows:
     name: Node on Windows (clippy, tests)
     runs-on: windows-2025
-    env:
-      # Not under Program Files: a space in the path breaks the flags
-      # pkg-config prints.
-      GST_DIR: C:\gstreamer\1.0\msvc_x86_64
     steps:
       - uses: actions/checkout@v7
 
-      - name: Cache GStreamer
-        id: gst-cache
-        uses: actions/cache@v6
+      # The same official MSVC build the release bundles.
+      - name: GStreamer
+        uses: ./.github/actions/gstreamer-windows
         with:
-          path: C:\gstreamer
-          key: gstreamer-windows-${{ env.GST_VERSION }}
-
-      # The official MSVC installer (one .exe since 1.28), runtime and
-      # development files.
-      - name: Install GStreamer
-        if: steps.gst-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          $exe = "gstreamer-1.0-msvc-x86_64-$env:GST_VERSION.exe"
-          $url = "https://gstreamer.freedesktop.org/data/pkg/windows/$env:GST_VERSION/msvc/$exe"
-          $path = Join-Path $env:RUNNER_TEMP $exe
-          curl.exe -fsSL --retry 3 -o $path $url
-          $sum = (curl.exe -fsSL --retry 3 "$url.sha256sum").Split(' ')[0]
-          if ((Get-FileHash $path -Algorithm SHA256).Hash -ne $sum) { throw "$exe doesn't match its checksum" }
-          $setup = Start-Process $path -Wait -PassThru -ArgumentList `
-            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/ALLUSERS', '/TYPE=devel', "/DIR=$env:GST_DIR"
-          if ($setup.ExitCode -ne 0) { throw "the installer exited with $($setup.ExitCode)" }
-          # Plugins the node links in itself (gst-plugins-rs, statically): the
-          # install's copies would clash with them.
-          foreach ($plugin in 'gstndi', 'gstfallbackswitch', 'gstrswebrtc') {
-            Remove-Item "$env:GST_DIR\lib\gstreamer-1.0\$plugin.dll" -ErrorAction SilentlyContinue
-          }
-
-      # Its bin has pkg-config and the DLLs the tests load.
-      - name: Point the build at GStreamer
-        shell: pwsh
-        run: |
-          $env:PATH = "$env:GST_DIR\bin;$env:PATH"
-          $env:PKG_CONFIG_PATH = "$env:GST_DIR\lib\pkgconfig"
-          "$env:GST_DIR\bin" >> $env:GITHUB_PATH
-          "PKG_CONFIG_PATH=$env:PKG_CONFIG_PATH" >> $env:GITHUB_ENV
-          (Get-Command pkg-config).Source
-          pkg-config --modversion gstreamer-1.0 gstreamer-webrtc-1.0 gstreamer-rtsp-server-1.0
+          version: ${{ env.GST_VERSION }}
+          dir: C:\gstreamer\1.0\msvc_x86_64
 
       - uses: dtolnay/rust-toolchain@stable
         with:

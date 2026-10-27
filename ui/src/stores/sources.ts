@@ -57,6 +57,13 @@ export const useSourcesStore = defineStore('sources', () => {
     s.link = link
   }
 
+  const byKey = computed(() => new Map(sources.value.map((s) => [s.key, s])))
+
+  /** A source's name, or its id if it isn't one this UI knows. */
+  function nameOf(nodeId: string, id: string) {
+    return byKey.value.get(sourceKey(nodeId, id))?.display_name ?? id
+  }
+
   /** Replace one node's sources, keeping the others. */
   function setForNode(nodeId: string, list: SourceDto[]) {
     sources.value = [...sources.value.filter((s) => s.node_id !== nodeId), ...tag(nodeId, list)]
@@ -211,5 +218,6 @@ export const useSourcesStore = defineStore('sources', () => {
     deleteSource,
     listFiles,
     alsoOn,
+    nameOf,
   }
 })

@@ -42,7 +42,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -160,20 +160,21 @@ async fn run(
     #[cfg(unix)]
     service::log_rotation::spawn();
 
-    if let Some(dir) = bundled_gst {
+    if let Some(dir) = &bundled_gst {
         info!(dir = %dir.display(), "using the GStreamer bundled in");
     }
     if let Some(dir) = ndi_dir {
         info!(dir, "using the NDI library found in");
     }
 
-    gstreamer::init().expect("GStreamer init failed");
-    gstndi::plugin_register_static().expect("NDI plugin registration failed");
-    gstfallbackswitch::plugin_register_static().expect("fallbackswitch plugin registration failed");
+    gstreamer::init().context("couldn't start GStreamer")?;
+    gstndi::plugin_register_static().context("couldn't register the NDI plugin")?;
+    gstfallbackswitch::plugin_register_static()
+        .context("couldn't register the fallbackswitch plugin")?;
     // Before the WebRTC elements list the encoders they can use.
     pipeline::whep::hide_unsupported_encoders();
-    gstrswebrtc::plugin_register_static().expect("webrtc plugin registration failed");
-    plugins::check_required_plugins()?;
+    gstrswebrtc::plugin_register_static().context("couldn't register the WebRTC plugin")?;
+    plugins::check_required_plugins(bundled_gst.is_some())?;
     let pool = db::init(&args.db).await?;
 
     let node_id = match db::config_get(&pool, "uuid").await? {
