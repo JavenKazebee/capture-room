@@ -33,26 +33,33 @@ curl -fsSL https://github.com/JavenKazebee/capture-room/releases/latest/download
 
 ## Install (Linux)
 
-Needs Ubuntu 24.04 or later, or Debian 13 or later, on x86_64. Other distros may work
-with GStreamer 1.24 or later but aren't tested.
+Needs x86_64 and one of:
+
+- Ubuntu 24.04 or later, or Debian 13 or later (GStreamer from `apt`)
+- Arch or a derivative such as CachyOS, EndeavourOS or Manjaro (GStreamer from `pacman`)
+
+Other distros may work with GStreamer 1.24 or later but aren't tested.
 
 ```
 curl -fsSL https://github.com/JavenKazebee/capture-room/releases/latest/download/install.sh | bash
 ```
 
 Run it as the user the node should run as, not root. It installs the distro's GStreamer
-packages with `apt` (asking for your password with `sudo` if any are missing), puts the
-app in `~/.local/share/capture-room/app` with `capture-room` linked into `~/.local/bin`,
-and runs it as a systemd user service that updates itself. It turns on lingering
-(`loginctl enable-linger`) so the node starts at boot, before anyone logs in. The same
-options as on macOS go after `bash -s --`.
+packages with `apt` or `pacman` (asking for your password with `sudo` if any are
+missing), puts the app in `~/.local/share/capture-room/app` with `capture-room` linked
+into `~/.local/bin`, and runs it as a systemd user service that updates itself. It turns
+on lingering (`loginctl enable-linger`) so the node starts at boot, before anyone logs
+in. The same options as on macOS go after `bash -s --`.
 
 There's no tray icon. On the machine itself, `capture-room` (no arguments) opens the UI
 signed in; from another computer, sign in with the access token
 (`capture-room access-token show`). Capture devices (`/dev/video*`) need the user in the
-`video` group on a headless machine; Setup › Checks says so. NDI Tools isn't made for
-Linux: for NDI, install the [NDI SDK for Linux](https://ndi.video/for-developers/ndi-sdk/)
-and copy its `libndi.so.6` into `/usr/local/lib` (then `sudo ldconfig`).
+`video` group on a headless machine; Setup › Checks says so.
+
+NDI Tools isn't made for Linux, and the NDI Runtime isn't bundled. For NDI, install the
+[NDI SDK for Linux](https://ndi.video/for-developers/ndi-sdk/) and copy its
+`libndi.so.6` into `/usr/local/lib` (then `sudo ldconfig`). On Arch, the AUR's `ndi-sdk`
+package installs it in `/usr/lib` instead (`yay -S ndi-sdk`, or your AUR helper).
 
 ```
 systemctl --user status capture-room     # running?

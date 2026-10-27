@@ -14,9 +14,10 @@
 #   --purge             with --uninstall, also remove its database and logs
 # Recordings in ~/capture-room are never touched.
 #
-# Linux: Ubuntu 24.04+ or Debian 13+, x86_64. GStreamer comes from the distro;
-# missing packages are installed with apt (which asks for sudo). The node runs
-# as a systemd user service, with lingering on so it starts at boot.
+# Linux: Ubuntu 24.04+, Debian 13+ or Arch and its derivatives, x86_64.
+# GStreamer comes from the distro; missing packages are installed with apt or
+# pacman (which asks for sudo). The node runs as a systemd user service, with
+# lingering on so it starts at boot.
 set -euo pipefail
 
 repo=JavenKazebee/capture-room
@@ -99,26 +100,45 @@ linux_app=$data_home/capture-room/app
 
 # What the node needs at run time beyond the libraries every install has:
 # GStreamer's plugins (the node checks for each element it uses when it
-# starts), rtsp-server, libnice for WebRTC, and the audio and GL plugins for
-# devices and display outputs. NDI, fallbackswitch and WebRTC are built in.
-linux_packages=(
+# starts), rtsp-server, libnice for WebRTC, PipeWire for Wayland screen
+# capture, and the audio and GL plugins for devices and display outputs. NDI,
+# fallbackswitch and WebRTC are built in.
+apt_packages=(
     gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
     gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-nice
-    gstreamer1.0-alsa gstreamer1.0-pulseaudio gstreamer1.0-gl
+    gstreamer1.0-alsa gstreamer1.0-pulseaudio gstreamer1.0-gl gstreamer1.0-pipewire
     libgstrtspserver-1.0-0
 )
+# Arch packs ALSA into base, PulseAudio into good and GL into base-libs (which
+# base needs), and libnice ships its own GStreamer plugin.
+pacman_packages=(
+    gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly
+    gst-libav gst-plugin-pipewire gst-rtsp-server libnice
+)
 
-# Ubuntu 24.04+ or Debian 13+: what's tested, with GStreamer 1.24 or later.
-linux_supported() {
-    [[ -r /etc/os-release ]] || return 1
-    local id ver
-    id=$(. /etc/os-release && echo "${ID:-}")
-    ver=$(. /etc/os-release && echo "${VERSION_ID:-}")
+# The package manager that installs GStreamer here, if this is a tested distro:
+# apt on Ubuntu 24.04+ or Debian 13+ (GStreamer 1.24 or later), pacman on Arch
+# and its derivatives (CachyOS, EndeavourOS, Manjaro), which name it in ID_LIKE.
+linux_family() {
+    [[ -r /etc/os-release ]] || return 0
+    local id like ver
+    # shellcheck source=/dev/null
+    { read -r id; read -r like; read -r ver; } < <(
+        . /etc/os-release && printf '%s\n' "${ID:-}" "${ID_LIKE:-}" "${VERSION_ID:-}"
+    )
     case $id in
-        ubuntu) at_least "$ver" 24.04 ;;
-        debian) at_least "$ver" 13 ;;
-        *) return 1 ;;
+        ubuntu) at_least "$ver" 24.04 && command -v apt-get >/dev/null && echo apt ;;
+        debian) at_least "$ver" 13 && command -v apt-get >/dev/null && echo apt ;;
+        *)
+            if [[ " $id $like " == *" arch "* ]] && command -v pacman >/dev/null; then
+                echo pacman
+            fi ;;
     esac
+    return 0
+}
+
+linux_supported() {
+    [[ -n $(linux_family) ]]
 }
 
 # Whether version $1 is $2 or later.
@@ -127,21 +147,39 @@ at_least() {
 }
 
 linux_deps() {
-    local missing=() p
-    for p in "${linux_packages[@]}"; do
-        dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'ok installed' || missing+=("$p")
-    done
-    [[ ${#missing[@]} -eq 0 ]] && return
-    if ! linux_supported || ! command -v apt-get >/dev/null; then
-        warn "This isn't Ubuntu 24.04+ or Debian 13+, so GStreamer isn't installed for you."
-        warn "The node needs GStreamer 1.24 or later with its base, good, bad, ugly, libav,"
-        warn "nice, ALSA, PulseAudio and GL plugins and rtsp-server (Debian names: ${missing[*]})."
-        return
+    local family missing=() p
+    family=$(linux_family)
+    if [[ $family == pacman ]]; then
+        for p in "${pacman_packages[@]}"; do
+            pacman -Q "$p" >/dev/null 2>&1 || missing+=("$p")
+        done
+    else
+        for p in "${apt_packages[@]}"; do
+            dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'ok installed' || missing+=("$p")
+        done
     fi
-    say "Installing GStreamer from the distro's packages (sudo asks for your password)"
-    sudo apt-get update </dev/null || fail "apt-get update failed"
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}" </dev/null ||
-        fail "Couldn't install ${missing[*]}"
+    [[ ${#missing[@]} -eq 0 ]] && return
+    case $family in
+        apt)
+            say "Installing GStreamer from the distro's packages (sudo asks for your password)"
+            sudo apt-get update </dev/null || fail "apt-get update failed"
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}" </dev/null ||
+                fail "Couldn't install ${missing[*]}"
+            ;;
+        pacman)
+            say "Installing GStreamer from the distro's packages (sudo asks for your password)"
+            # No -y: syncing the database without upgrading is a partial upgrade,
+            # which Arch doesn't support.
+            sudo pacman -S --needed --noconfirm "${missing[@]}" </dev/null ||
+                fail "Couldn't install ${missing[*]}; if a download failed, run 'sudo pacman -Syu' and try again."
+            ;;
+        *)
+            warn "This isn't Ubuntu 24.04+, Debian 13+ or Arch, so GStreamer isn't installed for you."
+            warn "The node needs GStreamer 1.24 or later with its base, good, bad, ugly, libav,"
+            warn "nice, ALSA, PulseAudio, GL and PipeWire plugins and rtsp-server"
+            warn "(Debian names: ${missing[*]})."
+            ;;
+    esac
 }
 
 linux_install() {
@@ -182,7 +220,7 @@ if [[ $os == macos ]]; then
 else
     [[ $(uname -m) == x86_64 ]] || fail "Capture Room for Linux is x86_64 only, not $(uname -m)."
     arch=x86_64
-    linux_supported || warn "Only Ubuntu 24.04+ and Debian 13+ are tested; carrying on."
+    linux_supported || warn "Only Ubuntu 24.04+, Debian 13+ and Arch are tested; carrying on."
 fi
 
 work=$(mktemp -d)
