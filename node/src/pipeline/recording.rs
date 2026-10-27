@@ -4,7 +4,7 @@
 //! ```text
 //! appsrc(video) → [videorate → caps] → [videoscale → caps] → videoconvert → [caps] → venc → [parse] ─┐
 //!                                                                                                mux → filesink
-//! appsrc(audio) → queue → audioconvert → audioresample → [caps] → aenc | audiorate (PCM) ────────┘
+//! appsrc(audio) → queue → audioconvert → audioresample → [caps] → aenc | S24LE → audiorate ───────┘
 //! ```
 //!
 //! A failure (a codec the container rejects at runtime, a full disk) fails
@@ -27,8 +27,9 @@ use super::profile::{
 };
 use super::timecode::{running_time, stamp_time_of_day};
 use super::{
-    audio_hold_queue, capsfilter, describe_error, make_el, mark_prores_keyframes, pcm_audiorate,
-    set_mix_matrix, set_property, start_or_reason, ConsumerPipeline,
+    audio_hold_queue, capsfilter, describe_error, first_that_builds, make_el,
+    mark_prores_keyframes, pcm_tail, remove_quietly, set_mix_matrix, set_property, start_or_reason,
+    ConsumerPipeline,
 };
 use crate::api::types::{Container, RateControl};
 
@@ -145,28 +146,22 @@ impl RecordingLeg {
         on_file: OnLegFile,
     ) -> Result<Self> {
         let encoders = profile.encoders();
-        let mut last_err = None;
-        for (i, &encoder) in encoders.iter().enumerate() {
-            match Self::build_with(
+        if encoders.is_empty() {
+            return Err(anyhow!("no encoder for {:?}", profile.video_codec));
+        }
+        let leg = first_that_builds(&encoders, |encoder| {
+            Self::build_with(
                 path,
                 profile,
                 encoder,
                 name,
                 Arc::clone(&on_error),
                 Arc::clone(&on_file),
-            ) {
-                Ok(leg) => {
-                    info!(path = ?path, encoder = encoder.element(), hardware = encoder.is_hardware(), "recording leg built");
-                    return Ok(leg);
-                }
-                Err(e) if i + 1 < encoders.len() => {
-                    warn!(encoder = encoder.element(), error = %format!("{e:#}"), "encoder unavailable, trying the next");
-                    last_err = Some(e);
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        Err(last_err.unwrap_or_else(|| anyhow!("no encoder for {:?}", profile.video_codec)))
+            )
+        })?;
+        let encoder = encoders.iter().find(|e| e.element() == leg.encoder);
+        info!(path = ?path, encoder = leg.encoder, hardware = encoder.is_some_and(|e| e.is_hardware()), "recording leg built");
+        Ok(leg)
     }
 
     fn build_with(
@@ -179,258 +174,47 @@ impl RecordingLeg {
     ) -> Result<Self> {
         let location = path.to_str().context("output path not valid UTF-8")?;
         let consumer = ConsumerPipeline::new(name);
-        let ConsumerPipeline {
-            pipeline,
-            video_src,
-            audio_src,
-            error,
-            ..
-        } = &consumer;
-        // Only errors and EOS are read; drop the rest so a long recording
-        // doesn't pile up messages. Errors are reported at once and still
-        // pass, so `stop` finds them too.
-        let first_error = error.clone();
+        // Errors are reported at once and still reach the bus, so `stop`
+        // finds them too.
         let error_path = path.to_path_buf();
-        pipeline
-            .bus()
-            .context("recording pipeline has no bus")?
-            .set_sync_handler(move |_, msg| match msg.view() {
-                gst::MessageView::Error(err) => {
-                    if first_error.set(err) {
-                        on_error(&error_path, leg_error(err));
-                    }
-                    gst::BusSyncReply::Pass
-                }
-                gst::MessageView::Eos(_) => gst::BusSyncReply::Pass,
-                _ => gst::BusSyncReply::Drop,
-            });
+        consumer.watch_errors(move |err| on_error(&error_path, leg_error(err)))?;
 
-        let mut video = vec![video_src.clone().upcast::<gst::Element>()];
-        // Before scaling; `mode=auto` passes progressive video through.
-        if profile.deinterlace() {
-            video.push(make_el("deinterlace", "deint")?);
-        }
-        if let Some((num, den)) = profile.framerate {
-            // skip-to-first: otherwise videorate fills from the segment start
-            // by duplicating the first frame.
-            video.push(
-                gst::ElementFactory::make("videorate")
-                    .name("vrate")
-                    .property("skip-to-first", true)
-                    .build()
-                    .context("create videorate")?,
-            );
-            video.push(capsfilter(
-                "vrate-caps",
-                gst::Caps::builder("video/x-raw")
-                    .field("framerate", gst::Fraction::new(num as i32, den as i32))
-                    .build(),
-            )?);
-        }
-        if let Some((width, height)) = profile.resolution {
-            video.push(make_el("videoscale", "vscale")?);
-            // Pin PAR so videoscale resizes instead of changing PAR.
-            video.push(capsfilter(
-                "vscale-caps",
-                gst::Caps::builder("video/x-raw")
-                    .field("width", width as i32)
-                    .field("height", height as i32)
-                    .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
-                    .build(),
-            )?);
-        }
-        // Handles formats the encoder can't take directly (NDI UYVY → I420).
-        video.push(make_el("videoconvert", "vconv")?);
-        if let Some(format) = profile.encoder_input_format(encoder) {
-            video.push(capsfilter(
-                "venc-caps",
-                gst::Caps::builder("video/x-raw")
-                    .field("format", format)
-                    .build(),
-            )?);
-        }
-        let venc = build_video_encoder(profile, encoder)?;
-        let timecode_pad = (profile.container == Container::Mov)
-            .then(|| venc.static_pad("src"))
-            .flatten();
-        if encoder == VideoEncoder::VtProRes {
-            mark_prores_keyframes(&venc)?;
-        }
-        video.push(venc);
-        if let (VideoEncoder::VtProRes, Some(variant)) = (encoder, profile.prores_profile()) {
-            // vtenc_prores picks its profile from downstream caps.
-            video.push(capsfilter(
-                "venc-out-caps",
-                gst::Caps::builder("video/x-prores")
-                    .field("variant", variant)
-                    .build(),
-            )?);
-        }
-        if let Some(parser) = profile.video_parser_element() {
-            video.push(make_el(parser, "vparse")?);
-        }
-
-        let aq = audio_hold_queue()?;
-        let aconv = make_el("audioconvert", "aconv")?;
-        let mix = profile.audio_mix();
-        if let Some(rows) = mix.as_ref().and_then(|m| m.matrix.as_ref()) {
-            set_mix_matrix(&aconv, rows);
-        }
-        let mut audio = vec![
-            audio_src.clone().upcast::<gst::Element>(),
-            aq,
-            aconv,
-            make_el("audioresample", "aresample")?,
-        ];
-        let pcm = profile.audio_format() == AudioFormat::Pcm24;
-        if mix.is_some() || pcm {
-            let mut caps = gst::Caps::builder("audio/x-raw");
-            if let Some(channels) = mix.map(|m| m.channels) {
-                caps = caps.field("channels", channels as i32);
-                // Mono needs no mask, stereo gets left/right, more are plain
-                // numbered channels.
-                match channels {
-                    1 => {}
-                    2 => caps = caps.field("channel-mask", gst::Bitmask::new(0x3)),
-                    _ => caps = caps.field("channel-mask", gst::Bitmask::new(0)),
-                }
-            }
-            if pcm {
-                caps = caps.field("format", "S24LE");
-            }
-            audio.push(capsfilter("aout-caps", caps.build())?);
-        }
-        if profile.relabel_pcm_channels() {
-            // Same samples, layout dropped: see `relabel_pcm_channels`.
-            audio.push(
-                gst::ElementFactory::make("capssetter")
-                    .name("apcm-relabel")
-                    .property(
-                        "caps",
-                        gst::Caps::builder("audio/x-raw")
-                            .field("channel-mask", gst::Bitmask::new(0))
-                            .build(),
-                    )
-                    .build()
-                    .context("create capssetter")?,
-            );
-        }
-        match profile.audio_format() {
-            // AAC and Opus tolerate timestamp gaps.
-            AudioFormat::Pcm24 => audio.push(pcm_audiorate()?),
-            AudioFormat::Aac { bitrate } => {
-                let aenc = make_el("avenc_aac", "aenc")?;
-                set_property(&aenc, "bitrate", &bitrate.to_string())?;
-                audio.push(aenc);
-            }
-            AudioFormat::Opus { bitrate } => {
-                let aenc = make_el("opusenc", "aenc")?;
-                set_property(&aenc, "bitrate", &bitrate.to_string())?;
-                audio.push(aenc);
-            }
-        }
-
+        let video = VideoChain::new(profile, encoder)?;
+        let audio = audio_chain(profile)?;
         let muxer = make_el(profile.muxer_element(), "mux")?;
-        match profile.container {
-            // Timestamps are the monitor's running time: qtmux/mp4mux start
-            // the file at zero themselves, matroskamux needs asking. A cut-off
-            // .mkv is readable as is.
-            Container::Mkv => set_property(&muxer, "offset-to-zero", "true")?,
-            // See `CRASH_SAFE_*`.
-            Container::Mov | Container::Mp4 if profile.audio_format() == AudioFormat::Pcm24 => {
-                // Longest file plus slack: the file splits at a keyframe
-                // after the limit.
-                let longest = profile.max_file_duration().unwrap_or(PCM_MAX_FILE);
-                let reserve = gst::ClockTime::from_nseconds(
-                    longest.as_nanos() as u64 + CRASH_SAFE_PERIOD.nseconds(),
-                );
-                set_property(
-                    &muxer,
-                    "reserved-max-duration",
-                    &reserve.nseconds().to_string(),
-                )?;
-                set_property(
-                    &muxer,
-                    "reserved-moov-update-period",
-                    &CRASH_SAFE_PERIOD.nseconds().to_string(),
-                )?;
-            }
-            Container::Mov | Container::Mp4 => {
-                set_property(
-                    &muxer,
-                    "fragment-duration",
-                    &CRASH_SAFE_FRAGMENT.mseconds().to_string(),
-                )?;
-                set_property(&muxer, "fragment-mode", "first-moov-then-finalise")?;
-            }
-        }
-
+        set_muxer(&muxer, profile)?;
         let files = Arc::new(Mutex::new(Vec::new()));
-        let sink = match &profile.segment_template {
-            None => {
-                files.lock().unwrap().push(path.to_path_buf());
-                gst::ElementFactory::make("filesink")
-                    .name("sink")
-                    .property("location", location)
-                    .build()
-                    .context("create filesink")?
-            }
-            Some(template) => {
-                let split = gst::ElementFactory::make("splitmuxsink")
-                    .name("sink")
-                    .property("muxer", &muxer)
-                    .build()
-                    .context("create splitmuxsink")?;
-                if let Some(d) = profile.max_file_duration() {
-                    split.set_property("max-size-time", d.as_nanos() as u64);
-                }
-                if let Some(bytes) = profile.split_bytes() {
-                    split.set_property("max-size-bytes", bytes);
-                }
-                // Keyframe requests are ignored with a size limit, which
-                // then splits at the next natural keyframe.
-                split.set_property("send-keyframe-requests", profile.split_bytes().is_none());
-                let template = template.clone();
-                let first = path.to_path_buf();
-                let leg_files = Arc::clone(&files);
-                split.connect("format-location", false, move |args| {
-                    let index = args[1].get::<u32>().unwrap_or(0);
-                    // The first file is the leg's own path.
-                    let file = match index {
-                        0 => first.clone(),
-                        _ => PathBuf::from(template.replace("{segment}", &segment_number(index))),
-                    };
-                    // `{segment}` may name a folder.
-                    if let Some(dir) = file.parent() {
-                        if let Err(e) = std::fs::create_dir_all(dir) {
-                            warn!(dir = ?dir, error = %e, "could not create folder for split file");
-                        }
-                    }
-                    info!(path = ?file, "recording leg opened file");
-                    leg_files.lock().unwrap().push(file.clone());
-                    on_file();
-                    Some(file.to_string_lossy().into_owned().to_value())
-                });
-                split
-            }
-        };
+        let sink = file_sink(path, location, profile, &muxer, &files, on_file)?;
 
+        let pipeline = &consumer.pipeline;
         pipeline
-            .add_many(video.iter().chain(&audio).chain([&sink]))
+            .add_many(
+                [&consumer.video_src, &consumer.audio_src]
+                    .into_iter()
+                    .map(|src| src.upcast_ref::<gst::Element>())
+                    .chain(&video.before)
+                    .chain(&video.after)
+                    .chain(&audio)
+                    .chain([&sink]),
+            )
             .context("add recording elements")?;
-        if profile.segment_template.is_none() {
+        let split = profile.segment_template.is_some();
+        if !split {
             pipeline.add(&muxer).context("add muxer")?;
         }
-        gst::Element::link_many(&video).context("link video chain")?;
-        gst::Element::link_many(&audio).context("link audio chain")?;
-        if profile.segment_template.is_none() {
-            link_to_muxer(video.last().unwrap(), &muxer, "video_%u", profile)?;
-            link_to_muxer(audio.last().unwrap(), &muxer, "audio_%u", profile)?;
-            muxer.link(&sink).context("link mux → filesink")?;
-        } else {
+        let video_out = consumer.video_chain(&refs(&video.before), &refs(&video.after))?;
+        let audio_out = consumer.audio_chain(&refs(&audio[..1]), &refs(&audio[1..]))?;
+        if let Some(rows) = profile.audio_mix().as_ref().and_then(|m| m.matrix.as_ref()) {
+            set_mix_matrix(&pipeline.by_name("aconv").context("audioconvert")?, rows);
+        }
+        if split {
             // splitmuxsink hands its pads to the muxer it was given.
-            link_to_muxer(video.last().unwrap(), &sink, "video", profile)?;
-            link_to_muxer(audio.last().unwrap(), &sink, "audio_%u", profile)?;
+            link_to_muxer(&video_out, &sink, "video", profile)?;
+            link_to_muxer(&audio_out, &sink, "audio_%u", profile)?;
+        } else {
+            link_to_muxer(&video_out, &muxer, "video_%u", profile)?;
+            link_to_muxer(&audio_out, &muxer, "audio_%u", profile)?;
+            muxer.link(&sink).context("link mux → filesink")?;
         }
 
         Ok(Self {
@@ -440,7 +224,7 @@ impl RecordingLeg {
             encoder: encoder.element(),
             first_frame: Arc::new(AtomicU64::new(u64::MAX)),
             base_time: None,
-            timecode_pad,
+            timecode_pad: video.timecode_pad,
         })
     }
 
@@ -530,8 +314,8 @@ impl RecordingLeg {
         // Remove empty files only: a leg that failed mid-recording (disk
         // full) may still be recoverable.
         for file in self.files.lock().unwrap().iter() {
-            if std::fs::metadata(file).is_ok_and(|m| m.len() == 0) {
-                remove_file(file);
+            if std::fs::metadata(file).is_ok_and(|m| m.len() == 0) && remove_quietly(file) {
+                info!(path = ?file, "removed unusable recording file");
             }
         }
         result
@@ -542,7 +326,9 @@ impl RecordingLeg {
     pub fn discard(mut self) {
         self.consumer.stop();
         for file in self.files.lock().unwrap().iter() {
-            remove_file(file);
+            if remove_quietly(file) {
+                info!(path = ?file, "removed unusable recording file");
+            }
         }
     }
 
@@ -587,12 +373,250 @@ fn drop_until(
     Ok(())
 }
 
-fn remove_file(location: &Path) {
-    match std::fs::remove_file(location) {
-        Ok(()) => info!(path = ?location, "removed unusable recording file"),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => warn!(path = ?location, error = %e, "could not remove recording file"),
+/// A leg's video around `ConsumerPipeline::video_chain`'s `videoconvert`.
+struct VideoChain {
+    /// Before the convert: deinterlace, frame rate and size, on the
+    /// source's own format.
+    before: Vec<gst::Element>,
+    /// After it: the encoder, with its input and output caps and parser.
+    after: Vec<gst::Element>,
+    /// The encoder's src pad, stamped with timecode for MOV.
+    timecode_pad: Option<gst::Pad>,
+}
+
+impl VideoChain {
+    fn new(profile: &RecordingProfile, encoder: VideoEncoder) -> Result<Self> {
+        let mut before = Vec::new();
+        // Before scaling; `mode=auto` passes progressive video through.
+        if profile.deinterlace() {
+            before.push(make_el("deinterlace", "deint")?);
+        }
+        if let Some((num, den)) = profile.framerate {
+            // skip-to-first: otherwise videorate fills from the segment start
+            // by duplicating the first frame.
+            before.push(
+                gst::ElementFactory::make("videorate")
+                    .name("vrate")
+                    .property("skip-to-first", true)
+                    .build()
+                    .context("create videorate")?,
+            );
+            before.push(capsfilter(
+                "vrate-caps",
+                gst::Caps::builder("video/x-raw")
+                    .field("framerate", gst::Fraction::new(num as i32, den as i32))
+                    .build(),
+            )?);
+        }
+        if let Some((width, height)) = profile.resolution {
+            before.push(make_el("videoscale", "vscale")?);
+            // Pin PAR so videoscale resizes instead of changing PAR.
+            before.push(capsfilter(
+                "vscale-caps",
+                gst::Caps::builder("video/x-raw")
+                    .field("width", width as i32)
+                    .field("height", height as i32)
+                    .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
+                    .build(),
+            )?);
+        }
+
+        // The convert handles formats the encoder can't take directly (NDI
+        // UYVY → I420).
+        let mut after = Vec::new();
+        if let Some(format) = profile.encoder_input_format(encoder) {
+            after.push(capsfilter(
+                "venc-caps",
+                gst::Caps::builder("video/x-raw")
+                    .field("format", format)
+                    .build(),
+            )?);
+        }
+        let venc = build_video_encoder(profile, encoder)?;
+        let timecode_pad = (profile.container == Container::Mov)
+            .then(|| venc.static_pad("src"))
+            .flatten();
+        if encoder == VideoEncoder::VtProRes {
+            mark_prores_keyframes(&venc)?;
+        }
+        after.push(venc);
+        if let (VideoEncoder::VtProRes, Some(variant)) = (encoder, profile.prores_profile()) {
+            // vtenc_prores picks its profile from downstream caps.
+            after.push(capsfilter(
+                "venc-out-caps",
+                gst::Caps::builder("video/x-prores")
+                    .field("variant", variant)
+                    .build(),
+            )?);
+        }
+        if let Some(parser) = profile.video_parser_element() {
+            after.push(make_el(parser, "vparse")?);
+        }
+        Ok(Self {
+            before,
+            after,
+            timecode_pad,
+        })
     }
+}
+
+/// A leg's audio: the hold queue (before `ConsumerPipeline::audio_chain`'s
+/// convert), then the channel layout and the encoder or PCM tail.
+fn audio_chain(profile: &RecordingProfile) -> Result<Vec<gst::Element>> {
+    let mut audio = vec![audio_hold_queue()?];
+    let channels = profile.audio_mix().map(|m| m.channels);
+    if let Some(channels) = channels {
+        let mut caps = gst::Caps::builder("audio/x-raw").field("channels", channels as i32);
+        // Mono needs no mask, stereo gets left/right. More are plain
+        // numbered channels, but audioconvert with a mix matrix won't put
+        // those out on GStreamer 1.24: the mask is left open here and
+        // dropped by the relabel.
+        if channels == 2 {
+            caps = caps.field("channel-mask", gst::Bitmask::new(0x3));
+        }
+        audio.push(capsfilter("amix-caps", caps.build())?);
+    }
+    let drop_mask = channels.is_some_and(|c| c > 2) || profile.relabel_pcm_channels();
+    let relabel = || -> Result<Option<gst::Element>> {
+        if !drop_mask {
+            return Ok(None);
+        }
+        // Same samples, layout dropped: see `relabel_pcm_channels`.
+        let el = gst::ElementFactory::make("capssetter")
+            .name("apcm-relabel")
+            .property(
+                "caps",
+                gst::Caps::builder("audio/x-raw")
+                    .field("channel-mask", gst::Bitmask::new(0))
+                    .build(),
+            )
+            .build()
+            .context("create capssetter")?;
+        Ok(Some(el))
+    };
+    match profile.audio_format() {
+        // The relabel goes after the 24-bit caps: ahead of them, the leg
+        // fails to negotiate.
+        AudioFormat::Pcm24 => {
+            let [caps, rate] = pcm_tail()?;
+            audio.push(caps);
+            audio.extend(relabel()?);
+            audio.push(rate);
+        }
+        // AAC and Opus tolerate timestamp gaps.
+        AudioFormat::Aac { bitrate } => {
+            audio.extend(relabel()?);
+            let aenc = make_el("avenc_aac", "aenc")?;
+            set_property(&aenc, "bitrate", &bitrate.to_string())?;
+            audio.push(aenc);
+        }
+        AudioFormat::Opus { bitrate } => {
+            audio.extend(relabel()?);
+            let aenc = make_el("opusenc", "aenc")?;
+            set_property(&aenc, "bitrate", &bitrate.to_string())?;
+            audio.push(aenc);
+        }
+    }
+    Ok(audio)
+}
+
+/// Set `muxer` up for crash safety and the leg's timestamps.
+fn set_muxer(muxer: &gst::Element, profile: &RecordingProfile) -> Result<()> {
+    match profile.container {
+        // Timestamps are the monitor's running time: qtmux/mp4mux start
+        // the file at zero themselves, matroskamux needs asking. A cut-off
+        // .mkv is readable as is.
+        Container::Mkv => set_property(muxer, "offset-to-zero", "true")?,
+        // See `CRASH_SAFE_*`.
+        Container::Mov | Container::Mp4 if profile.audio_format() == AudioFormat::Pcm24 => {
+            // Longest file plus slack: the file splits at a keyframe
+            // after the limit.
+            let longest = profile.max_file_duration().unwrap_or(PCM_MAX_FILE);
+            let reserve = gst::ClockTime::from_nseconds(
+                longest.as_nanos() as u64 + CRASH_SAFE_PERIOD.nseconds(),
+            );
+            set_property(
+                muxer,
+                "reserved-max-duration",
+                &reserve.nseconds().to_string(),
+            )?;
+            set_property(
+                muxer,
+                "reserved-moov-update-period",
+                &CRASH_SAFE_PERIOD.nseconds().to_string(),
+            )?;
+        }
+        Container::Mov | Container::Mp4 => {
+            set_property(
+                muxer,
+                "fragment-duration",
+                &CRASH_SAFE_FRAGMENT.mseconds().to_string(),
+            )?;
+            set_property(muxer, "fragment-mode", "first-moov-then-finalise")?;
+        }
+    }
+    Ok(())
+}
+
+/// The leg's sink: a filesink at `path`, or with a segment template a
+/// splitmuxsink around `muxer` that names each new file and adds it to
+/// `files`.
+fn file_sink(
+    path: &Path,
+    location: &str,
+    profile: &RecordingProfile,
+    muxer: &gst::Element,
+    files: &Arc<Mutex<Vec<PathBuf>>>,
+    on_file: OnLegFile,
+) -> Result<gst::Element> {
+    let Some(template) = &profile.segment_template else {
+        files.lock().unwrap().push(path.to_path_buf());
+        return gst::ElementFactory::make("filesink")
+            .name("sink")
+            .property("location", location)
+            .build()
+            .context("create filesink");
+    };
+    let split = gst::ElementFactory::make("splitmuxsink")
+        .name("sink")
+        .property("muxer", muxer)
+        .build()
+        .context("create splitmuxsink")?;
+    if let Some(d) = profile.max_file_duration() {
+        split.set_property("max-size-time", d.as_nanos() as u64);
+    }
+    if let Some(bytes) = profile.split_bytes() {
+        split.set_property("max-size-bytes", bytes);
+    }
+    // Keyframe requests are ignored with a size limit, which then splits
+    // at the next natural keyframe.
+    split.set_property("send-keyframe-requests", profile.split_bytes().is_none());
+    let template = template.clone();
+    let first = path.to_path_buf();
+    let leg_files = Arc::clone(files);
+    split.connect("format-location", false, move |args| {
+        let index = args[1].get::<u32>().unwrap_or(0);
+        // The first file is the leg's own path.
+        let file = match index {
+            0 => first.clone(),
+            _ => PathBuf::from(template.replace("{segment}", &segment_number(index))),
+        };
+        // `{segment}` may name a folder.
+        if let Some(dir) = file.parent() {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                warn!(dir = ?dir, error = %e, "could not create folder for split file");
+            }
+        }
+        info!(path = ?file, "recording leg opened file");
+        leg_files.lock().unwrap().push(file.clone());
+        on_file();
+        Some(file.to_string_lossy().into_owned().to_value())
+    });
+    Ok(split)
+}
+
+fn refs(elements: &[gst::Element]) -> Vec<&gst::Element> {
+    elements.iter().collect()
 }
 
 fn leg_error(err: &gst::message::Error) -> String {
@@ -755,8 +779,8 @@ fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Res
 mod tests {
     use super::*;
     use crate::api::types::{
-        AudioTestSignal, ChromaSubsampling, MonitorSettingsDto, OutputAdvanced, PresetOutputInput,
-        TestSourceConfig, VideoCodec, VideoTestPattern,
+        AudioChannels, AudioCodecChoice, AudioTestSignal, ChromaSubsampling, MonitorSettingsDto,
+        OutputAdvanced, PresetOutputInput, TestSourceConfig, VideoCodec, VideoTestPattern,
     };
     use crate::pipeline::timecode::time_of_day;
     use crate::sources::test::TestSource;
@@ -945,6 +969,122 @@ mod tests {
                 assert_eq!(got, want, "the file's timecode");
             }
             Err(_) => println!("no ffprobe: not reading the file back"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Each way a leg reshapes audio records: all channels relabelled for
+    /// .mov PCM, a pick, a stereo mixdown, and one channel.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn legs_reshape_audio() {
+        gst::init().unwrap();
+        let source = TestSource::new(
+            "t".into(),
+            "t".into(),
+            TestSourceConfig {
+                pattern: VideoTestPattern::Smpte,
+                width: 320,
+                height: 180,
+                fps_num: 30,
+                fps_den: 1,
+                audio_signal: AudioTestSignal::Tone,
+                frequency: 440.0,
+                channels: 8,
+            },
+        );
+        let clock = gst::SystemClock::obtain();
+        let monitor =
+            MonitorPipeline::new(&source, &MonitorSettingsDto::default(), &clock).unwrap();
+        while monitor.video_frames() == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let dir = std::env::temp_dir().join(format!("capture-room-audio-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let leg = |file: &str, container, audio_codec, audio_channels, channel_pick: &[u32]| {
+            let mut profile = RecordingProfile::from_output(&PresetOutputInput {
+                name: file.into(),
+                codec: VideoCodec::H264,
+                container,
+                resolution: None,
+                framerate: None,
+                bitrate_kbps: None,
+                chroma: ChromaSubsampling::Yuv420,
+                path_template: String::new(),
+                preview: false,
+                advanced: OutputAdvanced {
+                    audio_codec,
+                    audio_channels,
+                    channel_pick: channel_pick.to_vec(),
+                    ..OutputAdvanced::default()
+                },
+            })
+            .unwrap();
+            profile.source_audio = Some((8, false));
+            (dir.join(file), profile)
+        };
+        let legs = [
+            leg(
+                "all.mov",
+                Container::Mov,
+                AudioCodecChoice::Pcm,
+                AudioChannels::All,
+                &[],
+            ),
+            leg(
+                "pick.mov",
+                Container::Mov,
+                AudioCodecChoice::Pcm,
+                AudioChannels::Pick,
+                &[1, 3, 5],
+            ),
+            leg(
+                "stereo.mp4",
+                Container::Mp4,
+                AudioCodecChoice::Aac,
+                AudioChannels::Stereo,
+                &[],
+            ),
+            leg(
+                "mono.mkv",
+                Container::Mkv,
+                AudioCodecChoice::Opus,
+                AudioChannels::Pick,
+                &[2],
+            ),
+        ];
+        assert!(legs[0].1.relabel_pcm_channels());
+        // Kept, not panicked on: it runs on a streaming thread.
+        let failed = Arc::new(Mutex::new(Vec::new()));
+        let failures = Arc::clone(&failed);
+        let on_error: OnLegError =
+            Arc::new(move |path, e| failures.lock().unwrap().push(format!("{path:?}: {e}")));
+        let on_file: OnLegFile = Arc::new(|| {});
+        let started =
+            start_legs(&monitor, "audio", &legs, &on_error, &on_file, None, None).unwrap();
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        for leg in started {
+            let _ = leg.stop(Duration::from_secs(5)).await;
+        }
+        let _ = monitor.stop();
+        assert_eq!(*failed.lock().unwrap(), Vec::<String>::new());
+
+        for ((file, _), want) in legs.iter().zip([8, 3, 2, 1]) {
+            assert!(
+                std::fs::metadata(file).is_ok_and(|m| m.len() > 0),
+                "{file:?} is empty"
+            );
+            // Read back with ffprobe where it's installed.
+            let Ok(out) = std::process::Command::new("ffprobe")
+                .args(["-v", "error", "-select_streams", "a:0"])
+                .args(["-show_entries", "stream=channels", "-of", "csv=p=0"])
+                .arg(file)
+                .output()
+            else {
+                println!("no ffprobe: not reading the files back");
+                break;
+            };
+            let got = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            assert_eq!(got, want.to_string(), "{file:?}'s channels");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

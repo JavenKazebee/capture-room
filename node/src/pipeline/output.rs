@@ -292,20 +292,10 @@ impl PipelineOutput {
             mut consumer,
             receivers,
         } = output;
-        let error_ref = consumer.error.clone();
         let error_label = label.clone();
-        consumer
-            .pipeline
-            .bus()
-            .context("output pipeline has no bus")?
-            .set_sync_handler(move |_, msg| {
-                if let gst::MessageView::Error(err) = msg.view() {
-                    if error_ref.set(err) {
-                        warn!(output = %error_label, error = %err.error(), debug = ?err.debug(), "output failed");
-                    }
-                }
-                gst::BusSyncReply::Drop
-            });
+        consumer.watch_errors(move |err| {
+            warn!(output = %error_label, error = %err.error(), debug = ?err.debug(), "output failed");
+        })?;
 
         monitor.share_timing(&consumer.pipeline);
         // Off the runtime: the WebRTC elements block on their own.
@@ -367,11 +357,11 @@ impl NdiOutput {
             .add_many([&combiner, &sink])
             .context("add NDI output")?;
         consumer
-            .video_chain(&[])?
+            .video_chain(&[], &[])?
             .link_pads(Some("src"), &combiner, Some("video"))
             .context("link NDI video to combiner")?;
         consumer
-            .audio_chain(&[])?
+            .audio_chain(&[], &[])?
             .link_pads(Some("src"), &combiner, Some("audio"))
             .context("link NDI audio to combiner")?;
         combiner.link(&sink).context("link NDI combiner → sink")?;
@@ -453,7 +443,7 @@ impl DisplayOutput {
             .video_src
             .link(&vsink)
             .context("link display video")?;
-        consumer.audio_chain(&[&asink])?;
+        consumer.audio_chain(&[], &[&asink])?;
         Ok(output)
     }
 }
@@ -658,8 +648,8 @@ impl SrtOutput {
             .pipeline
             .add_many([&venc, &vparse, &aenc, &mux, &sink])
             .context("add SRT output")?;
-        consumer.video_chain(&[&venc, &vparse, &mux])?;
-        consumer.audio_chain(&[&aenc, &mux])?;
+        consumer.video_chain(&[], &[&venc, &vparse, &mux])?;
+        consumer.audio_chain(&[], &[&aenc, &mux])?;
         mux.link(&sink).context("link SRT mux → sink")?;
         start_together(&vparse, &aenc)?;
         output.receivers = receivers;

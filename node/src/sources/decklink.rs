@@ -780,8 +780,8 @@ impl DecklinkOutput {
             .pipeline
             .add_many([&vcaps, &vsink, &spread, &acaps, &asink])
             .context("add Decklink output")?;
-        consumer.video_chain(&[&vcaps, &vsink])?;
-        consumer.audio_chain(&[&spread, &acaps, &asink])?;
+        consumer.video_chain(&[], &[&vcaps, &vsink])?;
+        consumer.audio_chain(&[], &[&spread, &acaps, &asink])?;
         Ok((output, vsink))
     }
 }

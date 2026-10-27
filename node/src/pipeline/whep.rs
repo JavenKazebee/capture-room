@@ -105,13 +105,13 @@ impl WhepOutput {
             .request_pad_simple("audio_%u")
             .context("WHEP audio pad")?;
         consumer
-            .video_chain(&[])?
+            .video_chain(&[], &[])?
             .static_pad("src")
             .context("videoconvert src pad")?
             .link(&video_pad)
             .context("link WHEP video → sink")?;
         consumer
-            .audio_chain(&[&stereo])?
+            .audio_chain(&[], &[&stereo])?
             .static_pad("src")
             .context("stereo src pad")?
             .link(&audio_pad)

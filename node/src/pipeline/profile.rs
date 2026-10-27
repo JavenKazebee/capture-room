@@ -301,6 +301,12 @@ pub enum VideoEncoder {
     Uncompressed,
 }
 
+impl From<VideoEncoder> for &'static str {
+    fn from(encoder: VideoEncoder) -> Self {
+        encoder.element()
+    }
+}
+
 impl VideoEncoder {
     pub fn element(self) -> &'static str {
         match self {
