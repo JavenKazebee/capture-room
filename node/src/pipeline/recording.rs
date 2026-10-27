@@ -1114,5 +1114,6 @@ mod tests {
             println!("PROBE {name}: {res}");
             p.set_state(gst::State::Null).unwrap();
         }
+        panic!("probe done: see PROBE lines");
     }
 }
