@@ -1,0 +1,47 @@
+{
+  "h264": {
+    "mkv": null,
+    "mov": null,
+    "mp4": null
+  },
+  "h265": {
+    "mkv": null,
+    "mov": null,
+    "mp4": null
+  },
+  "prores_422": {
+    "mkv": null,
+    "mov": null,
+    "mp4": "ProRes can only be recorded to .mov or .mkv"
+  },
+  "prores_422hq": {
+    "mkv": null,
+    "mov": null,
+    "mp4": "ProRes can only be recorded to .mov or .mkv"
+  },
+  "prores_422lt": {
+    "mkv": null,
+    "mov": null,
+    "mp4": "ProRes can only be recorded to .mov or .mkv"
+  },
+  "prores_422proxy": {
+    "mkv": null,
+    "mov": null,
+    "mp4": "ProRes can only be recorded to .mov or .mkv"
+  },
+  "prores_4444": {
+    "mkv": null,
+    "mov": null,
+    "mp4": "ProRes can only be recorded to .mov or .mkv"
+  },
+  "uncompressed": {
+    "mkv": null,
+    "mov": null,
+    "mp4": "uncompressed video can only be recorded to .mov or .mkv"
+  },
+  "vp9": {
+    "mkv": null,
+    "mov": "VP9 can only be recorded to .mkv",
+    "mp4": "VP9 can only be recorded to .mkv"
+  }
+}

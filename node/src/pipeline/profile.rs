@@ -1284,4 +1284,57 @@ mod tests {
             None
         );
     }
+
+    /// Writes `incompatible()` as `codecContainers.json` beside the ts-rs
+    /// bindings, so the editor greys out exactly what saving would reject.
+    #[cfg(feature = "export-types")]
+    #[test]
+    fn export_codec_containers() {
+        use VideoCodec::*;
+        let codecs = [
+            H264,
+            H265,
+            Vp9,
+            ProRes4444,
+            ProRes422Hq,
+            ProRes422,
+            ProRes422Lt,
+            ProRes422Proxy,
+            Uncompressed,
+        ];
+        // Fails to compile when a codec is added, until it's listed above.
+        for codec in codecs {
+            match codec {
+                H264 | H265 | Vp9 | ProRes4444 | ProRes422Hq | ProRes422 | ProRes422Lt
+                | ProRes422Proxy | Uncompressed => {}
+            }
+        }
+        let containers = [Container::Mov, Container::Mp4, Container::Mkv];
+        for container in containers {
+            match container {
+                Container::Mov | Container::Mp4 | Container::Mkv => {}
+            }
+        }
+
+        let key = |v: serde_json::Value| v.as_str().unwrap().to_owned();
+        let table: serde_json::Map<_, _> = codecs
+            .iter()
+            .map(|&codec| {
+                let row: serde_json::Map<_, _> = containers
+                    .iter()
+                    .map(|&container| {
+                        (
+                            key(serde_json::json!(container)),
+                            serde_json::json!(incompatible(codec, container)),
+                        )
+                    })
+                    .collect();
+                (key(serde_json::json!(codec)), row.into())
+            })
+            .collect();
+
+        let dir = PathBuf::from(std::env::var("TS_RS_EXPORT_DIR").unwrap());
+        let json = serde_json::to_string_pretty(&table).unwrap() + "\n";
+        std::fs::write(dir.join("codecContainers.json"), json).unwrap();
+    }
 }
