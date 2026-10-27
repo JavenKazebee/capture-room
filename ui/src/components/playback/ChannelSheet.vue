@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import { Trash2 } from '@lucide/vue'
 import { useSourcesStore } from '@/stores/sources'
@@ -44,7 +44,12 @@ function blankChannel(): ChannelConfig {
   }
 }
 
-const nodeId = ref(props.editing?.nodeId ?? nodes.self?.node_id ?? nodes.nodes[0]?.id ?? '')
+const defaultNode = () => nodes.self?.node_id ?? nodes.nodes[0]?.id ?? ''
+const nodeId = ref(props.editing?.nodeId ?? defaultNode())
+// Opened by a deep link on a fresh page load, the sheet comes up before the node list does.
+watch(defaultNode, (id) => {
+  if (!nodeId.value) nodeId.value = id
+})
 const name = ref('')
 const channel = ref<ChannelConfig>(blankChannel())
 const loading = ref(!!props.editing)
