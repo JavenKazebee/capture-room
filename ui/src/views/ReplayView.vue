@@ -28,20 +28,6 @@ const nodes = useNodesStore()
 const playout = usePlayoutStore()
 const replay = useReplayStore()
 
-const SHORTCUTS: [string[], string][] = [
-  [['R'], 'Replay the last few seconds'],
-  [['1', '…', '9'], 'Switch angle, at the same moment'],
-  [['Space'], 'Play / pause'],
-  [['←', '→'], 'Step a frame back / forward'],
-  [['J', 'K', 'L'], 'Play backwards / pause / play forwards'],
-  [['↑', '↓'], 'Faster / slower'],
-  [['I', 'O'], 'Mark in / out at the frame shown'],
-  [['Enter'], 'Play from in to out'],
-  [['S'], 'Save in → out as a clip'],
-  [['Shift', 'S'], 'Save in → out on every angle, as one clip'],
-  [['Esc'], 'Stop (back to black)'],
-]
-
 const { channel, choice: channelChoice } = useChannelChoice('cr.replay.channel')
 const channelOptions = computed(() =>
   playout.channels.map((c) => ({
@@ -113,42 +99,60 @@ function timeOfDay(us: number | null) {
   return clockTimeFine(new Date((us + offset) / 1000), 2)
 }
 
+/**
+ * The page's keys, in the order the help lists them. `shift` set means the binding needs
+ * Shift held (true) or not (false); unset, Shift doesn't matter.
+ */
+const KEYS: { keys: string[]; show: string[]; help: string; shift?: boolean; prevent?: boolean; run: (key: string) => void }[] = [
+  { keys: ['r'], show: ['R'], help: 'Replay the last few seconds', run: () => ctl.replayLast() },
+  {
+    keys: ['1', '2', '3', '4', '5', '6', '7', '8', '9'],
+    show: ['1', '…', '9'],
+    help: 'Switch angle, at the same moment',
+    run: (key) => {
+      const a = usableAngles.value[Number(key) - 1]
+      if (a) ctl.selectAngle(a.source)
+    },
+  },
+  { keys: [' '], show: ['Space'], help: 'Play / pause', prevent: true, run: () => ctl.playPause() },
+  {
+    keys: ['arrowleft', 'arrowright'],
+    show: ['←', '→'],
+    help: 'Step a frame back / forward',
+    prevent: true,
+    run: (key) => ctl.step(key === 'arrowleft' ? -1 : 1),
+  },
+  {
+    keys: ['j', 'k', 'l'],
+    show: ['J', 'K', 'L'],
+    help: 'Play backwards / pause / play forwards',
+    run: (key) => {
+      if (key === 'k') return ctl.pause()
+      ctl.setReverse(key === 'j')
+      ctl.play()
+    },
+  },
+  {
+    keys: ['arrowup', 'arrowdown'],
+    show: ['↑', '↓'],
+    help: 'Faster / slower',
+    prevent: true,
+    run: (key) => ctl.nudgeRate(key === 'arrowup' ? 1 : -1),
+  },
+  { keys: ['i', 'o'], show: ['I', 'O'], help: 'Mark in / out at the frame shown', run: (key) => ctl.mark(key === 'i' ? 'in' : 'out') },
+  { keys: ['enter'], show: ['Enter'], help: 'Play from in to out', prevent: true, run: () => ctl.playMarked() },
+  { keys: ['s'], show: ['S'], help: 'Save in → out as a clip', shift: false, run: () => ctl.saveMarked(false) },
+  { keys: ['s'], show: ['Shift', 'S'], help: 'Save in → out on every angle, as one clip', shift: true, run: () => ctl.saveMarked(true) },
+  { keys: ['escape'], show: ['Esc'], help: 'Stop (back to black)', run: () => ctl.stop() },
+]
+const SHORTCUTS = KEYS.map((b): [string[], string] => [b.show, b.help])
+
 useViewKeys((e) => {
   const key = e.key.toLowerCase()
-  const handled = () => e.preventDefault()
-  if (/^[1-9]$/.test(key)) {
-    const a = usableAngles.value[Number(key) - 1]
-    if (a) ctl.selectAngle(a.source)
-  } else if (key === ' ') {
-    handled()
-    ctl.playPause()
-  } else if (key === 'r') ctl.replayLast()
-  else if (key === 'arrowleft') {
-    handled()
-    ctl.step(-1)
-  } else if (key === 'arrowright') {
-    handled()
-    ctl.step(1)
-  } else if (key === 'arrowup') {
-    handled()
-    ctl.nudgeRate(1)
-  } else if (key === 'arrowdown') {
-    handled()
-    ctl.nudgeRate(-1)
-  } else if (key === 'j') {
-    ctl.setReverse(true)
-    ctl.play()
-  } else if (key === 'k') ctl.pause()
-  else if (key === 'l') {
-    ctl.setReverse(false)
-    ctl.play()
-  } else if (key === 'i') ctl.mark('in')
-  else if (key === 'o') ctl.mark('out')
-  else if (key === 'enter') {
-    handled()
-    ctl.playMarked()
-  } else if (key === 's') ctl.saveMarked(e.shiftKey)
-  else if (key === 'escape') ctl.stop()
+  const binding = KEYS.find((b) => b.keys.includes(key) && (b.shift === undefined || b.shift === e.shiftKey))
+  if (!binding) return
+  if (binding.prevent) e.preventDefault()
+  binding.run(key)
 }, { alsoIgnore: '[role="listbox"]' })
 
 onMounted(() => sources.ensureLoaded())
