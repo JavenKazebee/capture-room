@@ -212,6 +212,14 @@ fn build_event_loop() -> Result<EventLoop<Command>, winit::error::EventLoopError
             .with_activation_policy(ActivationPolicy::Accessory)
             .with_default_menu(false);
     }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        // X11 even under Wayland (via XWayland): glimagesink renders into a
+        // wl_surface only through the wl_display that owns it, shared as a GL
+        // display context; given a bare surface it opens its own connection.
+        builder.with_x11();
+    }
     builder.build()
 }
 
@@ -552,7 +560,6 @@ fn native_handle(window: &Window) -> Result<usize, String> {
         RawWindowHandle::Win32(h) => Ok(h.hwnd.get() as usize),
         RawWindowHandle::Xlib(h) => Ok(h.window as usize),
         RawWindowHandle::Xcb(h) => Ok(h.window.get() as usize),
-        RawWindowHandle::Wayland(h) => Ok(h.surface.as_ptr() as usize),
         other => Err(format!("unsupported window type {other:?}")),
     }
 }
