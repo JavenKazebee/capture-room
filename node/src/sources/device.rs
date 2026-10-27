@@ -140,11 +140,18 @@ impl Drop for LocalDevices {
 }
 
 /// An element capturing from `device` that finds it again after a replug:
-/// PipeWire targets the stable node name, not the serial, which changes.
+/// PipeWire targets the stable node name, not the serial, which changes, and
+/// v4l2 opens the camera's `/dev/v4l` link, not the `/dev/videoN` it had.
 fn open(device: &gst::Device) -> Result<gst::Element> {
     let element = device
         .create_element(None)
         .with_context(|| format!("open {}", device.display_name()))?;
+    let link = string_property(device, "device-path").and_then(|p| v4l_link(&p));
+    if let Some(link) = link {
+        if element.find_property("device").is_some() {
+            element.set_property("device", link);
+        }
+    }
     let node_name = device
         .properties()
         .and_then(|p| p.get::<String>("node.name").ok());
@@ -172,7 +179,9 @@ fn display(key: &str, name: &str) -> String {
 }
 
 /// A key for `device` that survives restarts and replugs where the platform
-/// gives one; the display name is the last resort.
+/// gives one; the display name is the last resort. Keys are found afresh from
+/// the devices connected now, so a key finds its camera at whatever node it
+/// has after a replug.
 fn device_key(device: &gst::Device) -> String {
     const STABLE: &[&str] = &[
         "node.name",
@@ -185,11 +194,9 @@ fn device_key(device: &gst::Device) -> String {
     ];
     // The device objects' own ids first: a PulseAudio source's name (the
     // same as PipeWire's node name) and a v4l2 device's path.
-    let own = ["internal-name", "device-path"].iter().find_map(|name| {
-        device
-            .find_property(name)
-            .and_then(|_| device.property::<Option<String>>(name))
-            .filter(|v| !v.is_empty())
+    let own = string_property(device, "internal-name").or_else(|| {
+        let path = string_property(device, "device-path")?;
+        Some(v4l_link(&path).unwrap_or(path))
     });
     let props = device.properties();
     let stable = own.or_else(|| {
@@ -209,6 +216,43 @@ fn device_key(device: &gst::Device) -> String {
         "{kind}:{}",
         stable.unwrap_or_else(|| device.display_name().to_string())
     )
+}
+
+fn string_property(device: &gst::Device, name: &str) -> Option<String> {
+    device
+        .find_property(name)
+        .and_then(|_| device.property::<Option<String>>(name))
+        .filter(|v| !v.is_empty())
+}
+
+/// The `/dev/v4l` link to a v4l2 node, which udev keeps pointing at the same
+/// camera while `/dev/videoN` follows plug order: by-id (its serial, or its
+/// model when it has none) first, then by-path (its port), for two cameras
+/// without serials, where udev gives only one of them the by-id link.
+#[cfg(target_os = "linux")]
+fn v4l_link(node: &str) -> Option<String> {
+    let node = std::fs::canonicalize(node).ok()?;
+    ["/dev/v4l/by-id", "/dev/v4l/by-path"]
+        .iter()
+        .find_map(|dir| link_to(std::path::Path::new(dir), &node))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn v4l_link(_: &str) -> Option<String> {
+    None
+}
+
+/// The first (by name, so the same each time) link in `dir` to `target`.
+#[cfg(target_os = "linux")]
+fn link_to(dir: &std::path::Path, target: &std::path::Path) -> Option<String> {
+    let mut links: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| std::fs::canonicalize(p).is_ok_and(|t| t == target))
+        .collect();
+    links.sort();
+    links.first().map(|p| p.to_string_lossy().into_owned())
 }
 
 fn is_pulse(device: &gst::Device) -> bool {
@@ -553,4 +597,32 @@ pub fn validate_audio(plan: &AudioPlan, devices: &LocalDevices) -> Result<(), St
         }
     }
     Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn link_to_finds_the_first_link_to_a_node() {
+        let dir = std::env::temp_dir().join(format!("v4l-links-{}", uuid::Uuid::new_v4()));
+        let nodes = dir.join("dev");
+        let links = dir.join("by-path");
+        std::fs::create_dir_all(&nodes).unwrap();
+        std::fs::create_dir_all(&links).unwrap();
+        for n in ["video0", "video2"] {
+            std::fs::write(nodes.join(n), b"").unwrap();
+        }
+        symlink(nodes.join("video2"), links.join("usbv2-0:2-video-index0")).unwrap();
+        symlink(nodes.join("video2"), links.join("usb-0:2-video-index0")).unwrap();
+        symlink(nodes.join("video0"), links.join("usb-0:1-video-index0")).unwrap();
+        let target = std::fs::canonicalize(nodes.join("video2")).unwrap();
+        let found = link_to(&links, &target).unwrap();
+        assert!(found.ends_with("usb-0:2-video-index0"), "{found}");
+        let missing = std::fs::canonicalize(&nodes).unwrap();
+        assert_eq!(link_to(&links, &missing), None);
+        assert_eq!(link_to(&dir.join("none"), &target), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
