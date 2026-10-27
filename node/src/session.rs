@@ -130,8 +130,17 @@ pub async fn quit(state: &Arc<AppState>, code: i32) -> ! {
     std::process::exit(code)
 }
 
-/// Quit cleanly on Ctrl+C, or when the service manager stops the node.
+/// Quit cleanly on Ctrl+C, when the service manager stops the node, or (on
+/// Windows) when the user signs out or the machine shuts down.
 pub fn spawn_quit_on_signal(state: Arc<AppState>) {
+    #[cfg(windows)]
+    let mut asked = {
+        let (tx, rx) = mpsc::unbounded_channel();
+        crate::service::windows_quit::watch(move || {
+            let _ = tx.send(());
+        });
+        rx
+    };
     tokio::spawn(async move {
         #[cfg(unix)]
         {
@@ -147,7 +156,39 @@ pub fn spawn_quit_on_signal(state: Arc<AppState>) {
                 _ = int.recv() => {}
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            use tokio::signal::windows::{
+                ctrl_break, ctrl_c, ctrl_close, ctrl_logoff, ctrl_shutdown,
+            };
+            // For a node run in a console. Windows doesn't send a process
+            // with windows the sign-out and shutdown events, so those (and
+            // `service stop`) come through `windows_quit`.
+            match (
+                ctrl_c(),
+                ctrl_break(),
+                ctrl_close(),
+                ctrl_logoff(),
+                ctrl_shutdown(),
+            ) {
+                (Ok(mut c), Ok(mut brk), Ok(mut close), Ok(mut logoff), Ok(mut shutdown)) => {
+                    tokio::select! {
+                        _ = c.recv() => {}
+                        _ = brk.recv() => {}
+                        _ = close.recv() => {}
+                        _ = logoff.recv() => {}
+                        _ = shutdown.recv() => {}
+                        Some(()) = asked.recv() => {}
+                    }
+                }
+                _ => {
+                    if asked.recv().await.is_none() {
+                        return;
+                    }
+                }
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
         if tokio::signal::ctrl_c().await.is_err() {
             return;
         }
