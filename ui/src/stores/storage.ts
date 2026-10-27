@@ -1,10 +1,14 @@
 import { defineStore } from 'pinia'
 import { computed, reactive } from 'vue'
+import { FetchError } from 'ofetch'
 import { nodeApi } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
 import { nodeLoadErrors } from '@/lib/loadState'
 import { onReconnect } from '@/lib/reconnect'
 import type { StorageVolumeDto } from '@/types/generated/StorageVolumeDto'
+import type { CreateFolderRequest } from '@/types/generated/CreateFolderRequest'
+import type { FolderDto } from '@/types/generated/FolderDto'
+import type { FolderListingDto } from '@/types/generated/FolderListingDto'
 
 export const useStorageStore = defineStore('storage', () => {
   const nodes = useNodesStore()
@@ -48,5 +52,25 @@ export const useStorageStore = defineStore('storage', () => {
     return best
   })
 
-  return { volumes, errors, load, loadForNode, lowest, soonestFull }
+  /** A folder's subfolders on a node; with no `path`, where to start: home, the storage folder and the volumes. */
+  function listFolders(nodeId: string, path?: string) {
+    return nodeApi(nodeId)<FolderListingDto>('/fs/dirs', { query: path ? { path } : {} })
+  }
+
+  function createFolder(nodeId: string, parent: string, name: string) {
+    const body: CreateFolderRequest = { parent, name }
+    return nodeApi(nodeId)<FolderDto>('/fs/dirs', { method: 'POST', body })
+  }
+
+  /** Whether `path` is a folder on the node; `null` when it can't tell (unreachable, unreadable). */
+  async function folderExists(nodeId: string, path: string): Promise<boolean | null> {
+    try {
+      await listFolders(nodeId, path)
+      return true
+    } catch (e) {
+      return e instanceof FetchError && e.statusCode === 404 ? false : null
+    }
+  }
+
+  return { volumes, errors, load, loadForNode, lowest, soonestFull, listFolders, createFolder, folderExists }
 })

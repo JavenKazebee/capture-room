@@ -23,11 +23,12 @@ use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     BenchmarkRequest, BenchmarkRunDto, CapacityCheckDto, CapacityCheckRequest, ChannelConfig,
     CheckRequest, ClockClaim, ClockStatusDto, ClockTimeDto, ConfiguredSourceDto,
-    ConfiguredSourceRequest, DecklinkProfileRequest, DecklinkStatusDto, DeviceDto, DirListingDto,
-    DisplayDto, NdiSubscriptionsDto, NdiSubscriptionsInput, NodeCapacityDto, NodeChecksDto,
-    NodeSettingsDto, NodeStatus, OutputConfig, RecordingSessionDto, RecordingStatus,
-    RecordingsQuery, SourceConfig, SourceDto, StartRecordingRequest, StorageVolumeDto,
-    UpdateNodeSettingsRequest, UpdateRequest, UpdateStatusDto, VolumeCheckDto, WsEvent,
+    ConfiguredSourceRequest, CreateFolderRequest, DecklinkProfileRequest, DecklinkStatusDto,
+    DeviceDto, DirListingDto, DisplayDto, FolderDto, FolderListingDto, NdiSubscriptionsDto,
+    NdiSubscriptionsInput, NodeCapacityDto, NodeChecksDto, NodeSettingsDto, NodeStatus,
+    OutputConfig, RecordingSessionDto, RecordingStatus, RecordingsQuery, SourceConfig, SourceDto,
+    StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest, UpdateRequest,
+    UpdateStatusDto, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
 use crate::capacity::{Capacity, Load, Setup};
@@ -52,6 +53,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/settings", get(get_settings).put(put_settings))
         .route("/storage", get(get_storage))
         .route("/files", get(get_files))
+        .route("/fs/dirs", get(get_dirs).post(post_dir))
         .route("/devices", get(get_devices))
         .route("/displays", get(get_displays))
         .route("/decklink", get(get_decklink))
@@ -517,6 +519,40 @@ async fn get_files(Query(q): Query<FilesQuery>) -> ApiResult<Json<DirListingDto>
         .await?
         .map_err(ApiError::bad)?;
     Ok(Json(listing))
+}
+
+/// A 404 for a folder that isn't there, so the UI can tell it from one it
+/// can't read.
+fn folder_error(e: anyhow::Error) -> ApiError {
+    match e.downcast_ref::<std::io::Error>() {
+        Some(io) if io.kind() == std::io::ErrorKind::NotFound => {
+            ApiError::NotFound("folder not found")
+        }
+        _ => ApiError::bad(e),
+    }
+}
+
+/// A folder's subfolders, for picking where recordings go; with no `path`,
+/// the places to start: home, the storage folder and the volumes.
+async fn get_dirs(Query(q): Query<FilesQuery>) -> ApiResult<Json<FolderListingDto>> {
+    let listing = tokio::task::spawn_blocking(move || match q.path.filter(|p| !p.is_empty()) {
+        Some(path) => storage::list_folders(&path).map_err(folder_error),
+        None => Ok(FolderListingDto {
+            path: None,
+            parent: None,
+            folders: storage::folder_roots(),
+        }),
+    })
+    .await??;
+    Ok(Json(listing))
+}
+
+async fn post_dir(Json(req): Json<CreateFolderRequest>) -> ApiResult<Json<FolderDto>> {
+    let folder =
+        tokio::task::spawn_blocking(move || storage::create_folder(&req.parent, &req.name))
+            .await?
+            .map_err(folder_error)?;
+    Ok(Json(folder))
 }
 
 const SESSION_NOT_FOUND: ApiError = ApiError::NotFound("session not found");

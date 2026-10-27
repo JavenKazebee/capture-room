@@ -246,7 +246,7 @@ pub fn segment_number(index: u32) -> String {
 }
 
 /// `~`, `~/…` or `~\\…` → this node's home directory.
-fn expand_home(path: &str) -> PathBuf {
+pub fn expand_home(path: &str) -> PathBuf {
     let rest = match path.strip_prefix('~') {
         Some("") => "",
         Some(rest) if rest.starts_with(['/', '\\']) => rest.trim_start_matches(['/', '\\']),

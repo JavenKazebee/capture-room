@@ -8,6 +8,7 @@ import { dateTime, plural } from '@/lib/format'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordDeskStore } from '@/stores/recordDesk'
+import { useSchedulesStore } from '@/stores/schedules'
 import { errorMessage } from '@/composables/useApi'
 import { usePresetDraft } from '@/composables/usePresetDraft'
 import { useQueryAction } from '@/composables/useQueryAction'
@@ -24,6 +25,7 @@ const store = usePresetsStore()
 const sources = useSourcesStore()
 const nodes = useNodesStore()
 const desk = useRecordDeskStore()
+const schedules = useSchedulesStore()
 
 const sorted = computed(() => [...store.presets].sort((a, b) => a.name.localeCompare(b.name)))
 
@@ -48,6 +50,16 @@ const {
   clashes,
   problems,
 } = draft
+/** Nodes that record with the open preset: its feeds in Record (and those a new one is for) and its schedules. */
+const presetNodes = computed(() => {
+  const id = selectedId.value
+  const feeds = new Set(pendingFor.value)
+  const ids = new Set(sources.sources.filter((s) => feeds.has(s.key) || desk.presetIdOf(s.key) === id).map((s) => s.node_id))
+  for (const a of schedules.schedules.flatMap((s) => s.actions)) {
+    if (a.kind === 'record' && a.preset_id === id) for (const t of a.targets) ids.add(t.node_id)
+  }
+  return [...ids]
+})
 const problemCount = computed(() => problems.value.length)
 const saving = ref(false)
 
@@ -119,6 +131,7 @@ function pickInitial() {
 const ready = ref(false)
 onMounted(async () => {
   if (!store.presets.length) await store.load()
+  if (!schedules.loaded) schedules.load()
   pickInitial()
   ready.value = true
 })
@@ -206,6 +219,7 @@ useQueryAction(['new', 'for'], (q) => {
               :count="draftLegs.length"
               :clash="clashes.has(i)"
               :preview="preview"
+              :node-ids="presetNodes"
               @remove="draft.removeOutput(i)"
               @duplicate="draft.duplicateOutput(i)"
               @move="(d) => draft.moveOutput(i, d)"
