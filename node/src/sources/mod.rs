@@ -26,6 +26,8 @@ pub mod privacy;
 pub mod stream;
 pub mod test;
 pub mod whip;
+#[cfg(target_os = "linux")]
+pub mod x11;
 
 use crate::api::types::{
     ConfiguredSourceDto, LinkState, OutputConfig, SourceCapabilitiesDto, SourceConfig, SourceType,

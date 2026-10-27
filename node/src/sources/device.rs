@@ -15,7 +15,7 @@ use crate::api::types::{
 use crate::pipeline::{capsfilter, make_el};
 
 /// Device classes the monitor watches. Screens are `Source/Monitor` on
-/// Windows and video sources on macOS. Audio sinks play display outputs'
+/// Windows and Linux (`super::x11`) and video sources on macOS. Audio sinks play display outputs'
 /// sound; Decklink playout sub-devices are hardware video sinks.
 const CLASSES: &[&str] = &[
     "Video/Source",
