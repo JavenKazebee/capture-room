@@ -359,6 +359,41 @@ pub fn available_encoders() -> Vec<String> {
         .collect()
 }
 
+/// Whether a node with `available` encoders has one `profile` can use.
+pub fn has_encoder(profile: &RecordingProfile, available: &[String]) -> bool {
+    profile.encoders().iter().any(|&e| {
+        // Uncompressed is `identity`, which every GStreamer has.
+        e == VideoEncoder::Uncompressed || available.iter().any(|a| a == e.element())
+    })
+}
+
+/// Why a recording can't start on a node with `available` encoders: the
+/// first output none of whose encoders the node has. Checked before any leg
+/// is built, so a start fails whole instead of on the leg that lacks one.
+pub fn missing_encoder(
+    outputs: &[PresetOutputInput],
+    legs: &[(PathBuf, RecordingProfile)],
+    available: &[String],
+    node: &str,
+) -> Option<String> {
+    outputs.iter().zip(legs).find_map(|(o, (_, profile))| {
+        if has_encoder(profile, available) {
+            return None;
+        }
+        let kind = match profile.advanced.encoder {
+            EncoderChoice::Auto => "",
+            EncoderChoice::Hardware => "hardware ",
+            EncoderChoice::Software => "software ",
+        };
+        let needs: Vec<_> = profile.encoders().iter().map(|e| e.element()).collect();
+        Some(format!(
+            "output \"{}\": no {kind}encoder on {node} (needs {})",
+            o.name,
+            needs.join(" or ")
+        ))
+    })
+}
+
 impl RecordingProfile {
     /// Resolution and framerate are free text: blank matches the source,
     /// anything else must parse, so a typo isn't silently the source format.
@@ -1074,6 +1109,27 @@ mod tests {
         p.video_codec = VideoCodec::Vp9;
         p.container = Container::Mkv;
         assert_eq!(p.audio_format(), AudioFormat::Opus { bitrate: 160_000 });
+    }
+
+    #[test]
+    fn names_the_first_output_without_an_encoder() {
+        let mut hw = leg("hw", Container::Mov, "/r/hw.mov");
+        hw.advanced.encoder = EncoderChoice::Hardware;
+        let mut raw = leg("raw", Container::Mov, "/r/raw.mov");
+        raw.codec = VideoCodec::Uncompressed;
+        let outputs = [leg("sw", Container::Mov, "/r/sw.mov"), raw, hw];
+        let legs = plan_legs(&outputs, None).unwrap();
+        let software = ["x264enc".to_string()];
+        assert_eq!(
+            missing_encoder(&outputs, &legs, &software, "studio-pc").as_deref(),
+            Some("output \"hw\": no hardware encoder on studio-pc (needs vtenc_h264)")
+        );
+        let all = ["vtenc_h264".to_string(), "x264enc".to_string()];
+        assert_eq!(missing_encoder(&outputs, &legs, &all, "mac"), None);
+        assert_eq!(
+            missing_encoder(&outputs[..1], &legs[..1], &[], "bare").as_deref(),
+            Some("output \"sw\": no encoder on bare (needs vtenc_h264 or x264enc)")
+        );
     }
 
     #[test]

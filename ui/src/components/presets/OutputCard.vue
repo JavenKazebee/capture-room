@@ -30,7 +30,8 @@ import { FIELD_HELP } from '@/lib/fieldHelp'
 import OptionSelect from '@/components/OptionSelect.vue'
 import AdvancedSettings from '@/components/presets/AdvancedSettings.vue'
 import PathTemplateField from '@/components/presets/PathTemplateField.vue'
-import { advancedProblems, fitAdvanced } from '@/lib/advanced'
+import { advancedProblems, encoderWarning, fitAdvanced } from '@/lib/advanced'
+import { useNodesStore } from '@/stores/nodes'
 import type { ChromaSubsampling } from '@/types/generated/ChromaSubsampling'
 
 const props = defineProps<{
@@ -45,6 +46,9 @@ const leg = defineModel<PresetOutputInput>({ required: true })
 defineEmits<{ remove: []; duplicate: []; move: [dir: -1 | 1]; preview: [] }>()
 
 const open = ref(true)
+const nodes = useNodesStore()
+/** A warning, not a problem: presets aren't tied to a node, and another may record it. */
+const encoderNote = computed(() => encoderWarning(leg.value, nodes.reachable))
 const problems = computed(() => legProblems(leg.value))
 const hasProblem = computed(
   () => props.clash || Object.keys(problems.value).length > 0 || Object.keys(advancedProblems(leg.value)).length > 0,
@@ -158,6 +162,7 @@ const framerate = computed({
         <span class="text-sm font-medium truncate">{{ leg.name || `Output ${index + 1}` }}</span>
         <span class="text-xs text-muted-foreground truncate">{{ legSummary(leg) }}</span>
         <span v-if="hasProblem" class="text-xs text-destructive shrink-0">needs attention</span>
+        <span v-else-if="encoderNote" class="text-xs text-warning truncate shrink-0 max-w-72" :title="encoderNote">{{ encoderNote }}</span>
       </CollapsibleTrigger>
       <div class="flex items-center shrink-0">
         <Tooltip>
@@ -278,6 +283,9 @@ const framerate = computed({
           </label>
         </FormField>
 
+        <p v-if="encoderNote" class="col-span-2 lg:col-span-4 text-[11px] text-warning">
+          {{ encoderNote }}. Recording this output there will fail to start.
+        </p>
         <AdvancedSettings v-model="leg" />
       </div>
     </CollapsibleContent>
