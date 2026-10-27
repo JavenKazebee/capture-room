@@ -262,6 +262,23 @@ pub(crate) fn set_mix_matrix(aconv: &gst::Element, rows: &[Vec<f32>]) {
     aconv.set_property("mix-matrix", matrix);
 }
 
+/// `capssetter` relabelling audio as plain numbered channels
+/// (`channel-mask` 0), samples untouched. On GStreamer 1.24 `audioconvert`
+/// with a mix matrix won't negotiate mask 0 for fewer than 9 channels unless
+/// it's also the input's count, so the caps ahead of this leave the mask open.
+pub(crate) fn numbered_channels(name: &str) -> Result<gst::Element> {
+    gst::ElementFactory::make("capssetter")
+        .name(name)
+        .property(
+            "caps",
+            gst::Caps::builder("audio/x-raw")
+                .field("channel-mask", gst::Bitmask::new(0))
+                .build(),
+        )
+        .build()
+        .with_context(|| format!("create {name}"))
+}
+
 /// Link a new request pad of `tee` to `sink`'s static sink pad.
 pub(super) fn link_tee(tee: &gst::Element, sink: &gst::Element) -> Result<()> {
     tee.request_pad_simple("src_%u")

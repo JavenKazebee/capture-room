@@ -28,8 +28,8 @@ use super::profile::{
 use super::timecode::{running_time, stamp_time_of_day};
 use super::{
     audio_hold_queue, capsfilter, describe_error, first_that_builds, make_el,
-    mark_prores_keyframes, pcm_tail, remove_quietly, set_mix_matrix, set_property, start_or_reason,
-    ConsumerPipeline,
+    mark_prores_keyframes, numbered_channels, pcm_tail, remove_quietly, set_mix_matrix,
+    set_property, start_or_reason, ConsumerPipeline,
 };
 use crate::api::types::{Container, RateControl};
 
@@ -482,17 +482,7 @@ fn audio_chain(profile: &RecordingProfile) -> Result<Vec<gst::Element>> {
             return Ok(None);
         }
         // Same samples, layout dropped: see `relabel_pcm_channels`.
-        let el = gst::ElementFactory::make("capssetter")
-            .name("apcm-relabel")
-            .property(
-                "caps",
-                gst::Caps::builder("audio/x-raw")
-                    .field("channel-mask", gst::Bitmask::new(0))
-                    .build(),
-            )
-            .build()
-            .context("create capssetter")?;
-        Ok(Some(el))
+        Ok(Some(numbered_channels("apcm-relabel")?))
     };
     match profile.audio_format() {
         // The relabel goes after the 24-bit caps: ahead of them, the leg

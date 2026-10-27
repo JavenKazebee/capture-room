@@ -18,7 +18,7 @@ use tracing::{info, warn};
 use super::add_chain;
 use crate::api::types::{LinkState, LiveVideoFormat};
 use crate::pipeline::timecode::{drop_frame_flags, running_time};
-use crate::pipeline::{capsfilter, make_el, set_mix_matrix, set_property};
+use crate::pipeline::{capsfilter, make_el, numbered_channels, set_mix_matrix, set_property};
 
 /// Rate every live source's audio is resampled to.
 pub const AUDIO_RATE: i32 = 48_000;
@@ -403,14 +403,30 @@ impl Inputs {
             }
             Kind::Audio(caps, matrix) => {
                 let conv = make_el("audioconvert", &name("aconv"))?;
+                let numbered = caps
+                    .structure(0)
+                    .and_then(|s| s.get::<gst::Bitmask>("channel-mask").ok())
+                    .is_some_and(|m| m.0 == 0);
+                let mut out = caps.clone();
                 if let Some(rows) = matrix {
                     set_mix_matrix(&conv, rows);
+                    if numbered {
+                        // Mask left open for the matrix: see `numbered_channels`.
+                        out.make_mut()
+                            .structure_mut(0)
+                            .context("audio caps")?
+                            .remove_field("channel-mask");
+                    }
                 }
-                vec![
+                let mut chain = vec![
                     conv,
                     make_el("audioresample", &name("aresample"))?,
-                    capsfilter(&name("acaps"), caps.clone())?,
-                ]
+                    capsfilter(&name("acaps"), out)?,
+                ];
+                if matrix.is_some() && numbered {
+                    chain.push(numbered_channels(&name("anumbered"))?);
+                }
+                chain
             }
         };
         bin.add_many(&elements).context("add live input")?;
@@ -1075,6 +1091,71 @@ mod tests {
             locked.iter().all(|c| c.contains("width=(int)1280")),
             "locked to the placeholder: {caps:#?}"
         );
+    }
+
+    /// Picked device channels reach the mixer as numbered channels, from
+    /// positioned and numbered devices alike.
+    #[test]
+    fn device_picks_negotiate() {
+        gst::init().unwrap();
+        let cases: [(&str, u32, &[u32]); 4] = [
+            ("channels=8", 8, &[2]),
+            ("channels=8", 8, &[1, 3, 5]),
+            (
+                "channels=16,channel-mask=(bitmask)0",
+                16,
+                &[1, 2, 3, 4, 5, 6],
+            ),
+            (
+                "channels=16,channel-mask=(bitmask)0",
+                16,
+                &[9, 10, 11, 12, 13, 14, 15, 16, 1, 2, 3, 4],
+            ),
+        ];
+        for (device_caps, inputs, channels) in cases {
+            // The mixer and picking chain as `build_bin` makes them for a device.
+            let bin = gst::Bin::new();
+            let mixer = audio_output(&bin, "t", channels.len() as u32, true).unwrap();
+            let picker = Inputs {
+                kind: Kind::Audio(mixer.audio_caps(), Some(pick_matrix(inputs, channels))),
+                ..mixer
+            };
+            let device = gst::parse::bin_from_description(
+                &format!("audiotestsrc is-live=1 ! capsfilter caps=\"audio/x-raw,{device_caps}\""),
+                true,
+            )
+            .unwrap();
+            bin.add(&device).unwrap();
+            let chain = picker.add("dev").unwrap();
+            device
+                .static_pad("src")
+                .unwrap()
+                .link(&chain.sink().unwrap())
+                .unwrap();
+            let picked = Arc::new(AtomicU64::new(0));
+            let picked_ = picked.clone();
+            chain.pad.add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+                picked_.fetch_add(1, Ordering::Relaxed);
+                gst::PadProbeReturn::Ok
+            });
+
+            let pipeline = gst::Pipeline::new();
+            let a = Arc::new(Sink::default());
+            let asink = counting_sink(a.clone());
+            pipeline.add_many([bin.upcast_ref(), &asink]).unwrap();
+            bin.link_pads(Some("audio"), &asink, None).unwrap();
+            pipeline.set_state(gst::State::Playing).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+            pipeline.set_state(gst::State::Null).unwrap();
+
+            assert!(
+                picked.load(Ordering::Relaxed) > 0,
+                "{channels:?} of {device_caps}: no audio from the device"
+            );
+            let caps = a.caps.lock().unwrap();
+            let want = format!("channels=(int){}", channels.len());
+            assert!(caps.iter().all(|c| c.contains(&want)), "{caps:#?}");
+        }
     }
 
     /// Locked caps are fixed, with mono multiview and every flag pinned, so
