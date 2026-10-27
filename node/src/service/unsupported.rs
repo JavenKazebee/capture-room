@@ -27,11 +27,7 @@ pub fn uninstall(_purge: bool) -> Result<()> {
     bail!("installing as a service isn't supported on this OS yet")
 }
 
-pub fn installed_port() -> Option<u16> {
-    None
-}
-
-pub fn installed_db() -> Option<PathBuf> {
+pub fn installed_arg(_flag: &str) -> Option<String> {
     None
 }
 

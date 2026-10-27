@@ -39,13 +39,17 @@ use anyhow::{bail, ensure, Context, Result};
 
 use super::log_rotation;
 use super::windows_flags::{CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW};
-use super::{Installed, RELEASES_ENV, RESTART_EXIT_CODE, SERVICE_ENV};
+use super::{
+    answers, installed_port, node_args, node_env, remove, update_staging, wait_for_port, Installed,
+    DEFAULT_PORT, RESTART_EXIT_CODE,
+};
 
 /// The logon task's name, in the Task Scheduler Library's root.
 const TASK: &str = "Capture Room";
-const DEFAULT_PORT: u16 = 7700;
 /// The first start after an install scans every plugin.
-const START_TIMEOUT: Duration = Duration::from_secs(120);
+pub const START_TIMEOUT: Duration = Duration::from_secs(120);
+/// The supervisor writes everything, its own notes too, to the log file.
+pub const MORE_LOGS: &str = "";
 /// A node that fails sooner than this after starting waits [`RETRY_DELAY`]
 /// before the next try, so a broken install doesn't spin.
 const MIN_UPTIME: Duration = Duration::from_secs(10);
@@ -53,8 +57,6 @@ const RETRY_DELAY: Duration = Duration::from_secs(10);
 /// How long a stop waits for the node to finish its recordings and quit
 /// before killing it: well past `session::EOS_TIMEOUT`.
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
-/// Where `update.rs` unpacks an update, beside the app.
-const UPDATE_STAGING: &str = ".capture-room-update";
 
 const ERROR_SHARING_VIOLATION: i32 = 32;
 
@@ -137,23 +139,10 @@ pub fn install(controller: bool, port: Option<u16>) -> Result<Installed> {
 
     std::fs::create_dir_all(data_dir())?;
     std::fs::create_dir_all(log_dir())?;
-    let mut args = vec![
-        "--db".to_string(),
-        data_dir().join("capture-room.db").display().to_string(),
-        "--port".into(),
-        port.to_string(),
-    ];
-    if controller {
-        args.push("--controller".into());
-    }
-    let mut env = vec![(SERVICE_ENV.to_string(), "1".to_string())];
-    if let Ok(releases) = std::env::var(RELEASES_ENV) {
-        env.push((RELEASES_ENV.to_string(), releases));
-    }
     let config = Config {
         exe: app.join(r"bin\capture-room.exe"),
-        args,
-        env,
+        args: node_args(controller, port),
+        env: node_env(),
     };
 
     stop()?;
@@ -177,7 +166,7 @@ pub fn uninstall(purge: bool) -> Result<()> {
         remove(&shortcut)?;
     }
     let app = app_path().unwrap_or_else(|| root().join("app"));
-    remove(&app.with_file_name(UPDATE_STAGING))?;
+    remove(&update_staging(&app))?;
     if purge {
         remove(&data_dir())?;
         remove(&log_dir())?;
@@ -218,21 +207,16 @@ fn delete_after_exit(app: &Path, root: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-/// The port the installed service runs on, if it's installed.
-pub fn installed_port() -> Option<u16> {
-    installed_arg("--port")?.parse().ok()
-}
-
-/// The database the installed service uses, if it's installed.
-pub fn installed_db() -> Option<PathBuf> {
-    installed_arg("--db").map(PathBuf::from)
-}
-
 /// The value after `flag` in the installed service's arguments.
-fn installed_arg(flag: &str) -> Option<String> {
+pub fn installed_arg(flag: &str) -> Option<String> {
     let config = read_config()?;
     let at = config.args.iter().position(|a| a == flag)?;
     config.args.get(at + 1).cloned()
+}
+
+/// The supervisor keeps trying until the node quits cleanly.
+pub fn starting() -> bool {
+    is_running()
 }
 
 /// Whether a supervisor holds the lock file.
@@ -444,27 +428,6 @@ fn run(program: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn answers(port: u16) -> bool {
-    std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
-}
-
-fn wait_for_port(port: u16) -> Result<()> {
-    let deadline = Instant::now() + START_TIMEOUT;
-    while Instant::now() < deadline {
-        if answers(port) {
-            return Ok(());
-        }
-        if !is_running() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    bail!(
-        "the node didn't answer on port {port}; see {}",
-        log_dir().join("capture-room.log").display()
-    )
-}
-
 /// `capture-room service run`: the supervisor (see the module docs).
 pub fn run_supervisor() -> Result<()> {
     std::fs::create_dir_all(data_dir())?;
@@ -580,19 +543,5 @@ impl Log {
         if self.file.write_all(line).is_ok() {
             self.size += line.len() as u64;
         }
-    }
-}
-
-fn remove(path: &Path) -> Result<()> {
-    let result = if path.is_dir() {
-        std::fs::remove_dir_all(path)
-    } else {
-        std::fs::remove_file(path)
-    };
-    match result {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            Err(e).with_context(|| format!("remove {}", path.display()))
-        }
-        _ => Ok(()),
     }
 }

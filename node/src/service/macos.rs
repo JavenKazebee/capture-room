@@ -8,24 +8,24 @@
 //! restarts on errors and kills but not a clean quit; a `Crashed` condition
 //! would miss panics and kills.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use plist::{Dictionary, Value};
 
-use super::{Installed, RELEASES_ENV, SERVICE_ENV};
+use super::{
+    home, installed_port, node_args, node_env, remove, update_staging, wait_for_port, Installed,
+    DEFAULT_PORT,
+};
 
 const LABEL: &str = "com.capture-room.node";
-const DEFAULT_PORT: u16 = 7700;
 /// The first start after an install scans every plugin, which takes about
 /// 30 s on an Intel Mac.
-const START_TIMEOUT: Duration = Duration::from_secs(90);
-
-fn home() -> PathBuf {
-    std::env::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"))
-}
+pub const START_TIMEOUT: Duration = Duration::from_secs(90);
+/// Nothing to add to the log file when the node doesn't start.
+pub const MORE_LOGS: &str = "";
 
 pub fn data_dir() -> PathBuf {
     home().join("Library/Application Support/Capture Room")
@@ -73,21 +73,12 @@ pub fn install(controller: bool, port: Option<u16>) -> Result<Installed> {
     std::fs::create_dir_all(log_dir())?;
     let log = log_dir().join("capture-room.log");
 
-    let mut args = vec![
-        exe.display().to_string(),
-        "--db".into(),
-        data_dir().join("capture-room.db").display().to_string(),
-        "--port".into(),
-        port.to_string(),
-    ];
-    if controller {
-        args.push("--controller".into());
-    }
-    let mut env = Dictionary::new();
-    env.insert(SERVICE_ENV.into(), "1".into());
-    if let Ok(releases) = std::env::var(RELEASES_ENV) {
-        env.insert(RELEASES_ENV.into(), releases.into());
-    }
+    let mut args = vec![exe.display().to_string()];
+    args.extend(node_args(controller, port));
+    let env: Dictionary = node_env()
+        .into_iter()
+        .map(|(k, v)| (k, Value::from(v)))
+        .collect();
     let mut keep_alive = Dictionary::new();
     keep_alive.insert("SuccessfulExit".into(), false.into());
 
@@ -123,9 +114,8 @@ pub fn uninstall(purge: bool) -> Result<()> {
         Some(home().join("Applications/Capture Room.app")),
     ];
     for app in apps.into_iter().flatten() {
-        if app.exists() {
-            std::fs::remove_dir_all(&app).with_context(|| format!("remove {}", app.display()))?;
-        }
+        remove(&update_staging(&app))?;
+        remove(&app)?;
     }
     remove(&home().join("Library/Caches/capture-room"))?;
     if purge {
@@ -135,18 +125,8 @@ pub fn uninstall(purge: bool) -> Result<()> {
     Ok(())
 }
 
-/// The port the installed service runs on, if it's installed.
-pub fn installed_port() -> Option<u16> {
-    installed_arg("--port")?.parse().ok()
-}
-
-/// The database the installed service uses, if it's installed.
-pub fn installed_db() -> Option<PathBuf> {
-    installed_arg("--db").map(PathBuf::from)
-}
-
 /// The value after `flag` in the installed service's arguments.
-fn installed_arg(flag: &str) -> Option<String> {
+pub fn installed_arg(flag: &str) -> Option<String> {
     let job = Value::from_file(plist_path()).ok()?;
     let args = job.as_dictionary()?.get("ProgramArguments")?.as_array()?;
     let at = args.iter().position(|a| a.as_string() == Some(flag))?;
@@ -201,6 +181,11 @@ fn stop() -> Result<()> {
     Ok(())
 }
 
+/// Whether launchd still has the service, which it drops when it gives up.
+pub fn starting() -> bool {
+    loaded()
+}
+
 fn loaded() -> bool {
     Command::new("launchctl")
         .args(["print", &target()])
@@ -218,35 +203,4 @@ fn launchctl(args: &[&str]) -> Result<()> {
         );
     }
     Ok(())
-}
-
-fn wait_for_port(port: u16) -> Result<()> {
-    let deadline = Instant::now() + START_TIMEOUT;
-    while Instant::now() < deadline {
-        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            return Ok(());
-        }
-        if !loaded() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    bail!(
-        "the node didn't answer on port {port}; see {}",
-        log_dir().join("capture-room.log").display()
-    )
-}
-
-fn remove(path: &Path) -> Result<()> {
-    let result = if path.is_dir() {
-        std::fs::remove_dir_all(path)
-    } else {
-        std::fs::remove_file(path)
-    };
-    match result {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            Err(e).with_context(|| format!("remove {}", path.display()))
-        }
-        _ => Ok(()),
-    }
 }
