@@ -38,7 +38,7 @@ const GAP: gst::ClockTime = gst::ClockTime::from_mseconds(100);
 impl ReplayCodec {
     pub fn encoders(self) -> &'static [&'static str] {
         match self {
-            Self::ProresProxy => &["vtenc_prores"],
+            Self::ProresProxy => &["vtenc_prores", "avenc_prores_ks"],
             Self::H264Intra => &["vtenc_h264", "x264enc"],
             Self::Mjpeg => &["jpegenc"],
         }
@@ -69,7 +69,7 @@ impl ReplayCodec {
     }
 
     /// The codecs this node can use for replay, the default first: ProRes
-    /// where VideoToolbox has it, else Motion JPEG.
+    /// where VideoToolbox or FFmpeg has it, else Motion JPEG.
     pub fn usable() -> Vec<Self> {
         [Self::ProresProxy, Self::Mjpeg, Self::H264Intra]
             .into_iter()
@@ -441,6 +441,7 @@ impl ReplayLeg {
         let set = |k: &str, v: &str| set_property(&venc, k, v);
         match encoder {
             "vtenc_prores" => mark_prores_keyframes(&venc)?,
+            "avenc_prores_ks" => set("profile", "proxy")?,
             "vtenc_h264" => {
                 set("realtime", "true")?;
                 set("allow-frame-reordering", "false")?;
@@ -475,14 +476,15 @@ impl ReplayLeg {
         }
         video.push(venc);
         match codec {
-            ReplayCodec::ProresProxy => video.push(capsfilter(
+            // vtenc_prores picks its profile from downstream caps.
+            ReplayCodec::ProresProxy if encoder == "vtenc_prores" => video.push(capsfilter(
                 "venc-out-caps",
                 gst::Caps::builder("video/x-prores")
                     .field("variant", "proxy")
                     .build(),
             )?),
             ReplayCodec::H264Intra => video.push(make_el("h264parse", "vparse")?),
-            ReplayCodec::Mjpeg => {}
+            ReplayCodec::ProresProxy | ReplayCodec::Mjpeg => {}
         }
 
         let audio = vec![

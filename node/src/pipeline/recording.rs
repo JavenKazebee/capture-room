@@ -694,8 +694,9 @@ fn link_to_muxer(
 }
 
 /// Create `encoder` with the output's rate control, keyframe interval and
-/// speed preset. Quality 1–100 maps to x264/x265 CRF 41→11, VP9 `cq-level`
-/// 63→13, VideoToolbox `quality` 0.01→1.
+/// speed preset. Quality 1–100 maps to x264/x265 CRF and VA-API QP 41→11,
+/// VP9 `cq-level` 63→13, VideoToolbox `quality` 0.01→1. A rate control the
+/// VA-API driver lacks fails the build, so the leg falls back to software.
 fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Result<gst::Element> {
     let venc = make_el(encoder.element(), "venc")?;
     let set = |name: &str, value: &str| set_property(&venc, name, value);
@@ -763,6 +764,26 @@ fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Res
                 RateControl::Quality => set("quality", &(quality / 100.0).to_string())?,
             }
         }
+        VideoEncoder::VaH264 | VideoEncoder::VaH265 => {
+            // VA-API caps the GOP at 1024 frames.
+            set(
+                "key-int-max",
+                &profile.keyframe_interval().min(1024).to_string(),
+            )?;
+            match rc {
+                // VBR averages `target-percentage` (66% by default) of its
+                // `bitrate` peak; the bitrate below is raised to match.
+                RateControl::Average => set("rate-control", "vbr")?,
+                RateControl::Constant => set("rate-control", "cbr")?,
+                RateControl::Quality => {
+                    set("rate-control", "cqp")?;
+                    let qp = crf.to_string();
+                    for frame in ["qpi", "qpp", "qpb"] {
+                        set(frame, &qp)?;
+                    }
+                }
+            }
+        }
         VideoEncoder::ProResKs => {
             if let Some(prores) = profile.prores_profile() {
                 set("profile", prores)?;
@@ -779,11 +800,16 @@ fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Res
             }
             (VideoEncoder::Vp9, _) => set("target-bitrate", &(u64::from(kbps) * 1000).to_string())?,
             (_, RateControl::Quality) => {}
+            (VideoEncoder::VaH264 | VideoEncoder::VaH265, RateControl::Average) => {
+                set("bitrate", &(u64::from(kbps) * 3 / 2).to_string())?
+            }
             (
                 VideoEncoder::X264
                 | VideoEncoder::X265
                 | VideoEncoder::VtH264
-                | VideoEncoder::VtH265,
+                | VideoEncoder::VtH265
+                | VideoEncoder::VaH264
+                | VideoEncoder::VaH265,
                 _,
             ) => set("bitrate", &kbps.to_string())?,
             _ => {}

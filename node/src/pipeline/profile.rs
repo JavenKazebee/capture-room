@@ -295,6 +295,9 @@ pub enum VideoEncoder {
     VtH264,
     VtH265,
     VtProRes,
+    /// VA-API (Linux, AMD and Intel GPUs through Mesa or iHD).
+    VaH264,
+    VaH265,
     Uncompressed,
 }
 
@@ -308,12 +311,17 @@ impl VideoEncoder {
             Self::VtH264 => "vtenc_h264",
             Self::VtH265 => "vtenc_h265",
             Self::VtProRes => "vtenc_prores",
+            Self::VaH264 => "vah264enc",
+            Self::VaH265 => "vah265enc",
             Self::Uncompressed => "identity",
         }
     }
 
     pub fn is_hardware(self) -> bool {
-        matches!(self, Self::VtH264 | Self::VtH265 | Self::VtProRes)
+        matches!(
+            self,
+            Self::VtH264 | Self::VtH265 | Self::VtProRes | Self::VaH264 | Self::VaH265
+        )
     }
 }
 
@@ -351,12 +359,14 @@ pub const DEFAULT_QUALITY: u8 = 70;
 /// Every encoder recording can use that this node has, by element name.
 pub fn available_encoders() -> Vec<String> {
     use VideoEncoder::*;
-    [VtH264, VtH265, VtProRes, X264, X265, Vp9, ProResKs]
-        .into_iter()
-        .map(VideoEncoder::element)
-        .filter(|name| crate::plugins::has(name))
-        .map(String::from)
-        .collect()
+    [
+        VtH264, VtH265, VtProRes, VaH264, VaH265, X264, X265, Vp9, ProResKs,
+    ]
+    .into_iter()
+    .map(VideoEncoder::element)
+    .filter(|name| crate::plugins::has(name))
+    .map(String::from)
+    .collect()
 }
 
 /// Whether a node with `available` encoders has one `profile` can use.
@@ -473,8 +483,8 @@ impl RecordingProfile {
     }
 
     /// The encoders this leg can use, best first: hardware where the platform
-    /// has it, then software. VideoToolbox H.264/H.265 only take 4:2:0, so
-    /// 4:2:2 and 4:4:4 go straight to software.
+    /// has it, then software. Hardware H.264/H.265 only take 4:2:0, so 4:2:2
+    /// and 4:4:4 go straight to software.
     pub fn encoders(&self) -> Vec<VideoEncoder> {
         let all = self.encoders_for_codec();
         all.iter()
@@ -495,9 +505,9 @@ impl RecordingProfile {
         use VideoEncoder::*;
         let yuv420 = self.chroma == ChromaSubsampling::Yuv420;
         match self.video_codec {
-            VideoCodec::H264 if yuv420 => &[VtH264, X264],
+            VideoCodec::H264 if yuv420 => &[VtH264, VaH264, X264],
             VideoCodec::H264 => &[X264],
-            VideoCodec::H265 if yuv420 => &[VtH265, X265],
+            VideoCodec::H265 if yuv420 => &[VtH265, VaH265, X265],
             VideoCodec::H265 => &[X265],
             VideoCodec::Vp9 => &[Vp9],
             VideoCodec::ProRes4444
@@ -522,6 +532,8 @@ impl RecordingProfile {
                 ChromaSubsampling::Yuv422 => "Y42B",
                 ChromaSubsampling::Yuv444 => "Y444",
             }),
+            // Every VA-API driver encodes from NV12; not all take I420.
+            VideoEncoder::VaH264 | VideoEncoder::VaH265 => Some("NV12"),
             // Profile 0 (4:2:0) is the VP9 everything plays; an RGB source
             // would give 4:4:4 Profile 1.
             VideoEncoder::Vp9 => Some("I420"),
@@ -1097,7 +1109,16 @@ mod tests {
     #[test]
     fn picks_encoders_and_audio() {
         let mut p = RecordingProfile::from_output(&leg("a", Container::Mov, "x")).unwrap();
-        assert_eq!(p.encoders(), [VideoEncoder::VtH264, VideoEncoder::X264]);
+        assert_eq!(
+            p.encoders(),
+            [
+                VideoEncoder::VtH264,
+                VideoEncoder::VaH264,
+                VideoEncoder::X264
+            ]
+        );
+        p.advanced.encoder = EncoderChoice::Hardware;
+        assert_eq!(p.encoders(), [VideoEncoder::VtH264, VideoEncoder::VaH264]);
         p.advanced.encoder = EncoderChoice::Software;
         assert_eq!(p.encoders(), [VideoEncoder::X264]);
         p.advanced.encoder = EncoderChoice::Auto;
@@ -1122,13 +1143,15 @@ mod tests {
         let software = ["x264enc".to_string()];
         assert_eq!(
             missing_encoder(&outputs, &legs, &software, "studio-pc").as_deref(),
-            Some("output \"hw\": no hardware encoder on studio-pc (needs vtenc_h264)")
+            Some("output \"hw\": no hardware encoder on studio-pc (needs vtenc_h264 or vah264enc)")
         );
         let all = ["vtenc_h264".to_string(), "x264enc".to_string()];
         assert_eq!(missing_encoder(&outputs, &legs, &all, "mac"), None);
+        let linux = ["vah264enc".to_string(), "x264enc".to_string()];
+        assert_eq!(missing_encoder(&outputs, &legs, &linux, "linux"), None);
         assert_eq!(
             missing_encoder(&outputs[..1], &legs[..1], &[], "bare").as_deref(),
-            Some("output \"sw\": no encoder on bare (needs vtenc_h264 or x264enc)")
+            Some("output \"sw\": no encoder on bare (needs vtenc_h264 or vah264enc or x264enc)")
         );
     }
 

@@ -27,13 +27,17 @@ pub fn port(path: &str) -> Option<u16> {
 
 /// Rank VideoToolbox encoders NONE so `webrtcsink` doesn't pick them: they
 /// fail its negotiation and can't adapt bitrate per viewer. Others create
-/// them by name. Call before registering the WebRTC plugin, which lists
-/// encoders once.
+/// them by name. VA-API encoders register at NONE, but `webrtcsink` drives
+/// them (bitrate per viewer included), so they're ranked above x264enc.
+/// Call before registering the WebRTC plugin, which lists encoders once.
 pub fn hide_unsupported_encoders() {
     for name in ["vtenc_h264", "vtenc_h264_hw", "vtenc_h265", "vtenc_h265_hw"] {
         if let Some(factory) = gst::ElementFactory::find(name) {
             factory.set_rank(gst::Rank::NONE);
         }
+    }
+    if let Some(factory) = gst::ElementFactory::find("vah264enc") {
+        factory.set_rank(gst::Rank::PRIMARY + 1);
     }
 }
 

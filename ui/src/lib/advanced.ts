@@ -36,13 +36,15 @@ const ENCODER_NAMES: Record<string, string> = {
   vtenc_h264: 'VideoToolbox',
   vtenc_h265: 'VideoToolbox',
   vtenc_prores: 'VideoToolbox',
+  vah264enc: 'VA-API',
+  vah265enc: 'VA-API',
   x264enc: 'x264',
   x265enc: 'x265',
   vp9enc: 'libvpx',
   avenc_prores_ks: 'FFmpeg ProRes',
   identity: 'none',
 }
-const HARDWARE = new Set(['vtenc_h264', 'vtenc_h265', 'vtenc_prores'])
+const HARDWARE = new Set(['vtenc_h264', 'vtenc_h265', 'vtenc_prores', 'vah264enc', 'vah265enc'])
 
 export const isProRes = (leg: Pick<PresetOutputInput, 'codec'>) => leg.codec.startsWith('prores')
 
@@ -51,9 +53,9 @@ function codecEncoders(leg: Pick<PresetOutputInput, 'codec' | 'chroma'>): string
   const yuv420 = leg.chroma === '420'
   switch (leg.codec) {
     case 'h264':
-      return yuv420 ? ['vtenc_h264', 'x264enc'] : ['x264enc']
+      return yuv420 ? ['vtenc_h264', 'vah264enc', 'x264enc'] : ['x264enc']
     case 'h265':
-      return yuv420 ? ['vtenc_h265', 'x265enc'] : ['x265enc']
+      return yuv420 ? ['vtenc_h265', 'vah265enc', 'x265enc'] : ['x265enc']
     case 'vp9':
       return ['vp9enc']
     case 'uncompressed':
