@@ -10,7 +10,8 @@ use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
-use crate::api::types::{NodeEvent, TransportState, WsEvent};
+use crate::api::types::{NodeEvent, ReplayBufferDto, TransportState, WsEvent};
+use crate::pipeline::replay::SEGMENT;
 use crate::state::AppState;
 
 /// Slow receivers lose the oldest messages. On a controller this also carries
@@ -114,13 +115,71 @@ async fn drive<S, R, E>(
     }
 }
 
+/// A recording buffer's newest frame further than this from where its
+/// clients run it on to: it stalled or fell behind, so they're told again.
+const REPLAY_DRIFT_US: i64 = 2_000_000;
+
+/// Decides when the replay buffers are worth a `replay.buffers` event. A
+/// buffer grows by a segment a second, which clients run on from `now_us`
+/// themselves; what they can't foresee is a buffer starting, stopping,
+/// failing, being reconfigured or filling up (its start then moves too), or
+/// its newest frame drifting from where they ran it on to.
+#[derive(Default)]
+struct ReplayWatch {
+    last: Vec<ReplayBufferDto>,
+}
+
+impl ReplayWatch {
+    /// Whether `now` differs from what was last sent enough to send it.
+    fn changed(&mut self, now: Vec<ReplayBufferDto>) -> Option<Vec<ReplayBufferDto>> {
+        let same = now.len() == self.last.len()
+            && now.iter().zip(&self.last).all(|(a, b)| Self::same(a, b));
+        if same {
+            return None;
+        }
+        self.last = now.clone();
+        Some(now)
+    }
+
+    fn same(now: &ReplayBufferDto, then: &ReplayBufferDto) -> bool {
+        let full = Self::full(now);
+        now.source_id == then.source_id
+            && now.source_name == then.source_name
+            && now.codec == then.codec
+            && now.minutes == then.minutes
+            && now.encoder == then.encoder
+            && now.error == then.error
+            && full == Self::full(then)
+            // Fixed until full, and then run on by clients.
+            && (full || now.start_us == then.start_us)
+            && now.breaks_us == then.breaks_us
+            && match (now.end_us, then.end_us) {
+                (Some(end), Some(was)) if now.encoder.is_some() => {
+                    let expected = was as i64 + (now.now_us as i64 - then.now_us as i64);
+                    (end as i64 - expected).abs() <= REPLAY_DRIFT_US
+                }
+                (end, was) => end == was,
+            }
+    }
+
+    /// It keeps all it can, so its start moves on with its end.
+    fn full(b: &ReplayBufferDto) -> bool {
+        let keep = u64::from(b.minutes) * 60_000_000;
+        match (b.start_us, b.end_us) {
+            (Some(start), Some(end)) => end.saturating_sub(start) + SEGMENT.useconds() >= keep,
+            _ => false,
+        }
+    }
+}
+
 /// Emit this node's periodic events: audio levels every tick (~10 fps),
-/// timecode and recording stats at 1 Hz. Thumbnails have their own
+/// timecode and recording stats at 1 Hz, replay buffers on a change. Thumbnails have their own
 /// sockets (see [`crate::thumbnails`]).
 pub fn spawn_emitter(state: Arc<AppState>) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(100));
         let mut tick: u32 = 0;
+        let mut replay = ReplayWatch::default();
         loop {
             interval.tick().await;
             tick = tick.wrapping_add(1);
@@ -150,6 +209,10 @@ pub fn spawn_emitter(state: Arc<AppState>) {
                         error: mgr.monitor_error(source.id()),
                         link: mgr.link(source.as_ref()),
                     });
+                }
+                let buffers = mgr.replay_buffers(state.clock.utc_offset_us());
+                if let Some(buffers) = replay.changed(buffers) {
+                    state.emit(&WsEvent::ReplayBuffers { buffers });
                 }
             }
 
@@ -239,6 +302,47 @@ mod tests {
             .await
             .expect("the silent client was dropped")
             .unwrap();
+    }
+
+    fn buffer(start_us: u64, end_us: u64, now_us: u64) -> ReplayBufferDto {
+        ReplayBufferDto {
+            source_id: "cam".into(),
+            source_name: Some("Cam".into()),
+            codec: crate::api::types::ReplayCodec::Mjpeg,
+            minutes: 1,
+            encoder: Some("jpegenc".into()),
+            error: None,
+            start_us: Some(start_us),
+            end_us: Some(end_us),
+            breaks_us: Vec::new(),
+            utc_offset_us: None,
+            now_us,
+            bytes: 0,
+        }
+    }
+
+    #[test]
+    fn replay_buffers_are_sent_on_a_change_not_per_segment() {
+        const S: u64 = 1_000_000;
+        let mut watch = ReplayWatch::default();
+        assert!(watch.changed(vec![buffer(0, 10 * S, 11 * S)]).is_some());
+        // Growing a segment a second, as clients expect.
+        assert!(watch.changed(vec![buffer(0, 20 * S, 21 * S)]).is_none());
+        // Stalled: the newest frame stays put while the clock runs on.
+        assert!(watch.changed(vec![buffer(0, 20 * S, 25 * S)]).is_some());
+        // Full: the start moves on with the end.
+        assert!(watch.changed(vec![buffer(0, 59 * S, 64 * S)]).is_some());
+        assert!(watch
+            .changed(vec![buffer(10 * S, 69 * S, 74 * S)])
+            .is_none());
+        let mut stopped = buffer(10 * S, 69 * S, 80 * S);
+        stopped.encoder = None;
+        stopped.error = Some("the source isn't available".into());
+        assert!(watch.changed(vec![stopped.clone()]).is_some());
+        // Stopped, its span stays where it was.
+        stopped.now_us = 90 * S;
+        assert!(watch.changed(vec![stopped]).is_none());
+        assert!(watch.changed(Vec::new()).is_some());
     }
 
     #[test]

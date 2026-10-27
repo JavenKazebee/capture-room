@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useThumbnail } from '@/composables/useThumbnail'
-import { held } from './held'
+import { useHeld } from './held'
 import type { Angle } from './useReplayControl'
 
 /** The selected angle, live, with what its buffer holds. */
 const props = defineProps<{ angle: Angle }>()
 
 const thumb = useThumbnail(computed(() => props.angle.source))
+
+const held = useHeld()
 </script>
 
 <template>
