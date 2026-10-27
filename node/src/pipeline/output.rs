@@ -24,8 +24,8 @@ use super::monitor::MonitorPipeline;
 use super::rtsp::{self, RtspOutput};
 use super::whep::WhepOutput;
 use super::{make_el, set_property, start_or_reason, ConsumerPipeline};
-use crate::api::types::{DisplayIdle, OutputConfig, SourceCapabilitiesDto};
-use crate::display::{DisplayWindow, Displays, WantedFormat};
+use crate::api::types::{DisplayIdle, OutputConfig, SourceCapabilitiesDto, VideoFormat};
+use crate::display::{DisplayWindow, Displays};
 use crate::sources::decklink::DecklinkOutput;
 use crate::sources::device::LocalDevices;
 use crate::sources::stream;
@@ -110,17 +110,18 @@ impl OutputPipeline {
 /// What a channel's program is, as its outputs need to know it up front.
 #[derive(Debug, Clone, Copy)]
 pub struct Program {
-    pub size: (u32, u32),
-    /// (numerator, denominator)
-    pub fps: (u32, u32),
+    pub format: VideoFormat,
     pub audio_channels: u32,
 }
 
 impl From<&SourceCapabilitiesDto> for Program {
     fn from(caps: &SourceCapabilitiesDto) -> Self {
         Self {
-            size: (caps.max_width, caps.max_height),
-            fps: (caps.max_framerate[0], caps.max_framerate[1]),
+            format: VideoFormat::new(
+                caps.max_width,
+                caps.max_height,
+                (caps.fps_num, caps.fps_den),
+            ),
             audio_channels: caps.audio_channels,
         }
     }
@@ -390,21 +391,12 @@ impl OutputSink for DisplayOutput {
     }
 
     fn start(&self, monitor: &Arc<MonitorPipeline>) -> Result<Box<dyn RunningOutput>> {
-        let (width, height) = self.program.size;
-        let (fps_num, fps_den) = self.program.fps;
         // Hidden to start with when it hides while idle: the first status
         // tick shows it if something's loaded.
         let visible = self.idle == DisplayIdle::Black;
-        let window = self.displays.open(
-            &self.display,
-            WantedFormat {
-                width,
-                height,
-                fps_num,
-                fps_den,
-            },
-            visible,
-        )?;
+        let window = self
+            .displays
+            .open(&self.display, self.program.format, visible)?;
         let output = self.build(window.handle)?;
         let pipeline = PipelineOutput::start(monitor, self.label(), output)?;
         Ok(Box::new(DisplayRunning {
@@ -504,8 +496,7 @@ pub(crate) fn live_h264(
         .find(|f| crate::plugins::has(f))
         .ok_or_else(|| anyhow!("no H.264 encoder (needs {})", LIVE_H264.join(" or ")))?;
     let mut props = vec![("bitrate", bitrate_kbps.to_string())];
-    let (n, d) = program.fps;
-    let keyint = (f64::from(n) / f64::from(d.max(1))).round().max(1.0);
+    let keyint = program.format.fps().round().max(1.0);
     match factory {
         "vtenc_h264" => props.extend([
             ("realtime", "true".to_string()),
@@ -663,12 +654,11 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::api::types::{ChannelConfig, LiveVideoFormat, MonitorSettingsDto};
+    use crate::api::types::{ChannelConfig, MonitorSettingsDto, VideoFormat};
     use crate::sources::channel::ChannelSource;
 
     const PROGRAM: Program = Program {
-        size: (640, 360),
-        fps: (30, 1),
+        format: VideoFormat::new(640, 360, (30, 1)),
         audio_channels: 2,
     };
 
@@ -689,7 +679,7 @@ mod tests {
             "c".into(),
             "c".into(),
             ChannelConfig {
-                format: LiveVideoFormat {
+                format: VideoFormat {
                     width: 640,
                     height: 360,
                     fps_num: 30,

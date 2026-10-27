@@ -11,4 +11,4 @@ mode: string,
 /**
  * What people call it (`1080p 59.94`).
  */
-label: string, width: number, height: number, fps_num: number, fps_den: number, interlaced: boolean, };
+label: string, interlaced: boolean, width: number, height: number, fps_num: number, fps_den: number, };

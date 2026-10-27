@@ -246,7 +246,7 @@ mod tests {
             port: 8443,
             token: "0123456789abcdef".into(),
             audio: AudioPlan::default(),
-            format: Some(crate::api::types::LiveVideoFormat {
+            format: Some(crate::api::types::VideoFormat {
                 width: 1920,
                 height: 1080,
                 fps_num: 30,

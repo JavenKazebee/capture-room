@@ -83,7 +83,8 @@ impl InputSource for TestSource {
         Some(SourceCapabilitiesDto {
             max_width: self.config.width,
             max_height: self.config.height,
-            max_framerate: [self.config.fps_num, self.config.fps_den],
+            fps_num: self.config.fps_num,
+            fps_den: self.config.fps_den,
             audio_channels: self.config.channels,
         })
     }

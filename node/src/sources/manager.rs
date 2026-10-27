@@ -1513,8 +1513,8 @@ impl SourceManager {
 mod tests {
     use super::*;
     use crate::api::types::{
-        ChannelConfig, ChromaSubsampling, Container, LiveVideoFormat, OutputAdvanced,
-        PresetOutputInput, ReplayCodec, SourceConfig, VideoCodec,
+        ChannelConfig, ChromaSubsampling, Container, OutputAdvanced, PresetOutputInput,
+        ReplayCodec, SourceConfig, VideoCodec, VideoFormat,
     };
     use crate::pipeline::rtsp;
     use std::collections::HashSet;
@@ -1545,7 +1545,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             config: SourceConfig::Channel(ChannelConfig {
-                format: LiveVideoFormat {
+                format: VideoFormat {
                     width: 640,
                     height: 360,
                     fps_num: 30,

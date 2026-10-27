@@ -15,7 +15,7 @@ const H: u32 = 1080;
 
 fn with_outputs(outputs: Vec<OutputConfig>) -> ChannelConfig {
     ChannelConfig {
-        format: LiveVideoFormat {
+        format: VideoFormat {
             width: W,
             height: H,
             fps_num: 30,
@@ -229,7 +229,7 @@ async fn transport_on_a_running_program() {
         "c".into(),
         "c".into(),
         ChannelConfig {
-            format: LiveVideoFormat {
+            format: VideoFormat {
                 width: W,
                 height: H,
                 fps_num: 30,
@@ -363,7 +363,7 @@ fn channel_with_audio(audio_channels: u32) -> ChannelSource {
         "c".into(),
         "c".into(),
         ChannelConfig {
-            format: LiveVideoFormat {
+            format: VideoFormat {
                 width: W,
                 height: H,
                 fps_num: 30,
@@ -787,7 +787,7 @@ async fn replay_plays_at_any_speed() {
         "c".into(),
         "c".into(),
         ChannelConfig {
-            format: LiveVideoFormat {
+            format: VideoFormat {
                 width: W,
                 height: H,
                 fps_num: 30,

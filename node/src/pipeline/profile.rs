@@ -14,7 +14,7 @@ use chrono::{DateTime, Local};
 use crate::api::types::{
     AudioChannels, AudioCodecChoice, ChromaSubsampling, Container, Deinterlace, EncoderChoice,
     OutputAdvanced, PresetOutputInput, RateControl, SessionAudio, SessionOutputDto, SpeedPreset,
-    VideoCodec,
+    VideoCodec, VideoFormat,
 };
 
 /// Values for the per-recording tokens of a path template.
@@ -785,20 +785,16 @@ impl RecordingProfile {
         }
     }
 
-    /// Frame size written: the output's, else the source's, else 1080p (a
-    /// preset check, or a source that hasn't negotiated yet).
-    pub fn frame_size(&self) -> (u32, u32) {
-        self.resolution.or(self.source_size).unwrap_or((1920, 1080))
-    }
-
-    /// Frame rate written, with the same fallbacks as [`Self::frame_size`].
-    pub fn frame_rate(&self) -> (u32, u32) {
-        self.framerate.or(self.source_rate).unwrap_or((30, 1))
+    /// Format written: the output's size and rate, else the source's, else
+    /// 1080p30 (a preset check, or a source that hasn't negotiated yet).
+    pub fn format(&self) -> VideoFormat {
+        let (width, height) = self.resolution.or(self.source_size).unwrap_or((1920, 1080));
+        let rate = self.framerate.or(self.source_rate).unwrap_or((30, 1));
+        VideoFormat::new(width, height, rate)
     }
 
     pub fn keyframe_interval(&self) -> u32 {
-        let (n, d) = self.frame_rate();
-        (self.keyframe_secs() * n as f64 / d as f64)
+        (self.keyframe_secs() * self.format().fps())
             .round()
             .max(1.0) as u32
     }
@@ -812,9 +808,8 @@ impl RecordingProfile {
             _ => return None,
         };
         Some(self.bitrate_kbps.unwrap_or_else(|| {
-            let (w, h) = self.frame_size();
-            let (n, d) = self.frame_rate();
-            let kbps = w as f64 * h as f64 * n as f64 / d as f64 * bits_per_pixel / 1000.0;
+            let f = self.format();
+            let kbps = f.width as f64 * f.height as f64 * f.fps() * bits_per_pixel / 1000.0;
             // Round to 500 kbps so the number reads like a choice.
             ((kbps / 500.0).round() * 500.0).max(500.0) as u32
         }))
@@ -823,9 +818,8 @@ impl RecordingProfile {
     /// Rough bytes per second written, for storage estimates without a
     /// benchmark. ProRes uses Apple's target rates scaled from 1080p29.97.
     pub fn estimated_bytes_per_sec(&self) -> u64 {
-        let (w, h) = self.frame_size();
-        let (n, d) = self.frame_rate();
-        let pixels_per_sec = w as f64 * h as f64 * n as f64 / d as f64;
+        let f = self.format();
+        let pixels_per_sec = f.width as f64 * f.height as f64 * f.fps();
         let prores_mbps = match self.video_codec {
             VideoCodec::ProRes4444 => Some(330.0),
             VideoCodec::ProRes422Hq => Some(220.0),

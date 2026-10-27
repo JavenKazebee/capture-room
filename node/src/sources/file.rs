@@ -77,7 +77,8 @@ impl InputSource for FileSource {
         Some(SourceCapabilitiesDto {
             max_width: media.width,
             max_height: media.height,
-            max_framerate: [media.fps_num, media.fps_den],
+            fps_num: media.fps_num,
+            fps_den: media.fps_den,
             audio_channels: audio_channels(media),
         })
     }

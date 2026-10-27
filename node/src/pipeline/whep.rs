@@ -152,7 +152,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::api::types::{ChannelConfig, LiveVideoFormat, MonitorSettingsDto};
+    use crate::api::types::{ChannelConfig, MonitorSettingsDto, VideoFormat};
     use crate::pipeline::output::OutputLeg;
     use crate::sources::channel::ChannelSource;
 
@@ -174,7 +174,7 @@ mod tests {
             "c".into(),
             "c".into(),
             ChannelConfig {
-                format: LiveVideoFormat {
+                format: VideoFormat {
                     width: 640,
                     height: 360,
                     fps_num: 30,

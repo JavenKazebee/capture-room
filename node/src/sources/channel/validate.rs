@@ -47,11 +47,7 @@ pub fn validate(
                 if device.trim().is_empty() {
                     return Err("pick a Decklink sub-device".into());
                 }
-                decklink::output_mode(
-                    (f.width, f.height),
-                    (f.fps_num, f.fps_den),
-                    mode.as_deref(),
-                )?;
+                decklink::output_mode(*f, mode.as_deref())?;
                 if channels > 16 {
                     return Err("SDI carries at most 16 audio channels".into());
                 }
