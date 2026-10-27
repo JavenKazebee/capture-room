@@ -22,7 +22,10 @@ use gstreamer_video as gst_video;
 use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
-use super::profile::{segment_number, AudioFormat, RecordingProfile, VideoEncoder, PCM_MAX_FILE};
+use super::profile::{
+    available_encoders, has_encoder, segment_number, AudioFormat, RecordingProfile, VideoEncoder,
+    PCM_MAX_FILE,
+};
 use super::{
     audio_hold_queue, capsfilter, describe_error, make_el, mark_prores_keyframes, pcm_audiorate,
     set_mix_matrix, set_property, start_or_reason, ConsumerPipeline,
@@ -110,11 +113,16 @@ pub fn start_legs(
 }
 
 /// Build every leg without starting it, to catch config errors. Opens no
-/// files.
+/// files. A leg whose encoders this node lacks is skipped: another node may
+/// have them, and a start there checks again.
 pub fn check_legs(legs: &[(PathBuf, RecordingProfile)]) -> Result<()> {
     let on_error: OnLegError = Arc::new(|_, _| {});
     let on_file: OnLegFile = Arc::new(|| {});
+    let available = available_encoders();
     for (i, (path, profile)) in legs.iter().enumerate() {
+        if !has_encoder(profile, &available) {
+            continue;
+        }
         RecordingLeg::build(
             path,
             profile,

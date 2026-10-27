@@ -33,7 +33,9 @@ use crate::benchmark;
 use crate::capacity::{Capacity, Load, Setup};
 use crate::db;
 use crate::pipeline::monitor::SourceFormat;
-use crate::pipeline::profile::{plan_legs, PathVars, RecordingProfile};
+use crate::pipeline::profile::{
+    available_encoders, missing_encoder, plan_legs, PathVars, RecordingProfile,
+};
 use crate::session;
 use crate::sources::manager::{SourceManager, StopOutcome, StopResult};
 use crate::sources::InputSource;
@@ -830,6 +832,14 @@ async fn post_recording(
         return Err(ApiError::bad("at least one output is required"));
     }
     let legs = build_legs(&state, &req).await?;
+    if let Some(reason) = missing_encoder(
+        &req.outputs,
+        &legs,
+        &available_encoders(),
+        &state.node_name(),
+    ) {
+        return Err(ApiError::BadRequest(reason));
+    }
     check_free_space(&legs).await?;
     for (path, _) in &legs {
         if let Some(parent) = path.parent() {

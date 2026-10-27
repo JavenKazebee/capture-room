@@ -91,6 +91,27 @@ export function encoderOnNodes(leg: PresetOutputInput, nodes: NodeDto[]) {
     })
 }
 
+/**
+ * Nodes that couldn't record this leg because they have none of its encoders: mirrors
+ * `missing_encoder` in `profile.rs`, which rejects the start. Nodes that haven't
+ * reported encoders are left out.
+ */
+export function nodesWithoutEncoder(leg: PresetOutputInput, nodes: NodeDto[]): string[] {
+  const want = legEncoders(leg)
+  if (!want.length || want.includes('identity')) return []
+  return nodes.filter((n) => n.encoders.length && !want.some((e) => n.encoders.includes(e))).map((n) => n.name)
+}
+
+/** "Hardware: no hardware encoder on studio-pc", or null when every reachable node has one. */
+export function encoderWarning(leg: PresetOutputInput, nodes: NodeDto[]): string | null {
+  const missing = nodesWithoutEncoder(leg, nodes)
+  if (!missing.length) return null
+  const choice = leg.advanced.encoder
+  const kind = { auto: '', hardware: 'hardware ', software: 'software ' }[choice]
+  const label = { auto: 'Auto', hardware: 'Hardware', software: 'Software' }[choice]
+  return `${label}: no ${kind}encoder on ${missing.join(', ')}`
+}
+
 /** Whether a leg can end up on a software x264/x265 encoder, where the speed preset applies. */
 export function usesSpeedPreset(leg: PresetOutputInput) {
   return legEncoders(leg).some((e) => e === 'x264enc' || e === 'x265enc')
