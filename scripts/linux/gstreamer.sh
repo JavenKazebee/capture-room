@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 # Install the GStreamer packages the node builds and tests against on an
 # Ubuntu runner: the -dev packages (plugins-bad has WebRTC, which
-# gst-plugin-webrtc links), libssl for reqwest's native TLS, and the plugins
-# the tests' pipelines use.
+# gst-plugin-webrtc links) and the plugins the tests' pipelines use.
 # Usage: gstreamer.sh [archives]. With <archives>, apt keeps the .debs there
 # for actions/cache to save and restore.
 set -euo pipefail
 
 archives=${1:-}
 packages=(
-  pkg-config libssl-dev
+  pkg-config
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
   libgstreamer-plugins-bad1.0-dev libgstrtspserver-1.0-dev
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad

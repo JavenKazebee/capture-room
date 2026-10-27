@@ -47,10 +47,6 @@ pub fn start_at_login() -> bool {
     false
 }
 
-pub fn set_start_at_login(_on: bool) -> Result<()> {
-    bail!("installing as a service isn't supported on this OS yet")
-}
-
 pub fn start() -> Result<()> {
     bail!("installing as a service isn't supported on this OS yet")
 }

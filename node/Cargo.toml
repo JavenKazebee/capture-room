@@ -9,6 +9,11 @@ publish = false
 name = "capture-room"
 path = "src/main.rs"
 
+# Windows only: a no-op elsewhere, and only the Windows package ships it.
+[[bin]]
+name = "capture-room-launcher"
+path = "src/bin/capture-room-launcher.rs"
+
 [features]
 export-types = ["dep:ts-rs"]
 
@@ -32,7 +37,7 @@ gst-plugin-fallbackswitch = { git = "https://gitlab.freedesktop.org/gstreamer/gs
 gst-plugin-webrtc = { git = "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git", rev = "894e437dffa6851929ad48b85e7970943d650ed9", default-features = false, features = ["static", "whip", "whep"] }
 mdns-sd = "0.21"
 mime_guess = "2"
-reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls-webpki-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "system-proxy", "json", "stream", "rustls-tls-webpki-roots"] }
 rust-embed = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

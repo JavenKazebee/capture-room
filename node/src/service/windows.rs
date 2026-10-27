@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, ensure, Context, Result};
 
 use super::log_rotation;
+use super::windows_flags::{CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW};
 use super::{Installed, RELEASES_ENV, RESTART_EXIT_CODE, SERVICE_ENV};
 
 /// The logon task's name, in the Task Scheduler Library's root.
@@ -48,8 +49,6 @@ const RETRY_DELAY: Duration = Duration::from_secs(10);
 /// Where `update.rs` unpacks an update, beside the app.
 const UPDATE_STAGING: &str = ".capture-room-update";
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 const ERROR_SHARING_VIOLATION: i32 = 32;
 
 fn local_app_data() -> PathBuf {

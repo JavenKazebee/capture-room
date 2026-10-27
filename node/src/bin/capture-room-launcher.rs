@@ -6,12 +6,16 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+#[cfg(windows)]
+#[path = "../service/windows_flags.rs"]
+mod flags;
+
 fn main() {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+
+        use flags::{CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW};
 
         let Ok(exe) = std::env::current_exe() else {
             std::process::exit(1);

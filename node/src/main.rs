@@ -26,7 +26,15 @@ mod state;
 mod storage;
 mod thumbnails;
 mod tls;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod tray;
+/// No menu bar icon on Linux yet: the types it's passed around as, with no
+/// values, so the node always prints a sign-in link instead.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+mod tray {
+    pub enum Config {}
+    pub enum Action {}
+}
 mod update;
 mod ws;
 
@@ -61,6 +69,7 @@ struct Args {
     db: std::path::PathBuf,
 
     /// Show the menu bar icon (the installed service always does).
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[arg(long)]
     tray: bool,
 
@@ -104,10 +113,15 @@ fn main() -> Result<()> {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let bundled_gst: Option<std::path::PathBuf> = None;
     let ndi_dir = plugins::locate_ndi_runtime();
-    let (tray_tx, tray_rx) = tokio::sync::mpsc::unbounded_channel();
-    let tray =
-        (args.tray || service::running_as_service()).then(|| tray::Config { actions: tray_tx });
-    let tray_rx = tray.is_some().then_some(tray_rx);
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let (tray, tray_rx) = if args.tray || service::running_as_service() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (Some(tray::Config { actions: tx }), Some(rx))
+    } else {
+        (None, None)
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let (tray, tray_rx) = (None, None);
     // The main thread runs the window loop for display outputs and the menu
     // bar icon, where there's a window system; the node runs beside it.
     display::run(tray, move |displays| {
@@ -271,6 +285,7 @@ async fn run(
     update::spawn_checker(Arc::clone(&state));
     // Without a menu bar, nothing else signs a browser in: print a link.
     let print_sign_in_link = tray_actions.is_none();
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if let Some(actions) = tray_actions {
         tray::spawn(Arc::clone(&state), displays, actions);
     }

@@ -31,8 +31,7 @@ pub enum UpdateState {
     Failed(String),
 }
 
-/// What the menu asks the node to do. There's no menu on Linux yet.
-#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+/// What the menu asks the node to do.
 #[derive(Debug, Clone, Copy)]
 pub enum Action {
     /// Open the UI in the browser, signed in.
@@ -45,7 +44,6 @@ pub enum Action {
     CopyAccessToken,
 }
 
-#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub struct Config {
     pub actions: UnboundedSender<Action>,
 }
@@ -117,10 +115,8 @@ pub fn spawn(state: Arc<AppState>, displays: Displays, mut actions: UnboundedRec
     });
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use imp::Tray;
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod imp {
     use anyhow::Result;
     use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};

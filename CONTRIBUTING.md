@@ -45,7 +45,7 @@ run on real hardware yet.
 - **Linux:** CI's Ubuntu 24.04 job installs (see `.github/workflows/ci.yml`):
 
   ```
-  sudo apt-get install pkg-config libssl-dev \
+  sudo apt-get install pkg-config \
     libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
     libgstreamer-plugins-bad1.0-dev libgstrtspserver-1.0-dev \
     gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
