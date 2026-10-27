@@ -293,104 +293,69 @@ async fn validated(
         return Err(ApiError::bad("name is required"));
     }
     let devices = state.source_manager.read().await.devices().clone();
+    let configs = db::configured_sources_list(&state.db).await?;
+    let others: Vec<_> = configs
+        .iter()
+        .filter(|o| Some(o.id.as_str()) != id)
+        .collect();
     match &mut req.config {
         SourceConfig::Stream(cfg) => {
-            cfg.url = cfg.url.trim().to_string();
-            crate::sources::stream::validate(cfg, crate::plugins::has).map_err(ApiError::bad)?;
-            crate::sources::device::validate_audio(&cfg.audio, &devices).map_err(ApiError::bad)?;
+            crate::sources::stream::validate(cfg, &devices, crate::plugins::has)
+                .map_err(ApiError::bad)?;
         }
         SourceConfig::Device(cfg) => {
             crate::sources::device::validate(cfg, &devices).map_err(ApiError::bad)?;
         }
         SourceConfig::Decklink(cfg) => {
-            let configs = db::configured_sources_list(&state.db).await?;
             crate::sources::decklink::validate(cfg, &devices, id, &configs)
                 .map_err(ApiError::bad)?;
         }
         SourceConfig::Whip(cfg) => {
-            cfg.token = cfg.token.trim().to_string();
-            if cfg.token.is_empty() {
-                cfg.token = crate::auth::new_token();
-            }
-            crate::sources::whip::validate(cfg).map_err(ApiError::bad)?;
-            crate::sources::device::validate_audio(&cfg.audio, &devices).map_err(ApiError::bad)?;
+            crate::sources::whip::validate(cfg, &devices).map_err(ApiError::bad)?;
         }
         SourceConfig::Channel(cfg) => {
-            let others = db::configured_sources_list(&state.db).await?;
-            let others: Vec<_> = others
+            let channels: Vec<_> = others
                 .iter()
-                .filter(|o| Some(o.id.as_str()) != id)
                 .filter_map(|o| match &o.config {
                     SourceConfig::Channel(c) => Some((o.name.as_str(), c)),
                     _ => None,
                 })
                 .collect();
-            crate::sources::channel::validate(cfg, &req.name, &others, crate::plugins::has)
+            crate::sources::channel::validate(cfg, &req.name, &channels, crate::plugins::has)
                 .map_err(ApiError::bad)?;
-            if cfg
-                .outputs
-                .iter()
-                .any(|o| matches!(o, OutputConfig::Decklink { .. }))
-            {
-                let configs = db::configured_sources_list(&state.db).await?;
-                crate::sources::decklink::validate_outputs(
-                    &cfg.outputs,
-                    &devices,
-                    id,
-                    &req.name,
-                    &configs,
-                )
+            crate::sources::channel::validate_devices(cfg, &req.name, id, &devices, &configs)
                 .map_err(ApiError::bad)?;
-            }
-            for o in &cfg.outputs {
-                if let OutputConfig::Display {
-                    audio_device: Some(key),
-                    ..
-                } = o
-                {
-                    if !key.is_empty() && !devices.has_output(key) {
-                        return Err(ApiError::bad(format!("audio output {key} isn't connected")));
-                    }
-                }
-            }
         }
         _ => {}
     }
+    // The RTSP server's port, while any channel serves RTSP.
+    const RTSP: u16 = crate::pipeline::rtsp::RTSP_PORT;
     let ports = listen_ports(&req.config);
-    if !ports.is_empty() || serves_rtsp(&req.config) {
-        let others = db::configured_sources_list(&state.db).await?;
-        let others: Vec<_> = others
+    if ports.contains(&RTSP) && others.iter().any(|o| serves_rtsp(&o.config)) {
+        return Err(ApiError::bad(format!(
+            "port {RTSP} is the node's RTSP server, used by RTSP outputs"
+        )));
+    }
+    if serves_rtsp(&req.config) {
+        if let Some(other) = others
             .iter()
-            .filter(|o| Some(o.id.as_str()) != id)
-            .collect();
-        // The RTSP server's port, while any channel serves RTSP.
-        const RTSP: u16 = crate::pipeline::rtsp::RTSP_PORT;
-        if ports.contains(&RTSP) && others.iter().any(|o| serves_rtsp(&o.config)) {
+            .find(|o| listen_ports(&o.config).contains(&RTSP))
+        {
             return Err(ApiError::bad(format!(
-                "port {RTSP} is the node's RTSP server, used by RTSP outputs"
+                "RTSP outputs are served on port {RTSP}, which {} listens on",
+                other.name
             )));
         }
-        if serves_rtsp(&req.config) {
-            if let Some(other) = others
-                .iter()
-                .find(|o| listen_ports(&o.config).contains(&RTSP))
-            {
-                return Err(ApiError::bad(format!(
-                    "RTSP outputs are served on port {RTSP}, which {} listens on",
-                    other.name
-                )));
-            }
-        }
-        for port in ports {
-            if let Some(other) = others
-                .iter()
-                .find(|o| listen_ports(&o.config).contains(&port))
-            {
-                return Err(ApiError::bad(format!(
-                    "port {port} is already used by {}",
-                    other.name
-                )));
-            }
+    }
+    for port in ports {
+        if let Some(other) = others
+            .iter()
+            .find(|o| listen_ports(&o.config).contains(&port))
+        {
+            return Err(ApiError::bad(format!(
+                "port {port} is already used by {}",
+                other.name
+            )));
         }
     }
     if let SourceConfig::File(cfg) = &mut req.config {

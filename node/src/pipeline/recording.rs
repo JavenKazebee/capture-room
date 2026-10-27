@@ -16,9 +16,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use gstreamer::{self as gst, glib, prelude::*};
+use gstreamer::{self as gst, prelude::*};
 use gstreamer_app as gst_app;
-use gstreamer_video as gst_video;
 use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
@@ -26,6 +25,7 @@ use super::profile::{
     available_encoders, has_encoder, segment_number, AudioFormat, RecordingProfile, VideoEncoder,
     PCM_MAX_FILE,
 };
+use super::timecode::{running_time, stamp_time_of_day};
 use super::{
     audio_hold_queue, capsfilter, describe_error, make_el, mark_prores_keyframes, pcm_audiorate,
     set_mix_matrix, set_property, start_or_reason, ConsumerPipeline,
@@ -454,16 +454,16 @@ impl RecordingLeg {
         let start_rt = start_at
             .zip(self.base_time)
             .map(|(at, base)| at.saturating_sub(base));
-        gate(
+        drop_until(
             &self.consumer.video_src,
             start_rt,
             Some(Arc::clone(&self.first_frame)),
         )?;
-        gate(&self.consumer.audio_src, start_rt, None)?;
+        drop_until(&self.consumer.audio_src, start_rt, None)?;
         if let (Some(pad), Some(base), Some(offset)) =
             (&self.timecode_pad, self.base_time, utc_offset_us)
         {
-            stamp_timecode(pad, move |segment, pts| {
+            stamp_time_of_day(pad, move |segment, pts| {
                 let rt = segment.map_or(Some(pts), |s| s.to_running_time(pts))?;
                 Some((base + rt).useconds() as i64 + offset)
             });
@@ -562,7 +562,7 @@ impl RecordingLeg {
 
 /// Drop `src`'s buffers due before `start` (running time), then note the
 /// first one let through in `first` and get out of the way.
-fn gate(
+fn drop_until(
     src: &gst_app::AppSrc,
     start: Option<gst::ClockTime>,
     first: Option<Arc<AtomicU64>>,
@@ -574,14 +574,7 @@ fn gate(
         };
         // The producer forwards the monitor's segment; without one, the
         // timestamps are running time already.
-        let rt = pad
-            .sticky_event::<gst::event::Segment>(0)
-            .and_then(|e| {
-                e.segment()
-                    .downcast_ref::<gst::ClockTime>()
-                    .and_then(|s| s.to_running_time(pts))
-            })
-            .unwrap_or(pts);
+        let rt = running_time(pad, pts).unwrap_or(pts);
         if start.is_some_and(|start| rt < start) {
             return gst::PadProbeReturn::Drop;
         }
@@ -592,66 +585,6 @@ fn gate(
     })
     .context("add start gate")?;
     Ok(())
-}
-
-/// Stamp each frame leaving `pad` with its local time of day as SMPTE
-/// timecode. `to_utc_us` maps a PTS in its segment to UTC µs; using the clock
-/// domain's offset makes files from nodes on one clock line up. qtmux writes
-/// each file's first frame's into its timecode track. Existing timecode is
-/// kept.
-pub(super) fn stamp_timecode(
-    pad: &gst::Pad,
-    to_utc_us: impl Fn(Option<&gst::FormattedSegment<gst::ClockTime>>, gst::ClockTime) -> Option<i64>
-        + Send
-        + Sync
-        + 'static,
-) {
-    pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
-        let Some(pts) = info.buffer().and_then(|b| b.pts()) else {
-            return gst::PadProbeReturn::Ok;
-        };
-        if info
-            .buffer()
-            .is_some_and(|b| b.meta::<gst_video::VideoTimeCodeMeta>().is_some())
-        {
-            return gst::PadProbeReturn::Ok;
-        }
-        let segment = pad.sticky_event::<gst::event::Segment>(0);
-        let segment = segment
-            .as_ref()
-            .and_then(|e| e.segment().downcast_ref::<gst::ClockTime>());
-        let fps = pad
-            .current_caps()
-            .and_then(|c| c.structure(0)?.get::<gst::Fraction>("framerate").ok())
-            .filter(|f| f.numer() > 0 && f.denom() > 0);
-        let tc = fps
-            .zip(to_utc_us(segment, pts))
-            .and_then(|(fps, utc_us)| time_code(utc_us, fps));
-        if let (Some(tc), Some(buffer)) = (tc, info.buffer_mut()) {
-            gst_video::VideoTimeCodeMeta::add(buffer.make_mut(), &tc);
-        }
-        gst::PadProbeReturn::Ok
-    });
-}
-
-/// The timecode at `utc_us` (µs since the Unix epoch) in local time, at
-/// `fps`. 29.97 and 59.94 count drop-frame, as their timecode does.
-pub(super) fn time_code(utc_us: i64, fps: gst::Fraction) -> Option<gst_video::ValidVideoTimeCode> {
-    let dt = glib::DateTime::from_unix_local(utc_us.div_euclid(1_000_000))
-        .ok()?
-        .add(glib::TimeSpan::from_microseconds(
-            utc_us.rem_euclid(1_000_000),
-        ))
-        .ok()?;
-    let flags = if fps.denom() == 1001 && fps.numer() % 30000 == 0 {
-        gst_video::VideoTimeCodeFlags::DROP_FRAME
-    } else {
-        gst_video::VideoTimeCodeFlags::empty()
-    };
-    gst_video::VideoTimeCode::from_date_time(fps, &dt, flags, 0)
-        .ok()?
-        .try_into()
-        .ok()
 }
 
 fn remove_file(location: &Path) {
@@ -825,6 +758,7 @@ mod tests {
         AudioTestSignal, ChromaSubsampling, MonitorSettingsDto, OutputAdvanced, PresetOutputInput,
         TestSourceConfig, VideoCodec, VideoTestPattern,
     };
+    use crate::pipeline::timecode::time_of_day;
     use crate::sources::test::TestSource;
 
     /// A leg told to start at a time begins with the first frame due at or
@@ -991,7 +925,7 @@ mod tests {
         }
         let _ = monitor.stop();
 
-        let want = time_code(
+        let want = time_of_day(
             first.useconds() as i64 + offset,
             gst::Fraction::new(30000, 1001),
         )
@@ -1013,21 +947,5 @@ mod tests {
             Err(_) => println!("no ffprobe: not reading the file back"),
         }
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// Timecode counts frames of the time of day; a second is a second.
-    #[test]
-    fn time_code_counts_the_time_of_day() {
-        gst::init().unwrap();
-        let fps = gst::Fraction::new(25, 1);
-        let t = 1_790_000_000_000_000; // a whole second
-        let a = time_code(t, fps).unwrap();
-        let b = time_code(t + 1_120_000, fps).unwrap();
-        assert_eq!(a.frames(), 0);
-        assert_eq!(b.frames(), 3, "0.12 s is 3 frames at 25 fps");
-        assert_eq!((b.seconds() + 60 - a.seconds()) % 60, 1);
-        assert!(!a
-            .flags()
-            .contains(gst_video::VideoTimeCodeFlags::DROP_FRAME));
     }
 }

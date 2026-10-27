@@ -122,15 +122,20 @@ fn add_chain(bin: &gst::Bin, chain: &[&gst::Element], name: &str) -> Result<()> 
 }
 
 /// Expose `element`'s src pad on `bin` as the ghost pad `name`.
-fn add_ghost_pad(bin: &gst::Bin, element: &gst::Element, name: &str) -> Result<()> {
+pub(crate) fn add_ghost_pad(bin: &gst::Bin, element: &gst::Element, name: &str) -> Result<()> {
     let target = element
         .static_pad("src")
         .with_context(|| format!("{} src pad", element.name()))?;
-    let ghost = gst::GhostPad::builder_with_target(&target)
-        .map_err(|e| anyhow!("{name} ghost pad: {e}"))?
-        .name(name)
-        .build();
-    bin.add_pad(&ghost)
+    bin.add_pad(&ghost_pad(&target, name)?)
         .with_context(|| format!("add {name} ghost pad"))?;
     Ok(())
+}
+
+/// A ghost pad `name` for `target`, not yet added to a bin.
+pub(crate) fn ghost_pad(target: &gst::Pad, name: &str) -> Result<gst::Pad> {
+    Ok(gst::GhostPad::builder_with_target(target)
+        .map_err(|e| anyhow!("{name} ghost pad: {e}"))?
+        .name(name)
+        .build()
+        .upcast())
 }

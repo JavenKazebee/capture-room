@@ -29,7 +29,7 @@ mod validate;
 
 pub use lanes::PlayedProgress;
 pub use playout::{check_rate, ClipRequest, PlaylistItem, Playout, PlayoutStatus, ReplayClip};
-pub use validate::{listen_ports, validate};
+pub use validate::{listen_ports, validate, validate_devices};
 
 /// How far ahead of its slot a clip's buffer is stamped, covering program-side
 /// conversion so frames are never late at the compositor.

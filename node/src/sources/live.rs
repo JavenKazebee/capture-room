@@ -17,6 +17,7 @@ use tracing::{info, warn};
 
 use super::add_chain;
 use crate::api::types::{LinkState, LiveVideoFormat};
+use crate::pipeline::timecode::{drop_frame_flags, running_time};
 use crate::pipeline::{capsfilter, make_el, set_mix_matrix, set_property};
 
 /// Rate every live source's audio is resampled to.
@@ -215,7 +216,7 @@ pub(crate) fn video_output(
     let compositor = make_el("compositor", &format!("live-vsync-{id}"))?;
     set_property(&compositor, "background", "black")?;
     let timecode = LastTimecode::default();
-    stamp_timecode(
+    carry_source_timecode(
         &compositor.static_pad("src").context("compositor src pad")?,
         timecode.clone(),
     );
@@ -461,13 +462,6 @@ impl Inputs {
     }
 }
 
-/// The running time of `pts` in `pad`'s segment.
-fn running_time(pad: &gst::Pad, pts: Option<gst::ClockTime>) -> Option<gst::ClockTime> {
-    let segment = pad.sticky_event::<gst::event::Segment>(0)?;
-    let segment = segment.segment().downcast_ref::<gst::ClockTime>()?;
-    segment.to_running_time(pts?)
-}
-
 /// Keep the timecode (e.g. a Decklink's RP188) of each frame entering an
 /// input chain; a frame without one clears it.
 fn note_timecode(pad: &gst::Pad, last: LastTimecode) {
@@ -478,7 +472,10 @@ fn note_timecode(pad: &gst::Pad, last: LastTimecode) {
         let tc = buffer
             .meta::<gst_video::VideoTimeCodeMeta>()
             .map(|m| m.tc());
-        let rt = tc.as_ref().and(running_time(pad, buffer.pts()));
+        let rt = tc
+            .as_ref()
+            .and(buffer.pts())
+            .and_then(|pts| running_time(pad, pts));
         *last.lock().unwrap() = rt.zip(tc);
         gst::PadProbeReturn::Ok
     });
@@ -487,12 +484,15 @@ fn note_timecode(pad: &gst::Pad, last: LastTimecode) {
 /// The compositor makes new frames, dropping their timecode: give each the
 /// newest input frame's, counted on by the frames between them (it repeats a
 /// late input's frame). Recordings keep it instead of the time of day.
-fn stamp_timecode(pad: &gst::Pad, last: LastTimecode) {
+fn carry_source_timecode(pad: &gst::Pad, last: LastTimecode) {
     pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
         let Some((at, tc)) = last.lock().unwrap().clone() else {
             return gst::PadProbeReturn::Ok;
         };
-        let rt = running_time(pad, info.buffer().and_then(|b| b.pts()));
+        let rt = info
+            .buffer()
+            .and_then(|b| b.pts())
+            .and_then(|pts| running_time(pad, pts));
         let fps = pad
             .current_caps()
             .and_then(|c| c.structure(0)?.get::<gst::Fraction>("framerate").ok());
@@ -529,15 +529,10 @@ fn timecode_at(
         let from = tc.fps();
         let frames = tc.frames() as i64 * fps.numer() as i64 * from.denom() as i64
             / (fps.denom() as i64 * from.numer() as i64);
-        let flags = if fps.denom() == 1001 && fps.numer() % 30000 == 0 {
-            gst_video::VideoTimeCodeFlags::DROP_FRAME
-        } else {
-            gst_video::VideoTimeCodeFlags::empty()
-        };
         gst_video::ValidVideoTimeCode::new(
             fps,
             None,
-            flags,
+            drop_frame_flags(fps),
             tc.hours(),
             tc.minutes(),
             tc.seconds(),

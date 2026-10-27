@@ -4,11 +4,11 @@ use anyhow::{bail, Result};
 use gstreamer::{self as gst, prelude::*};
 use tracing::warn;
 
-use super::device::LocalDevices;
+use super::device::{self, LocalDevices};
 use super::live::{self, LinkTracker, LiveInput};
 use super::InputSource;
 use crate::api::types::{
-    AudioPlan, LinkState, RtspTransport, SourceCapabilitiesDto, SourceType, StreamSourceConfig,
+    LinkState, RtspTransport, SourceCapabilitiesDto, SourceType, StreamSourceConfig,
 };
 use crate::pipeline::{make_el, set_property};
 
@@ -198,9 +198,15 @@ pub(crate) fn uri(url: &str) -> Result<String> {
     Ok(url.to_string())
 }
 
-/// Check a config before it's saved. `available` says whether an element is installed.
-pub fn validate(cfg: &StreamSourceConfig, available: impl Fn(&str) -> bool) -> Result<(), String> {
-    let url = cfg.url.trim();
+/// Check a config before it's saved, trimming its URL. `available` says
+/// whether an element is installed.
+pub fn validate(
+    cfg: &mut StreamSourceConfig,
+    devices: &LocalDevices,
+    available: impl Fn(&str) -> bool,
+) -> Result<(), String> {
+    cfg.url = cfg.url.trim().to_string();
+    let url = cfg.url.as_str();
     let scheme = scheme(url).ok_or("enter a URL, like rtsp://camera.local/stream")?;
     let (_, element) = PROTOCOLS
         .iter()
@@ -219,20 +225,13 @@ pub fn validate(cfg: &StreamSourceConfig, available: impl Fn(&str) -> bool) -> R
         return Err("the URL needs a port".into());
     }
     live::validate_format(cfg.format.as_ref())?;
-    match &cfg.audio {
-        AudioPlan::Source { channels } | AudioPlan::Silence { channels }
-            if !(1..=64).contains(channels) =>
-        {
-            Err("audio needs 1–64 channels".into())
-        }
-        // Checked against the node's devices by the caller.
-        _ => Ok(()),
-    }
+    device::validate_audio(&cfg.audio, devices)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::types::AudioPlan;
 
     fn cfg(url: &str) -> StreamSourceConfig {
         StreamSourceConfig {
@@ -275,12 +274,15 @@ mod tests {
 
     #[test]
     fn validation() {
+        gst::init().unwrap();
+        let devices = LocalDevices::none();
+        let check = |url, available: fn(&str) -> bool| validate(&mut cfg(url), &devices, available);
         let all = |_: &str| true;
-        assert!(validate(&cfg("rtsp://cam.local/stream"), all).is_ok());
-        assert!(validate(&cfg("srt://:9000"), all).is_ok());
-        assert!(validate(&cfg("srt://host"), all).is_err());
-        assert!(validate(&cfg("ftp://x/y"), all).is_err());
-        assert!(validate(&cfg("rtsp://cam/s"), |_| false).is_err());
+        assert!(check(" rtsp://cam.local/stream ", all).is_ok());
+        assert!(check("srt://:9000", all).is_ok());
+        assert!(check("srt://host", all).is_err());
+        assert!(check("ftp://x/y", all).is_err());
+        assert!(check("rtsp://cam/s", |_| false).is_err());
     }
 }
 
@@ -292,7 +294,7 @@ mod monitor_tests {
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::api::types::MonitorSettingsDto;
+    use crate::api::types::{AudioPlan, MonitorSettingsDto};
     use crate::pipeline::monitor::MonitorPipeline;
 
     /// Stopped when dropped: disposing a playing pipeline (as a failed

@@ -21,7 +21,7 @@ use gstreamer::{self as gst, prelude::*};
 use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
-use super::recording::stamp_timecode;
+use super::timecode::stamp_time_of_day;
 use super::{
     audio_hold_queue, capsfilter, make_el, mark_prores_keyframes, pcm_audiorate, set_property,
     share_clock, start_or_reason, ConsumerPipeline,
@@ -623,8 +623,8 @@ pub fn save(span: &ReplaySpan, dir: &Path) -> Result<Vec<String>> {
 /// in an NLE.
 ///
 /// ```text
-/// splitmuxsrc ─┬→ [gate] → qtmux → filesink
-///              └→ [gate] ↗
+/// splitmuxsrc ─┬→ [keep_from_seek] → qtmux → filesink
+///              └→ [keep_from_seek] ↗
 /// ```
 pub fn export(
     files: &[String],
@@ -663,7 +663,7 @@ pub fn export(
         } else {
             return;
         };
-        // Ahead of the gate, which drops the part's own segment.
+        // Ahead of `keep_from_seek`, which drops the part's own segment.
         let started_tx = started_tx.clone();
         pad.add_probe(
             gst::PadProbeType::EVENT_DOWNSTREAM,
@@ -675,13 +675,13 @@ pub fn export(
                 _ => gst::PadProbeReturn::Ok,
             },
         );
-        gate(pad, from);
+        keep_from_seek(pad, from);
         match mux.request_pad_simple(template) {
             Some(sink) => {
-                // After the gate the segment is the seek's, whose stream
+                // After `keep_from_seek` the segment is the seek's, whose stream
                 // time is the position. The cut frame can start just before.
                 if let (true, Some((base, offset))) = (video, timecode) {
-                    stamp_timecode(&sink, move |segment, pts| {
+                    stamp_time_of_day(&sink, move |segment, pts| {
                         let position = match segment?.to_stream_time_full(pts)? {
                             gst::Signed::Positive(p) => p.useconds() as i64,
                             gst::Signed::Negative(p) => -(p.useconds() as i64),
@@ -705,7 +705,7 @@ pub fn export(
         changed.map_err(|_| anyhow!("the clip's files can't be read"))?;
         // splitmuxsrc (seen in 1.24) reports PAUSED before it starts its
         // first part. A seek that lands while it does can miss a stream,
-        // which then plays on under the part's segment: the gate drops all
+        // which then plays on under the part's segment: `keep_from_seek` drops all
         // of it and the file has no sound, or no pictures. So the seek waits
         // for every stream's first segment.
         let streams = src
@@ -761,7 +761,7 @@ pub fn export(
 /// pictures at or before the last one are dropped, and sound is trimmed to
 /// start where the last buffer ended (which also takes out any overlap
 /// where two files meet).
-fn gate(pad: &gst::Pad, from: gst::ClockTime) {
+fn keep_from_seek(pad: &gst::Pad, from: gst::ClockTime) {
     // An accurate seek's segment starts where it was asked to.
     const NEAR: gst::ClockTime = gst::ClockTime::from_mseconds(1);
     // The segment's start and stop, once let through.
@@ -898,7 +898,7 @@ mod tests {
     use crate::api::types::{
         AudioTestSignal, MonitorSettingsDto, TestSourceConfig, VideoTestPattern,
     };
-    use crate::pipeline::recording::time_code;
+    use crate::pipeline::timecode::time_of_day;
     use crate::sources::test::TestSource;
     use gstreamer_app as gst_app;
     use gstreamer_video as gst_video;
@@ -1259,7 +1259,7 @@ mod tests {
         let at = (base + from).useconds() as i64 + offset;
         let want: Vec<String> = [at - frame, at, at + frame]
             .iter()
-            .map(|&t| time_code(t, fps).unwrap().to_string())
+            .map(|&t| time_of_day(t, fps).unwrap().to_string())
             .collect();
         match std::process::Command::new("ffprobe")
             .args(["-v", "error", "-select_streams", "v:0"])

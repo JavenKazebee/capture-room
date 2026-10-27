@@ -19,7 +19,7 @@ use tracing::warn;
 
 use super::device::LocalDevices;
 use super::live::{self, LinkTracker, LiveAudio, LiveInput};
-use super::InputSource;
+use super::{ghost_pad, InputSource};
 use crate::api::types::{
     ConfiguredSourceDto, DecklinkCardDto, DecklinkConnection, DecklinkDeviceDto, DecklinkModeDto,
     DecklinkProfile, DecklinkSourceConfig, DecklinkStatusDto, DecklinkUseDto, LinkState,
@@ -607,14 +607,10 @@ impl DecklinkSource {
         let vpad = vsrc.static_pad("src").context("decklink video pad")?;
         let apad = asrc.static_pad("src").context("decklink audio pad")?;
         watch_video(&vpad, self.timecode.clone());
-        let ghost = |pad: &gst::Pad, name: &str| -> Result<gst::Pad> {
-            Ok(gst::GhostPad::builder_with_target(pad)
-                .map_err(|e| anyhow!("{name} ghost pad: {e}"))?
-                .name(name)
-                .build()
-                .upcast())
-        };
-        Ok((bin, [ghost(&vpad, "video")?, ghost(&apad, "audio")?]))
+        Ok((
+            bin,
+            [ghost_pad(&vpad, "video")?, ghost_pad(&apad, "audio")?],
+        ))
     }
 }
 
