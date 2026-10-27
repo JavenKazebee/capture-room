@@ -25,14 +25,20 @@ pub fn port(path: &str) -> Option<u16> {
     MOUNTS.lock().unwrap().get(path).copied()
 }
 
-/// Rank VideoToolbox encoders NONE so `webrtcsink` doesn't pick them: they
-/// fail its negotiation and can't adapt bitrate per viewer. Others create
-/// them by name. VA-API encoders register at NONE, but `webrtcsink` drives
-/// them (bitrate per viewer included), so they're ranked above x264enc.
-/// Call before registering the WebRTC plugin, which lists encoders once.
+/// Rank encoders `webrtcsink` can't drive NONE so it doesn't pick them, and
+/// others create them by name. VideoToolbox fails its negotiation;
+/// `webrtcsink` can't set AMF's or Media Foundation's bitrate per viewer,
+/// and amfh264enc would otherwise beat x264enc (same rank, sorted by name).
+/// VA-API encoders register at NONE, but `webrtcsink` drives them (bitrate
+/// per viewer included), so they're ranked above x264enc. Call before
+/// registering the WebRTC plugin, which lists encoders once.
 pub fn hide_unsupported_encoders() {
-    for name in ["vtenc_h264", "vtenc_h264_hw", "vtenc_h265", "vtenc_h265_hw"] {
-        if let Some(factory) = gst::ElementFactory::find(name) {
+    let unsupported = ["vtenc_", "amfh26", "mfh26"];
+    for factory in gst::ElementFactory::factories_with_type(
+        gst::ElementFactoryType::VIDEO_ENCODER,
+        gst::Rank::NONE,
+    ) {
+        if unsupported.iter().any(|p| factory.name().starts_with(p)) {
             factory.set_rank(gst::Rank::NONE);
         }
     }
