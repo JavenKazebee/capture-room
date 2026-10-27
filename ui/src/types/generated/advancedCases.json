@@ -1,0 +1,1347 @@
+[
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "defaults"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "prores_422",
+      "container": "mov",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "ProRes defaults"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "hardware",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "hardware 4:2:0"
+  },
+  {
+    "error": "encoder",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "hardware",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "422",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "hardware 4:2:2"
+  },
+  {
+    "error": "encoder",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "hardware",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "444",
+      "codec": "h265",
+      "container": "mkv",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "hardware H.265 4:4:4"
+  },
+  {
+    "error": "encoder",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "hardware",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "vp9",
+      "container": "mkv",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "hardware VP9"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "hardware",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "prores_4444",
+      "container": "mov",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "hardware ProRes"
+  },
+  {
+    "error": "encoder",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "hardware",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "uncompressed",
+      "container": "mkv",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "hardware uncompressed"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "software",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "444",
+      "codec": "h265",
+      "container": "mkv",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "software H.265 4:4:4"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "software",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "uncompressed",
+      "container": "mov",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "software uncompressed"
+  },
+  {
+    "error": "quality",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": 0,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "quality 0"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": 1,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "quality 1"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": 100,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "quality 100"
+  },
+  {
+    "error": "quality",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": 101,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "quality 101"
+  },
+  {
+    "error": "keyframe_secs",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": 0.0,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "keyframes 0"
+  },
+  {
+    "error": "keyframe_secs",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": 0.05,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "keyframes 0.05"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": 0.1,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "keyframes 0.1"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": 60.0,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "keyframes 60"
+  },
+  {
+    "error": "keyframe_secs",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": 60.5,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "keyframes 60.5"
+  },
+  {
+    "error": "split_minutes",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": 0
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "split 0 min"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": 1
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "split 1 min"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": 1440
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "split 1440 min"
+  },
+  {
+    "error": "split_minutes",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": 1441
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "split 1441 min"
+  },
+  {
+    "error": "split_gb",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": 0.05,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "split 0.05 GB"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": 0.1,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "split 0.1 GB"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": 10000.0,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "split 10000 GB"
+  },
+  {
+    "error": "split_gb",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": 10000.5,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "split 10000.5 GB"
+  },
+  {
+    "error": "audio_bitrate_kbps",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": 31,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "audio 31 kbps"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": 32,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "audio 32 kbps"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": 512,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "audio 512 kbps"
+  },
+  {
+    "error": "audio_bitrate_kbps",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": 513,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "audio 513 kbps"
+  },
+  {
+    "error": "audio_codec",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "pcm",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "PCM in .mp4"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "pcm",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mov",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "PCM in .mov"
+  },
+  {
+    "error": "audio_codec",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "opus",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mov",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "Opus in .mov"
+  },
+  {
+    "error": "audio_codec",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "opus",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "Opus in .mp4"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "opus",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mkv",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "Opus in .mkv"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "aac",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mkv",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "AAC in .mkv"
+  },
+  {
+    "error": "channel_pick",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "pick",
+        "audio_codec": "auto",
+        "channel_pick": [],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "pick nothing"
+  },
+  {
+    "error": "channel_pick",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "pick",
+        "audio_codec": "auto",
+        "channel_pick": [
+          0
+        ],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "pick channel 0"
+  },
+  {
+    "error": "channel_pick",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "pick",
+        "audio_codec": "auto",
+        "channel_pick": [
+          65
+        ],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "pick channel 65"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "pick",
+        "audio_codec": "auto",
+        "channel_pick": [
+          1,
+          64
+        ],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "pick channels 1 and 64"
+  },
+  {
+    "error": "channel_pick",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "pick",
+        "audio_codec": "auto",
+        "channel_pick": [
+          1,
+          2,
+          3
+        ],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "pick 3 to AAC"
+  },
+  {
+    "error": "channel_pick",
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "pick",
+        "audio_codec": "auto",
+        "channel_pick": [
+          1,
+          2,
+          3
+        ],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "vp9",
+      "container": "mkv",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "pick 3 to Opus"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "pick",
+        "audio_codec": "pcm",
+        "channel_pick": [
+          1,
+          2,
+          3
+        ],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mov",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "pick 3 to PCM"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "pick",
+        "audio_codec": "auto",
+        "channel_pick": [
+          1,
+          2,
+          3
+        ],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "prores_422",
+      "container": "mov",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "pick 3 to ProRes"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "pick",
+        "audio_codec": "auto",
+        "channel_pick": [
+          1,
+          2,
+          3
+        ],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "uncompressed",
+      "container": "mkv",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "pick 3 to uncompressed"
+  },
+  {
+    "error": null,
+    "leg": {
+      "advanced": {
+        "audio_bitrate_kbps": null,
+        "audio_channels": "all",
+        "audio_codec": "auto",
+        "channel_pick": [
+          0
+        ],
+        "deinterlace": "auto",
+        "encoder": "auto",
+        "keyframe_secs": null,
+        "quality": null,
+        "rate_control": "average",
+        "speed_preset": null,
+        "split_gb": null,
+        "split_minutes": null
+      },
+      "bitrate_kbps": null,
+      "chroma": "420",
+      "codec": "h264",
+      "container": "mp4",
+      "framerate": null,
+      "name": "a",
+      "path_template": "x",
+      "resolution": null
+    },
+    "name": "unpicked channel 0"
+  }
+]

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  type AdvancedField,
   advancedProblems,
   advancedSummary,
   audioCodecOptions,
@@ -17,6 +18,7 @@ import {
   resolvedAudio,
   usesSpeedPreset,
 } from '@/lib/advanced'
+import advancedCases from '@/types/generated/advancedCases.json'
 import type { NodeDto } from '@/types/generated/NodeDto'
 import type { OutputAdvanced } from '@/types/generated/OutputAdvanced'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
@@ -201,11 +203,24 @@ describe('advancedProblems', () => {
       audio_codec: 'PCM 24-bit can only be recorded to .mov or .mkv',
     })
   })
+  it('flags the same legs as the server', () => {
+    const cases = advancedCases as { name: string; leg: PresetOutputInput; error: AdvancedField | null }[]
+    expect(cases.length).toBeGreaterThan(0)
+    for (const c of cases) expect(Object.keys(advancedProblems(c.leg)), c.name).toEqual(c.error ? [c.error] : [])
+  })
+  it('wants whole numbers where the server does', () => {
+    expect(advancedProblems(leg({}, { quality: 70.5, audio_bitrate_kbps: 128.5, channel_pick: [1.5], audio_channels: 'pick' }))).toEqual({
+      quality: 'Use 1–100',
+      audio_bitrate_kbps: 'Use 32–512 kbps',
+      channel_pick: 'Channels are numbered 1–64',
+    })
+  })
   it('checks picked channels', () => {
     expect(advancedProblems(leg({}, { audio_channels: 'pick' })).channel_pick).toBe('List channels, e.g. 1-2 or 3, 4')
     expect(advancedProblems(leg({}, { audio_channels: 'pick', channel_pick: [1, 2, 3] })).channel_pick).toBe(
       'AAC and Opus take 1 or 2 channels; use PCM for more',
     )
+    expect(advancedProblems(leg({}, { audio_channels: 'pick', channel_pick: [0] })).channel_pick).toBe('Channels are numbered 1–64')
     expect(advancedProblems(leg({ codec: 'prores_422', container: 'mov' }, { audio_channels: 'pick', channel_pick: [1, 2, 3] }))).toEqual({})
   })
 })
