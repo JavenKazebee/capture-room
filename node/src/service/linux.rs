@@ -15,26 +15,26 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-use super::{Installed, RELEASES_ENV, SERVICE_ENV};
+use super::{
+    home, installed_port, node_args, node_env, remove, update_staging, wait_for_port, Installed,
+    DEFAULT_PORT,
+};
 
 const UNIT: &str = "capture-room.service";
-const DEFAULT_PORT: u16 = 7700;
 /// The first start after an install scans every plugin.
-const START_TIMEOUT: Duration = Duration::from_secs(90);
+pub const START_TIMEOUT: Duration = Duration::from_secs(90);
+/// The unit's own messages (a bad `ExecStart=`, say) go to the journal.
+pub const MORE_LOGS: &str = " (or journalctl --user -u capture-room.service)";
 /// Set in the service's environment: its log file, which may not be where
 /// this process's XDG variables say (the user manager has its own).
 const LOG_ENV: &str = "CAPTURE_ROOM_LOG";
 /// In the data folder when the install turned lingering on, so uninstalling
 /// turns it off again (and leaves it alone when it was on already).
 const LINGER_MARKER: &str = ".enabled-linger";
-
-fn home() -> PathBuf {
-    std::env::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"))
-}
 
 /// An XDG base folder: the variable if it's set to an absolute path (as
 /// the spec says), else its default under the home folder.
@@ -93,23 +93,10 @@ pub fn install(controller: bool, port: Option<u16>) -> Result<Installed> {
     std::fs::create_dir_all(unit_path().parent().unwrap())?;
     let log = log_dir().join("capture-room.log");
 
-    let mut args = vec![
-        exe.display().to_string(),
-        "--db".into(),
-        data_dir().join("capture-room.db").display().to_string(),
-        "--port".into(),
-        port.to_string(),
-    ];
-    if controller {
-        args.push("--controller".into());
-    }
-    let mut env = vec![
-        (SERVICE_ENV.to_string(), "1".to_string()),
-        (LOG_ENV.to_string(), log.display().to_string()),
-    ];
-    if let Ok(releases) = std::env::var(RELEASES_ENV) {
-        env.push((RELEASES_ENV.to_string(), releases));
-    }
+    let mut args = vec![exe.display().to_string()];
+    args.extend(node_args(controller, port));
+    let mut env = node_env();
+    env.push((LOG_ENV.to_string(), log.display().to_string()));
 
     stop()?;
     std::fs::write(unit_path(), unit(&args, &env, &log))
@@ -215,7 +202,7 @@ pub fn uninstall(purge: bool) -> Result<()> {
     {
         remove(&app)?;
     }
-    remove(&data_dir().join(".capture-room-update"))?;
+    remove(&update_staging(&data_dir().join("app")))?;
     if std::fs::read_link(path_link()).is_ok_and(|to| to.starts_with(data_dir())) {
         remove(&path_link())?;
     }
@@ -226,18 +213,8 @@ pub fn uninstall(purge: bool) -> Result<()> {
     Ok(())
 }
 
-/// The port the installed service runs on, if it's installed.
-pub fn installed_port() -> Option<u16> {
-    installed_arg("--port")?.parse().ok()
-}
-
-/// The database the installed service uses, if it's installed.
-pub fn installed_db() -> Option<PathBuf> {
-    installed_arg("--db").map(PathBuf::from)
-}
-
 /// The value after `flag` in the installed service's arguments.
-fn installed_arg(flag: &str) -> Option<String> {
+pub fn installed_arg(flag: &str) -> Option<String> {
     let unit = std::fs::read_to_string(unit_path()).ok()?;
     arg_in_unit(&unit, flag)
 }
@@ -353,6 +330,11 @@ fn run(program: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Whether systemd is still running the unit or trying to.
+pub fn starting() -> bool {
+    !matches!(active_state().as_str(), "failed" | "inactive")
+}
+
 /// The unit's state: `active`, `activating`, `failed`, `inactive`, …
 fn active_state() -> String {
     Command::new("systemctl")
@@ -360,37 +342,6 @@ fn active_state() -> String {
         .output()
         .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
         .unwrap_or_default()
-}
-
-fn wait_for_port(port: u16) -> Result<()> {
-    let deadline = Instant::now() + START_TIMEOUT;
-    while Instant::now() < deadline {
-        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            return Ok(());
-        }
-        if matches!(active_state().as_str(), "failed" | "inactive") {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    bail!(
-        "the node didn't answer on port {port}; see {} (or journalctl --user -u {UNIT})",
-        log_dir().join("capture-room.log").display()
-    )
-}
-
-fn remove(path: &Path) -> Result<()> {
-    let result = if path.is_dir() {
-        std::fs::remove_dir_all(path)
-    } else {
-        std::fs::remove_file(path)
-    };
-    match result {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            Err(e).with_context(|| format!("remove {}", path.display()))
-        }
-        _ => Ok(()),
-    }
 }
 
 #[cfg(test)]

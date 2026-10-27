@@ -59,7 +59,7 @@ struct Args {
     #[arg(long)]
     controller: bool,
 
-    #[arg(long, default_value_t = 7700)]
+    #[arg(long, default_value_t = service::DEFAULT_PORT)]
     port: u16,
 
     /// UDP port to serve the clock on while a controller [default: port + 100]

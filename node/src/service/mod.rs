@@ -3,9 +3,13 @@
 //! The installer scripts and updater go through this too. macOS, Linux and
 //! Windows so far.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+use anyhow::{bail, Context};
 
 #[cfg(any(unix, windows))]
 pub mod log_rotation;
@@ -41,6 +45,10 @@ pub const RELEASES_ENV: &str = "CAPTURE_ROOM_RELEASES";
 /// The exit code that asks the service manager to start the node again
 /// (anything but 0 does; this one says it was on purpose).
 pub const RESTART_EXIT_CODE: i32 = 75;
+pub const DEFAULT_PORT: u16 = 7700;
+/// Where an update is unpacked, beside the app (one volume, so the swap is
+/// two renames). The updater clears it; uninstalling removes what's left.
+const UPDATE_STAGING: &str = ".capture-room-update";
 
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum Command {
@@ -93,7 +101,7 @@ pub fn run_command(command: Command) -> Result<()> {
                 );
             }
         }
-        Command::Status => match platform::installed_port() {
+        Command::Status => match installed_port() {
             None => println!("Not installed."),
             Some(port) => println!(
                 "Installed on port {port}, {}; starts at login: {}.",
@@ -115,9 +123,14 @@ pub fn run_command(command: Command) -> Result<()> {
     Ok(())
 }
 
+/// The port the installed service runs on, if it's installed.
+pub fn installed_port() -> Option<u16> {
+    platform::installed_arg("--port")?.parse().ok()
+}
+
 /// The installed service's database, if it's installed and running from it.
 pub fn installed_db() -> Option<PathBuf> {
-    platform::installed_db()
+    platform::installed_arg("--db").map(PathBuf::from)
 }
 
 pub fn is_running() -> bool {
@@ -169,7 +182,7 @@ pub fn launched_from_desktop() -> Result<bool> {
     if running_as_service() || std::env::args_os().len() > 1 || app_path().is_none() {
         return Ok(false);
     }
-    let port = match platform::installed_port() {
+    let port = match installed_port() {
         Some(port) => {
             platform::start()?;
             port
@@ -215,4 +228,83 @@ pub fn copy_to_clipboard(text: &str) -> Result<()> {
 pub struct Installed {
     pub port: u16,
     pub log: PathBuf,
+}
+
+/// The folder an update to `app` is unpacked in.
+pub fn update_staging(app: &Path) -> PathBuf {
+    app.with_file_name(UPDATE_STAGING)
+}
+
+/// The node's arguments after its executable: the database in the data
+/// folder, the port, and whether it's a controller.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+fn node_args(controller: bool, port: u16) -> Vec<String> {
+    let mut args = vec![
+        "--db".to_string(),
+        data_dir().join("capture-room.db").display().to_string(),
+        "--port".into(),
+        port.to_string(),
+    ];
+    if controller {
+        args.push("--controller".into());
+    }
+    args
+}
+
+/// The service's environment: [`SERVICE_ENV`], and [`RELEASES_ENV`] when
+/// it's set for the install.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+fn node_env() -> Vec<(String, String)> {
+    let mut env = vec![(SERVICE_ENV.to_string(), "1".to_string())];
+    if let Ok(releases) = std::env::var(RELEASES_ENV) {
+        env.push((RELEASES_ENV.to_string(), releases));
+    }
+    env
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn home() -> PathBuf {
+    std::env::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+fn answers(port: u16) -> bool {
+    std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+}
+
+/// Wait for the node to answer on `port`, giving up early once the service
+/// has stopped trying.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+fn wait_for_port(port: u16) -> Result<()> {
+    let deadline = Instant::now() + platform::START_TIMEOUT;
+    while Instant::now() < deadline {
+        if answers(port) {
+            return Ok(());
+        }
+        if !platform::starting() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    bail!(
+        "the node didn't answer on port {port}; see {}{}",
+        platform::log_file().unwrap_or_default().display(),
+        platform::MORE_LOGS
+    )
+}
+
+/// Remove a file or folder, if it's there.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+fn remove(path: &Path) -> Result<()> {
+    let result = if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    match result {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(e).with_context(|| format!("remove {}", path.display()))
+        }
+        _ => Ok(()),
+    }
 }

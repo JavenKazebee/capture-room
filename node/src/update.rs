@@ -28,9 +28,6 @@ use crate::state::AppState;
 const REPO: &str = "JavenKazebee/capture-room";
 const PUBLIC_KEY: &str = include_str!("../../scripts/release-key.pub");
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
-/// Where an update is unpacked, beside the app (one volume, so the swap is
-/// two renames).
-const STAGING: &str = ".capture-room-update";
 #[cfg(target_os = "macos")]
 const APP_NAME: &str = "Capture Room.app";
 /// The folder in the Linux archive: the binary and its licenses.
@@ -155,7 +152,7 @@ pub async fn status(state: &AppState) -> UpdateStatusDto {
 pub fn spawn_checker(state: Arc<AppState>) {
     tokio::spawn(async move {
         if let Some(app) = service::app_path() {
-            let staging = app.with_file_name(STAGING);
+            let staging = service::update_staging(&app);
             let _ = tokio::fs::remove_dir_all(staging).await;
         }
         loop {
@@ -251,7 +248,7 @@ pub async fn start(state: &Arc<AppState>, version: Option<String>) -> Result<()>
                 warn!(error = format!("{e:#}"), version, "update failed");
                 // The download, unless the app didn't make it back into place.
                 if let Some(app) = service::app_path().filter(|app| app.exists()) {
-                    let _ = tokio::fs::remove_dir_all(app.with_file_name(STAGING)).await;
+                    let _ = tokio::fs::remove_dir_all(service::update_staging(&app)).await;
                 }
                 state.updater.set(|s| {
                     s.phase = UpdatePhase::Idle;
@@ -266,7 +263,7 @@ pub async fn start(state: &Arc<AppState>, version: Option<String>) -> Result<()>
 
 async fn install(state: &AppState, version: &str) -> Result<()> {
     let app = service::app_path().context("not running from the installed app")?;
-    let staging = app.with_file_name(STAGING);
+    let staging = service::update_staging(&app);
     let _ = tokio::fs::remove_dir_all(&staging).await;
     tokio::fs::create_dir_all(&staging).await?;
 
