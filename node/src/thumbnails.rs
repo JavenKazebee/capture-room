@@ -18,20 +18,19 @@ use std::time::Duration;
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::{mpsc, watch};
-use tokio::task::JoinHandle;
+use tokio::sync::mpsc;
 use tokio::time::Instant;
-use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest};
-use tracing::{debug, warn};
+use tokio_tungstenite::tungstenite;
+use tracing::warn;
 
 use crate::api::types::{ThumbnailSource, ThumbnailSubscription};
+use crate::controller::peer_ws::{Peers, Subscription};
 use crate::state::AppState;
 
 /// The most frames per second a client gets of a source, and a monitor makes.
 pub const MAX_FPS: u32 = 30;
 /// Peers' frames waiting for a slow client; more are dropped.
 const PEER_BUFFER: usize = 8;
-const PEER_RETRY: Duration = Duration::from_secs(2);
 
 /// Drive one client's socket until it closes or the access token changes.
 /// With `relay`, sources on peers are fetched from them.
@@ -50,7 +49,7 @@ pub async fn serve(socket: WebSocket, state: Arc<AppState>, relay: bool) {
     let mut next = Instant::now();
 
     let (peer_tx, mut peer_rx) = mpsc::channel::<Bytes>(PEER_BUFFER);
-    let mut peers: HashMap<String, Peer> = HashMap::new();
+    let mut peers = Peers::new(Arc::clone(&state), peer_tx);
 
     loop {
         tokio::select! {
@@ -78,33 +77,21 @@ pub async fn serve(socket: WebSocket, state: Arc<AppState>, relay: bool) {
                     }
                     pending = !local.is_empty();
                     if relay {
-                        peers.retain(|id, _| by_node.contains_key(id));
-                        for (node_id, ids) in by_node {
-                            let sub = ThumbnailSubscription {
-                                sources: ids
-                                    .into_iter()
-                                    .map(|source_id| ThumbnailSource {
-                                        node_id: node_id.clone(),
-                                        source_id,
-                                    })
-                                    .collect(),
-                                fps,
-                            };
-                            match peers.get(&node_id) {
-                                Some(peer) => {
-                                    peer.sub.send_if_modified(|s| {
-                                        let modified = *s != sub;
-                                        *s = sub;
-                                        modified
-                                    });
-                                }
-                                None => {
-                                    let peer =
-                                        Peer::spawn(Arc::clone(&state), node_id.clone(), sub, peer_tx.clone());
-                                    peers.insert(node_id, peer);
-                                }
-                            }
-                        }
+                        peers.set(
+                            by_node
+                                .into_iter()
+                                .map(|(node_id, ids)| {
+                                    let sources = ids
+                                        .into_iter()
+                                        .map(|source_id| ThumbnailSource {
+                                            node_id: node_id.clone(),
+                                            source_id,
+                                        })
+                                        .collect();
+                                    (node_id, ThumbnailSubscription { sources, fps })
+                                })
+                                .collect(),
+                        );
                     }
                 }
                 Some(Ok(Message::Ping(data))) => {
@@ -158,86 +145,14 @@ fn frame(node_id: &str, source_id: &str, jpeg: &[u8]) -> Bytes {
     out.into()
 }
 
-/// A socket to a peer's `/api/v1/node/ws/thumbnails` for the sources a client
-/// watches on it. Closed when dropped.
-struct Peer {
-    sub: watch::Sender<ThumbnailSubscription>,
-    task: JoinHandle<()>,
-}
+impl Subscription for ThumbnailSubscription {
+    const PATH: &'static str = "/api/v1/node/ws/thumbnails";
+    type Item = Bytes;
 
-impl Peer {
-    fn spawn(
-        state: Arc<AppState>,
-        node_id: String,
-        sub: ThumbnailSubscription,
-        out: mpsc::Sender<Bytes>,
-    ) -> Self {
-        let (tx, rx) = watch::channel(sub);
-        let task = tokio::spawn(run_peer(state, node_id, rx, out));
-        Self { sub: tx, task }
-    }
-}
-
-impl Drop for Peer {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-/// Connect and pass frames on, reconnecting until the peer is removed. The
-/// URL is looked up each time, so a changed address is picked up.
-async fn run_peer(
-    state: Arc<AppState>,
-    node_id: String,
-    mut sub: watch::Receiver<ThumbnailSubscription>,
-    out: mpsc::Sender<Bytes>,
-) {
-    loop {
-        let url = match state.controller.read().await.as_ref() {
-            Some(c) => c.registry.read().await.url_of(&node_id),
-            None => None,
-        };
-        let Some(url) = url else { return };
-        if let Err(e) = relay_peer(&state, &url, &mut sub, &out).await {
-            debug!(node_id = %node_id, error = %e, "thumbnail relay");
-        }
-        tokio::time::sleep(PEER_RETRY).await;
-    }
-}
-
-async fn relay_peer(
-    state: &AppState,
-    url: &str,
-    sub: &mut watch::Receiver<ThumbnailSubscription>,
-    out: &mpsc::Sender<Bytes>,
-) -> anyhow::Result<()> {
-    // http → ws, https → wss.
-    let mut request =
-        (url.replacen("http", "ws", 1) + "/api/v1/node/ws/thumbnails").into_client_request()?;
-    if let Some(bearer) = state.access_token.bearer() {
-        request.headers_mut().insert("authorization", bearer);
-    }
-    let connector = Some(state.peers.ws_connector());
-    let (socket, _) =
-        tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector).await?;
-    let (mut write, mut read) = socket.split();
-    // A new connection needs the subscription, whether or not it changed.
-    sub.mark_changed();
-    loop {
-        tokio::select! {
-            changed = sub.changed() => {
-                changed?;
-                let text = serde_json::to_string(&*sub.borrow_and_update())?;
-                write.send(tungstenite::Message::Text(text.into())).await?;
-            }
-            msg = read.next() => match msg {
-                Some(Ok(tungstenite::Message::Binary(frame))) => {
-                    let _ = out.try_send(frame);
-                }
-                Some(Ok(tungstenite::Message::Close(_))) | None => return Ok(()),
-                Some(Err(e)) => return Err(e.into()),
-                _ => {}
-            },
+    fn item(msg: tungstenite::Message) -> Option<Bytes> {
+        match msg {
+            tungstenite::Message::Binary(frame) => Some(frame),
+            _ => None,
         }
     }
 }

@@ -5,6 +5,7 @@
 pub mod api;
 pub mod discovery;
 pub mod forward;
+pub mod peer_ws;
 pub mod registry;
 pub mod relay;
 pub mod scheduler;

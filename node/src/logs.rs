@@ -9,11 +9,10 @@
 //!
 //! Lines from this module are never kept: streaming them would log itself.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Query, State, WebSocketUpgrade};
@@ -21,14 +20,14 @@ use axum::response::Response;
 use axum::Json;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use tokio::sync::{broadcast, mpsc, watch};
-use tokio::task::JoinHandle;
-use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest};
+use tokio::sync::{broadcast, mpsc};
+use tokio_tungstenite::tungstenite;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 
 use crate::api::types::{LogLevel, LogLine, LogPage, LogSubscription};
+use crate::controller::peer_ws::{Peers, Subscription};
 use crate::state::AppState;
 
 /// Lines kept in memory; older ones are only in the log file.
@@ -39,7 +38,6 @@ const MAX_PAGE: usize = 5_000;
 const LIVE_BUFFER: usize = 1024;
 /// Peers' lines waiting for a slow client; more are dropped.
 const PEER_BUFFER: usize = 1024;
-const PEER_RETRY: Duration = Duration::from_secs(2);
 const OWN_TARGET: &str = module_path!();
 
 struct Store {
@@ -208,7 +206,7 @@ async fn serve(socket: WebSocket, state: Arc<AppState>, relay: bool) {
     // `None` until subscribed, or while the subscription leaves this node out.
     let mut local_level: Option<LogLevel> = None;
     let (peer_tx, mut peer_rx) = mpsc::channel::<String>(PEER_BUFFER);
-    let mut peers: HashMap<String, Peer> = HashMap::new();
+    let mut peers = Peers::new(Arc::clone(&state), peer_tx);
 
     loop {
         tokio::select! {
@@ -222,28 +220,14 @@ async fn serve(socket: WebSocket, state: Arc<AppState>, relay: bool) {
                     let wants_self = !relay || sub.nodes.iter().any(|n| *n == state.node_id);
                     local_level = wants_self.then_some(sub.level);
                     if relay {
-                        peers.retain(|id, _| sub.nodes.contains(id));
-                        for node_id in sub.nodes.iter().filter(|n| **n != state.node_id) {
-                            let peer_sub = LogSubscription { nodes: vec![], level: sub.level };
-                            match peers.get(node_id) {
-                                Some(peer) => {
-                                    peer.sub.send_if_modified(|s| {
-                                        let modified = *s != peer_sub;
-                                        *s = peer_sub;
-                                        modified
-                                    });
-                                }
-                                None => {
-                                    let peer = Peer::spawn(
-                                        Arc::clone(&state),
-                                        node_id.clone(),
-                                        peer_sub,
-                                        peer_tx.clone(),
-                                    );
-                                    peers.insert(node_id.clone(), peer);
-                                }
-                            }
-                        }
+                        let peer_sub = || LogSubscription { nodes: vec![], level: sub.level };
+                        peers.set(
+                            sub.nodes
+                                .iter()
+                                .filter(|n| **n != state.node_id)
+                                .map(|n| (n.clone(), peer_sub()))
+                                .collect(),
+                        );
                     }
                 }
                 Some(Ok(Message::Ping(data))) => {
@@ -291,84 +275,17 @@ fn skipped(n: u64) -> LogLine {
     }
 }
 
-/// A socket to a peer's `/api/v1/node/ws/logs`. Closed when dropped.
-struct Peer {
-    sub: watch::Sender<LogSubscription>,
-    task: JoinHandle<()>,
-}
+impl Subscription for LogSubscription {
+    const PATH: &'static str = "/api/v1/node/ws/logs";
+    // They'd be streamed back to the viewer.
+    const LOG_ERRORS: bool = false;
+    // Lines arrive stamped with the peer's ID, so they're passed on as they are.
+    type Item = String;
 
-impl Peer {
-    fn spawn(
-        state: Arc<AppState>,
-        node_id: String,
-        sub: LogSubscription,
-        out: mpsc::Sender<String>,
-    ) -> Self {
-        let (tx, rx) = watch::channel(sub);
-        let task = tokio::spawn(run_peer(state, node_id, rx, out));
-        Self { sub: tx, task }
-    }
-}
-
-impl Drop for Peer {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-/// Connect and pass lines on, reconnecting until the peer is removed. Lines
-/// arrive stamped with the peer's ID, so they're passed on as they are.
-async fn run_peer(
-    state: Arc<AppState>,
-    node_id: String,
-    mut sub: watch::Receiver<LogSubscription>,
-    out: mpsc::Sender<String>,
-) {
-    loop {
-        let url = match state.controller.read().await.as_ref() {
-            Some(c) => c.registry.read().await.url_of(&node_id),
-            None => None,
-        };
-        let Some(url) = url else { return };
-        // Errors aren't logged: they'd be streamed back to this viewer.
-        let _ = relay_peer(&state, &url, &mut sub, &out).await;
-        tokio::time::sleep(PEER_RETRY).await;
-    }
-}
-
-async fn relay_peer(
-    state: &AppState,
-    url: &str,
-    sub: &mut watch::Receiver<LogSubscription>,
-    out: &mpsc::Sender<String>,
-) -> anyhow::Result<()> {
-    // http → ws, https → wss.
-    let mut request =
-        (url.replacen("http", "ws", 1) + "/api/v1/node/ws/logs").into_client_request()?;
-    if let Some(bearer) = state.access_token.bearer() {
-        request.headers_mut().insert("authorization", bearer);
-    }
-    let connector = Some(state.peers.ws_connector());
-    let (socket, _) =
-        tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector).await?;
-    let (mut write, mut read) = socket.split();
-    // A new connection needs the subscription, whether or not it changed.
-    sub.mark_changed();
-    loop {
-        tokio::select! {
-            changed = sub.changed() => {
-                changed?;
-                let text = serde_json::to_string(&*sub.borrow_and_update())?;
-                write.send(tungstenite::Message::Text(text.into())).await?;
-            }
-            msg = read.next() => match msg {
-                Some(Ok(tungstenite::Message::Text(text))) => {
-                    let _ = out.try_send(text.to_string());
-                }
-                Some(Ok(tungstenite::Message::Close(_))) | None => return Ok(()),
-                Some(Err(e)) => return Err(e.into()),
-                _ => {}
-            },
+    fn item(msg: tungstenite::Message) -> Option<String> {
+        match msg {
+            tungstenite::Message::Text(text) => Some(text.to_string()),
+            _ => None,
         }
     }
 }
