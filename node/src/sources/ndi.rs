@@ -90,7 +90,7 @@ pub struct NdiMonitor {
 }
 
 impl NdiMonitor {
-    /// Blocking: waits for the provider's first poll (up to 1 s). Call once via `spawn_blocking`.
+    /// Blocking: waits 1.5 s for the provider's first poll. Call once via `spawn_blocking`.
     pub fn start() -> Self {
         let monitor = gst::DeviceMonitor::new();
         monitor.add_filter(Some("Source/Audio/Video/Network"), None);

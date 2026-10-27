@@ -1,5 +1,5 @@
 //! Which GStreamer elements this node has. The [`REQUIRED`] ones fail startup
-//! with a hint at the package to install; the rest only make a source type or
+//! with a hint at what to install; the rest only make a source type or
 //! stream protocol unavailable ([`source_types`]).
 //!
 //! NDI, fallbackswitch and WebRTC come from gst-plugins-rs, linked in
@@ -18,7 +18,7 @@ use crate::api::types::{SourceType, SourceTypeSupport};
 const REQUIRED: &[Package] = &[
     Package {
         name: "gst-plugins-base",
-        hint: "",
+        deb: "",
         elements: &[
             "videoconvert",
             "audioconvert",
@@ -30,7 +30,7 @@ const REQUIRED: &[Package] = &[
     },
     Package {
         name: "gst-plugins-good",
-        hint: "pacman -S gst-plugins-good  /  apt install gstreamer1.0-plugins-good",
+        deb: "gstreamer1.0-plugins-good",
         elements: &[
             "qtmux",
             "mp4mux",
@@ -44,28 +44,28 @@ const REQUIRED: &[Package] = &[
     },
     Package {
         name: "gst-plugins-ugly",
-        hint: "pacman -S gst-plugins-ugly  /  apt install gstreamer1.0-plugins-ugly",
+        deb: "gstreamer1.0-plugins-ugly",
         elements: &["x264enc"],
     },
     Package {
         name: "gst-plugins-bad",
-        hint: "pacman -S gst-plugins-bad  /  apt install gstreamer1.0-plugins-bad",
+        deb: "gstreamer1.0-plugins-bad",
         elements: &["h264parse", "h265parse", "x265enc"],
     },
     Package {
         name: "gst-libav",
-        hint: "pacman -S gst-libav  /  apt install gstreamer1.0-libav",
+        deb: "gstreamer1.0-libav",
         elements: &["avenc_prores_ks", "avenc_aac"],
     },
     // Statically linked.
     Package {
         name: "gst-plugin-ndi",
-        hint: "",
+        deb: "",
         elements: &["ndisrc", "ndisrcdemux"],
     },
     Package {
         name: "gst-plugin-fallbackswitch",
-        hint: "",
+        deb: "",
         elements: &["fallbacksrc"],
     },
 ];
@@ -154,7 +154,9 @@ fn support(source_type: SourceType, elements: &[&str]) -> SourceTypeSupport {
 
 struct Package {
     name: &'static str,
-    hint: &'static str,
+    /// The Debian/Ubuntu package, what the Linux install script uses; empty
+    /// for what every GStreamer install or this binary has.
+    deb: &'static str,
     elements: &'static [&'static str],
 }
 
@@ -263,29 +265,36 @@ pub fn use_bundled_gstreamer() -> Option<std::path::PathBuf> {
 }
 
 /// Check every required element is registered; the error lists what's missing
-/// and the packages that provide it.
-pub fn check_required_plugins() -> Result<()> {
+/// and where to get it. `bundled`: GStreamer came with the app (macOS and
+/// Windows), so a missing plugin means a broken install, not a package to add.
+pub fn check_required_plugins(bundled: bool) -> Result<()> {
     let mut msg = String::new();
+    let mut debs = Vec::new();
     for package in REQUIRED {
         let missing = missing(package.elements);
         if missing.is_empty() {
             continue;
         }
         msg.push_str(&format!(
-            "\n  {}  (provides: {})\n",
+            "\n  {}  (provides: {})",
             package.name,
             missing.join(", ")
         ));
-        if !package.hint.is_empty() {
-            msg.push_str(&format!("    install: {}\n", package.hint));
+        if !package.deb.is_empty() {
+            debs.push(package.deb);
         }
     }
 
     if msg.is_empty() {
         return Ok(());
     }
-    bail!(
-        "Missing GStreamer plugins — install the following packages:\n{msg}\n\
-         On macOS/Windows, install the GStreamer runtime from https://gstreamer.freedesktop.org/download/\n"
-    )
+    let fix = if bundled {
+        "This copy of Capture Room is missing plugins it ships with: reinstall it.".to_string()
+    } else if cfg!(target_os = "linux") && !debs.is_empty() {
+        format!("On Debian or Ubuntu: sudo apt install {}", debs.join(" "))
+    } else {
+        "Install them with the GStreamer runtime: https://gstreamer.freedesktop.org/download/"
+            .to_string()
+    };
+    bail!("Missing GStreamer plugins:{msg}\n\n{fix}")
 }

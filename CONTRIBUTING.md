@@ -42,20 +42,14 @@ The tested platform. Either:
 Being brought up for v0.2.0: CI builds and tests the node on both, but neither has been
 run on real hardware yet.
 
-- **Linux:** CI's Ubuntu 24.04 job installs (see `.github/workflows/ci.yml`):
+- **Linux:** `apt-get install` the `packages` listed in `scripts/linux/gstreamer.sh`,
+  which CI's Ubuntu 24.04 jobs run (it also tunes apt for the runner, so on your own
+  machine install the list rather than running the script).
 
-  ```
-  sudo apt-get install pkg-config \
-    libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-    libgstreamer-plugins-bad1.0-dev libgstrtspserver-1.0-dev \
-    gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-    gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-nice
-  ```
-
-- **Windows:** the official MSVC GStreamer installer (devel type) into a path without
-  spaces, with its `bin` on `PATH` and `PKG_CONFIG_PATH` at its `lib/pkgconfig`; CI's
-  `windows` job does exactly this. Delete its `gstndi`, `gstfallbackswitch` and
-  `gstrswebrtc` plugins, which the node links in itself.
+- **Windows:** `scripts/windows/gstreamer.ps1 1.28.8 C:\gstreamer\1.0\msvc_x86_64`
+  installs the official MSVC build, as CI does, into a path without spaces and without
+  the `gstndi`, `gstfallbackswitch` and `gstrswebrtc` plugins the node links in itself.
+  Then put its `bin` on `PATH` and point `PKG_CONFIG_PATH` at its `lib\pkgconfig`.
 
 Reports of what it takes on your distro or machine are useful.
 

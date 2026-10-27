@@ -1,5 +1,5 @@
-//! The service on OSes it isn't built for yet (Windows: a logon task). Run
-//! the node from a shell there.
+//! The service on OSes it isn't built for (anything but macOS, Linux and
+//! Windows). Run the node from a shell there.
 
 use std::path::PathBuf;
 

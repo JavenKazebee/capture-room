@@ -1,8 +1,8 @@
-//! Rotating the service's log file. launchd opens the file once and hands it
-//! to the node as stdout and stderr, so it would grow forever. Past
-//! [`MAX_BYTES`] the node renames it to `.1` (shifting older ones up to
-//! [`KEEP`]) and points stdout and stderr at a fresh file, which catches
-//! GStreamer's and the SDKs' own output as well as `tracing`'s.
+//! Rotating the service's log file. launchd, and systemd with `append:`, open
+//! the file once and hand it to the node as stdout and stderr, so it would
+//! grow forever. Past [`MAX_BYTES`] the node renames it to `.1` (shifting
+//! older ones up to [`KEEP`]) and points stdout and stderr at a fresh file,
+//! which catches GStreamer's and the SDKs' own output as well as `tracing`'s.
 //!
 //! On Windows the service's supervisor writes the node's output to the file
 //! itself, so it rotates with [`rotate`] as it goes.

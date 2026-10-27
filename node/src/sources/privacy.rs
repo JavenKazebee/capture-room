@@ -55,15 +55,17 @@ impl Permission {
     }
 }
 
-/// Only macOS reports it.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+/// Reported on macOS and Windows; Windows can't tell [`Access::NotAsked`]
+/// apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
+    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
     Granted,
     /// Denied, or restricted by a profile. For screen recording, also not
     /// asked yet: macOS doesn't tell the two apart.
     Denied,
     /// Not asked yet: opening a device asks.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     NotAsked,
 }
 
