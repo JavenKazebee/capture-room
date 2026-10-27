@@ -754,6 +754,11 @@ pub fn export(
 /// to the segment: qtdemux hands out PCM in chunks that straddle the cuts,
 /// and qtmux would drop the first whole and write the last whole.
 ///
+/// Nothing holds the streams back while they wait for the seek, so under load
+/// one can run to the end of the clip first. Its EOS must not reach qtmux
+/// either: that pad would stay finished and lose its stream, or with every
+/// pad finished qtmux would write an empty file before the seek.
+///
 /// splitmuxsrc (seen in 1.24) can flush again after the segment and resend
 /// the in point's buffers under the same segment. With that flush dropped,
 /// the repeats would reach qtmux: extra frames, extra sound, or "Could not
@@ -768,13 +773,18 @@ fn gate(pad: &gst::Pad, from: gst::ClockTime) {
     let span = Mutex::new(None::<(gst::ClockTime, Option<gst::ClockTime>)>);
     // The last picture's PTS, or where the last sound ended.
     let reached = Mutex::new(None::<gst::ClockTime>);
-    pad.add_probe(gst::PadProbeType::DATA_DOWNSTREAM, move |pad, info| {
+    // Flushes reach a probe only when asked for. One that got through after
+    // qtmux had started would make filesink truncate the file while qtmux
+    // went on at its old offsets, losing the moov inside an unsized mdat.
+    let kinds = gst::PadProbeType::DATA_DOWNSTREAM | gst::PadProbeType::EVENT_FLUSH;
+    pad.add_probe(kinds, move |pad, info| {
         let open = *span.lock().unwrap();
         match &mut info.data {
             Some(gst::PadProbeData::Event(e)) => match e.view() {
                 gst::EventView::FlushStart(_) | gst::EventView::FlushStop(_) => {
                     gst::PadProbeReturn::Drop
                 }
+                gst::EventView::Eos(_) if open.is_none() => gst::PadProbeReturn::Drop,
                 gst::EventView::Segment(seg) => {
                     // Stream time: splitmuxsrc's segments start at 1000 s
                     // plus the position.
