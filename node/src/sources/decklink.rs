@@ -27,7 +27,7 @@ use crate::api::types::{
 };
 use crate::pipeline::monitor::MonitorPipeline;
 use crate::pipeline::output::{OutputPipeline, OutputSink, PipelineOutput, Program, RunningOutput};
-use crate::pipeline::{capsfilter, make_el, set_mix_matrix, set_property};
+use crate::pipeline::{capsfilter, make_el, numbered_channels, set_mix_matrix, set_property};
 
 pub const SOURCE_ELEMENTS: &[&str] = &["decklinkvideosrc", "decklinkaudiosrc"];
 pub const OUTPUT_ELEMENTS: &[&str] = &["decklinkvideosink", "decklinkaudiosink"];
@@ -755,8 +755,7 @@ impl DecklinkOutput {
         let vsink = d.element("decklinkvideosink", "vsink", profile)?;
         set_property(&vsink, "mode", mode.nick)?;
         let asink = d.element("decklinkaudiosink", "asink", DecklinkProfile::Default)?;
-        let channels = self.program.audio_channels.max(1);
-        let embedded = embedded_channels(channels);
+        let [spread, acaps, numbered] = audio_spread(self.program.audio_channels)?;
         let vcaps = capsfilter(
             "vcaps",
             gst::Caps::builder("video/x-raw")
@@ -765,25 +764,32 @@ impl DecklinkOutput {
                 .field("height", mode.height as i32)
                 .build(),
         )?;
-        // The program's channels first, then silence up to what SDI carries.
-        let spread = make_el("audioconvert", "aspread")?;
-        set_mix_matrix(&spread, &spread_matrix(channels, embedded));
-        let acaps = capsfilter(
-            "acaps",
-            gst::Caps::builder("audio/x-raw")
-                .field("rate", 48000)
-                .field("channels", embedded as i32)
-                .field("channel-mask", gst::Bitmask::new(0))
-                .build(),
-        )?;
         consumer
             .pipeline
-            .add_many([&vcaps, &vsink, &spread, &acaps, &asink])
+            .add_many([&vcaps, &vsink, &spread, &acaps, &numbered, &asink])
             .context("add Decklink output")?;
         consumer.video_chain(&[], &[&vcaps, &vsink])?;
-        consumer.audio_chain(&[], &[&spread, &acaps, &asink])?;
+        consumer.audio_chain(&[], &[&spread, &acaps, &numbered, &asink])?;
         Ok((output, vsink))
     }
+}
+
+/// The program's `channels` first, then silence up to what SDI carries, as
+/// numbered channels.
+fn audio_spread(channels: u32) -> Result<[gst::Element; 3]> {
+    let channels = channels.max(1);
+    let embedded = embedded_channels(channels);
+    let spread = make_el("audioconvert", "aspread")?;
+    set_mix_matrix(&spread, &spread_matrix(channels, embedded));
+    // Mask left open for the matrix: see `numbered_channels`.
+    let acaps = capsfilter(
+        "acaps",
+        gst::Caps::builder("audio/x-raw")
+            .field("rate", 48000)
+            .field("channels", embedded as i32)
+            .build(),
+    )?;
+    Ok([spread, acaps, numbered_channels("anumbered")?])
 }
 
 /// `audioconvert` matrix putting `channels` on the first of `embedded`.
@@ -864,6 +870,45 @@ mod tests {
         assert_eq!(embedded_channels(3), 8);
         assert_eq!(embedded_channels(8), 8);
         assert_eq!(embedded_channels(12), 16);
+    }
+
+    /// Any program channel count reaches SDI as numbered channels.
+    #[test]
+    fn spread_negotiates_numbered_channels() {
+        gst::init().unwrap();
+        for channels in [1, 2, 3, 6, 8, 12, 16] {
+            let pipeline = gst::parse::launch(&format!(
+                "audiotestsrc num-buffers=5 ! audio/x-raw,channels={channels} \
+                 ! audioconvert ! audioresample name=in"
+            ))
+            .unwrap()
+            .downcast::<gst::Pipeline>()
+            .unwrap();
+            let [spread, acaps, numbered] = audio_spread(channels).unwrap();
+            let sink = make_el("fakesink", "sink").unwrap();
+            pipeline
+                .add_many([&spread, &acaps, &numbered, &sink])
+                .unwrap();
+            let input = pipeline.by_name("in").unwrap();
+            gst::Element::link_many([&input, &spread, &acaps, &numbered, &sink]).unwrap();
+            pipeline.set_state(gst::State::Playing).unwrap();
+            let msg = pipeline.bus().unwrap().timed_pop_filtered(
+                gst::ClockTime::from_seconds(5),
+                &[gst::MessageType::Eos, gst::MessageType::Error],
+            );
+            let caps = sink.static_pad("sink").unwrap().current_caps();
+            pipeline.set_state(gst::State::Null).unwrap();
+            if let Some(gst::MessageView::Error(e)) = msg.as_ref().map(|m| m.view()) {
+                panic!("{channels} channels: {} {:?}", e.error(), e.debug());
+            }
+            assert!(msg.is_some(), "{channels} channels: no EOS");
+            let s = caps.unwrap().structure(0).unwrap().to_owned();
+            assert_eq!(
+                s.get::<i32>("channels").unwrap() as u32,
+                embedded_channels(channels)
+            );
+            assert_eq!(s.get::<gst::Bitmask>("channel-mask").unwrap().0, 0);
+        }
     }
 
     #[test]
