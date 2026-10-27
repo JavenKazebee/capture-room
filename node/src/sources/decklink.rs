@@ -31,6 +31,8 @@ use crate::pipeline::{capsfilter, make_el, numbered_channels, set_mix_matrix, se
 
 pub const SOURCE_ELEMENTS: &[&str] = &["decklinkvideosrc", "decklinkaudiosrc"];
 pub const OUTPUT_ELEMENTS: &[&str] = &["decklinkvideosink", "decklinkaudiosink"];
+/// What an output in an interlaced mode needs as well.
+pub const INTERLACE_ELEMENTS: &[&str] = &["interlace"];
 
 /// Embedded audio channel counts the cards carry.
 const AUDIO_CHANNELS: &[u32] = &[2, 8, 16];
@@ -165,10 +167,30 @@ impl From<&Mode> for DecklinkModeDto {
     }
 }
 
-/// The mode an output plays `program` in: `pinned` (which must match its size
-/// and rate) or the matching progressive mode. Interlaced output isn't supported yet.
+impl Mode {
+    /// Whether SDI outputs play this mode. SD would also need BT.601 and
+    /// non-square pixels, so of the interlaced modes only 1080i plays out.
+    pub fn plays_out(&self) -> bool {
+        !self.interlaced || self.format.height == 1080
+    }
+
+    /// The progressive program an output in this mode plays: interlaced modes
+    /// take each program frame as one field, so their field rate.
+    pub fn program_format(&self) -> VideoFormat {
+        let f = self.format;
+        let fields = if self.interlaced { 2 } else { 1 };
+        VideoFormat::new(f.width, f.height, (f.fps_num * fields, f.fps_den))
+    }
+}
+
+/// The mode an output plays `program` in: `pinned` (whose size and rate, a
+/// field rate if interlaced, must match it) or the matching mode, progressive
+/// before interlaced at the same rate.
 pub fn output_mode(program: VideoFormat, pinned: Option<&str>) -> Result<&'static Mode, String> {
-    let fits = |m: &Mode| m.format.size() == program.size() && m.format.same_rate(&program);
+    let fits = |m: &Mode| {
+        let f = m.program_format();
+        f.size() == program.size() && f.same_rate(&program)
+    };
     let program = format!(
         "{}x{} at {:.2} fps",
         program.width,
@@ -178,9 +200,9 @@ pub fn output_mode(program: VideoFormat, pinned: Option<&str>) -> Result<&'stati
     match pinned.filter(|p| !p.is_empty()) {
         Some(nick) => {
             let m = find_mode(nick).ok_or_else(|| format!("unknown SDI mode {nick}"))?;
-            if m.interlaced {
+            if !m.plays_out() {
                 return Err(format!(
-                    "{} is interlaced; SDI outputs are progressive for now",
+                    "SDI outputs don't play {}; of the interlaced modes only 1080i",
                     m.label
                 ));
             }
@@ -191,7 +213,8 @@ pub fn output_mode(program: VideoFormat, pinned: Option<&str>) -> Result<&'stati
         }
         None => MODES
             .iter()
-            .find(|m| !m.interlaced && fits(m))
+            .filter(|m| m.plays_out() && fits(m))
+            .min_by_key(|m| m.interlaced)
             .ok_or_else(|| format!("SDI has no mode for the channel's {program}")),
     }
 }
@@ -759,10 +782,29 @@ impl DecklinkOutput {
             .pipeline
             .add_many([&vcaps, &vsink, &spread, &acaps, &numbered, &asink])
             .context("add Decklink output")?;
-        consumer.video_chain(&[], &[&vcaps, &vsink])?;
+        let mut video = vec![&vcaps];
+        let interlace;
+        if mode.interlaced {
+            // After the convert to UYVY: 4:2:2 has whole chroma lines, so
+            // weaving fields can't mix one field's chroma into the other's.
+            interlace = interlacer()?;
+            consumer.pipeline.add(&interlace).context("add interlace")?;
+            video.push(&interlace);
+        }
+        video.push(&vsink);
+        consumer.video_chain(&[], &video)?;
         consumer.audio_chain(&[], &[&spread, &acaps, &numbered, &asink])?;
         Ok((output, vsink))
     }
+}
+
+/// Weaves each pair of progressive frames into one top-field-first frame.
+fn interlacer() -> Result<gst::Element> {
+    let interlace = make_el("interlace", "interlace")?;
+    // The default, 2:3, is telecine.
+    set_property(&interlace, "field-pattern", "1:1")?;
+    set_property(&interlace, "top-field-first", "true")?;
+    Ok(interlace)
 }
 
 /// The program's `channels` first, then silence up to what SDI carries, as
@@ -848,10 +890,53 @@ mod tests {
     fn output_mode_checks_pinned() {
         assert!(output_mode(VideoFormat::new(1920, 1080, (50, 1)), Some("1080p50")).is_ok());
         assert!(output_mode(VideoFormat::new(1920, 1080, (50, 1)), Some("1080p5994")).is_err());
-        assert!(output_mode(VideoFormat::new(1920, 1080, (25, 1)), Some("1080i50")).is_err());
         assert!(output_mode(VideoFormat::new(1920, 1080, (50, 1)), Some("nope")).is_err());
         // Empty means unset.
         assert!(output_mode(VideoFormat::new(1920, 1080, (50, 1)), Some("")).is_ok());
+    }
+
+    #[test]
+    fn output_mode_pins_1080i_at_the_field_rate() {
+        let pinned = |fps, nick| output_mode(VideoFormat::new(1920, 1080, fps), Some(nick));
+        assert_eq!(pinned((50, 1), "1080i50").unwrap().nick, "1080i50");
+        assert_eq!(
+            pinned((60000, 1001), "1080i5994").unwrap().nick,
+            "1080i5994"
+        );
+        assert_eq!(pinned((60, 1), "1080i60").unwrap().nick, "1080i60");
+        // The program's frame rate is the field rate, not the frame rate.
+        assert!(pinned((25, 1), "1080i50").is_err());
+        assert!(pinned((30000, 1001), "1080i5994").is_err());
+        assert!(pinned((60, 1), "1080i5994").is_err());
+        assert!(output_mode(VideoFormat::new(1280, 720, (50, 1)), Some("1080i50")).is_err());
+    }
+
+    #[test]
+    fn output_mode_matches_progressive_first() {
+        for (fps, nick) in [
+            ((50, 1), "1080p50"),
+            ((60000, 1001), "1080p5994"),
+            ((60, 1), "1080p60"),
+            ((25, 1), "1080p25"),
+        ] {
+            let m = output_mode(VideoFormat::new(1920, 1080, fps), None).unwrap();
+            assert_eq!(m.nick, nick);
+        }
+    }
+
+    #[test]
+    fn output_mode_refuses_sd_interlaced() {
+        assert!(output_mode(VideoFormat::new(720, 576, (50, 1)), Some("pal")).is_err());
+        assert!(output_mode(VideoFormat::new(720, 486, (60000, 1001)), Some("ntsc")).is_err());
+        assert!(output_mode(VideoFormat::new(720, 576, (50, 1)), None).is_err());
+    }
+
+    #[test]
+    fn program_format_doubles_interlaced_rates() {
+        let f = find_mode("1080i5994").unwrap().program_format();
+        assert!(f.same_rate(&VideoFormat::new(1920, 1080, (60000, 1001))));
+        let f = find_mode("1080p25").unwrap().program_format();
+        assert!(f.same_rate(&VideoFormat::new(1920, 1080, (25, 1))));
     }
 
     #[test]
@@ -900,6 +985,41 @@ mod tests {
             );
             assert_eq!(s.get::<gst::Bitmask>("channel-mask").unwrap().0, 0);
         }
+    }
+
+    #[test]
+    fn interlacer_halves_the_frame_rate() {
+        gst::init().unwrap();
+        let pipeline = gst::parse::launch(
+            "videotestsrc num-buffers=4 \
+             ! video/x-raw,format=I420,width=1920,height=1080,framerate=60000/1001 \
+             ! videoconvert ! capsfilter name=in caps=video/x-raw,format=UYVY",
+        )
+        .unwrap()
+        .downcast::<gst::Pipeline>()
+        .unwrap();
+        let interlace = interlacer().unwrap();
+        let sink = make_el("fakesink", "sink").unwrap();
+        pipeline.add_many([&interlace, &sink]).unwrap();
+        let input = pipeline.by_name("in").unwrap();
+        gst::Element::link_many([&input, &interlace, &sink]).unwrap();
+        pipeline.set_state(gst::State::Playing).unwrap();
+        let msg = pipeline.bus().unwrap().timed_pop_filtered(
+            gst::ClockTime::from_seconds(5),
+            &[gst::MessageType::Eos, gst::MessageType::Error],
+        );
+        let caps = sink.static_pad("sink").unwrap().current_caps();
+        pipeline.set_state(gst::State::Null).unwrap();
+        if let Some(gst::MessageView::Error(e)) = msg.as_ref().map(|m| m.view()) {
+            panic!("{} {:?}", e.error(), e.debug());
+        }
+        let s = caps.unwrap().structure(0).unwrap().to_owned();
+        assert_eq!(s.get::<&str>("interlace-mode").unwrap(), "interleaved");
+        assert_eq!(s.get::<&str>("field-order").unwrap(), "top-field-first");
+        assert_eq!(
+            s.get::<gst::Fraction>("framerate").unwrap(),
+            gst::Fraction::new(30000, 1001)
+        );
     }
 
     #[test]
