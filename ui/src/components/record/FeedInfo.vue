@@ -50,7 +50,7 @@ const sourceFacts = computed(() => {
     { label: 'Node', value: nodes.labelOf(s.node_id) },
     { label: 'ID', value: s.id, mono: true, copy: true },
     { label: 'Resolution', value: c ? resolutionLabel(c) : 'negotiated on connect', mono: !!c },
-    { label: 'Frame rate', value: c ? fpsLabel(c.max_framerate) : '—', mono: !!c },
+    { label: 'Frame rate', value: c ? fpsLabel([c.fps_num, c.fps_den]) : '—', mono: !!c },
     { label: 'Audio', value: c ? `${c.audio_channels} ch` : '—', mono: !!c },
   ]
 })

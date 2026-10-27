@@ -9,8 +9,8 @@ use super::decklink::{is_decklink, Profiles};
 use super::live::{self, LinkTracker, LiveAudio, LiveInput};
 use super::{add_ghost_pad, InputSource};
 use crate::api::types::{
-    AudioPlan, DeviceDto, DeviceKind, DeviceMode, DeviceSourceConfig, LinkState, LiveVideoFormat,
-    SourceCapabilitiesDto, SourceType,
+    AudioPlan, DeviceDto, DeviceKind, DeviceMode, DeviceSourceConfig, LinkState,
+    SourceCapabilitiesDto, SourceType, VideoFormat,
 };
 use crate::pipeline::{capsfilter, make_el};
 
@@ -330,17 +330,13 @@ fn describe(device: &gst::Device) -> DeviceDto {
         } else {
             rates
         };
-        for (fps_num, fps_den) in rates {
-            match modes.iter_mut().find(|m| {
-                (m.width, m.height, m.fps_num, m.fps_den) == (width, height, fps_num, fps_den)
-            }) {
+        for rate in rates {
+            let mode = VideoFormat::new(width, height, rate);
+            match modes.iter_mut().find(|m| m.format == mode) {
                 Some(m) if !m.formats.contains(&format) => m.formats.push(format.clone()),
                 Some(_) => {}
                 None => modes.push(DeviceMode {
-                    width,
-                    height,
-                    fps_num,
-                    fps_den,
+                    format: mode,
                     formats: vec![format.clone()],
                 }),
             }
@@ -348,10 +344,10 @@ fn describe(device: &gst::Device) -> DeviceDto {
     }
     // Largest and fastest first.
     modes.sort_by(|a, b| {
-        let fps = |m: &DeviceMode| m.fps_num as f64 / m.fps_den.max(1) as f64;
+        let (a, b) = (a.format, b.format);
         (b.width * b.height)
             .cmp(&(a.width * a.height))
-            .then(fps(b).total_cmp(&fps(a)))
+            .then(b.fps().total_cmp(&a.fps()))
     });
     modes.truncate(MAX_MODES);
     // The device's own count, where the caps only give a range.
@@ -424,7 +420,7 @@ fn capture_bin(
     id: &str,
     device: &gst::Device,
     element: gst::Element,
-    format: Option<&LiveVideoFormat>,
+    format: Option<&VideoFormat>,
 ) -> Result<gst::Element> {
     let device_caps = device.caps();
     let want = |media: &str| {

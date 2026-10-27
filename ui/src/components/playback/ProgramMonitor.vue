@@ -29,7 +29,7 @@ const watching = ref<string | null>(null)
 
 const format = computed(() => {
   const c = props.source.capabilities
-  return c ? `${c.max_width}×${c.max_height} · ${fpsLabel(c.max_framerate)} · ${c.audio_channels} ch` : null
+  return c ? `${c.max_width}×${c.max_height} · ${fpsLabel([c.fps_num, c.fps_den])} · ${c.audio_channels} ch` : null
 })
 </script>
 

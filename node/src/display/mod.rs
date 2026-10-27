@@ -27,22 +27,13 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::{Fullscreen, WindowLevel};
 use winit::window::{Window, WindowId};
 
-use crate::api::types::{DisplayDto, DisplayModeDto};
+use crate::api::types::{DisplayDto, DisplayModeDto, VideoFormat};
 use crate::power;
 
 #[cfg(target_os = "macos")]
 mod mac;
 
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// A program format a window should show, to pick the screen mode by.
-#[derive(Debug, Clone, Copy)]
-pub struct WantedFormat {
-    pub width: u32,
-    pub height: u32,
-    pub fps_num: u32,
-    pub fps_den: u32,
-}
 
 pub struct DisplayWindow {
     proxy: EventLoopProxy<Command>,
@@ -79,7 +70,7 @@ enum Command {
     List(mpsc::SyncSender<Vec<DisplayDto>>),
     Open {
         display: String,
-        format: WantedFormat,
+        format: VideoFormat,
         visible: bool,
         reply: mpsc::SyncSender<Result<Opened, String>>,
     },
@@ -132,12 +123,7 @@ impl Displays {
 
     /// Open an output window on `display` (a [`DisplayDto::id`]) in the mode
     /// that best fits `format`; shown at once if `visible`.
-    pub fn open(
-        &self,
-        display: &str,
-        format: WantedFormat,
-        visible: bool,
-    ) -> Result<DisplayWindow> {
+    pub fn open(&self, display: &str, format: VideoFormat, visible: bool) -> Result<DisplayWindow> {
         let proxy = self
             .proxy
             .clone()
@@ -410,7 +396,7 @@ impl WindowLoop {
         &mut self,
         event_loop: &ActiveEventLoop,
         screen: &str,
-        format: WantedFormat,
+        format: VideoFormat,
         visible: bool,
     ) -> Result<Opened, String> {
         let monitor = event_loop
@@ -623,7 +609,7 @@ fn list(event_loop: &ActiveEventLoop) -> Vec<DisplayDto> {
 }
 
 /// Refresh rates that show `format` without judder, best first: its own, then double.
-pub fn refresh_rates(format: WantedFormat) -> [u32; 2] {
+pub fn refresh_rates(format: VideoFormat) -> [u32; 2] {
     let mhz = (u64::from(format.fps_num) * 1000 / u64::from(format.fps_den.max(1))) as u32;
     [mhz, mhz * 2]
 }
@@ -635,10 +621,10 @@ fn same_rate(mode: u32, wanted: u32) -> bool {
 }
 
 /// The screen's mode at `format`'s size and a rate that suits it.
-fn best_mode(monitor: &MonitorHandle, format: WantedFormat) -> Option<VideoModeHandle> {
+fn best_mode(monitor: &MonitorHandle, format: VideoFormat) -> Option<VideoModeHandle> {
     let sized: Vec<VideoModeHandle> = monitor
         .video_modes()
-        .filter(|m| m.size().width == format.width && m.size().height == format.height)
+        .filter(|m| (m.size().width, m.size().height) == format.size())
         .collect();
     refresh_rates(format).into_iter().find_map(|rate| {
         sized
@@ -661,13 +647,8 @@ pub fn describe(width: u32, height: u32, refresh_mhz: u32) -> String {
 mod tests {
     use super::*;
 
-    fn fmt(fps_num: u32, fps_den: u32) -> WantedFormat {
-        WantedFormat {
-            width: 1920,
-            height: 1080,
-            fps_num,
-            fps_den,
-        }
+    fn fmt(fps_num: u32, fps_den: u32) -> VideoFormat {
+        VideoFormat::new(1920, 1080, (fps_num, fps_den))
     }
 
     #[test]

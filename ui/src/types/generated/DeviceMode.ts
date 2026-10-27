@@ -3,12 +3,8 @@
 /**
  * A size and rate a video device offers.
  */
-export type DeviceMode = { width: number, height: number, 
-/**
- * 0/1 when the device doesn't say.
- */
-fps_num: number, fps_den: number, 
+export type DeviceMode = { 
 /**
  * Pixel formats it comes in (`YUY2`, `NV12`; `jpeg` for MJPEG).
  */
-formats: Array<string>, };
+formats: Array<string>, width: number, height: number, fps_num: number, fps_den: number, };

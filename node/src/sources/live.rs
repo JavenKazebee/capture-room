@@ -16,7 +16,7 @@ use gstreamer_video as gst_video;
 use tracing::{info, warn};
 
 use super::add_chain;
-use crate::api::types::{LinkState, LiveVideoFormat};
+use crate::api::types::{LinkState, VideoFormat};
 use crate::pipeline::timecode::{drop_frame_flags, running_time};
 use crate::pipeline::{capsfilter, make_el, set_mix_matrix, set_property};
 
@@ -102,7 +102,7 @@ pub struct LiveInput<'a> {
     pub source: gst::Element,
     pub audio: LiveAudio,
     /// Hold video to this size and rate instead of the source's first.
-    pub format: Option<&'a LiveVideoFormat>,
+    pub format: Option<&'a VideoFormat>,
     pub tracker: &'a Arc<LinkTracker>,
     /// Link the source's pads straight in, not through `fallbacksrc`: for a
     /// server that comes and goes with its publisher (WHIP) and mustn't be
@@ -212,7 +212,7 @@ pub(crate) fn video_output(
     bin: &gst::Bin,
     id: &str,
     caps: gst::Caps,
-) -> Result<(Inputs, Arc<Mutex<VideoFormat>>)> {
+) -> Result<(Inputs, Arc<Mutex<InputCaps>>)> {
     let compositor = make_el("compositor", &format!("live-vsync-{id}"))?;
     set_property(&compositor, "background", "black")?;
     let timecode = LastTimecode::default();
@@ -222,7 +222,7 @@ pub(crate) fn video_output(
     );
     let out_vcaps = capsfilter(&format!("live-outvcaps-{id}"), caps.clone())?;
     add_chain(bin, &[&compositor, &out_vcaps], "video")?;
-    let format = Arc::new(Mutex::new(VideoFormat {
+    let format = Arc::new(Mutex::new(InputCaps {
         pre: pre_compositor_caps(&caps),
         inputs: Vec::new(),
         out: out_vcaps.downgrade(),
@@ -306,14 +306,14 @@ pub(crate) fn channel_layout(channels: u32) -> u64 {
 
 /// The video format inputs are converted to, and who has to know when it's
 /// locked.
-pub(crate) struct VideoFormat {
+pub(crate) struct InputCaps {
     /// Caps for each input's converters (see [`pre_compositor_caps`]).
     pre: gst::Caps,
     inputs: Vec<glib::WeakRef<gst::Element>>,
     out: glib::WeakRef<gst::Element>,
 }
 
-impl VideoFormat {
+impl InputCaps {
     pub(crate) fn lock(&mut self, lock: &gst::Caps) {
         // Before the compositor, only what the converters can always produce:
         // stricter caps reach fallbacksrc's black source, which fails to negotiate.
@@ -334,7 +334,7 @@ type LastTimecode = Arc<Mutex<Option<(gst::ClockTime, gst_video::ValidVideoTimeC
 #[derive(Clone)]
 enum Kind {
     /// The format inputs are converted to, and their timecode.
-    Video(Arc<Mutex<VideoFormat>>, LastTimecode),
+    Video(Arc<Mutex<InputCaps>>, LastTimecode),
     /// The mixer's caps, and a channel-picking matrix.
     Audio(gst::Caps, Option<Vec<Vec<f32>>>),
 }
@@ -674,7 +674,7 @@ pub(crate) fn add_background(bin: &gst::Bin, id: &str, compositor: &gst::Element
 }
 
 /// Check a configured format: a zero rate or size would fail (or panic) building caps.
-pub fn validate_format(format: Option<&LiveVideoFormat>) -> Result<(), String> {
+pub fn validate_format(format: Option<&VideoFormat>) -> Result<(), String> {
     match format {
         Some(f) if f.width == 0 || f.height == 0 || f.fps_num == 0 || f.fps_den == 0 => {
             Err("the format needs a size and frame rate".into())
@@ -686,7 +686,7 @@ pub fn validate_format(format: Option<&LiveVideoFormat>) -> Result<(), String> {
 /// Caps before the source's format is known: the configured format, or any
 /// size at the default rate. The rate must be set, or the compositor takes the
 /// slowest a branch accepts (the thumbnails' 1 fps).
-fn initial_video_caps(format: Option<&LiveVideoFormat>) -> gst::Caps {
+fn initial_video_caps(format: Option<&VideoFormat>) -> gst::Caps {
     match format {
         Some(f) => gst::Caps::builder("video/x-raw")
             .field("width", f.width as i32)
@@ -715,7 +715,7 @@ fn initial_video_caps(format: Option<&LiveVideoFormat>) -> gst::Caps {
 fn watch_source(
     source: &gst::Element,
     tracker: Arc<LinkTracker>,
-    format: Option<LiveVideoFormat>,
+    format: Option<VideoFormat>,
     on_lock: impl Fn(&gst::Caps) + Send + Sync + 'static,
 ) {
     let locked = Arc::new(AtomicBool::new(false));
@@ -785,7 +785,7 @@ fn pre_compositor_caps(lock: &gst::Caps) -> gst::Caps {
 }
 
 /// Output caps for a source whose first video caps are `caps`.
-pub(crate) fn lock_caps(caps: &gst::CapsRef, format: Option<&LiveVideoFormat>) -> gst::Caps {
+pub(crate) fn lock_caps(caps: &gst::CapsRef, format: Option<&VideoFormat>) -> gst::Caps {
     let s = caps.structure(0);
     let int = |name: &str| s.and_then(|s| s.get::<i32>(name).ok());
     let frac = |name: &str| s.and_then(|s| s.get::<gst::Fraction>(name).ok());

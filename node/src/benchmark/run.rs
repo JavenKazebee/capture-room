@@ -13,7 +13,7 @@ use tracing::{error, info, warn};
 
 use crate::api::types::{
     BenchmarkRunDto, BenchmarkStatus, BenchmarkStepDto, ChannelConfig, ClipEnd, FileSourceConfig,
-    LiveVideoFormat, MediaInfo, OutputConfig, PresetOutputInput, WsEvent,
+    MediaInfo, OutputConfig, PresetOutputInput, VideoFormat, WsEvent,
 };
 use crate::capacity::Setup;
 use crate::db;
@@ -490,7 +490,7 @@ impl Run {
             feed_id(n),
             format!("Benchmark channel {n}"),
             ChannelConfig {
-                format: LiveVideoFormat {
+                format: VideoFormat {
                     width: m.width,
                     height: m.height,
                     fps_num: m.fps_num,

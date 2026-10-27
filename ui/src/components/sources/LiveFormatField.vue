@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { LiveVideoFormat } from '@/types/generated/LiveVideoFormat'
+import type { VideoFormat } from '@/types/generated/VideoFormat'
 import { findFramerate, findResolution, FRAMERATE_OPTIONS, RESOLUTION_OPTIONS } from '@/lib/videoPresets'
 import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
 
 /** By default the source's first format is held (a later change is scaled); a fixed one never changes size. */
-const format = defineModel<LiveVideoFormat | null>({ required: true })
+const format = defineModel<VideoFormat | null>({ required: true })
 
 const AUTO = 'auto'
 const size = computed({

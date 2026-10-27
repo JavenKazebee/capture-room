@@ -73,7 +73,7 @@ const columns: Column<Source>[] = [
   { id: 'type', label: 'Type', value: (s) => s.source_type, class: 'w-px' },
   { id: 'node', label: 'Node', value: (s) => nodesStore.nameOf(s.node_id), hiddenByDefault: true },
   { id: 'resolution', label: 'Resolution', value: (s) => (s.capabilities ? s.capabilities.max_width * s.capabilities.max_height : null), class: 'num whitespace-nowrap' },
-  { id: 'fps', label: 'FPS', value: (s) => (s.capabilities ? s.capabilities.max_framerate[0] / s.capabilities.max_framerate[1] : null), class: 'num whitespace-nowrap' },
+  { id: 'fps', label: 'FPS', value: (s) => (s.capabilities ? s.capabilities.fps_num / s.capabilities.fps_den : null), class: 'num whitespace-nowrap' },
   { id: 'audio', label: 'Audio', value: (s) => s.capabilities?.audio_channels ?? null, class: 'num whitespace-nowrap' },
   { id: 'timecode', label: 'Timecode', value: (s) => s.timecode, hiddenByDefault: true, class: 'num whitespace-nowrap' },
   { id: 'id', label: 'ID', value: (s) => s.id, class: 'num' },
@@ -246,7 +246,7 @@ onMounted(() => store.ensureLoaded())
         <template v-if="row.capabilities">{{ resolutionLabel(row.capabilities) }}</template>
         <span v-else class="text-muted-foreground font-sans" title="NDI and live sources get their format when they connect">on connect</span>
       </template>
-      <template #cell-fps="{ row }">{{ row.capabilities ? fpsLabel(row.capabilities.max_framerate) : '—' }}</template>
+      <template #cell-fps="{ row }">{{ row.capabilities ? fpsLabel([row.capabilities.fps_num, row.capabilities.fps_den]) : '—' }}</template>
       <template #cell-audio="{ row }">{{ row.capabilities ? `${row.capabilities.audio_channels} ch` : '—' }}</template>
       <template #cell-timecode="{ row }">{{ row.timecode ?? '—' }}</template>
       <template #cell-id="{ row }">

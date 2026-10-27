@@ -54,7 +54,8 @@ pub enum LinkState {
 pub struct SourceCapabilitiesDto {
     pub max_width: u32,
     pub max_height: u32,
-    pub max_framerate: [u32; 2],
+    pub fps_num: u32,
+    pub fps_den: u32,
     pub audio_channels: u32,
 }
 
@@ -175,7 +176,7 @@ pub struct StreamSourceConfig {
     /// Hold the feed to this size and rate; by default it takes the
     /// stream's first format.
     #[serde(default)]
-    pub format: Option<LiveVideoFormat>,
+    pub format: Option<VideoFormat>,
 }
 
 fn default_stream_latency() -> u32 {
@@ -233,7 +234,7 @@ pub struct DeviceSourceConfig {
     pub audio: AudioPlan,
     /// Capture at this size and rate (the device's default otherwise).
     #[serde(default)]
-    pub format: Option<LiveVideoFormat>,
+    pub format: Option<VideoFormat>,
 }
 
 /// SDI (or HDMI) on a Blackmagic Decklink card: one sub-device's video and
@@ -259,7 +260,7 @@ pub struct DecklinkSourceConfig {
     /// Hold the feed to this size and rate; by default it takes the
     /// signal's first format.
     #[serde(default)]
-    pub format: Option<LiveVideoFormat>,
+    pub format: Option<VideoFormat>,
 }
 
 fn default_decklink_channels() -> u32 {
@@ -349,10 +350,8 @@ pub struct DecklinkModeDto {
     pub mode: String,
     /// What people call it (`1080p 59.94`).
     pub label: String,
-    pub width: u32,
-    pub height: u32,
-    pub fps_num: u32,
-    pub fps_den: u32,
+    #[serde(flatten)]
+    pub format: VideoFormat,
     pub interlaced: bool,
 }
 
@@ -376,7 +375,7 @@ pub struct WhipSourceConfig {
     #[serde(default)]
     pub audio: AudioPlan,
     #[serde(default)]
-    pub format: Option<LiveVideoFormat>,
+    pub format: Option<VideoFormat>,
 }
 
 /// Which NDI senders a node connects to.
@@ -460,23 +459,48 @@ pub struct DeviceDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct DeviceMode {
-    pub width: u32,
-    pub height: u32,
-    /// 0/1 when the device doesn't say.
-    pub fps_num: u32,
-    pub fps_den: u32,
+    /// The rate is 0/1 when the device doesn't say.
+    #[serde(flatten)]
+    pub format: VideoFormat,
     /// Pixel formats it comes in (`YUY2`, `NV12`; `jpeg` for MJPEG).
     pub formats: Vec<String>,
 }
 
-/// A fixed video format for a live source.
+/// A frame size and rate: a live source's fixed format, a channel's
+/// program, a device or SDI mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
-pub struct LiveVideoFormat {
+pub struct VideoFormat {
     pub width: u32,
     pub height: u32,
     pub fps_num: u32,
     pub fps_den: u32,
+}
+
+impl VideoFormat {
+    pub const fn new(width: u32, height: u32, (fps_num, fps_den): (u32, u32)) -> Self {
+        Self {
+            width,
+            height,
+            fps_num,
+            fps_den,
+        }
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Frames per second; 0 when the denominator is (a device that doesn't say).
+    pub fn fps(&self) -> f64 {
+        f64::from(self.fps_num) / f64::from(self.fps_den.max(1))
+    }
+
+    /// Exactly the same rate, however the fraction is written (`60/2` is `30/1`).
+    pub fn same_rate(&self, other: &Self) -> bool {
+        u64::from(self.fps_num) * u64::from(other.fps_den)
+            == u64::from(other.fps_num) * u64::from(self.fps_den)
+    }
 }
 
 /// A configured source, as stored and as served.

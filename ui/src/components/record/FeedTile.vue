@@ -60,7 +60,7 @@ const noSignal = computed(() => {
 const format = computed(() => {
   const c = props.source.capabilities
   return c
-    ? formatLabel({ width: c.max_width, height: c.max_height, fps_num: c.max_framerate[0], fps_den: c.max_framerate[1] })
+    ? formatLabel({ width: c.max_width, height: c.max_height, fps_num: c.fps_num, fps_den: c.fps_den })
     : null
 })
 
