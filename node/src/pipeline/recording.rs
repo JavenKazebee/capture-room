@@ -464,23 +464,25 @@ impl VideoChain {
 /// convert), then the channel layout and the encoder or PCM tail.
 fn audio_chain(profile: &RecordingProfile) -> Result<Vec<gst::Element>> {
     let mut audio = vec![audio_hold_queue()?];
-    if let Some(channels) = profile.audio_mix().map(|m| m.channels) {
-        // Mono needs no mask, stereo gets left/right, more are plain
-        // numbered channels.
-        let mask = match channels {
-            1 => None,
-            2 => Some(0x3),
-            _ => Some(0),
-        };
+    let channels = profile.audio_mix().map(|m| m.channels);
+    if let Some(channels) = channels {
         let mut caps = gst::Caps::builder("audio/x-raw").field("channels", channels as i32);
-        if let Some(mask) = mask {
-            caps = caps.field("channel-mask", gst::Bitmask::new(mask));
+        // Mono needs no mask, stereo gets left/right. More are plain
+        // numbered channels, but audioconvert with a mix matrix won't put
+        // those out on GStreamer 1.24: the mask is left open here and
+        // dropped by the relabel.
+        if channels == 2 {
+            caps = caps.field("channel-mask", gst::Bitmask::new(0x3));
         }
         audio.push(capsfilter("amix-caps", caps.build())?);
     }
-    let relabel = || {
+    let drop_mask = channels.is_some_and(|c| c > 2) || profile.relabel_pcm_channels();
+    let relabel = || -> Result<Option<gst::Element>> {
+        if !drop_mask {
+            return Ok(None);
+        }
         // Same samples, layout dropped: see `relabel_pcm_channels`.
-        gst::ElementFactory::make("capssetter")
+        let el = gst::ElementFactory::make("capssetter")
             .name("apcm-relabel")
             .property(
                 "caps",
@@ -489,7 +491,8 @@ fn audio_chain(profile: &RecordingProfile) -> Result<Vec<gst::Element>> {
                     .build(),
             )
             .build()
-            .context("create capssetter")
+            .context("create capssetter")?;
+        Ok(Some(el))
     };
     match profile.audio_format() {
         // The relabel goes after the 24-bit caps: ahead of them, the leg
@@ -497,18 +500,18 @@ fn audio_chain(profile: &RecordingProfile) -> Result<Vec<gst::Element>> {
         AudioFormat::Pcm24 => {
             let [caps, rate] = pcm_tail()?;
             audio.push(caps);
-            if profile.relabel_pcm_channels() {
-                audio.push(relabel()?);
-            }
+            audio.extend(relabel()?);
             audio.push(rate);
         }
         // AAC and Opus tolerate timestamp gaps.
         AudioFormat::Aac { bitrate } => {
+            audio.extend(relabel()?);
             let aenc = make_el("avenc_aac", "aenc")?;
             set_property(&aenc, "bitrate", &bitrate.to_string())?;
             audio.push(aenc);
         }
         AudioFormat::Opus { bitrate } => {
+            audio.extend(relabel()?);
             let aenc = make_el("opusenc", "aenc")?;
             set_property(&aenc, "bitrate", &bitrate.to_string())?;
             audio.push(aenc);
