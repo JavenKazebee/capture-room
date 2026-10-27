@@ -10,6 +10,7 @@ use crate::api::types::{
     ClockStatusDto, ConfiguredSourceDto, DeviceDto, DeviceKind, NdiConnect, NdiSubscriptionsDto,
     NodeChecksDto, NodePortDto, OutputConfig, PortProtocol, SourceConfig,
 };
+use crate::sources::decklink;
 use crate::sources::privacy::{self, Access, Permission};
 use crate::state::AppState;
 use crate::storage;
@@ -50,6 +51,7 @@ pub async fn run(state: &AppState) -> anyhow::Result<NodeChecksDto> {
         Permission::Camera,
     )));
     checks.push(ndi_check(ndi_loaded, &configured));
+    checks.push(decklink_check(&configured));
     if ndi_loaded {
         checks.push(ndi_intake_check(&ndi));
     }
@@ -368,6 +370,56 @@ fn ndi_check(loaded: bool, configured: &[ConfiguredSourceDto]) -> CheckDto {
             }
         });
     }
+    c
+}
+
+/// Blackmagic Desktop Video, without which the decklink elements find no
+/// cards. Only required once a source or output uses a card.
+fn decklink_check(configured: &[ConfiguredSourceDto]) -> CheckDto {
+    let mut c = check(
+        "decklink_driver",
+        CheckGroup::Software,
+        "Blackmagic Desktop Video",
+        "Capturing from and playing out to Decklink cards",
+    );
+    c.used_by = configured
+        .iter()
+        .filter(|s| match &s.config {
+            SourceConfig::Decklink(_) => true,
+            SourceConfig::Channel(cfg) => cfg
+                .outputs
+                .iter()
+                .any(|o| matches!(o, OutputConfig::Decklink { .. })),
+            _ => false,
+        })
+        .map(|s| s.name.clone())
+        .collect();
+    c.required = !c.used_by.is_empty();
+    let Some(reason) = decklink::unavailable(crate::plugins::has) else {
+        c.summary = "Installed.".into();
+        return c;
+    };
+    c.status = CheckStatus::Missing;
+    c.summary = format!("{reason}.");
+    c.fix = Some(if decklink::driver_installed() {
+        CheckFix {
+            steps: "Install GStreamer's decklink plugin (part of gst-plugins-bad), then \
+                    restart the node."
+                .into(),
+            ..Default::default()
+        }
+    } else {
+        CheckFix {
+            steps: "Install Blackmagic Desktop Video on this machine, then restart the node: \
+                    the decklink plugin only looks for the driver once."
+                .into(),
+            link: Some(CheckLink {
+                url: "https://www.blackmagicdesign.com/support/family/capture-and-playback".into(),
+                label: "Download Desktop Video".into(),
+            }),
+            ..Default::default()
+        }
+    });
     c
 }
 
