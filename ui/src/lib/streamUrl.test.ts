@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hostPort, mountPath, param, scheme, srtListens, whepUrl, withParam } from '@/lib/streamUrl'
+import { hostPort, mountPath, param, scheme, srtListens, srtMode, whepUrl, withParam, withSrtMode } from '@/lib/streamUrl'
 
 describe('scheme', () => {
   it('is the lower-cased scheme', () => {
@@ -73,5 +73,24 @@ describe('mountPath', () => {
   })
   it('builds a WHEP URL', () => {
     expect(whepUrl('https://node:7700', null, 'Program')).toBe('https://node:7700/whep/program')
+  })
+})
+
+describe('srtMode and withSrtMode', () => {
+  it('reads the mode', () => {
+    expect(srtMode('srt://:9000')).toBe('listener')
+    expect(srtMode('srt://10.0.0.5:9000')).toBe('caller')
+  })
+
+  it('keeps the port and query, dropping mode', () => {
+    expect(withSrtMode('srt://10.0.0.5:9001?passphrase=secret1234&mode=caller', 'listener')).toBe(
+      'srt://:9001?passphrase=secret1234',
+    )
+    expect(withSrtMode('srt://:9001?latency=200', 'caller', '10.0.0.5')).toBe('srt://10.0.0.5:9001?latency=200')
+  })
+
+  it('fills a placeholder host and port', () => {
+    expect(withSrtMode('srt://', 'caller')).toBe('srt://10.0.0.20:9000')
+    expect(withSrtMode('srt://10.0.0.5', 'listener')).toBe('srt://:9000')
   })
 })

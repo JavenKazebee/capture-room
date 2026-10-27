@@ -6,7 +6,8 @@ import { errorMessage } from '@/composables/useApi'
 import { useCapacityStore } from '@/stores/capacity'
 import { useNodesStore } from '@/stores/nodes'
 import { blankLeg, DEFAULT_PRESET, usePresetsStore } from '@/stores/presets'
-import { CODECS, useReplayStore } from '@/stores/replay'
+import { REPLAY_CODECS } from '@/lib/codecs'
+import { useReplayStore } from '@/stores/replay'
 import { useSourcesStore } from '@/stores/sources'
 import type { ConfiguredSourceDto } from '@/types/generated/ConfiguredSourceDto'
 import type { OutputConfig } from '@/types/generated/OutputConfig'
@@ -70,7 +71,7 @@ function likeChannel(outputs: OutputConfig[]) {
 /** The node's default codec. */
 const codec = ref<ReplayCodec>(replay.codecsOf(props.nodeId)[0] ?? 'prores_proxy')
 const codecOptions = computed(() =>
-  replay.codecsOf(props.nodeId).map((c) => ({ value: c, label: CODECS[c].label })),
+  replay.codecsOf(props.nodeId).map((c) => ({ value: c, label: REPLAY_CODECS[c].label })),
 )
 
 const presetId = ref<string>(DEFAULT_PRESET.id)

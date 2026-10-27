@@ -39,15 +39,6 @@ export type ReplayClipGroup = {
   clips: ReplayClip[]
 }
 
-export const CODECS: Record<ReplayCodec, { label: string; note: string }> = {
-  prores_proxy: { label: 'ProRes 422 Proxy', note: 'About 40 GB an hour at 1080p59.94. Mac only.' },
-  h264_intra: {
-    label: 'H.264, every frame a keyframe',
-    note: "As good a picture as ProRes Proxy's at about 60% of the size: 20–30 GB an hour at 1080p59.94.",
-  },
-  mjpeg: { label: 'Motion JPEG', note: 'About 40–55 GB an hour at 1080p59.94. Any platform.' },
-}
-
 /** Replay buffers on every node (polled while Replay is open) and their commands; channel status lives in the playout store. */
 export const useReplayStore = defineStore('replay', () => {
   const nodes = useNodesStore()

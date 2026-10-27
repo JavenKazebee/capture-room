@@ -10,7 +10,7 @@ import type { OutputConfig } from '@/types/generated/OutputConfig'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import type { ReplayCodec } from '@/types/generated/ReplayCodec'
 import { DEFAULT_PRESET } from '@/stores/presets'
-import { CODECS } from '@/stores/replay'
+import { REPLAY_CODECS } from '@/lib/codecs'
 import { nodeLoadErrors } from '@/lib/loadState'
 import { onReconnect } from '@/lib/reconnect'
 import type { CapacityCheckRequest } from '@/types/generated/CapacityCheckRequest'
@@ -27,7 +27,7 @@ export function capacityWarningText(nodeName: string, load: number): string | nu
 }
 
 /** A channel benchmark's outputs: `NDI + SRT 8 Mb/s`, or `program only`. */
-export function channelOutputsLabel(outputs: OutputConfig[]) {
+function channelOutputsLabel(outputs: OutputConfig[]) {
   const parts = outputs.map((o) =>
     o.type === 'srt' ? `SRT ${+(o.bitrate_kbps / 1000).toFixed(1)} Mb/s` : o.type === 'ndi' ? 'NDI' : o.type,
   )
@@ -37,7 +37,7 @@ export function channelOutputsLabel(outputs: OutputConfig[]) {
 /** What a benchmark run or profile measured: a preset's outputs, replay buffers, or playout channels. */
 export function setupLabel(s: { preset_name: string | null; replay: ReplayCodec | null; channel: OutputConfig[] | null }) {
   if (s.channel) return `Channel · ${channelOutputsLabel(s.channel)}`
-  if (s.replay) return `Replay buffer · ${CODECS[s.replay].label}`
+  if (s.replay) return `Replay buffer · ${REPLAY_CODECS[s.replay].label}`
   return s.preset_name ?? DEFAULT_PRESET.name
 }
 

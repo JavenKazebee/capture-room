@@ -6,7 +6,7 @@ import type { VideoTestPattern } from '@/types/generated/VideoTestPattern'
 import { Input } from '@/components/ui/input'
 import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
-import { AUDIO_CHANNEL_OPTIONS, findFramerate, findResolution, FRAMERATE_OPTIONS, RESOLUTION_OPTIONS } from '@/lib/videoPresets'
+import { AUDIO_CHANNEL_OPTIONS, findFramerate, findResolution, FRAMERATE_OPTIONS, RESOLUTION_OPTIONS } from '@/lib/videoFormats'
 
 /** A synthetic feed: a video pattern plus a test audio signal. */
 const cfg = defineModel<TestSourceConfig>({ required: true })
