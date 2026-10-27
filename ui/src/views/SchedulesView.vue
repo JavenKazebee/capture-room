@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { CalendarClock, ListChecks, Pencil, Plus, Power, PowerOff, Square, Trash2, X } from '@lucide/vue'
+import { CalendarClock, Pencil, Plus, Power, PowerOff, Square, Trash2 } from '@lucide/vue'
 import { registerCommands } from '@/composables/useCommands'
+import { useQueryAction } from '@/composables/useQueryAction'
+import { useTableSelectionCommands } from '@/composables/useTableSelectionCommands'
 import { useSecondClock } from '@/composables/useSecondClock'
 import { useSelection } from '@/composables/useSelection'
 import { bulkToast, runBulk } from '@/lib/bulk'
@@ -75,23 +76,14 @@ watch(
 const editing = ref<ScheduleDto | null | 'new'>(null)
 
 // From the command palette: `?select=<id>` picks a schedule, `?edit=<id>` opens it.
-const route = useRoute()
-const router = useRouter()
-watch(
-  () => [route.query.select, route.query.edit, store.loaded] as const,
-  ([select, edit, loaded]) => {
-    if (!loaded) return
-    const id = typeof select === 'string' ? select : typeof edit === 'string' ? edit : null
-    if (!id) return
-    const s = store.schedules.find((x) => x.id === id)
-    if (s) {
-      selectedId.value = s.id
-      if (edit !== undefined) editing.value = s
-    }
-    router.replace({ query: {} })
-  },
-  { immediate: true },
-)
+useQueryAction(['select', 'edit'], ({ select, edit }) => {
+  const id = typeof select === 'string' ? select : typeof edit === 'string' ? edit : null
+  const s = id ? store.schedules.find((x) => x.id === id) : null
+  if (s) {
+    selectedId.value = s.id
+    if (edit !== undefined) editing.value = s
+  }
+}, { when: () => store.loaded })
 
 registerCommands(() =>
   nodes.isController
@@ -123,19 +115,13 @@ const checkedSchedules = computed(() => store.schedules.filter((s) => checked.se
 const bulkDeleting = ref(false)
 
 const table = ref<{ displayedRows: ScheduleDto[] }>()
-registerCommands(() => !nodes.isController ? [] : [
-  {
-    id: 'schedule:select-all',
-    title: 'Select all schedules shown',
-    group: 'This page',
-    icon: ListChecks,
-    keywords: ['bulk', 'multiple', 'check'],
-    run: () => checked.selectAll((table.value?.displayedRows ?? []).map((s) => s.id)),
-  },
-  ...(checked.count.value
-    ? [{ id: 'schedule:clear-selection', title: 'Clear selection', group: 'This page' as const, icon: X, keywords: ['deselect', 'none'], run: checked.clearSelection }]
-    : []),
-])
+useTableSelectionCommands({
+  id: 'schedule',
+  noun: 'schedules',
+  selection: checked,
+  shown: () => (table.value?.displayedRows ?? []).map((s) => s.id),
+  enabled: () => nodes.isController,
+})
 
 async function bulkDelete() {
   const result = await runBulk(checkedSchedules.value, (s) => store.remove(s.id))

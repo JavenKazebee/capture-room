@@ -10,8 +10,8 @@ import { notifyWarn } from '@/lib/notify'
 import { errorMessage, sourceKey } from '@/composables/useApi'
 import { useNodeDevices } from '@/composables/useNodeDevices'
 import { useNodeDecklink } from '@/composables/useNodeDecklink'
+import { useNodeDisplays } from '@/composables/useNodeDisplays'
 import type { ChannelConfig } from '@/types/generated/ChannelConfig'
-import type { DisplayDto } from '@/types/generated/DisplayDto'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import FormField from '@/components/FormField.vue'
@@ -44,7 +44,12 @@ function blankChannel(): ChannelConfig {
   }
 }
 
-const nodeId = ref(props.editing?.nodeId ?? nodes.self?.node_id ?? nodes.nodes[0]?.id ?? '')
+const defaultNode = () => nodes.self?.node_id ?? nodes.nodes[0]?.id ?? ''
+const nodeId = ref(props.editing?.nodeId ?? defaultNode())
+// Opened by a deep link on a fresh page load, the sheet comes up before the node list does.
+watch(defaultNode, (id) => {
+  if (!nodeId.value) nodeId.value = id
+})
 const name = ref('')
 const channel = ref<ChannelConfig>(blankChannel())
 const loading = ref(!!props.editing)
@@ -79,24 +84,9 @@ const unavailable = computed(() => {
 
 const devices = useNodeDevices(nodeId)
 const decklink = useNodeDecklink(nodeId)
-const displays = ref<DisplayDto[]>([])
-
-/** The node's screens and audio outputs, for display outputs. */
-function refreshScreens() {
-  devices.refresh()
-  const id = nodeId.value
-  if (!id) return
-  sources
-    .listDisplays(id)
-    .then((d) => {
-      if (nodeId.value === id) displays.value = d
-    })
-    .catch(() => (displays.value = []))
-}
-watch(nodeId, refreshScreens)
+const { displays } = useNodeDisplays(nodeId)
 
 onMounted(async () => {
-  refreshScreens()
   if (!props.editing) return
   try {
     const cfg = await sources.getConfig(props.editing.nodeId, props.editing.id)

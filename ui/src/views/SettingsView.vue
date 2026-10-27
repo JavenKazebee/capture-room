@@ -1,18 +1,15 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { computed, ref, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import { AlertTriangle, RotateCcw } from '@lucide/vue'
-import { api, nodeApi } from '@/composables/useApi'
 import { usePreferences } from '@/composables/usePreferences'
+import { useUnsavedGuard } from '@/composables/useUnsavedGuard'
 import { formatFingerprint, formatUptime, plural } from '@/lib/format'
-import { loadState, nodeLoadErrors } from '@/lib/loadState'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
+import { useSettingsStore } from '@/stores/settings'
 import type { ClockMode } from '@/types/generated/ClockMode'
-import type { ControllerClockDto } from '@/types/generated/ControllerClockDto'
 import type { MonitorSettingsDto } from '@/types/generated/MonitorSettingsDto'
-import type { NodeSettingsDto } from '@/types/generated/NodeSettingsDto'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -21,36 +18,21 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import KeyValueList from '@/components/common/KeyValueList.vue'
 import LoadError from '@/components/common/LoadError.vue'
 import AccessTokenSettings from '@/components/auth/AccessTokenSettings.vue'
-import type { UpdateNodeSettingsRequest } from '@/types/generated/UpdateNodeSettingsRequest'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 
 const { colorMode, density } = usePreferences()
 const nodes = useNodesStore()
-
-/** Each reachable node's monitoring settings, as last read. */
-const nodeMonitors = reactive(new Map<string, MonitorSettingsDto>())
-const monitorErrors = nodeLoadErrors()
-
-async function loadNodeMonitors() {
-  const ids = nodes.reachable.map((n) => n.id)
-  for (const id of nodeMonitors.keys()) if (!ids.includes(id)) nodeMonitors.delete(id)
-  monitorErrors.prune(ids)
-  await Promise.all(
-    ids.map(async (id) => {
-      const s = await monitorErrors.track(id, () => nodeApi(id)<NodeSettingsDto>('/settings'))
-      if (s) nodeMonitors.set(id, s.monitor)
-    }),
-  )
-}
+const settings = useSettingsStore()
 
 /** Without this node's settings there's nothing to edit; without a peer's, its drift is unknown. */
 const monitorError = computed(
-  () => (!nodes.self && nodes.error) || monitorErrors.message('settings', nodes.nameOf),
+  () => (!nodes.self && nodes.error) || settings.monitorErrors.message('settings', nodes.nameOf),
 )
-const retryMonitoring = () => (nodes.self ? loadNodeMonitors() : nodes.load())
+const retryMonitoring = () => (nodes.self ? settings.loadMonitors() : nodes.load())
 
 // `nodes.load()` replaces the list on every node event, including another
 // client changing settings, so this keeps the drift check current.
-watch(() => nodes.nodes, loadNodeMonitors, { immediate: true })
+watch(() => nodes.nodes, settings.loadMonitors, { immediate: true })
 
 /** What this node uses: the baseline the draft is compared to. */
 const current = computed(() => nodes.self?.monitor ?? null)
@@ -74,7 +56,7 @@ watch(current, (m) => {
 /** Reachable nodes whose settings differ from this one's. */
 const drifted = computed(() =>
   nodes.reachable.filter((n) => {
-    const m = nodeMonitors.get(n.id)
+    const m = settings.monitorFor(n.id)
     return m && current.value && !same(m, current.value)
   }),
 )
@@ -87,33 +69,21 @@ function revert() {
 async function apply() {
   if (!draft.value || saving.value) return
   saving.value = true
-  const monitor = draft.value
-  const targets = nodes.reachable
   try {
-    const results = await Promise.allSettled(
-      targets.map((n) => nodeApi(n.id)<NodeSettingsDto>('/settings', { method: 'PUT', body: { name: null, monitor } satisfies UpdateNodeSettingsRequest })),
-    )
-    results.forEach((r, i) => {
-      if (r.status === 'fulfilled') nodeMonitors.set(targets[i]!.id, r.value.monitor)
-    })
-    const selfResult = results.find((r, i) => r.status === 'fulfilled' && targets[i]!.is_self)
-    if (selfResult?.status === 'fulfilled' && nodes.self) nodes.self.monitor = selfResult.value.monitor
+    const { applied, failed } = await settings.applyMonitor(draft.value)
     // The server clamps values; show what it actually stored.
     if (current.value) draft.value = { ...current.value }
-
-    const failed = targets.filter((_, i) => results[i]!.status === 'rejected')
     if (!failed.length) {
-      toast.success(targets.length > 1 ? `Monitoring applied to ${targets.length} nodes` : 'Monitoring applied')
+      toast.success(applied > 1 ? `Monitoring applied to ${applied} nodes` : 'Monitoring applied')
     } else {
-      const first = results.find((r) => r.status === 'rejected') as PromiseRejectedResult
-      notifyError(`Couldn't apply monitoring to ${failed.map((n) => n.name).join(', ')}`, first.reason)
+      notifyError(`Couldn't apply monitoring to ${failed.map((f) => f.name).join(', ')}`, failed[0]!.error)
     }
   } finally {
     saving.value = false
   }
 }
 
-onBeforeRouteLeave(() => !dirty.value || confirm('Discard unapplied monitoring changes?'))
+const { confirmOpen: confirmLeave, discard: discardAndLeave } = useUnsavedGuard(dirty)
 
 /** The fixed choices, plus the current value if it was set to something else (e.g. via the API). */
 function withValue<T extends string | number>(opts: { value: T; label: string }[], value: T | undefined, label: (v: T) => string) {
@@ -151,28 +121,22 @@ const meterRates = computed(() =>
   withValue([50, 100, 200, 500].map((v) => ({ value: v, label: msLabel(v) })), draft.value?.level_interval_ms, msLabel),
 )
 
-/** `null` until loaded, or while this instance isn't a controller. */
-const clockSettings = ref<ControllerClockDto | null>(null)
-const clockLoad = loadState('clock settings')
-const clockError = computed(() => (nodes.isController ? clockLoad.error.value : null))
+const clockSettings = computed(() => settings.clock)
+const clockError = computed(() => (nodes.isController ? settings.clockError : null))
 const ptpDomain = ref(0)
 const savingClock = ref(false)
 
-async function loadClock() {
-  if (!nodes.isController) {
-    clockSettings.value = null
-    return
-  }
-  const clock = await clockLoad.track(() => api<ControllerClockDto>('/controller/clock'))
-  if (clock) clockSettings.value = clock
-  if (clockSettings.value?.mode.kind === 'ptp') ptpDomain.value = clockSettings.value.mode.domain
-}
-watch(() => nodes.nodes, loadClock, { immediate: true })
+const loadClock = () => settings.loadClock()
+// `nodes.self`, which says whether this is a controller, arrives after the node list.
+watch([() => nodes.nodes, () => nodes.isController], loadClock, { immediate: true })
+watch(clockSettings, (c) => {
+  if (c?.mode.kind === 'ptp') ptpDomain.value = c.mode.domain
+}, { immediate: true })
 
 async function setClockMode(mode: ClockMode) {
   savingClock.value = true
   try {
-    clockSettings.value = await api<ControllerClockDto>('/controller/clock', { method: 'PUT', body: mode })
+    await settings.setClockMode(mode)
     toast.success('Clock mode changed; nodes switch once the new clock syncs')
   } catch (e) {
     notifyError("Couldn't change the clock mode", e)
@@ -392,5 +356,13 @@ const about = computed(() => [
         </p>
       </div>
     </section>
+
+    <ConfirmDialog
+      v-model:open="confirmLeave"
+      title="Discard unapplied changes?"
+      description="Your monitoring changes haven't been applied."
+      confirm-label="Discard"
+      @confirm="discardAndLeave"
+    />
   </div>
 </template>
