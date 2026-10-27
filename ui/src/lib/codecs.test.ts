@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { defaultAdvanced } from '@/lib/advanced'
 import {
   applyPattern,
+  withRoot,
   browserPlayable,
   clashingLegs,
   containerOptions,
@@ -267,5 +268,19 @@ describe('clashingLegs', () => {
   it('compares split legs by their first file', () => {
     const t = '~/rec/{source}_001.{ext}'
     expect(clashingLegs([leg({}, { split_minutes: 15 }), leg({ path_template: t })])).toEqual(new Set([0, 1]))
+  })
+})
+
+describe('withRoot', () => {
+  it('swaps the token-free folders and keeps the rest', () => {
+    expect(withRoot('~/capture-room/{date}/{source}.{ext}', '/Volumes/Media')).toBe('/Volumes/Media/{date}/{source}.{ext}')
+    expect(withRoot('/rec/show/{source}.{ext}', '/Volumes/Media/')).toBe('/Volumes/Media/{source}.{ext}')
+    expect(withRoot('{source}.{ext}', '/srv')).toBe('/srv/{source}.{ext}')
+    expect(withRoot('~/rec/{date}/{source}.{ext}', '/')).toBe('/{date}/{source}.{ext}')
+  })
+
+  it('writes Windows folders with forward slashes', () => {
+    expect(withRoot('~/rec/{source}.{ext}', 'D:\\')).toBe('D:/{source}.{ext}')
+    expect(withRoot('~/rec/{source}.{ext}', 'D:\\Shows\\Live')).toBe('D:/Shows/Live/{source}.{ext}')
   })
 })

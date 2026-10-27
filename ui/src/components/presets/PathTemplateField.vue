@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { ChevronDown } from '@lucide/vue'
+import { ChevronDown, FolderOpen } from '@lucide/vue'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import {
   EXT_SUFFIX,
@@ -10,7 +10,9 @@ import {
   expandPath,
   joinTemplate,
   splitTemplate,
+  templateRoot,
   withExtToken,
+  withRoot,
 } from '@/lib/codecs'
 import {
   DropdownMenu,
@@ -22,6 +24,10 @@ import {
 import HelpTip from '@/components/common/HelpTip.vue'
 import { FIELD_HELP } from '@/lib/fieldHelp'
 import TokenInput from '@/components/presets/TokenInput.vue'
+import FolderBrowseDialog from '@/components/presets/FolderBrowseDialog.vue'
+import { Button } from '@/components/ui/button'
+import { useFolderCheck } from '@/composables/useFolderCheck'
+import { useNodesStore } from '@/stores/nodes'
 
 /**
  * One `path_template` edited as folder and file name, the extension from the container.
@@ -34,6 +40,8 @@ const props = defineProps<{
   multipleOutputs: boolean
   /** Example values for the preview. */
   preview: { source: string; sourceName: string; node: string; preset: string }
+  /** Nodes that record with this preset, checked for the folder. */
+  nodeIds?: string[]
 }>()
 const leg = defineModel<PresetOutputInput>({ required: true })
 
@@ -102,6 +110,19 @@ function usePattern(path: string) {
   single.value = false
 }
 
+/** The folders before the first token: what the browse button opens and other nodes must have. */
+const root = computed(() => templateRoot(template.value))
+const browsing = ref(false)
+
+/** A picked folder replaces the root; token folders and the name below it stay. */
+function pickFolder(path: string) {
+  template.value = withRoot(template.value, path)
+}
+
+const nodes = useNodesStore()
+const { missing } = useFolderCheck(root, () => props.nodeIds ?? [])
+const missingNames = computed(() => missing.value.map((id) => nodes.nameOf(id)).join(', '))
+
 const previewPath = computed(() => expandPath(leg.value, props.preview))
 const invalid = computed(() => !!props.problem || props.clash)
 </script>
@@ -130,7 +151,14 @@ const invalid = computed(() => !!props.problem || props.clash)
     </div>
 
     <template v-if="single">
-      <TokenInput v-model="template" :groups="PATH_TOKEN_GROUPS" :invalid="invalid" aria-label="Path template" />
+      <div class="flex items-center gap-1">
+        <div class="flex-1 min-w-0">
+          <TokenInput v-model="template" :groups="PATH_TOKEN_GROUPS" :invalid="invalid" aria-label="Path template" />
+        </div>
+        <Button variant="outline" size="icon" class="shrink-0" title="Browse for a folder on a node" aria-label="Browse for a folder" @click="browsing = true">
+        <FolderOpen />
+      </Button>
+      </div>
       <span v-if="extWillChange" class="text-[11px] text-muted-foreground">
         This path doesn't end in {{ EXT_SUFFIX }}. Splitting it sets the extension from the container.
       </span>
@@ -138,14 +166,21 @@ const invalid = computed(() => !!props.problem || props.clash)
     <div v-else class="grid gap-2 lg:grid-cols-2">
       <label class="flex flex-col gap-1 min-w-0">
         <span class="text-[11px] text-muted-foreground">Folder</span>
-        <TokenInput
-          :model-value="folder"
-          :groups="splitGroups"
-          :invalid="invalid"
-          placeholder="~/capture-room/{date}"
-          aria-label="Folder"
-          @update:model-value="setFolder"
-        />
+        <div class="flex items-center gap-1">
+          <div class="flex-1 min-w-0">
+            <TokenInput
+              :model-value="folder"
+              :groups="splitGroups"
+              :invalid="invalid"
+              placeholder="~/capture-room/{date}"
+              aria-label="Folder"
+              @update:model-value="setFolder"
+            />
+          </div>
+          <Button variant="outline" size="icon" class="shrink-0" title="Browse for a folder on a node" aria-label="Browse for a folder" @click="browsing = true">
+            <FolderOpen />
+          </Button>
+        </div>
       </label>
       <label class="flex flex-col gap-1 min-w-0">
         <span class="text-[11px] text-muted-foreground">File name</span>
@@ -169,5 +204,10 @@ const invalid = computed(() => !!props.problem || props.clash)
     <span v-if="clash" class="text-[11px] text-destructive">
       Another output writes the same file — vary the path, container, or include {output}.
     </span>
+    <span v-if="missing.length" class="text-[11px] text-warning">
+      {{ root }} isn't on {{ missingNames }}, which {{ missing.length === 1 ? 'uses' : 'use' }} this preset. Recording there tries to create it.
+    </span>
+
+    <FolderBrowseDialog v-if="browsing" :start="root" @close="browsing = false" @select="pickFolder" />
   </div>
 </template>

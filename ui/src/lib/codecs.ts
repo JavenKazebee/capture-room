@@ -228,6 +228,16 @@ export function templateRoot(t: string) {
   return root || (folder.startsWith('/') ? '/' : '~/capture-room')
 }
 
+/** `t` with its root swapped for `root` (a picked folder), keeping the folders and name below it. */
+export function withRoot(t: string, root: string) {
+  const { folder, file } = splitTemplate(t)
+  const parts = folder.split('/')
+  const i = parts.findIndex((p) => p.includes('{'))
+  // Windows takes `/` too, and the template is split on it.
+  const dir = (/^[A-Za-z]:/.test(root) ? root.replace(/\\/g, '/') : root).replace(/\/+$/, '')
+  return [dir, ...(i < 0 ? [] : parts.slice(i)), file].join('/')
+}
+
 /** A pattern applied below `t`'s root; several outputs also get `{output}` so they don't clash. */
 export function applyPattern(t: string, path: string, multipleOutputs: boolean) {
   const root = templateRoot(t)

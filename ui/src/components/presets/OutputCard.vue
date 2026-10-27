@@ -40,6 +40,8 @@ const props = defineProps<{
   clash: boolean
   /** Example values for the path preview. */
   preview: { source: string; sourceName: string; node: string; preset: string }
+  /** Nodes that record with this preset. */
+  nodeIds?: string[]
 }>()
 const leg = defineModel<PresetOutputInput>({ required: true })
 defineEmits<{ remove: []; duplicate: []; move: [dir: -1 | 1]; preview: [] }>()
@@ -270,6 +272,7 @@ const framerate = computed({
           :problem="problems.path"
           :multiple-outputs="count > 1"
           :preview="preview"
+          :node-ids="nodeIds"
         />
 
         <FormField v-if="playable" label="Preview in Recordings" :help="FIELD_HELP.preview" class="col-span-2">

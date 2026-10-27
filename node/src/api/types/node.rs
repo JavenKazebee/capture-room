@@ -163,3 +163,43 @@ pub struct StorageVolumeDto {
     #[cfg_attr(feature = "export-types", ts(type = "number | null"))]
     pub seconds_left: Option<u64>,
 }
+
+/// What a folder in [`FolderListingDto`] is, for its icon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum FolderKind {
+    Folder,
+    Home,
+    /// The node's own folder for recordings, replay buffers and clips.
+    Storage,
+    Volume,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct FolderDto {
+    pub name: String,
+    pub path: String,
+    pub kind: FolderKind,
+}
+
+/// A folder's subfolders on the node, for picking where recordings go.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct FolderListingDto {
+    /// `None` for the roots: home, the storage folder and the volumes.
+    pub path: Option<String>,
+    /// `None` at a filesystem root and for the roots.
+    pub parent: Option<String>,
+    /// Sorted by name; hidden folders are left out.
+    pub folders: Vec<FolderDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct CreateFolderRequest {
+    /// The folder to create it in.
+    pub parent: String,
+    pub name: String,
+}

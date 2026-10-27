@@ -1,4 +1,5 @@
-//! Storage volumes this node can record to, and browsing for media files.
+//! Storage volumes this node can record to, and browsing for media files and
+//! for folders to record into.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -6,7 +7,10 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use sysinfo::Disks;
 
-use crate::api::types::{DirEntryDto, DirListingDto, StorageVolumeDto};
+use crate::api::types::{
+    DirEntryDto, DirListingDto, FolderDto, FolderKind, FolderListingDto, StorageVolumeDto,
+};
+use crate::pipeline::profile::expand_home;
 use crate::sources::file::MEDIA_EXTENSIONS;
 
 pub const DEFAULT_FOLDER: &str = "capture-room";
@@ -227,6 +231,112 @@ pub fn list_dir(dir: Option<&str>) -> Result<DirListingDto> {
     })
 }
 
+/// Where browsing for a folder starts: home, the storage folder, then the
+/// volumes. Blocking.
+pub fn folder_roots() -> Vec<FolderDto> {
+    let mut roots = Vec::new();
+    let folder = |name: String, path: &Path, kind| FolderDto {
+        name,
+        path: path.display().to_string(),
+        kind,
+    };
+    if let Some(home) = std::env::home_dir() {
+        roots.push(folder("Home".into(), &home, FolderKind::Home));
+    }
+    let storage = default_folder();
+    if storage.is_dir() {
+        roots.push(folder(DEFAULT_FOLDER.into(), &storage, FolderKind::Storage));
+    }
+    roots.extend(
+        volume_paths()
+            .into_iter()
+            .map(|(name, path)| folder(name, &path, FolderKind::Volume)),
+    );
+    roots
+}
+
+/// macOS mounts every volume, the startup disk included, under `/Volumes`;
+/// [`list_volumes`] would name the startup disk by its `/System/Volumes/Data`
+/// firmlink instead.
+#[cfg(target_os = "macos")]
+fn volume_paths() -> Vec<(String, PathBuf)> {
+    let Ok(dir) = std::fs::read_dir("/Volumes") else {
+        return Vec::new();
+    };
+    let mut volumes: Vec<(String, PathBuf)> = dir
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
+        .filter(|(name, _)| !name.starts_with('.'))
+        .collect();
+    volumes.sort_by_key(|(name, _)| name.to_lowercase());
+    volumes
+}
+
+/// Mount points on Linux, drive letters on Windows.
+#[cfg(not(target_os = "macos"))]
+fn volume_paths() -> Vec<(String, PathBuf)> {
+    list_volumes()
+        .into_iter()
+        .map(|v| {
+            let path = PathBuf::from(&v.mount_point);
+            let name = path
+                .file_name()
+                .map_or(v.mount_point.clone(), |n| n.to_string_lossy().into_owned());
+            (name, path)
+        })
+        .collect()
+}
+
+/// The subfolders of `dir` (absolute, or from `~`), never its files.
+/// Blocking.
+pub fn list_folders(dir: &str) -> Result<FolderListingDto> {
+    let dir = expand_home(dir);
+    if !dir.is_absolute() {
+        bail!("path must be absolute");
+    }
+    let mut folders = Vec::new();
+    for entry in std::fs::read_dir(&dir).with_context(|| format!("can't read {}", dir.display()))? {
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Follows symlinks, so a linked folder lists like a folder.
+        if name.starts_with('.') || !entry.path().is_dir() {
+            continue;
+        }
+        folders.push(FolderDto {
+            name,
+            path: entry.path().display().to_string(),
+            kind: FolderKind::Folder,
+        });
+    }
+    folders.sort_by_key(|f| f.name.to_lowercase());
+    Ok(FolderListingDto {
+        path: Some(dir.display().to_string()),
+        parent: dir.parent().map(|p| p.display().to_string()),
+        folders,
+    })
+}
+
+/// Create the folder `name` in `parent`. One level only, and not one that's
+/// already there. Blocking.
+pub fn create_folder(parent: &str, name: &str) -> Result<FolderDto> {
+    let parent = expand_home(parent);
+    if !parent.is_absolute() {
+        bail!("path must be absolute");
+    }
+    let name = name.trim();
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', '\0']) {
+        bail!("{name:?} isn't a folder name");
+    }
+    let path = parent.join(name);
+    std::fs::create_dir(&path).with_context(|| format!("can't create {}", path.display()))?;
+    Ok(FolderDto {
+        name: name.to_string(),
+        path: path.display().to_string(),
+        kind: FolderKind::Folder,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +377,82 @@ mod tests {
             vol("", "F:\\"),
         ]);
         assert_eq!(merged.len(), 3);
+    }
+
+    /// A fresh empty folder in the temp dir, removed when dropped.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("capture-room-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn path(&self) -> String {
+            self.0.display().to_string()
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn lists_only_visible_folders() {
+        let tmp = TempDir::new("list-folders");
+        for dir in ["b", "A", ".hidden"] {
+            std::fs::create_dir(tmp.0.join(dir)).unwrap();
+        }
+        std::fs::write(tmp.0.join("clip.mov"), b"").unwrap();
+        let listing = list_folders(&tmp.path()).unwrap();
+        let names: Vec<_> = listing.folders.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["A", "b"]);
+        assert_eq!(
+            listing.folders[1].path,
+            tmp.0.join("b").display().to_string()
+        );
+        assert_eq!(listing.path.as_deref(), Some(tmp.path().as_str()));
+        assert_eq!(
+            listing.parent.as_deref(),
+            tmp.0.parent().map(|p| p.display().to_string()).as_deref()
+        );
+    }
+
+    #[test]
+    fn missing_or_relative_folders_fail() {
+        let tmp = TempDir::new("list-missing");
+        let err = list_folders(&tmp.0.join("nope").display().to_string()).unwrap_err();
+        let io = err.downcast_ref::<std::io::Error>().unwrap();
+        assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
+        assert!(list_folders("relative/dir").is_err());
+    }
+
+    #[test]
+    fn creates_one_folder() {
+        let tmp = TempDir::new("create-folder");
+        let made = create_folder(&tmp.path(), " Show 1 ").unwrap();
+        assert_eq!(made.name, "Show 1");
+        assert!(tmp.0.join("Show 1").is_dir());
+        // Already there.
+        assert!(create_folder(&tmp.path(), "Show 1").is_err());
+        for bad in ["", " ", ".", "..", "a/b", "a\\b", "../up"] {
+            assert!(create_folder(&tmp.path(), bad).is_err(), "{bad:?}");
+        }
+        assert!(create_folder("relative", "x").is_err());
+    }
+
+    #[test]
+    fn roots_start_with_home() {
+        let roots = folder_roots();
+        if let Some(home) = std::env::home_dir() {
+            assert_eq!(roots[0].kind, FolderKind::Home);
+            assert_eq!(roots[0].path, home.display().to_string());
+        }
+        assert!(roots.iter().any(|r| r.kind == FolderKind::Volume));
     }
 }
