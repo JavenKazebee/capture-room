@@ -1,5 +1,6 @@
-use crate::api::types::{ChannelConfig, OutputConfig};
+use crate::api::types::{ChannelConfig, ConfiguredSourceDto, OutputConfig};
 use crate::pipeline::{output, rtsp, whep};
+use crate::sources::device::LocalDevices;
 use crate::sources::{decklink, stream};
 
 /// Check a config before it's saved. `others` are the node's other channels,
@@ -114,6 +115,31 @@ pub fn validate(
         |n| format!("two outputs are both called {n}"),
         |n, other| format!("NDI name {n} is already used by {other}"),
     )?;
+    Ok(())
+}
+
+/// Check channel `name`'s outputs against the node's devices: its Decklink
+/// sub-devices (free, or used by this channel `id`, as `configs` say) and
+/// its displays' audio outputs.
+pub fn validate_devices(
+    cfg: &ChannelConfig,
+    name: &str,
+    id: Option<&str>,
+    devices: &LocalDevices,
+    configs: &[ConfiguredSourceDto],
+) -> Result<(), String> {
+    decklink::validate_outputs(&cfg.outputs, devices, id, name, configs)?;
+    for o in &cfg.outputs {
+        if let OutputConfig::Display {
+            audio_device: Some(key),
+            ..
+        } = o
+        {
+            if !key.is_empty() && !devices.has_output(key) {
+                return Err(format!("audio output {key} isn't connected"));
+            }
+        }
+    }
     Ok(())
 }
 

@@ -8,7 +8,7 @@ use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use gstreamer::{self as gst, glib, prelude::*};
 
-use super::device::LocalDevices;
+use super::device::{self, LocalDevices};
 use super::live::{self, LinkTracker, LiveInput};
 use super::InputSource;
 use crate::api::types::{LinkState, SourceCapabilitiesDto, SourceType, WhipSourceConfig};
@@ -210,7 +210,12 @@ fn authorized(headers: &HeaderMap, token: &str) -> bool {
         .is_some_and(|p| crate::auth::constant_time_eq(p.trim().as_bytes(), token.as_bytes()))
 }
 
-pub fn validate(cfg: &WhipSourceConfig) -> Result<(), String> {
+/// Check a config before it's saved, making a token if it has none.
+pub fn validate(cfg: &mut WhipSourceConfig, devices: &LocalDevices) -> Result<(), String> {
+    cfg.token = cfg.token.trim().to_string();
+    if cfg.token.is_empty() {
+        cfg.token = crate::auth::new_token();
+    }
     if cfg.port < 1024 {
         return Err("use a port from 1024 up".into());
     }
@@ -223,7 +228,8 @@ pub fn validate(cfg: &WhipSourceConfig) -> Result<(), String> {
     {
         return Err("the token needs 16 to 128 letters, digits or -._~+/=".into());
     }
-    live::validate_format(cfg.format.as_ref())
+    live::validate_format(cfg.format.as_ref())?;
+    device::validate_audio(&cfg.audio, devices)
 }
 
 #[cfg(test)]
@@ -247,13 +253,20 @@ mod tests {
                 fps_den,
             }),
         };
-        assert!(validate(&cfg(1)).is_ok());
-        assert!(validate(&cfg(0)).is_err());
-        let short = WhipSourceConfig {
+        gst::init().unwrap();
+        let devices = LocalDevices::none();
+        assert!(validate(&mut cfg(1), &devices).is_ok());
+        assert!(validate(&mut cfg(0), &devices).is_err());
+        let mut short = WhipSourceConfig {
             token: "short".into(),
             ..cfg(1)
         };
-        assert!(validate(&short).is_err());
+        assert!(validate(&mut short, &devices).is_err());
+        let mut blank = WhipSourceConfig {
+            token: " ".into(),
+            ..cfg(1)
+        };
+        assert!(validate(&mut blank, &devices).is_ok(), "a token is made");
     }
 
     /// `whipclientsink` blocks on its own runtime while changing state.

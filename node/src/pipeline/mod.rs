@@ -15,6 +15,7 @@ pub mod profile;
 pub mod recording;
 pub mod replay;
 pub mod rtsp;
+pub mod timecode;
 pub mod whep;
 
 use std::sync::atomic::{AtomicU64, Ordering};

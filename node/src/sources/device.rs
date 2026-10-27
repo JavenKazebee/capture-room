@@ -7,7 +7,7 @@ use tracing::warn;
 
 use super::decklink::{is_decklink, Profiles};
 use super::live::{self, LinkTracker, LiveAudio, LiveInput};
-use super::InputSource;
+use super::{add_ghost_pad, InputSource};
 use crate::api::types::{
     AudioPlan, DeviceDto, DeviceKind, DeviceMode, DeviceSourceConfig, LinkState, LiveVideoFormat,
     SourceCapabilitiesDto, SourceType,
@@ -51,6 +51,15 @@ impl LocalDevices {
         }
         Self {
             monitor,
+            decklink_profiles: Profiles::default(),
+        }
+    }
+
+    /// No devices: a monitor that's never started.
+    #[cfg(test)]
+    pub fn none() -> Self {
+        Self {
+            monitor: gst::DeviceMonitor::new(),
             decklink_profiles: Profiles::default(),
         }
     }
@@ -446,13 +455,7 @@ fn capture_bin(
     }
     bin.add_many(&chain).context("add device capture")?;
     gst::Element::link_many(&chain).context("link device capture")?;
-    let last = chain.last().expect("chain has elements");
-    let pad = last.static_pad("src").context("device capture src pad")?;
-    let ghost = gst::GhostPad::builder_with_target(&pad)
-        .map_err(|e| anyhow!("device ghost pad: {e}"))?
-        .name("src")
-        .build();
-    bin.add_pad(&ghost).context("add device ghost pad")?;
+    add_ghost_pad(&bin, chain.last().expect("chain has elements"), "src")?;
     Ok(bin.upcast())
 }
 
@@ -568,7 +571,7 @@ pub fn validate(cfg: &mut DeviceSourceConfig, devices: &LocalDevices) -> Result<
 }
 
 /// Check an audio plan against the node's devices.
-pub fn validate_audio(plan: &AudioPlan, devices: &LocalDevices) -> Result<(), String> {
+pub(super) fn validate_audio(plan: &AudioPlan, devices: &LocalDevices) -> Result<(), String> {
     match plan {
         AudioPlan::Source { channels } | AudioPlan::Silence { channels } => {
             if !(1..=64).contains(channels) {
