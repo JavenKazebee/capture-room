@@ -107,6 +107,11 @@ describe('parseFramerate', () => {
     expect(parseFramerate('12.5')).toEqual([25, 2])
     expect(parseFramerate('0.25')).toEqual([1, 4])
   })
+  it('never reads a rate as zero fps', () => {
+    expect(parseFramerate('0.004')).toEqual([1, 250])
+    expect(parseFramerate('0.0004')).toBeNull()
+    expect(parseFramerate('0.0000000001')).toBeNull()
+  })
   it('rejects zero, negatives, out-of-range and junk', () => {
     for (const bad of ['', 'abc', '0', '0.0', '-30', '30/0', '0/1', '1.5/2', '1000.5', '.', '1e3', '29.97fps']) expect(parseFramerate(bad), bad).toBeNull()
   })

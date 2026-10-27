@@ -888,11 +888,11 @@ fn parse_framerate(s: &str) -> Option<(u32, u32)> {
             .ok()
             .filter(|f: &f64| f.is_finite() && *f > 0.0 && *f <= 1000.0)?;
         let whole = fps.round();
-        if (fps - whole).abs() < 1e-9 {
+        if whole > 0.0 && (fps - whole).abs() < 1e-9 {
             return Some((whole as u32, 1));
         }
         let ntsc = (fps * 1.001).round();
-        if (fps - ntsc * 1000.0 / 1001.0).abs() < 0.006 {
+        if ntsc > 0.0 && (fps - ntsc * 1000.0 / 1001.0).abs() < 0.006 {
             return Some((ntsc as u32 * 1000, 1001));
         }
         let milli = (fps * 1000.0).round() as u32;
@@ -941,6 +941,10 @@ mod tests {
         assert_eq!(parse_framerate("abc"), None);
         assert_eq!(parse_framerate("-29.97"), None);
         assert_eq!(parse_framerate("30/0"), None);
+        // Rates that round to zero fps.
+        assert_eq!(parse_framerate("0.004"), Some((1, 250)));
+        assert_eq!(parse_framerate("0.0004"), None);
+        assert_eq!(parse_framerate("0.0000000001"), None);
     }
 
     #[test]

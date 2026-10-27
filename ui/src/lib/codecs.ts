@@ -121,9 +121,9 @@ export function parseFramerate(input: string): [number, number] | null {
     const fps = Number(s)
     if (!Number.isFinite(fps) || fps <= 0 || fps > 1000) return null
     const whole = Math.round(fps)
-    if (Math.abs(fps - whole) < 1e-9) return [whole, 1]
+    if (whole > 0 && Math.abs(fps - whole) < 1e-9) return [whole, 1]
     const ntsc = Math.round(fps * 1.001)
-    if (Math.abs(fps - (ntsc * 1000) / 1001) < 0.006) return [ntsc * 1000, 1001]
+    if (ntsc > 0 && Math.abs(fps - (ntsc * 1000) / 1001) < 0.006) return [ntsc * 1000, 1001]
     const milli = Math.round(fps * 1000)
     const g = gcd(milli, 1000)
     return milli > 0 ? [milli / g, 1000 / g] : null
