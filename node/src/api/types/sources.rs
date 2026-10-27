@@ -219,8 +219,9 @@ impl Default for AudioPlan {
     }
 }
 
-/// A capture device on the node (a webcam, an HDMI/USB capture card, or on
-/// macOS and Windows a screen), with audio from another device or silence.
+/// A capture device on the node (a webcam, an HDMI/USB capture card, or a
+/// screen; on Linux only in an X11 session), with audio from another device
+/// or silence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct DeviceSourceConfig {

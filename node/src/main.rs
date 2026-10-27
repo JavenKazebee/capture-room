@@ -175,6 +175,8 @@ async fn run(
     // Before the WebRTC elements list the encoders they can use.
     pipeline::whep::hide_unsupported_encoders();
     gstrswebrtc::plugin_register_static().context("couldn't register the WebRTC plugin")?;
+    #[cfg(target_os = "linux")]
+    sources::x11::register().context("couldn't register the X11 screen provider")?;
     plugins::check_required_plugins(bundled_gst.is_some())?;
     let pool = db::init(&args.db).await?;
 
