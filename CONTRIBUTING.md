@@ -2,7 +2,8 @@
 
 Bug reports, fixes and features are welcome. For anything bigger than a fix, open an
 issue first so we can agree on the shape. Each module's `//!` docs explain its design;
-[ROADMAP.md](ROADMAP.md) is the planned work.
+planned work is in the
+[issues](https://github.com/JavenKazebee/capture-room/issues), by milestone.
 
 Security problems: see [SECURITY.md](SECURITY.md), not the issue tracker.
 

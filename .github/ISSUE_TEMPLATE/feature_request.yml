@@ -4,7 +4,7 @@ labels: [enhancement]
 body:
   - type: markdown
     attributes:
-      value: Check [ROADMAP.md](https://github.com/JavenKazebee/capture-room/blob/main/ROADMAP.md) first; it may already be planned.
+      value: Search the [open issues](https://github.com/JavenKazebee/capture-room/issues) first; it may already be planned.
   - type: textarea
     id: problem
     attributes:
