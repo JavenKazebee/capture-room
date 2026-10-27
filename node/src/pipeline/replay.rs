@@ -647,6 +647,7 @@ pub fn export(
         .add_many([&src, &mux, &sink])
         .context("add export elements")?;
     mux.link(&sink).context("link qtmux")?;
+    let (started_tx, started) = std::sync::mpsc::channel::<()>();
     let mux_weak = mux.downgrade();
     src.connect_pad_added(move |_, pad| {
         let Some(mux) = mux_weak.upgrade() else {
@@ -660,6 +661,18 @@ pub fn export(
         } else {
             return;
         };
+        // Ahead of the gate, which drops the part's own segment.
+        let started_tx = started_tx.clone();
+        pad.add_probe(
+            gst::PadProbeType::EVENT_DOWNSTREAM,
+            move |_, info| match info.event().map(|e| e.type_()) {
+                Some(gst::EventType::Segment) => {
+                    let _ = started_tx.send(());
+                    gst::PadProbeReturn::Remove
+                }
+                _ => gst::PadProbeReturn::Ok,
+            },
+        );
         gate(pad, from);
         match mux.request_pad_simple(template) {
             Some(sink) => {
@@ -688,6 +701,21 @@ pub fn export(
             .map_err(|_| anyhow!("the clip's files can't be read"))?;
         let (changed, _, _) = pipeline.state(gst::ClockTime::from_seconds(10));
         changed.map_err(|_| anyhow!("the clip's files can't be read"))?;
+        // splitmuxsrc (seen in 1.24) reports PAUSED before it starts its
+        // first part. A seek that lands while it does can miss a stream,
+        // which then plays on under the part's segment: the gate drops all
+        // of it and the file has no sound, or no pictures. So the seek waits
+        // for every stream's first segment.
+        let streams = src
+            .src_pads()
+            .iter()
+            .filter(|p| p.name().starts_with("video") || p.name().starts_with("audio"))
+            .count();
+        for _ in 0..streams {
+            started
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .map_err(|_| anyhow!("the clip's files can't be read"))?;
+        }
         // At the source: the muxer would handle a seek itself.
         src.seek(
             1.0,
@@ -1158,7 +1186,13 @@ mod tests {
                 gst::ClockTime::from_seconds(10),
                 &[gst::MessageType::Eos, gst::MessageType::Error],
             )
-            .expect("reading the export timed out");
+            .unwrap_or_else(|| {
+                // A missing track leaves its fakesink unprerolled, so the
+                // read stalls in PAUSED rather than failing.
+                let tracks: Vec<_> = p.by_name("d").unwrap().src_pads();
+                let tracks: Vec<_> = tracks.iter().map(|pad| pad.name()).collect();
+                panic!("reading the export timed out; its tracks: {tracks:?}")
+            });
         assert!(matches!(msg.view(), gst::MessageView::Eos(_)), "{msg:?}");
         p.set_state(gst::State::Null).unwrap();
         (
