@@ -2,6 +2,7 @@ import type { ChromaSubsampling } from '@/types/generated/ChromaSubsampling'
 import type { Container } from '@/types/generated/Container'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import type { VideoCodec } from '@/types/generated/VideoCodec'
+import codecContainers from '@/types/generated/codecContainers.json'
 
 // Records keyed by the generated unions, so a codec or container added in Rust
 // fails the type check here until it gets a label.
@@ -46,28 +47,22 @@ export function legSummary(leg: PresetOutputInput) {
     .join(' · ')
 }
 
-// Containers each codec can be recorded to. Mirrors `incompatible()` in
-// `node/src/pipeline/profile.rs`, which rejects the rest when a preset is saved.
-const ALL: Container[] = ['mov', 'mp4', 'mkv']
-const MOV_MKV: Container[] = ['mov', 'mkv']
-export const CONTAINERS_FOR: Record<VideoCodec, Container[]> = {
-  h264: ALL,
-  h265: ALL,
-  vp9: ['mkv'],
-  prores_4444: MOV_MKV,
-  prores_422hq: MOV_MKV,
-  prores_422: MOV_MKV,
-  prores_422lt: MOV_MKV,
-  prores_422proxy: MOV_MKV,
-  uncompressed: MOV_MKV,
-}
+// Why each codec can't go in each container (null if it can), written from
+// `incompatible()` in `profile.rs` by `pnpm types`. The annotation fails the type
+// check if a codec or container is missing from the table.
+const INCOMPATIBLE: Record<VideoCodec, Record<Container, string | null>> = codecContainers
+
+/** Containers each codec can be recorded to, in `CONTAINERS` order (the first is the fallback). */
+export const CONTAINERS_FOR = Object.fromEntries(
+  (Object.keys(INCOMPATIBLE) as VideoCodec[]).map((codec) => [
+    codec,
+    (Object.keys(CONTAINERS) as Container[]).filter((c) => INCOMPATIBLE[codec][c] === null),
+  ]),
+) as Record<VideoCodec, Container[]>
 
 /** Why `codec` can't go in `container`, or null if it can. Same wording as the server. */
 export function incompatibleReason(codec: VideoCodec, container: Container): string | null {
-  if (CONTAINERS_FOR[codec].includes(container)) return null
-  if (codec === 'vp9') return 'VP9 can only be recorded to .mkv'
-  if (codec.startsWith('prores')) return 'ProRes can only be recorded to .mov or .mkv'
-  return 'uncompressed video can only be recorded to .mov or .mkv'
+  return INCOMPATIBLE[codec][container]
 }
 
 /** Every container, with the ones `codec` can't use disabled and explained. */
