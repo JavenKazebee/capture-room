@@ -9,6 +9,7 @@ import KeyValueList from '@/components/common/KeyValueList.vue'
 import AccessTokenSettings from '@/components/auth/AccessTokenSettings.vue'
 import ClockSettings from '@/components/settings/ClockSettings.vue'
 import MonitorSettings from '@/components/settings/MonitorSettings.vue'
+import UpdateSettings from '@/components/settings/UpdateSettings.vue'
 
 const { colorMode, density } = usePreferences()
 const nodes = useNodesStore()
@@ -80,6 +81,8 @@ const about = computed(() => [
     <ClockSettings />
 
     <AccessTokenSettings />
+
+    <UpdateSettings />
 
     <section id="about" class="space-y-2 scroll-mt-4">
       <div>

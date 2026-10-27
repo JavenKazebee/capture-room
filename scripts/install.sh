@@ -9,6 +9,8 @@
 #   --controller        make this node a controller (remembered)
 #   --port <n>          API and UI port (default 7700, or what it was)
 #   --version <tag>     install that release instead of the latest, e.g. v0.2.0
+#   --prerelease        offer betas and release candidates as updates too
+#                       (remembered); without --version, install the newest
 #   --archive <file>    install a local build (capture-room-<os>-<arch>.tar.gz)
 #   --uninstall         stop it and remove the app and service; keeps its data
 #   --purge             with --uninstall, also remove its database and logs
@@ -23,10 +25,11 @@ set -euo pipefail
 repo=JavenKazebee/capture-room
 app_name="Capture Room.app"
 
-service_args=() version="" archive="" uninstall=false purge=false
+service_args=() version="" archive="" uninstall=false purge=false prerelease=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --controller) service_args+=(--controller) ;;
+        --prerelease) service_args+=(--prerelease); prerelease=true ;;
         --port) service_args+=(--port "${2:?--port needs a number}"); shift ;;
         --version) version=${2:?--version needs a tag}; shift ;;
         --archive) archive=${2:?--archive needs a file}; shift ;;
@@ -231,6 +234,14 @@ if [[ -n $archive ]]; then
     [[ -f $archive ]] || fail "No such file: $archive"
     cp "$archive" "$work/$asset"
 else
+    if [[ -z $version ]] && $prerelease; then
+        # The most recently published release, pre-release or not; releases/latest skips betas.
+        version=$(curl -fsSL -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$repo/releases?per_page=1" |
+            sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1) ||
+            fail "Couldn't look up the newest release"
+        [[ -n $version ]] || fail "Couldn't look up the newest release"
+    fi
     if [[ -n $version ]]; then
         base=https://github.com/$repo/releases/download/$version
     else

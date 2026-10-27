@@ -2,8 +2,11 @@ name: Release
 
 # Pushing a tag vX.Y.Z (matching node/Cargo.toml's version) builds the apps,
 # signs them with the release key, and publishes them with latest.json (what
-# the updater checks), install.sh and install.ps1 as a GitHub release. Run by
-# hand, it builds the same files as one workflow artifact without releasing.
+# the updater checks), install.sh and install.ps1 as a GitHub release. A
+# version with a pre-release part (v0.2.0-beta.1) is published as a GitHub
+# pre-release, which releases/latest skips: only nodes on the pre-release
+# update channel are offered it. Run by hand, it builds the same files as one
+# workflow artifact without releasing.
 #
 # Each platform job uploads its dist files as an artifact named
 # capture-room-<os>; publish, after all of them, merges those, writes
@@ -263,12 +266,17 @@ jobs:
 
       - run: ls -l dist
 
-      # Not a pre-release: the updater and install.sh read releases/latest.
+      # The stable updater and install.sh read releases/latest, which skips
+      # pre-releases; a 0.2.0-beta.1 must be one or every node would take it.
       - name: Publish release
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          pre=()
+          if [[ $VERSION == *-* ]]; then pre=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes "${pre[@]}"
 
       # The same files as a release, flat, so the folder can be served as
       # CAPTURE_ROOM_RELEASES to test the updater.

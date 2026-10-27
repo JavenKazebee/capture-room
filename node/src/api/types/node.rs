@@ -74,6 +74,9 @@ pub struct UpdateStatusDto {
     /// Why the last check or update failed.
     pub error: Option<String>,
     pub checked_at: Option<String>,
+    /// Which releases `latest` is from.
+    #[serde(default)]
+    pub channel: UpdateChannel,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +133,7 @@ pub struct NodeSettingsDto {
     pub node_name: String,
     pub is_controller: bool,
     pub monitor: MonitorSettingsDto,
+    pub update_channel: UpdateChannel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +141,20 @@ pub struct NodeSettingsDto {
 pub struct UpdateNodeSettingsRequest {
     pub name: Option<String>,
     pub monitor: Option<MonitorSettingsDto>,
+    #[serde(default)]
+    pub update_channel: Option<UpdateChannel>,
+}
+
+/// Which releases the updater offers. Pre-releases (`0.2.0-beta.1`) are
+/// GitHub pre-releases, which only this node's choice brings in; a node on
+/// them still moves on to the stable release that follows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum UpdateChannel {
+    #[default]
+    Stable,
+    Prerelease,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

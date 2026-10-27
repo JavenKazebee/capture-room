@@ -30,6 +30,8 @@ curl -fsSL https://github.com/JavenKazebee/capture-room/releases/latest/download
 - `--controller` — make this node a controller (can also be turned on later on the Nodes page)
 - `--port <n>` — API and UI port (default 7700)
 - `--version <tag>` — install that release instead of the latest, e.g. `v0.2.0`
+- `--prerelease` — also offer betas and release candidates as updates (remembered; Settings ›
+  Updates changes it). Without `--version` it installs the newest release, beta or not
 
 ## Install (Linux)
 
@@ -83,7 +85,7 @@ to the Start menu, and updates itself. With options:
 & ([scriptblock]::Create((irm https://github.com/JavenKazebee/capture-room/releases/latest/download/install.ps1))) -Controller
 ```
 
-- `-Controller`, `-Port <n>`, `-Version <tag>` — as for macOS above
+- `-Controller`, `-Port <n>`, `-Version <tag>`, `-Prerelease` — as for macOS above
 
 The first time it starts, Windows Firewall asks whether to let it in; allowing that takes
 an administrator. Without it other machines can't reach the node; Setup › Checks has the

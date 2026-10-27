@@ -10,6 +10,8 @@
 #   -Controller       make this node a controller (remembered)
 #   -Port <n>         API and UI port (default 7700, or what it was)
 #   -Version <tag>    install that release instead of the latest, e.g. v0.2.0
+#   -Prerelease       offer betas and release candidates as updates too
+#                     (remembered); without -Version, install the newest
 #   -Archive <file>   install a local build (capture-room-windows-x86_64.tar.gz)
 #   -Uninstall        stop it and remove the app and its logon task; keeps its data
 #   -Purge            with -Uninstall, also remove its database and logs
@@ -19,6 +21,7 @@
 # and keeps its variables and functions in a script block of its own.
 param(
     [switch]$Controller,
+    [switch]$Prerelease,
     [int]$Port = 0,
     [string]$Version = '',
     [string]$Archive = '',
@@ -81,6 +84,12 @@ param(
                 if (-not (Test-Path -LiteralPath $Archive)) { throw "No such file: $Archive" }
                 Copy-Item -LiteralPath $Archive $file
             } else {
+                if (-not $Version -and $Prerelease) {
+                    # The most recently published release, pre-release or not; releases/latest skips betas.
+                    $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases?per_page=1" -Headers @{ Accept = 'application/vnd.github+json' }
+                    $Version = @($releases)[0].tag_name
+                    if (-not $Version) { throw "Couldn't look up the newest release." }
+                }
                 if ($Version) {
                     $base = "https://github.com/$repo/releases/download/$Version"
                     Say "Downloading $asset ($Version)"
@@ -117,6 +126,7 @@ param(
             Say 'Starting Capture Room (the first start can take a minute)'
             $serviceArgs = @('service', 'install')
             if ($Controller) { $serviceArgs += '--controller' }
+            if ($Prerelease) { $serviceArgs += '--prerelease' }
             if ($Port) { $serviceArgs += '--port', $Port }
             & $exe @serviceArgs
             if ($LASTEXITCODE -ne 0) { throw 'Starting Capture Room failed (above).' }
