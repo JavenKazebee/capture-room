@@ -220,6 +220,9 @@ async fn run(
     devices
         .decklink_profiles
         .replace(db::decklink_profiles_get(&pool).await?);
+    devices
+        .screencasts
+        .replace(db::screencasts_get(&pool).await?);
     let node_clock = Arc::new(clock::NodeClock::new(&node_id));
     let (leg_failure_tx, leg_failure_rx) = tokio::sync::mpsc::unbounded_channel();
     let (leg_file_tx, leg_file_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -287,6 +290,7 @@ async fn run(
     session::spawn_leg_file_recorder(Arc::clone(&state), leg_file_rx);
     session::spawn_quit_on_signal(Arc::clone(&state));
     session::spawn_power_keeper(Arc::clone(&state));
+    session::spawn_screencast_saver(Arc::clone(&state));
     update::spawn_checker(Arc::clone(&state));
     // Without a menu bar, nothing else signs a browser in: print a link.
     let print_sign_in_link = tray_actions.is_none();

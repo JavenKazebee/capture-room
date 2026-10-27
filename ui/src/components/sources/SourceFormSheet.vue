@@ -26,7 +26,7 @@ import SourceTypeCards from './SourceTypeCards.vue'
 import TestFields from './TestFields.vue'
 import FileFields from './FileFields.vue'
 import StreamFields from './StreamFields.vue'
-import DeviceFields from './DeviceFields.vue'
+import DeviceFields, { PORTAL_SCREEN } from './DeviceFields.vue'
 import DecklinkFields from './DecklinkFields.vue'
 import WhipFields from './WhipFields.vue'
 
@@ -144,6 +144,18 @@ function pickKind(k: Kind) {
   })
 }
 
+/** The device the source was saved with: its screen can be chosen only once it's saved as a portal screen. */
+const savedVideoDevice = ref<string | null>(null)
+
+async function chooseScreen() {
+  if (!props.source) return
+  try {
+    await store.chooseScreen(nodeId.value, props.source.id)
+  } catch (e) {
+    notifyError("Couldn't open the screen picker", e, nodeId.value)
+  }
+}
+
 onMounted(async () => {
   const src = props.source
   if (!src) {
@@ -172,6 +184,7 @@ onMounted(async () => {
   } else if (c.type === 'device') {
     const { type: _type, ...rest } = c
     device.value = rest
+    savedVideoDevice.value = rest.video_device
   } else if (c.type === 'whip') {
     const { type: _type, ...rest } = c
     whip.value = rest
@@ -302,7 +315,9 @@ async function save() {
         :devices="nodeDevices.devices.value"
         :loading="nodeDevices.loading.value"
         :error="nodeDevices.error.value"
+        :screen-saved="savedVideoDevice === PORTAL_SCREEN"
         @refresh="nodeDevices.refresh"
+        @choose-screen="chooseScreen"
       />
       <DecklinkFields
         v-else-if="kind === 'decklink'"

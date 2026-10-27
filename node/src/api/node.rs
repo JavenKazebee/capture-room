@@ -17,7 +17,7 @@ use axum::{
 use serde::Deserialize;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
@@ -39,6 +39,7 @@ use crate::pipeline::profile::{
 };
 use crate::session;
 use crate::sources::manager::{SourceManager, StopOutcome, StopResult};
+use crate::sources::portal;
 use crate::sources::InputSource;
 use crate::state::AppState;
 use crate::storage;
@@ -75,6 +76,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route(
             "/configured-sources/{id}",
             axum::routing::put(put_configured_source).delete(delete_configured_source),
+        )
+        .route(
+            "/configured-sources/{id}/screen",
+            post(post_configured_source_screen),
         )
         .route("/recordings", get(get_recordings).post(post_recording))
         .route(
@@ -414,12 +419,48 @@ async fn delete_configured_source(
     if !db::configured_source_delete(&state.db, &id).await? {
         return Err(ApiError::NotFound("source not found"));
     }
+    let configs = db::configured_sources_list(&state.db).await?;
+    let ids: Vec<&str> = configs.iter().map(|c| c.id.as_str()).collect();
+    let devices = state.source_manager.read().await.devices().clone();
+    devices.screencasts.retain(&ids);
     let work = state.source_manager.write().await.set_replay(&id, None);
     if let Err(e) = session::run_work(&state, work).await {
         error!(error = %e, "remove a deleted source's replay buffer");
     }
     rescan_after(&state, "delete").await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Open the desktop's dialog to pick the screen a portal screen source
+/// shows. It opens on the node's own display and may wait minutes for an
+/// answer, so this answers at once; the source restarts on the screen picked,
+/// or its state says why not.
+async fn post_configured_source_screen(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+) -> ApiResult<StatusCode> {
+    let source = db::configured_source_get(&state.db, &id)
+        .await?
+        .ok_or(ApiError::NotFound("source not found"))?;
+    if !matches!(&source.config, SourceConfig::Device(cfg) if cfg.video_device == portal::KEY) {
+        return Err(ApiError::bad(
+            "this source doesn't capture a screen through the portal",
+        ));
+    }
+    let devices = state.source_manager.read().await.devices().clone();
+    devices
+        .screencasts
+        .begin_choice(&id)
+        .map_err(ApiError::Conflict)?;
+    // A failed source shows that it's waiting for the dialog.
+    rescan_after(&state, "screen choice").await;
+    tokio::spawn(async move {
+        if let Err(e) = portal::choose(&devices.screencasts, &id).await {
+            warn!(source = %id, error = %e, "pick a screen");
+        }
+        rescan_after(&state, "screen choice").await;
+    });
+    Ok(StatusCode::ACCEPTED)
 }
 
 /// The local ports a configured source listens on: a listening stream,

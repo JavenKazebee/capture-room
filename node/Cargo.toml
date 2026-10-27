@@ -79,6 +79,8 @@ tray-icon = "0.26"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 # Monitor geometry for X11 screen sources (`sources::x11`); winit already uses it.
 x11rb = { version = "0.13", features = ["randr"] }
+# Wayland screen sources (`sources::portal`): the ScreenCast portal.
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "screencast"] }
 
 [dev-dependencies]
 chrono-tz = "0.10"

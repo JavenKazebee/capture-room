@@ -7,6 +7,7 @@ use tracing::warn;
 
 use super::decklink::{is_decklink, Profiles};
 use super::live::{self, LinkTracker, LiveAudio, LiveInput};
+use super::portal::{self, Screencasts};
 use super::{add_ghost_pad, InputSource};
 use crate::api::types::{
     AudioPlan, DeviceDto, DeviceKind, DeviceMode, DeviceSourceConfig, LinkState,
@@ -15,7 +16,8 @@ use crate::api::types::{
 use crate::pipeline::{capsfilter, make_el};
 
 /// Device classes the monitor watches. Screens are `Source/Monitor` on
-/// Windows and Linux (`super::x11`) and video sources on macOS. Audio sinks play display outputs'
+/// Windows and Linux under X11 (`super::x11`) and video sources on macOS;
+/// under Wayland they come from the portal (`super::portal`), not a provider. Audio sinks play display outputs'
 /// sound; Decklink playout sub-devices are hardware video sinks.
 const CLASSES: &[&str] = &[
     "Video/Source",
@@ -34,6 +36,7 @@ const MAX_MODES: usize = 32;
 pub struct LocalDevices {
     monitor: gst::DeviceMonitor,
     pub decklink_profiles: Profiles,
+    pub screencasts: Screencasts,
 }
 
 impl LocalDevices {
@@ -49,9 +52,11 @@ impl LocalDevices {
         if let Err(e) = monitor.start() {
             warn!("device monitor failed to start: {e}");
         }
+        portal::start();
         Self {
             monitor,
             decklink_profiles: Profiles::default(),
+            screencasts: Screencasts::default(),
         }
     }
 
@@ -61,6 +66,7 @@ impl LocalDevices {
         Self {
             monitor: gst::DeviceMonitor::new(),
             decklink_profiles: Profiles::default(),
+            screencasts: Screencasts::default(),
         }
     }
 
@@ -88,7 +94,11 @@ impl LocalDevices {
             .collect();
         // Real inputs before monitors of outputs (what the machine plays).
         list.sort_by_key(|(monitor, _)| *monitor);
-        list.into_iter().map(|(_, d)| d).collect()
+        let mut list: Vec<DeviceDto> = list.into_iter().map(|(_, d)| d).collect();
+        if portal::available() {
+            list.push(portal_device());
+        }
+        list
     }
 
     fn find(&self, key: &str) -> Option<gst::Device> {
@@ -262,6 +272,19 @@ fn link_to(dir: &std::path::Path, target: &std::path::Path) -> Option<String> {
         .collect();
     links.sort();
     links.first().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// The one entry for screens under Wayland: which screen is picked per
+/// source, in the desktop's own dialog, so there's no size to list.
+fn portal_device() -> DeviceDto {
+    DeviceDto {
+        key: portal::KEY.to_string(),
+        name: "Screen (picked on the node's display)".to_string(),
+        kind: DeviceKind::Screen,
+        api: "portal".to_string(),
+        channels: None,
+        modes: Vec::new(),
+    }
 }
 
 fn is_pulse(device: &gst::Device) -> bool {
@@ -476,6 +499,8 @@ pub struct DeviceSource {
     config: DeviceSourceConfig,
     devices: Arc<LocalDevices>,
     tracker: Arc<LinkTracker>,
+    /// A portal screen's session, kept while its bin plays.
+    screencast: std::sync::Mutex<Option<portal::Stream>>,
 }
 
 impl DeviceSource {
@@ -491,7 +516,15 @@ impl DeviceSource {
             config,
             devices,
             tracker: Arc::default(),
+            screencast: std::sync::Mutex::default(),
         }
+    }
+
+    fn portal_bin(&self) -> Result<gst::Element> {
+        let stream = self.devices.screencasts.open(&self.id)?;
+        let element = stream.element(&self.id)?;
+        *self.screencast.lock().unwrap() = Some(stream);
+        Ok(element)
     }
 }
 
@@ -518,13 +551,31 @@ impl InputSource for DeviceSource {
 
     /// Not whether the devices are connected: an unplugged device plays black
     /// until it's back (a rebuild would stop recording). One missing at build
-    /// fails the source, and the failed-monitor rescan retries.
+    /// fails the source, and the failed-monitor rescan retries. A portal
+    /// screen restarts when another is chosen, not when its token renews.
     fn fingerprint(&self) -> String {
-        serde_json::to_string(&self.config).unwrap_or_default()
+        let config = serde_json::to_string(&self.config).unwrap_or_default();
+        if self.config.video_device == portal::KEY {
+            let generation = self.devices.screencasts.generation(&self.id);
+            return format!("{config}#{generation}");
+        }
+        config
     }
 
     fn build_bin(&self) -> Result<gst::Element> {
         let cfg = &self.config;
+        if cfg.video_device == portal::KEY {
+            let bin = live::build_bin(LiveInput {
+                id: &self.id,
+                source: self.portal_bin()?,
+                audio: self.devices.audio(&cfg.audio)?,
+                format: cfg.format.as_ref(),
+                tracker: &self.tracker,
+                direct: false,
+                latency: None,
+            })?;
+            return Ok(bin.upcast());
+        }
         let device = self.devices.find(&cfg.video_device).ok_or_else(|| {
             anyhow!(
                 "{} isn't connected",
