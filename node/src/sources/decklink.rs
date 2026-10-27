@@ -32,10 +32,6 @@ use crate::pipeline::{capsfilter, make_el, set_mix_matrix, set_property};
 pub const SOURCE_ELEMENTS: &[&str] = &["decklinkvideosrc", "decklinkaudiosrc"];
 pub const OUTPUT_ELEMENTS: &[&str] = &["decklinkvideosink", "decklinkaudiosink"];
 
-/// Where Desktop Video installs the driver's API on macOS.
-#[cfg(target_os = "macos")]
-const FRAMEWORK: &str = "/Library/Frameworks/DeckLinkAPI.framework";
-
 /// Embedded audio channel counts the cards carry.
 const AUDIO_CHANNELS: &[u32] = &[2, 8, 16];
 
@@ -53,11 +49,48 @@ pub fn unavailable(has: impl Fn(&str) -> bool) -> Option<String> {
     {
         return Some(format!("GStreamer's decklink plugin is missing ({e})"));
     }
-    #[cfg(target_os = "macos")]
-    if !std::path::Path::new(FRAMEWORK).exists() {
+    if !driver_installed() {
         return Some("Blackmagic Desktop Video isn't installed".into());
     }
     None
+}
+
+/// Whether Blackmagic Desktop Video's API is installed, which the decklink
+/// plugin loads at run time: without it the elements exist but find no cards.
+#[cfg(target_os = "macos")]
+pub fn driver_installed() -> bool {
+    std::path::Path::new("/Library/Frameworks/DeckLinkAPI.framework").exists()
+}
+
+/// The plugin `dlopen`s the library by this name, so ask the loader rather
+/// than guess at library folders. The plugin tries once per process, so a
+/// driver installed later needs a restart anyway: the answer is kept, and
+/// the handle left open for the plugin, which loads the same library.
+#[cfg(target_os = "linux")]
+pub fn driver_installed() -> bool {
+    use std::sync::OnceLock;
+    static LOADED: OnceLock<bool> = OnceLock::new();
+    *LOADED.get_or_init(|| {
+        // SAFETY: a constant NUL-terminated name; the handle is only tested.
+        let handle = unsafe { libc::dlopen(c"libDeckLinkAPI.so".as_ptr(), libc::RTLD_LAZY) };
+        !handle.is_null()
+    })
+}
+
+/// Desktop Video registers its COM server, `DeckLinkAPI64.dll`, from the
+/// system folder; the plugin finds cards through that class.
+#[cfg(target_os = "windows")]
+pub fn driver_installed() -> bool {
+    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+    std::path::Path::new(&root)
+        .join("System32")
+        .join("DeckLinkAPI64.dll")
+        .exists()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+pub fn driver_installed() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
