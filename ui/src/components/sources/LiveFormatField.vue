@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { VideoFormat } from '@/types/generated/VideoFormat'
-import { findFramerate, findResolution, FRAMERATE_OPTIONS, RESOLUTION_OPTIONS } from '@/lib/videoPresets'
+import { findFramerate, findResolution, FRAMERATE_OPTIONS, RESOLUTION_OPTIONS } from '@/lib/videoFormats'
 import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
 

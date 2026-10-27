@@ -1,7 +1,9 @@
 import { pad } from '@/lib/format'
+import { FRAMERATE_PRESETS } from '@/lib/videoFormats'
 import type { ChromaSubsampling } from '@/types/generated/ChromaSubsampling'
 import type { Container } from '@/types/generated/Container'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
+import type { ReplayCodec } from '@/types/generated/ReplayCodec'
 import type { VideoCodec } from '@/types/generated/VideoCodec'
 import codecContainers from '@/types/generated/codecContainers.json'
 
@@ -17,6 +19,16 @@ export const CODECS: Record<VideoCodec, string> = {
   prores_422lt: 'ProRes 422 LT',
   prores_422proxy: 'ProRes 422 Proxy',
   uncompressed: 'Uncompressed',
+}
+
+/** Codecs a replay buffer can record, with what each costs. */
+export const REPLAY_CODECS: Record<ReplayCodec, { label: string; note: string }> = {
+  prores_proxy: { label: 'ProRes 422 Proxy', note: 'About 40 GB an hour at 1080p59.94. Mac only.' },
+  h264_intra: {
+    label: 'H.264, every frame a keyframe',
+    note: "As good a picture as ProRes Proxy's at about 60% of the size: 20–30 GB an hour at 1080p59.94.",
+  },
+  mjpeg: { label: 'Motion JPEG', note: 'About 40–55 GB an hour at 1080p59.94. Any platform.' },
 }
 
 export const CONTAINERS: Record<Container, string> = { mov: '.mov', mp4: '.mp4', mkv: '.mkv' }
@@ -81,26 +93,6 @@ export const CHROMA_OPTIONS: { value: ChromaSubsampling; label: string }[] = [
   { value: '422', label: '4:2:2' },
   { value: '444', label: '4:4:4' },
 ]
-
-/** Common output sizes; anything else is entered as a custom WIDTHxHEIGHT. */
-export const RESOLUTION_PRESETS = [
-  { value: '3840x2160', label: '3840 × 2160 (UHD)' },
-  { value: '2560x1440', label: '2560 × 1440' },
-  { value: '1920x1080', label: '1920 × 1080 (HD)' },
-  { value: '1280x720', label: '1280 × 720' },
-] as const
-
-/** Common frame rates, stored as the fractions the node records at. */
-export const FRAMERATE_PRESETS = [
-  { value: '24000/1001', label: '23.976' },
-  { value: '24', label: '24' },
-  { value: '25', label: '25' },
-  { value: '30000/1001', label: '29.97' },
-  { value: '30', label: '30' },
-  { value: '50', label: '50' },
-  { value: '60000/1001', label: '59.94' },
-  { value: '60', label: '60' },
-] as const
 
 export function parseResolution(s: string): [number, number] | null {
   const m = /^\s*([1-9]\d*)\s*[xX]\s*([1-9]\d*)\s*$/.exec(s)

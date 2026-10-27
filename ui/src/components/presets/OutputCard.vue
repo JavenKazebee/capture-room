@@ -11,8 +11,6 @@ import {
   CODEC_OPTIONS,
   CONTAINERS,
   CONTAINERS_FOR,
-  FRAMERATE_PRESETS,
-  RESOLUTION_PRESETS,
   containerOptions,
   framerateChoice,
   hasBitrate,
@@ -21,6 +19,7 @@ import {
   legSummary,
   parseResolution,
 } from '@/lib/codecs'
+import { FRAMERATE_PRESETS, RESOLUTION_PRESETS } from '@/lib/videoFormats'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'

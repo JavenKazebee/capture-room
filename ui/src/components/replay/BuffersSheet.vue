@@ -4,7 +4,8 @@ import { capacityWarningText, useCapacityStore } from '@/stores/capacity'
 import { useSourcesStore, type Source } from '@/stores/sources'
 import { sourceKey } from '@/composables/useApi'
 import { useNodesStore } from '@/stores/nodes'
-import { CODECS, useReplayStore } from '@/stores/replay'
+import { REPLAY_CODECS } from '@/lib/codecs'
+import { useReplayStore } from '@/stores/replay'
 import { notifyError, notifyWarn } from '@/lib/notify'
 import { formatBytes } from '@/lib/format'
 import type { ReplayCodec } from '@/types/generated/ReplayCodec'
@@ -43,7 +44,7 @@ function bufferedElsewhere(s: Source) {
 }
 
 function codecOptions(nodeId: string) {
-  return replay.codecsOf(nodeId).map((c) => ({ value: c, label: CODECS[c].label }))
+  return replay.codecsOf(nodeId).map((c) => ({ value: c, label: REPLAY_CODECS[c].label }))
 }
 
 function stateOf(s: Source): { dot: 'ok' | 'off' | 'error'; label: string } {
@@ -166,7 +167,7 @@ function setMinutes(s: Source, text: string | number) {
               </label>
             </div>
             <p class="text-xs text-muted-foreground">
-              {{ CODECS[replay.buffers.get(s.key)!.codec].note }} A new codec starts the buffer afresh.
+              {{ REPLAY_CODECS[replay.buffers.get(s.key)!.codec].note }} A new codec starts the buffer afresh.
             </p>
             <p v-if="replay.buffers.get(s.key)!.error" class="text-xs text-destructive">
               {{ replay.buffers.get(s.key)!.error }}

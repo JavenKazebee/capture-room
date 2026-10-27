@@ -12,7 +12,7 @@ export interface ClockSummary {
   title: string
 }
 
-export function clockSourceLabel(source: ClockSourceDto): string {
+function clockSourceLabel(source: ClockSourceDto): string {
   switch (source.kind) {
     case 'local':
       return 'Own clock'

@@ -15,8 +15,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
-import { AUDIO_CHANNEL_OPTIONS, findFramerate, findResolution, FRAMERATE_OPTIONS, RESOLUTION_OPTIONS } from '@/lib/videoPresets'
-import { RTSP_PORT, hostPort, mountPath, srtListens, whepUrl } from '@/lib/streamUrl'
+import { AUDIO_CHANNEL_OPTIONS, findFramerate, findResolution, FRAMERATE_OPTIONS, RESOLUTION_OPTIONS } from '@/lib/videoFormats'
+import { RTSP_PORT, hostPort, mountPath, srtListens, srtMode, whepUrl, withSrtMode } from '@/lib/streamUrl'
 
 /** A playout channel: its fixed program format, and where it's sent. */
 const props = defineProps<{
@@ -81,14 +81,13 @@ function remove(i: number) {
   cfg.value = { ...cfg.value, outputs: cfg.value.outputs.filter((_, j) => j !== i) }
 }
 
-function srtMode(o: SrtOutput) {
-  return srtListens(o.url) ? 'listener' : 'caller'
-}
+/** Each output's caller host, kept while toggling to listener and back. */
+const callerHosts = new Map<number, string>()
 
 function setSrtMode(i: number, o: SrtOutput, mode: unknown) {
-  if (typeof mode !== 'string' || mode === srtMode(o)) return
-  const { port } = hostPort(o.url)
-  update(i, { url: mode === 'listener' ? `srt://:${port || 9000}` : `srt://10.0.0.20:${port || 9000}` })
+  if ((mode !== 'listener' && mode !== 'caller') || mode === srtMode(o.url)) return
+  if (mode === 'listener') callerHosts.set(i, hostPort(o.url).host)
+  update(i, { url: withSrtMode(o.url, mode, callerHosts.get(i)) })
 }
 
 function rtspUrl(path: string | null) {
@@ -245,7 +244,7 @@ const TYPE_LABELS: Record<string, string> = { ndi: 'NDI', srt: 'SRT', rtsp: 'RTS
           />
           <template v-else>
             <ToggleGroup
-              :model-value="srtMode(o)"
+              :model-value="srtMode(o.url)"
               type="single"
               variant="segmented"
               class="flex-1 min-w-0"

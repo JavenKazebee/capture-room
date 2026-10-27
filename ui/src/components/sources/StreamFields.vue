@@ -12,7 +12,7 @@ import OptionSelect from '@/components/OptionSelect.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
 import AudioPlanField from './AudioPlanField.vue'
 import LiveFormatField from './LiveFormatField.vue'
-import { hostPort, param, scheme as schemeOf, srtListens, withParam } from '@/lib/streamUrl'
+import { hostPort, param, scheme as schemeOf, srtListens, srtMode, withParam, withSrtMode, type SrtMode } from '@/lib/streamUrl'
 
 /** A network stream, URL first, with protocol fields under it. UDP always listens; SRT rules are in `streamUrl.ts`. */
 const props = defineProps<{
@@ -48,21 +48,12 @@ const srtListener = computed(() => srtListens(url.value))
 /** The caller's host, kept while toggling to listener and back. */
 const lastHost = ref('')
 
-const srtMode = computed({
-  get: () => (srtListener.value ? 'listener' : 'caller'),
-  set: (mode: string | undefined) => {
-    if (!mode || mode === srtMode.value) return
-    const { host, port } = hostPort(url.value)
-    const query = url.value.split('?')[1]
-    const params = new URLSearchParams(query ?? '')
-    params.delete('mode')
-    const q = params.toString() ? `?${params}` : ''
-    if (mode === 'listener') {
-      lastHost.value = host
-      cfg.value = { ...cfg.value, url: `srt://:${port || 9000}${q}` }
-    } else {
-      cfg.value = { ...cfg.value, url: `srt://${lastHost.value || '10.0.0.20'}:${port || 9000}${q}` }
-    }
+const srtModeChoice = computed({
+  get: () => srtMode(url.value),
+  set: (mode: SrtMode | undefined) => {
+    if (!mode || mode === srtModeChoice.value) return
+    if (mode === 'listener') lastHost.value = hostPort(url.value).host
+    cfg.value = { ...cfg.value, url: withSrtMode(url.value, mode, lastHost.value) }
   },
 })
 
@@ -111,7 +102,7 @@ const advancedOpen = ref(false)
 
     <template v-if="scheme === 'srt'">
       <FormField label="SRT mode">
-        <ToggleGroup v-model="srtMode" type="single" variant="segmented" class="w-full">
+        <ToggleGroup v-model="srtModeChoice" type="single" variant="segmented" class="w-full">
           <ToggleGroupItem value="listener" class="flex-1 h-8 text-xs">Listener (senders push here)</ToggleGroupItem>
           <ToggleGroupItem value="caller" class="flex-1 h-8 text-xs">Caller (connect out)</ToggleGroupItem>
         </ToggleGroup>

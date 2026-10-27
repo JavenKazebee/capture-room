@@ -5,7 +5,7 @@ import type { DeviceDto } from '@/types/generated/DeviceDto'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
-import { AUDIO_CHANNEL_OPTIONS } from '@/lib/videoPresets'
+import { AUDIO_CHANNEL_OPTIONS } from '@/lib/videoFormats'
 
 /** A live source's audio: its own (`sourceLabel`), an audio device's picked channels, or silence. */
 const props = defineProps<{

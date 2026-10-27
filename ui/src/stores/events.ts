@@ -1,12 +1,12 @@
 import { defineStore } from 'pinia'
 import { computed, shallowRef, triggerRef } from 'vue'
 
-export type LogLevel = 'info' | 'warn' | 'error' | 'rec'
+export type ActivityLevel = 'info' | 'warn' | 'error' | 'rec'
 
 export interface LogEntry {
   id: number
   at: Date
-  level: LogLevel
+  level: ActivityLevel
   /** The node the entry is about, when there is one. */
   node_id: string | null
   message: string
@@ -24,7 +24,7 @@ export const useEventsStore = defineStore('events', () => {
   /** Errors logged since the log was last viewed. */
   const unseenErrors = shallowRef(0)
 
-  function log(level: LogLevel, message: string, opts: { node_id?: string | null; detail?: string } = {}) {
+  function log(level: ActivityLevel, message: string, opts: { node_id?: string | null; detail?: string } = {}) {
     entries.value.push({ id: nextId++, at: new Date(), level, node_id: opts.node_id ?? null, message, detail: opts.detail })
     if (entries.value.length > MAX_ENTRIES) entries.value.splice(0, entries.value.length - MAX_ENTRIES)
     if (level === 'error') unseenErrors.value++

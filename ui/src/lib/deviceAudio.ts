@@ -11,7 +11,7 @@ function core(name: string) {
 }
 
 /** A capture dongle's HDMI audio is its own device, usually its video's name or that plus "Audio". */
-export function pairedAudioInput(video: DeviceDto, devices: DeviceDto[]): DeviceDto | null {
+function pairedAudioInput(video: DeviceDto, devices: DeviceDto[]): DeviceDto | null {
   const v = core(video.name)
   if (v.length < 4) return null
   return (

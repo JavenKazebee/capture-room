@@ -31,6 +31,24 @@ export function srtListens(u: string): boolean {
   return scheme(url) === 'srt' && (!hostPort(url).host || param(url, 'mode') === 'listener')
 }
 
+export type SrtMode = 'listener' | 'caller'
+
+export function srtMode(u: string): SrtMode {
+  return srtListens(u) ? 'listener' : 'caller'
+}
+
+/**
+ * `u` switched to `mode`, keeping its port and query but dropping `mode=`, which would
+ * contradict the switch. A caller connects to `callerHost`, or a placeholder to edit.
+ */
+export function withSrtMode(u: string, mode: SrtMode, callerHost = ''): string {
+  const url = withParam(u.trim(), 'mode', null)
+  const [, query] = url.split('?')
+  const port = hostPort(url).port || '9000'
+  const q = query ? `?${query}` : ''
+  return mode === 'listener' ? `srt://:${port}${q}` : `srt://${callerHost || '10.0.0.20'}:${port}${q}`
+}
+
 /** The node's RTSP server port (`pipeline/rtsp.rs`). */
 export const RTSP_PORT = 8554
 
