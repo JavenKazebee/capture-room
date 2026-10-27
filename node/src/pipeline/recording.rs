@@ -755,8 +755,8 @@ fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Res
 mod tests {
     use super::*;
     use crate::api::types::{
-        AudioTestSignal, ChromaSubsampling, MonitorSettingsDto, OutputAdvanced, PresetOutputInput,
-        TestSourceConfig, VideoCodec, VideoTestPattern,
+        AudioChannels, AudioCodecChoice, AudioTestSignal, ChromaSubsampling, MonitorSettingsDto,
+        OutputAdvanced, PresetOutputInput, TestSourceConfig, VideoCodec, VideoTestPattern,
     };
     use crate::pipeline::timecode::time_of_day;
     use crate::sources::test::TestSource;
@@ -945,6 +945,123 @@ mod tests {
                 assert_eq!(got, want, "the file's timecode");
             }
             Err(_) => println!("no ffprobe: not reading the file back"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Each way a leg reshapes audio records: all channels relabelled for
+    /// .mov PCM, a pick, a stereo mixdown, and one channel.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn legs_reshape_audio() {
+        gst::init().unwrap();
+        println!("{}", gst::version_string());
+        let source = TestSource::new(
+            "t".into(),
+            "t".into(),
+            TestSourceConfig {
+                pattern: VideoTestPattern::Smpte,
+                width: 320,
+                height: 180,
+                fps_num: 30,
+                fps_den: 1,
+                audio_signal: AudioTestSignal::Tone,
+                frequency: 440.0,
+                channels: 8,
+            },
+        );
+        let clock = gst::SystemClock::obtain();
+        let monitor =
+            MonitorPipeline::new(&source, &MonitorSettingsDto::default(), &clock).unwrap();
+        while monitor.video_frames() == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let dir = std::env::temp_dir().join(format!("capture-room-audio-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let leg = |file: &str, container, audio_codec, audio_channels, channel_pick: &[u32]| {
+            let mut profile = RecordingProfile::from_output(&PresetOutputInput {
+                name: file.into(),
+                codec: VideoCodec::H264,
+                container,
+                resolution: None,
+                framerate: None,
+                bitrate_kbps: None,
+                chroma: ChromaSubsampling::Yuv420,
+                path_template: String::new(),
+                preview: false,
+                advanced: OutputAdvanced {
+                    audio_codec,
+                    audio_channels,
+                    channel_pick: channel_pick.to_vec(),
+                    ..OutputAdvanced::default()
+                },
+            })
+            .unwrap();
+            profile.source_audio = Some((8, false));
+            (dir.join(file), profile)
+        };
+        let legs = [
+            leg(
+                "all.mov",
+                Container::Mov,
+                AudioCodecChoice::Pcm,
+                AudioChannels::All,
+                &[],
+            ),
+            leg(
+                "pick.mov",
+                Container::Mov,
+                AudioCodecChoice::Pcm,
+                AudioChannels::Pick,
+                &[1, 3, 5],
+            ),
+            leg(
+                "stereo.mp4",
+                Container::Mp4,
+                AudioCodecChoice::Aac,
+                AudioChannels::Stereo,
+                &[],
+            ),
+            leg(
+                "mono.mkv",
+                Container::Mkv,
+                AudioCodecChoice::Opus,
+                AudioChannels::Pick,
+                &[2],
+            ),
+        ];
+        assert!(legs[0].1.relabel_pcm_channels());
+        // Kept, not panicked on: it runs on a streaming thread.
+        let failed = Arc::new(Mutex::new(Vec::new()));
+        let failures = Arc::clone(&failed);
+        let on_error: OnLegError =
+            Arc::new(move |path, e| failures.lock().unwrap().push(format!("{path:?}: {e}")));
+        let on_file: OnLegFile = Arc::new(|| {});
+        let started =
+            start_legs(&monitor, "audio", &legs, &on_error, &on_file, None, None).unwrap();
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        for leg in started {
+            let _ = leg.stop(Duration::from_secs(5)).await;
+        }
+        let _ = monitor.stop();
+        assert_eq!(*failed.lock().unwrap(), Vec::<String>::new());
+
+        for ((file, _), want) in legs.iter().zip([8, 3, 2, 1]) {
+            assert!(
+                std::fs::metadata(file).is_ok_and(|m| m.len() > 0),
+                "{file:?} is empty"
+            );
+            // Read back with ffprobe where it's installed.
+            let Ok(out) = std::process::Command::new("ffprobe")
+                .args(["-v", "error", "-select_streams", "a:0"])
+                .args(["-show_entries", "stream=channels", "-of", "csv=p=0"])
+                .arg(file)
+                .output()
+            else {
+                println!("no ffprobe: not reading the files back");
+                break;
+            };
+            let got = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            assert_eq!(got, want.to_string(), "{file:?}'s channels");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
