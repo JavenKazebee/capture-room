@@ -34,12 +34,17 @@ const deviceOptions = computed(() => {
 
 const MATCH = 'match'
 
-/** The modes the sub-device can play this channel in: progressive, at its size and rate. */
+/**
+ * The modes the sub-device can play this channel in, at its size and rate. Mirrors `output_mode` in
+ * `sources/decklink.rs`: of the interlaced modes only 1080i, whose field rate is the channel's frame rate.
+ */
 const modeOptions = computed(() => {
   const { width, height, fps_num, fps_den } = props.format
-  const modes = (sub.value?.device.modes ?? []).filter(
-    (m) => !m.interlaced && m.width === width && m.height === height && m.fps_num * fps_den === fps_num * m.fps_den,
-  )
+  const modes = (sub.value?.device.modes ?? []).filter((m) => {
+    if (m.interlaced && m.height !== 1080) return false
+    const fields = m.interlaced ? 2 : 1
+    return m.width === width && m.height === height && m.fps_num * fields * fps_den === fps_num * m.fps_den
+  })
   return [{ value: MATCH, label: "The channel's format" }, ...modes.map((m) => ({ value: m.mode, label: m.label }))]
 })
 </script>
@@ -64,7 +69,8 @@ const modeOptions = computed(() => {
       />
     </FormField>
     <p class="text-xs text-muted-foreground">
-      Progressive only for now; the channel's format has to be an SDI mode. Audio is embedded on
+      The channel's format has to be an SDI mode. A 1080i mode plays each of the channel's frames as a
+      field, so a 1080p50 channel can go out as 1080i50. Audio is embedded on
       {{ audioChannels <= 2 ? 2 : 8 }} channels. The card follows the node's clock, so it may repeat or drop
       a frame every few minutes.
     </p>
