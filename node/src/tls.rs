@@ -34,7 +34,7 @@ use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tracing::{debug, info, warn};
 
 use crate::api::types::IdentityDto;
@@ -53,6 +53,11 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// The first byte of a TLS record carrying a handshake.
 const TLS_HANDSHAKE: u8 = 0x16;
 const IDENTIFY_TIMEOUT: Duration = Duration::from_secs(3);
+/// Connections being told apart or shaking hands at once. Each holds a socket
+/// for up to twice [`HANDSHAKE_TIMEOUT`]; past this, new ones wait in the
+/// kernel's backlog. Well under the 256 file descriptors macOS gives a
+/// process by default.
+const MAX_HANDSHAKES: usize = 128;
 
 /// This node's certificate and key.
 pub struct Identity {
@@ -325,14 +330,26 @@ pub struct TlsListener {
 
 impl TlsListener {
     pub fn new(tcp: TcpListener, config: Arc<rustls::ServerConfig>) -> io::Result<Self> {
+        Self::with_limit(tcp, config, MAX_HANDSHAKES)
+    }
+
+    fn with_limit(
+        tcp: TcpListener,
+        config: Arc<rustls::ServerConfig>,
+        max_handshakes: usize,
+    ) -> io::Result<Self> {
         let local = Conn {
             addr: tcp.local_addr()?,
             tls: true,
         };
         let (tx, accepted) = mpsc::channel(64);
         let acceptor = tokio_rustls::TlsAcceptor::from(config);
+        let handshakes = Arc::new(Semaphore::new(max_handshakes));
         tokio::spawn(async move {
             loop {
+                let Ok(permit) = Arc::clone(&handshakes).acquire_owned().await else {
+                    return;
+                };
                 match tcp.accept().await {
                     // Handshakes run beside each other: a slow client mustn't
                     // hold up the rest.
@@ -340,7 +357,9 @@ impl TlsListener {
                         let tx = tx.clone();
                         let acceptor = acceptor.clone();
                         tokio::spawn(async move {
-                            if let Some(io) = classify(stream, &acceptor, addr).await {
+                            let io = classify(stream, &acceptor, addr).await;
+                            drop(permit);
+                            if let Some(io) = io {
                                 let tls = matches!(io, Io::Tls(_));
                                 let _ = tx.send((io, Conn { addr, tls })).await;
                             }
@@ -528,5 +547,34 @@ mod tests {
         assert_eq!(first, renewed);
         assert_ne!(first, other);
         assert_eq!(first.len(), 64);
+    }
+
+    #[tokio::test]
+    async fn handshakes_past_the_limit_wait_their_turn() {
+        use tokio::io::AsyncWriteExt;
+
+        let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = tcp.local_addr().unwrap();
+        let key = rcgen::KeyPair::generate().unwrap();
+        let identity = Identity {
+            cert: CertificateDer::from_pem_slice(issue(&key, None).unwrap().0.as_bytes()).unwrap(),
+            key: PrivateKeyDer::from_pem_slice(key.serialize_pem().as_bytes()).unwrap(),
+            fingerprint: String::new(),
+        };
+        let mut listener =
+            TlsListener::with_limit(tcp, server_config(&identity).unwrap(), 1).unwrap();
+
+        // Silent: holds the only slot until it closes.
+        let silent = TcpStream::connect(addr).await.unwrap();
+        let mut plain = TcpStream::connect(addr).await.unwrap();
+        plain.write_all(b"GET / HTTP/1.1\r\n\r\n").await.unwrap();
+        let wait = Duration::from_millis(200);
+        assert!(tokio::time::timeout(wait, listener.accept()).await.is_err());
+
+        drop(silent);
+        let (_, conn) = tokio::time::timeout(HANDSHAKE_TIMEOUT, listener.accept())
+            .await
+            .expect("the waiting connection got the freed slot");
+        assert!(!conn.tls);
     }
 }
