@@ -1003,7 +1003,13 @@ pub async fn schedule_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
 const RUN_SELECT: &str = "SELECT id, schedule_id, planned_start, planned_end, started_at, \
      stopped_at, status, targets FROM schedule_runs";
 
-/// Record a run that came due. `false` if that occurrence already has one.
+/// Runs kept per schedule. The scheduler only ever looks up a schedule's
+/// latest occurrence, so dropping older rows can't let one run twice.
+pub const SCHEDULE_RUNS_KEPT: u32 = 200;
+
+/// Record a run that came due, dropping the schedule's runs beyond the newest
+/// [`SCHEDULE_RUNS_KEPT`] (never a running one). `false` if that occurrence
+/// already has one.
 pub async fn schedule_run_insert(pool: &SqlitePool, r: &ScheduleRunDto) -> Result<bool> {
     let res = sqlx::query(
         "INSERT OR IGNORE INTO schedule_runs (id, schedule_id, planned_start, planned_end,
@@ -1020,7 +1026,20 @@ pub async fn schedule_run_insert(pool: &SqlitePool, r: &ScheduleRunDto) -> Resul
     .bind(Json(&r.targets))
     .execute(pool)
     .await?;
-    Ok(res.rows_affected() > 0)
+    if res.rows_affected() == 0 {
+        return Ok(false);
+    }
+    sqlx::query(
+        "DELETE FROM schedule_runs WHERE schedule_id = ?1 AND status != ?2 AND id NOT IN
+           (SELECT id FROM schedule_runs WHERE schedule_id = ?1
+            ORDER BY planned_start DESC LIMIT ?3)",
+    )
+    .bind(&r.schedule_id)
+    .bind(ScheduleRunStatus::Running)
+    .bind(SCHEDULE_RUNS_KEPT)
+    .execute(pool)
+    .await?;
+    Ok(true)
 }
 
 pub async fn schedule_run_update(pool: &SqlitePool, r: &ScheduleRunDto) -> Result<()> {
@@ -1361,6 +1380,53 @@ mod tests {
             "clip left behind"
         );
 
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn keeps_only_a_schedules_newest_runs() {
+        let path =
+            std::env::temp_dir().join(format!("capture-room-runs-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let pool = init(&path).await.unwrap();
+        sqlx::query(
+            "INSERT INTO schedules (id, name, kind, start_time, actions, created_at, updated_at)
+             VALUES ('s', 's', 'daily', '09:00', '[]', '', '')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let run = |n: u32, status| ScheduleRunDto {
+            id: format!("r{n}"),
+            schedule_id: "s".into(),
+            planned_start: format!("2026-01-01T00:00:{n:04}Z"),
+            planned_end: None,
+            started_at: None,
+            stopped_at: None,
+            status,
+            targets: vec![],
+        };
+        // The oldest is still running, so it stays.
+        assert!(
+            schedule_run_insert(&pool, &run(0, ScheduleRunStatus::Running))
+                .await
+                .unwrap()
+        );
+        for n in 1..=SCHEDULE_RUNS_KEPT + 5 {
+            assert!(schedule_run_insert(&pool, &run(n, ScheduleRunStatus::Done))
+                .await
+                .unwrap());
+        }
+        let runs = schedule_runs(&pool, "s", 1000).await.unwrap();
+        assert_eq!(runs.len() as u32, SCHEDULE_RUNS_KEPT + 1);
+        assert_eq!(runs[0].id, format!("r{}", SCHEDULE_RUNS_KEPT + 5));
+        assert_eq!(runs.last().unwrap().id, "r0");
+        assert!(
+            !schedule_run_exists(&pool, "s", &run(5, ScheduleRunStatus::Done).planned_start)
+                .await
+                .unwrap()
+        );
         pool.close().await;
         let _ = std::fs::remove_file(path);
     }
