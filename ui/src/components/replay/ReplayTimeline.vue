@@ -34,7 +34,7 @@ const tick = ref(performance.now())
 const nowUs = computed(() => replay.nowUs(props.buffer, tick.value))
 
 const viewStartAt = (end: number) => {
-  const start = props.buffer.start_us ?? end - 10_000_000
+  const start = replay.span(props.buffer, tick.value)?.start ?? end - 10_000_000
   return props.windowSecs === null ? Math.min(start, end - 10_000_000) : end - props.windowSecs * 1_000_000
 }
 /** How far the strip's end is behind now, µs: 0 following live, more while held. */
@@ -65,11 +65,9 @@ const span = computed(() => Math.max(1, viewEnd.value - viewStart.value))
 const pct = (us: number) => `${Math.min(100, Math.max(0, ((us - viewStart.value) / span.value) * 100))}%`
 const width = (a: number, b: number) => `calc(${pct(b)} - ${pct(a)})`
 
-const recorded = computed(() =>
-  props.buffer.start_us !== null && props.buffer.end_us !== null
-    ? { start: props.buffer.start_us, end: props.buffer.end_us }
-    : null,
-)
+const recorded = computed(() => replay.span(props.buffer, tick.value))
+/** Gaps still in the buffer: the oldest roll off its start. */
+const breaks = computed(() => props.buffer.breaks_us.filter((b) => recorded.value !== null && b > recorded.value.start))
 
 /** Tick marks every 5 s / 10 s / 1 min… back from the strip's end, labelled as time before now. */
 const ticks = computed(() => {
@@ -139,7 +137,7 @@ const head = computed(() => dragging.value ?? props.playheadUs)
       />
       <!-- Gaps: the source restarted. -->
       <div
-        v-for="b in buffer.breaks_us"
+        v-for="b in breaks"
         :key="b"
         class="absolute inset-y-0 w-px bg-destructive"
         :style="{ left: pct(b) }"

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { capacityWarningText, useCapacityStore } from '@/stores/capacity'
 import { useSourcesStore, type Source } from '@/stores/sources'
 import { sourceKey } from '@/composables/useApi'
@@ -33,6 +33,9 @@ const replay = useReplayStore()
 const capacity = useCapacityStore()
 
 const DEFAULT_MINUTES = 30
+
+// Sizes aren't pushed (they change every segment): fetch them as the sheet opens.
+onMounted(() => replay.loadAll())
 
 /** Every source but playout channels, grouped by node when there are several. */
 const candidates = computed(() => sources.sources.filter((s) => s.source_type !== 'channel'))

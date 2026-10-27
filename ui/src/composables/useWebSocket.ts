@@ -149,6 +149,10 @@ function handleEvent(event: NodeEvent) {
       break
     }
 
+    case 'replay.buffers':
+      useReplayStore().apply(nodeId, event.buffers)
+      break
+
     case 'schedule.updated':
       useSchedulesStore().refresh(event.schedule_id)
       break

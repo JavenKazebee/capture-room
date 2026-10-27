@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import { reactive } from 'vue'
 import { nodeApi, sourceKey } from '@/composables/useApi'
+import { onReconnect } from '@/lib/reconnect'
+import { nodeNowUs, replaySpan } from '@/lib/replaySpan'
 import { useNodesStore } from '@/stores/nodes'
 import { usePlayoutStore } from '@/stores/playout'
 import type { ChannelStatusDto } from '@/types/generated/ChannelStatusDto'
@@ -19,7 +21,7 @@ import type { UpdateReplayClipRequest } from '@/types/generated/UpdateReplayClip
 export type ReplayBuffer = ReplayBufferDto & {
   node_id: string
   key: string
-  /** `performance.now()` when it was fetched, to run its clock on from `now_us`. */
+  /** `performance.now()` when it was reported, to run its clock and span on from `now_us`. */
   fetched_at: number
 }
 
@@ -39,7 +41,10 @@ export type ReplayClipGroup = {
   clips: ReplayClip[]
 }
 
-/** Replay buffers on every node (polled while Replay is open) and their commands; channel status lives in the playout store. */
+/**
+ * Replay buffers on every node and their commands; channel status lives in the playout store. Nodes
+ * send `replay.buffers` only on a change: in between, `span` runs each buffer on.
+ */
 export const useReplayStore = defineStore('replay', () => {
   const nodes = useNodesStore()
   const playout = usePlayoutStore()
@@ -48,14 +53,27 @@ export const useReplayStore = defineStore('replay', () => {
   /** Saved clips, by node, newest first. */
   const clips = reactive(new Map<string, ReplayClip[]>())
 
-  async function load(nodeId: string) {
-    const list = await nodeApi(nodeId)<ReplayBufferDto[]>('/replay')
+  /** Nodes whose buffers have been loaded, to load again on reconnect. */
+  const loaded = new Set<string>()
+
+  /** A node's whole list, from `/replay` or an event. Entries are patched, so only what changed re-renders. */
+  function apply(nodeId: string, list: ReplayBufferDto[]) {
     const now = performance.now()
-    for (const [key, b] of buffers) if (b.node_id === nodeId) buffers.delete(key)
+    loaded.add(nodeId)
+    const keys = new Set<string>()
     for (const b of list) {
       const key = sourceKey(nodeId, b.source_id)
-      buffers.set(key, { ...b, node_id: nodeId, key, fetched_at: now })
+      keys.add(key)
+      const entry = { ...b, node_id: nodeId, key, fetched_at: now }
+      const had = buffers.get(key)
+      if (had) Object.assign(had, entry)
+      else buffers.set(key, entry)
     }
+    for (const [key, b] of buffers) if (b.node_id === nodeId && !keys.has(key)) buffers.delete(key)
+  }
+
+  async function load(nodeId: string) {
+    apply(nodeId, await nodeApi(nodeId)<ReplayBufferDto[]>('/replay'))
   }
 
   async function loadAll() {
@@ -63,14 +81,21 @@ export const useReplayStore = defineStore('replay', () => {
     await Promise.all(nodes.reachable.map((n) => load(n.id).catch(() => {})))
   }
 
+  onReconnect(() => Promise.all([...loaded].map((id) => load(id).catch(() => {}))))
+
   /** The codecs a node can keep buffers in, default first; empty if it isn't listed. */
   function codecsOf(nodeId: string): ReplayCodec[] {
     return nodes.nodes.find((n) => n.id === nodeId)?.replay_codecs ?? []
   }
 
-  /** A buffer's node clock now (µs), run on from when it was fetched. */
+  /** A buffer's node clock now (µs), run on from when it was reported. */
   function nowUs(b: ReplayBuffer, at = performance.now()) {
-    return b.now_us + Math.round((at - b.fetched_at) * 1000)
+    return nodeNowUs(b, at)
+  }
+
+  /** What a buffer can replay now, run on from when it was reported; `null` while empty. */
+  function span(b: ReplayBuffer, at = performance.now()) {
+    return replaySpan(b, at)
   }
 
   async function setBuffer(nodeId: string, sourceId: string, config: ReplayConfigInput) {
@@ -163,10 +188,12 @@ export const useReplayStore = defineStore('replay', () => {
   return {
     buffers,
     clips,
+    apply,
     load,
     loadAll,
     codecsOf,
     nowUs,
+    span,
     setBuffer,
     removeBuffer,
     play,

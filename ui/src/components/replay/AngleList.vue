@@ -2,7 +2,7 @@
 import { useNodesStore } from '@/stores/nodes'
 import type { Source } from '@/stores/sources'
 import StatusDot from '@/components/common/StatusDot.vue'
-import { held } from './held'
+import { useHeld } from './held'
 import type { Angle } from './useReplayControl'
 
 /** Every angle with a buffer; only those on the channel's node are numbered (1–9) and pickable. */
@@ -17,6 +17,8 @@ const emit = defineEmits<{ select: [source: Source] }>()
 
 const nodes = useNodesStore()
 const number = (a: Angle) => props.usableAngles.indexOf(a) + 1
+
+const held = useHeld()
 </script>
 
 <template>

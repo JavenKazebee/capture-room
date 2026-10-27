@@ -70,6 +70,12 @@ pub enum WsEvent {
     /// A replay clip was saved, renamed or deleted.
     #[serde(rename = "replay.clips")]
     ReplayClipsUpdated,
+    /// Every replay buffer on the node, when one starts, stops, fails, is
+    /// reconfigured or fills up: not per segment. Meanwhile a recording
+    /// buffer's `end_us` runs on with `now_us`, and once full its start
+    /// follows `minutes` behind.
+    #[serde(rename = "replay.buffers")]
+    ReplayBuffers { buffers: Vec<ReplayBufferDto> },
     #[serde(rename = "feed.status")]
     FeedStatus {
         source_id: String,

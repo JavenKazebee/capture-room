@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useIntervalFn, useStorage } from '@vueuse/core'
+import { useStorage } from '@vueuse/core'
 import { useViewKeys } from '@/composables/useViewKeys'
 import { ChevronLeft, ChevronRight, History, Pause, Play, Rewind, Save, Settings2, Square, X } from '@lucide/vue'
 import { useSourcesStore } from '@/stores/sources'
@@ -87,21 +87,8 @@ const angle = computed(
     null,
 )
 
-// One poll at a time: a slow node mustn't pile requests up.
-let polling = false
-useIntervalFn(
-  async () => {
-    if (polling) return
-    polling = true
-    try {
-      await replay.loadAll()
-    } finally {
-      polling = false
-    }
-  },
-  1000,
-  { immediateCallback: true },
-)
+// Loaded once: then `replay.buffers` events keep it, and the store reloads on reconnect.
+onMounted(() => replay.loadAll())
 
 const rate = useStorage('cr.replay.rate', 0.5)
 const lastSecs = useStorage('cr.replay.last', 8)
