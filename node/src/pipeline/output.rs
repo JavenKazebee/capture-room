@@ -481,7 +481,13 @@ pub const SRT_MAX_AUDIO_CHANNELS: u32 = 8;
 pub const SRT_ELEMENTS: &[&str] = &["srtsink", "mpegtsmux", "h264parse", "avenc_aac"];
 
 /// H.264 encoders for a live stream, best first.
-pub const LIVE_H264: &[&str] = &["vtenc_h264", "vah264enc", "x264enc"];
+pub const LIVE_H264: &[&str] = &[
+    "vtenc_h264",
+    "vah264enc",
+    "amfh264enc",
+    "mfh264enc",
+    "x264enc",
+];
 
 /// The first live H.264 encoder this node has, and its properties for
 /// streaming: low latency, no B-frames, a keyframe every second (so a
@@ -508,6 +514,25 @@ pub(crate) fn live_h264(
             ("b-frames", "0".to_string()),
             ("key-int-max", keyint.to_string()),
         ]),
+        // B-frames are off by default in both.
+        "amfh264enc" => props.extend([
+            ("usage", "low-latency".to_string()),
+            ("rate-control", "cbr".to_string()),
+            ("gop-size", keyint.to_string()),
+        ]),
+        // mfh264enc has only the properties the GPU's encoder supports.
+        "mfh264enc" => {
+            let probe = gst::ElementFactory::make(factory).build()?;
+            props.extend(
+                [
+                    ("rc-mode", "cbr".to_string()),
+                    ("low-latency", "true".to_string()),
+                    ("gop-size", keyint.to_string()),
+                ]
+                .into_iter()
+                .filter(|(name, _)| probe.find_property(name).is_some()),
+            );
+        }
         _ => {
             props.extend([
                 ("tune", "zerolatency".to_string()),

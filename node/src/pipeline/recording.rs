@@ -641,9 +641,11 @@ fn link_to_muxer(
 }
 
 /// Create `encoder` with the output's rate control, keyframe interval and
-/// speed preset. Quality 1–100 maps to x264/x265 CRF and VA-API QP 41→11,
-/// VP9 `cq-level` 63→13, VideoToolbox `quality` 0.01→1. A rate control the
-/// VA-API driver lacks fails the build, so the leg falls back to software.
+/// speed preset. Quality 1–100 maps to x264/x265 CRF and VA-API, AMF and
+/// Media Foundation QP 41→11 (16 at best for Media Foundation), VP9
+/// `cq-level` 63→13, VideoToolbox `quality` 0.01→1. A rate control or
+/// property the driver lacks fails the build, so the leg falls back to the
+/// next encoder.
 fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Result<gst::Element> {
     let venc = make_el(encoder.element(), "venc")?;
     let set = |name: &str, value: &str| set_property(&venc, name, value);
@@ -731,6 +733,38 @@ fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Res
                 }
             }
         }
+        VideoEncoder::AmfH264 | VideoEncoder::AmfH265 => {
+            set("gop-size", &keyint)?;
+            match rc {
+                // AMF's `vbr` is peak-constrained: `bitrate` is the average.
+                RateControl::Average => set("rate-control", "vbr")?,
+                RateControl::Constant => set("rate-control", "cbr")?,
+                RateControl::Quality => {
+                    set("rate-control", "cqp")?;
+                    let qp = crf.to_string();
+                    for frame in ["qp-i", "qp-p"] {
+                        set(frame, &qp)?;
+                    }
+                }
+            }
+        }
+        VideoEncoder::MfH264 => {
+            // Most of mfh264enc's properties exist only if the GPU's MFT
+            // supports them.
+            set("gop-size", &keyint)?;
+            match rc {
+                RateControl::Average => set("rc-mode", "uvbr")?,
+                RateControl::Constant => set("rc-mode", "cbr")?,
+                RateControl::Quality => {
+                    set("rc-mode", "qvbr")?;
+                    if venc.find_property("qp").is_some() {
+                        set("qp", &crf.clamp(16.0, 51.0).to_string())?;
+                    } else {
+                        set("quality", &quality.round().clamp(1.0, 100.0).to_string())?;
+                    }
+                }
+            }
+        }
         VideoEncoder::ProResKs => {
             if let Some(prores) = profile.prores_profile() {
                 set("profile", prores)?;
@@ -750,13 +784,20 @@ fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Res
             (VideoEncoder::VaH264 | VideoEncoder::VaH265, RateControl::Average) => {
                 set("bitrate", &(u64::from(kbps) * 3 / 2).to_string())?
             }
+            (VideoEncoder::AmfH264 | VideoEncoder::AmfH265, RateControl::Average) => {
+                set("bitrate", &kbps.to_string())?;
+                set("max-bitrate", &(u64::from(kbps) * 3 / 2).to_string())?
+            }
             (
                 VideoEncoder::X264
                 | VideoEncoder::X265
                 | VideoEncoder::VtH264
                 | VideoEncoder::VtH265
                 | VideoEncoder::VaH264
-                | VideoEncoder::VaH265,
+                | VideoEncoder::VaH265
+                | VideoEncoder::AmfH264
+                | VideoEncoder::AmfH265
+                | VideoEncoder::MfH264,
                 _,
             ) => set("bitrate", &kbps.to_string())?,
             _ => {}

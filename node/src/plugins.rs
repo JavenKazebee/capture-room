@@ -71,7 +71,15 @@ const REQUIRED: &[Package] = &[
 ];
 
 pub fn has(name: &str) -> bool {
-    gst::ElementFactory::find(name).is_some()
+    gst::ElementFactory::find(name).is_some_and(|f| !name.starts_with("mfh26") || is_hardware(&f))
+}
+
+/// With no GPU encoder, Media Foundation registers Windows' software one
+/// under the same name, and x264enc beats it.
+fn is_hardware(factory: &gst::ElementFactory) -> bool {
+    factory
+        .metadata(gst::ELEMENT_METADATA_KLASS)
+        .is_some_and(|k| k.contains("Hardware"))
 }
 
 /// The elements of `names` this node doesn't have.

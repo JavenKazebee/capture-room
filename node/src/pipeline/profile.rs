@@ -298,6 +298,11 @@ pub enum VideoEncoder {
     /// VA-API (Linux, AMD and Intel GPUs through Mesa or iHD).
     VaH264,
     VaH265,
+    /// AMD AMF (Windows).
+    AmfH264,
+    AmfH265,
+    /// Media Foundation (Windows): the GPU vendor's encoder, whichever GPU.
+    MfH264,
     Uncompressed,
 }
 
@@ -319,6 +324,9 @@ impl VideoEncoder {
             Self::VtProRes => "vtenc_prores",
             Self::VaH264 => "vah264enc",
             Self::VaH265 => "vah265enc",
+            Self::AmfH264 => "amfh264enc",
+            Self::AmfH265 => "amfh265enc",
+            Self::MfH264 => "mfh264enc",
             Self::Uncompressed => "identity",
         }
     }
@@ -326,7 +334,14 @@ impl VideoEncoder {
     pub fn is_hardware(self) -> bool {
         matches!(
             self,
-            Self::VtH264 | Self::VtH265 | Self::VtProRes | Self::VaH264 | Self::VaH265
+            Self::VtH264
+                | Self::VtH265
+                | Self::VtProRes
+                | Self::VaH264
+                | Self::VaH265
+                | Self::AmfH264
+                | Self::AmfH265
+                | Self::MfH264
         )
     }
 }
@@ -366,7 +381,8 @@ pub const DEFAULT_QUALITY: u8 = 70;
 pub fn available_encoders() -> Vec<String> {
     use VideoEncoder::*;
     [
-        VtH264, VtH265, VtProRes, VaH264, VaH265, X264, X265, Vp9, ProResKs,
+        VtH264, VtH265, VtProRes, VaH264, VaH265, AmfH264, AmfH265, MfH264, X264, X265, Vp9,
+        ProResKs,
     ]
     .into_iter()
     .map(VideoEncoder::element)
@@ -511,9 +527,9 @@ impl RecordingProfile {
         use VideoEncoder::*;
         let yuv420 = self.chroma == ChromaSubsampling::Yuv420;
         match self.video_codec {
-            VideoCodec::H264 if yuv420 => &[VtH264, VaH264, X264],
+            VideoCodec::H264 if yuv420 => &[VtH264, VaH264, AmfH264, MfH264, X264],
             VideoCodec::H264 => &[X264],
-            VideoCodec::H265 if yuv420 => &[VtH265, VaH265, X265],
+            VideoCodec::H265 if yuv420 => &[VtH265, VaH265, AmfH265, X265],
             VideoCodec::H265 => &[X265],
             VideoCodec::Vp9 => &[Vp9],
             VideoCodec::ProRes4444
@@ -539,7 +555,12 @@ impl RecordingProfile {
                 ChromaSubsampling::Yuv444 => "Y444",
             }),
             // Every VA-API driver encodes from NV12; not all take I420.
-            VideoEncoder::VaH264 | VideoEncoder::VaH265 => Some("NV12"),
+            // AMF and Media Foundation take only NV12.
+            VideoEncoder::VaH264
+            | VideoEncoder::VaH265
+            | VideoEncoder::AmfH264
+            | VideoEncoder::AmfH265
+            | VideoEncoder::MfH264 => Some("NV12"),
             // Profile 0 (4:2:0) is the VP9 everything plays; an RGB source
             // would give 4:4:4 Profile 1.
             VideoEncoder::Vp9 => Some("I420"),
@@ -1113,19 +1134,16 @@ mod tests {
     #[test]
     fn picks_encoders_and_audio() {
         let mut p = RecordingProfile::from_output(&leg("a", Container::Mov, "x")).unwrap();
-        assert_eq!(
-            p.encoders(),
-            [
-                VideoEncoder::VtH264,
-                VideoEncoder::VaH264,
-                VideoEncoder::X264
-            ]
-        );
+        use VideoEncoder::*;
+        assert_eq!(p.encoders(), [VtH264, VaH264, AmfH264, MfH264, X264]);
         p.advanced.encoder = EncoderChoice::Hardware;
-        assert_eq!(p.encoders(), [VideoEncoder::VtH264, VideoEncoder::VaH264]);
+        assert_eq!(p.encoders(), [VtH264, VaH264, AmfH264, MfH264]);
         p.advanced.encoder = EncoderChoice::Software;
-        assert_eq!(p.encoders(), [VideoEncoder::X264]);
+        assert_eq!(p.encoders(), [X264]);
         p.advanced.encoder = EncoderChoice::Auto;
+        p.video_codec = VideoCodec::H265;
+        assert_eq!(p.encoders(), [VtH265, VaH265, AmfH265, X265]);
+        p.video_codec = VideoCodec::H264;
         assert_eq!(p.audio_format(), AudioFormat::Aac { bitrate: 256_000 });
         p.chroma = ChromaSubsampling::Yuv422;
         assert_eq!(p.encoders(), [VideoEncoder::X264]);
@@ -1147,15 +1165,25 @@ mod tests {
         let software = ["x264enc".to_string()];
         assert_eq!(
             missing_encoder(&outputs, &legs, &software, "studio-pc").as_deref(),
-            Some("output \"hw\": no hardware encoder on studio-pc (needs vtenc_h264 or vah264enc)")
+            Some(
+                "output \"hw\": no hardware encoder on studio-pc \
+                 (needs vtenc_h264 or vah264enc or amfh264enc or mfh264enc)"
+            )
         );
         let all = ["vtenc_h264".to_string(), "x264enc".to_string()];
         assert_eq!(missing_encoder(&outputs, &legs, &all, "mac"), None);
         let linux = ["vah264enc".to_string(), "x264enc".to_string()];
         assert_eq!(missing_encoder(&outputs, &legs, &linux, "linux"), None);
+        let amd = ["amfh264enc".to_string(), "x264enc".to_string()];
+        assert_eq!(missing_encoder(&outputs, &legs, &amd, "windows-amd"), None);
+        let windows = ["mfh264enc".to_string(), "x264enc".to_string()];
+        assert_eq!(missing_encoder(&outputs, &legs, &windows, "windows"), None);
         assert_eq!(
             missing_encoder(&outputs[..1], &legs[..1], &[], "bare").as_deref(),
-            Some("output \"sw\": no encoder on bare (needs vtenc_h264 or vah264enc or x264enc)")
+            Some(
+                "output \"sw\": no encoder on bare \
+                 (needs vtenc_h264 or vah264enc or amfh264enc or mfh264enc or x264enc)"
+            )
         );
     }
 
