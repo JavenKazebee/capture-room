@@ -212,8 +212,7 @@ function logEvent(event: NodeEvent) {
   const log = useEventsStore().log
   const node_id = event.node_id
   const nodes = useNodesStore()
-  const source = (id: string) =>
-    useSourcesStore().sources.find((s) => s.key === sourceKey(node_id, id))?.display_name ?? id
+  const source = (id: string) => useSourcesStore().nameOf(node_id, id)
 
   switch (event.type) {
     case 'schedule.updated': {
@@ -221,8 +220,7 @@ function logEvent(event: NodeEvent) {
       if (!run) break
       const name = `Schedule “${event.name}”`
       const failures = run.targets.filter((t) => t.error)
-      const targetName = (t: (typeof failures)[number]) =>
-        useSourcesStore().sources.find((x) => x.key === sourceKey(t.node_id, t.id))?.display_name ?? t.id
+      const targetName = (t: (typeof failures)[number]) => useSourcesStore().nameOf(t.node_id, t.id)
       const detail = failures.map((t) => `${targetName(t)}: ${t.error}`).join('; ') || undefined
       if (run.status === 'skipped') {
         log('warn', `${name} skipped: its time passed while the controller was off`, { node_id })

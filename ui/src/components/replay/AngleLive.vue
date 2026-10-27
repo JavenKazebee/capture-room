@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useThumbnail } from '@/components/record/useThumbnail'
+import { useThumbnail } from '@/composables/useThumbnail'
 import { held } from './held'
 import type { Angle } from './useReplayControl'
 

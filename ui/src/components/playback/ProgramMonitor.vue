@@ -7,7 +7,7 @@ import { plural } from '@/lib/format'
 import type { ChannelStatusDto } from '@/types/generated/ChannelStatusDto'
 import AudioMeter from '@/components/AudioMeter.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
-import { useThumbnail } from '@/components/record/useThumbnail'
+import { useThumbnail } from '@/composables/useThumbnail'
 import { TRANSPORT } from './transport'
 import WhepViewer from './WhepViewer.vue'
 

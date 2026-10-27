@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { RouterView, useRouter } from 'vue-router'
-import { useEventListener, useIntervalFn } from '@vueuse/core'
+import { useDocumentVisibility, useEventListener, useIntervalFn } from '@vueuse/core'
 import { startWebSocket } from '@/composables/useWebSocket'
 import { usePreferences } from '@/composables/usePreferences'
 import { usePresetsStore } from '@/stores/presets'
@@ -32,8 +32,17 @@ onMounted(async () => {
   storage.load()
 })
 
-// Free space changes slowly and isn't evented; poll it for the header and node cards.
-useIntervalFn(() => storage.load(), 30_000)
+// Free space changes slowly and isn't evented; poll it for the header and node
+// cards while the tab is showing, and catch up when it shows again.
+const storagePoll = useIntervalFn(() => storage.load(), 30_000)
+watch(useDocumentVisibility(), (visibility) => {
+  if (visibility === 'visible') {
+    storage.load()
+    storagePoll.resume()
+  } else {
+    storagePoll.pause()
+  }
+})
 
 useEventListener('keydown', (e: KeyboardEvent) => {
   if (e.key.toLowerCase() === 'j' && (e.metaKey || e.ctrlKey)) {

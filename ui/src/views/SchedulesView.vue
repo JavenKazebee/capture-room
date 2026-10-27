@@ -3,7 +3,6 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { CalendarClock, ListChecks, Pencil, Plus, Power, PowerOff, Square, Trash2, X } from '@lucide/vue'
-import { sourceKey } from '@/composables/useApi'
 import { registerCommands } from '@/composables/useCommands'
 import { useSecondClock } from '@/composables/useSecondClock'
 import { useSelection } from '@/composables/useSelection'
@@ -41,10 +40,6 @@ watch(() => nodes.isController, store.load)
 
 const filter = ref('')
 
-function sourceName(nodeId: string, id: string) {
-  return sources.sources.find((s) => s.key === sourceKey(nodeId, id))?.display_name ?? id
-}
-
 const RUN: Record<ScheduleRunStatus, { label: string; dot: 'tally' | 'ok' | 'warn' | 'error' | 'off' }> = {
   running: { label: 'Running', dot: 'tally' },
   done: { label: 'Done', dot: 'ok' },
@@ -56,7 +51,7 @@ const RUN: Record<ScheduleRunStatus, { label: string; dot: 'tally' | 'ok' | 'war
 const columns: Column<ScheduleDto>[] = [
   { id: 'name', label: 'Name', value: (s) => s.name, alwaysVisible: true, class: 'font-medium' },
   { id: 'when', label: 'When', value: (s) => whenLabel(s) },
-  { id: 'what', label: 'What', value: (s) => whatLabel(s.actions, sourceName) },
+  { id: 'what', label: 'What', value: (s) => whatLabel(s.actions, sources.nameOf) },
   { id: 'next', label: 'Next', value: (s) => s.next_start ?? '' },
   { id: 'status', label: 'Last run', value: (s) => s.last_run?.status ?? '' },
   { id: 'enabled', label: 'Enabled', alwaysVisible: true, align: 'right' },
@@ -203,7 +198,7 @@ async function stop(s: ScheduleDto) {
             <span class="num">{{ whenLabel(row) }}</span>
           </template>
           <template #cell-what="{ row }">
-            <span class="text-muted-foreground">{{ whatLabel(row.actions, sourceName) }}</span>
+            <span class="text-muted-foreground">{{ whatLabel(row.actions, sources.nameOf) }}</span>
           </template>
           <template #cell-next="{ row }">
             <span v-if="row.next_start" :title="dateTime(row.next_start)">{{ relativeFuture(row.next_start, now) }}</span>
@@ -290,7 +285,7 @@ async function stop(s: ScheduleDto) {
             :key="`${t.node_id}/${t.id}`"
             class="pl-4 text-destructive"
           >
-            {{ sourceName(t.node_id, t.id) }}{{ nodes.nodes.length > 1 ? ` (${nodes.nameOf(t.node_id)})` : '' }}: {{ t.error }}
+            {{ sources.nameOf(t.node_id, t.id) }}{{ nodes.nodes.length > 1 ? ` (${nodes.nameOf(t.node_id)})` : '' }}: {{ t.error }}
           </p>
         </div>
       </section>
