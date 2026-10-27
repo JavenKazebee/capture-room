@@ -19,8 +19,12 @@
 //! running node. A task, not a Windows service: services can't show a tray
 //! icon or reach the user's cameras.
 //!
-//! Stopping kills the processes (a process without a console window has no
-//! Ctrl+C to send it), so recordings in progress end unfinalised.
+//! Stopping asks the node to quit through `windows_quit` (a process without
+//! a console window has no Ctrl+C to send it), so it finishes its recordings
+//! and exits cleanly, which ends the supervisor too. Only a node that hasn't
+//! gone after [`STOP_TIMEOUT`] is killed, and its recordings end unfinalised.
+//! Restarting is a stop and a start. The node finishes its recordings itself
+//! when the user signs out or Windows shuts down.
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -46,6 +50,9 @@ const START_TIMEOUT: Duration = Duration::from_secs(120);
 /// before the next try, so a broken install doesn't spin.
 const MIN_UPTIME: Duration = Duration::from_secs(10);
 const RETRY_DELAY: Duration = Duration::from_secs(10);
+/// How long a stop waits for the node to finish its recordings and quit
+/// before killing it: well past `session::EOS_TIMEOUT`.
+const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Where `update.rs` unpacks an update, beside the app.
 const UPDATE_STAGING: &str = ".capture-room-update";
 
@@ -370,28 +377,49 @@ fn spawn_supervisor(exe: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Restart the running node (stopping anything it's doing): the supervisor
-/// starts it again.
+/// Restart the running node (finishing anything it's doing): stop the
+/// service and start it again.
 pub fn restart() -> Result<()> {
     ensure!(is_running(), "the service isn't running");
     let port = installed_port().unwrap_or(DEFAULT_PORT);
-    let pid = std::fs::read_to_string(node_pid_path()).context("the node isn't running")?;
-    run("taskkill", &["/F", "/T", "/PID", pid.trim()])?;
+    stop()?;
     // Until the old node has let go of the port.
     let deadline = Instant::now() + Duration::from_secs(10);
     while answers(port) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(200));
     }
+    start()?;
     wait_for_port(port)
 }
 
+/// Ask the node to quit, which ends the supervisor too; kill them both if
+/// they're still there after [`STOP_TIMEOUT`].
 fn stop() -> Result<()> {
     if !is_running() {
         return Ok(());
     }
     let pid = std::fs::read_to_string(pid_path()).context("the service's pid file is missing")?;
-    // The supervisor and the node under it.
-    run("taskkill", &["/F", "/T", "/PID", pid.trim()])?;
+    // No node, or one not listening yet: it's between starts or still
+    // starting, with nothing to finish.
+    let asked = std::fs::read_to_string(node_pid_path())
+        .ok()
+        .and_then(|node| node.trim().parse().ok())
+        .is_some_and(|node| super::windows_quit::request(node).is_ok());
+    if asked {
+        let deadline = Instant::now() + STOP_TIMEOUT;
+        while is_running() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        if !is_running() {
+            return Ok(());
+        }
+    }
+    // The supervisor and the node under it. It may have gone just now.
+    if let Err(e) = run("taskkill", &["/F", "/T", "/PID", pid.trim()]) {
+        if is_running() {
+            return Err(e);
+        }
+    }
     let deadline = Instant::now() + Duration::from_secs(30);
     while is_running() {
         ensure!(Instant::now() < deadline, "the service didn't stop");
