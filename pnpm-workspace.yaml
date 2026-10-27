@@ -2,3 +2,6 @@ packages:
   - "ui"
 allowBuilds:
   vue-demi: true
+overrides:
+  # minimatch 3 (via stylus's glob 7) allows ^1.1.7 but pnpm keeps the old lock entry.
+  brace-expansion@1: ^1.1.21
