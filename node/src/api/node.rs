@@ -99,7 +99,9 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/ws/logs", get(crate::logs::local_ws))
         .route("/update", get(get_update).post(post_update))
         .route("/update/check", post(post_update_check))
+        .merge(super::media::router())
         .merge(super::playout::router())
+        .merge(super::replay::router())
         .merge(crate::auth::node_router())
         // `/whep` again, behind the token: the UI reaches it through the
         // controller, so an HTTPS page never has to reach a node itself.
