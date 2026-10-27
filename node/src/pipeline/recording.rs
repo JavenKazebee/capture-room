@@ -1065,4 +1065,54 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Probe: which element refuses 8 → 3 numbered channels on this GStreamer.
+    #[test]
+    fn probe_pick_negotiation() {
+        gst::init().unwrap();
+        println!("{}", gst::version_string());
+        let rows: Vec<Vec<f32>> = [0usize, 2, 4]
+            .iter()
+            .map(|&p| (0..8).map(|c| if c == p { 1.0 } else { 0.0 }).collect())
+            .collect();
+        let src8 = "audiotestsrc num-buffers=30 ! audio/x-raw,rate=48000,channels=8,channel-mask=(bitmask)0";
+        let pos8 = "audiotestsrc num-buffers=30 ! audio/x-raw,rate=48000,channels=8";
+        let out3 = "audio/x-raw,channels=3,channel-mask=(bitmask)0,format=S24LE";
+        let cases = [
+            ("matrix->fakesink", format!("{src8} ! audioconvert name=aconv ! audioresample ! {out3} ! fakesink")),
+            ("matrix->audiorate->fakesink", format!("{src8} ! audioconvert name=aconv ! audioresample ! {out3} ! audiorate ! fakesink")),
+            ("matrix->qtmux", format!("{src8} ! audioconvert name=aconv ! audioresample ! {out3} ! audiorate ! qtmux ! fakesink")),
+            ("positioned8 matrix->qtmux", format!("{pos8} ! audioconvert name=aconv ! audioresample ! {out3} ! audiorate ! qtmux ! fakesink")),
+            ("3ch mask0 ->qtmux", format!("audiotestsrc num-buffers=30 ! {out3} ! qtmux ! fakesink")),
+            ("3ch nomask ->qtmux", "audiotestsrc num-buffers=30 ! audio/x-raw,channels=3,format=S24LE ! qtmux ! fakesink".to_string()),
+        ];
+        for (name, launch) in cases {
+            let p = gst::parse::launch(&launch)
+                .unwrap()
+                .downcast::<gst::Pipeline>()
+                .unwrap();
+            if let Some(aconv) = p.by_name("aconv") {
+                crate::pipeline::set_mix_matrix(&aconv, &rows);
+            }
+            if p.set_state(gst::State::Playing).is_err() {
+                println!("PROBE {name}: state change failed");
+            }
+            let msg = p.bus().unwrap().timed_pop_filtered(
+                gst::ClockTime::from_seconds(5),
+                &[gst::MessageType::Eos, gst::MessageType::Error],
+            );
+            let res = match msg.as_ref().map(|m| m.view()) {
+                Some(gst::MessageView::Eos(_)) => "ok".to_string(),
+                Some(gst::MessageView::Error(e)) => format!(
+                    "ERR {} from {:?}: {:?}",
+                    e.error(),
+                    e.src().map(|s| s.name()),
+                    e.debug()
+                ),
+                _ => "timeout".into(),
+            };
+            println!("PROBE {name}: {res}");
+            p.set_state(gst::State::Null).unwrap();
+        }
+    }
 }
