@@ -1077,14 +1077,16 @@ mod tests {
             .collect();
         let src8 = "audiotestsrc num-buffers=30 ! audio/x-raw,rate=48000,channels=8,channel-mask=(bitmask)0";
         let pos8 = "audiotestsrc num-buffers=30 ! audio/x-raw,rate=48000,channels=8";
-        let out3 = "audio/x-raw,channels=3,channel-mask=(bitmask)0,format=S24LE";
+        let relabel = "capssetter caps=audio/x-raw,channel-mask=(bitmask)0";
         let cases = [
-            ("matrix->fakesink", format!("{src8} ! audioconvert name=aconv ! audioresample ! {out3} ! fakesink")),
-            ("matrix->audiorate->fakesink", format!("{src8} ! audioconvert name=aconv ! audioresample ! {out3} ! audiorate ! fakesink")),
-            ("matrix->qtmux", format!("{src8} ! audioconvert name=aconv ! audioresample ! {out3} ! audiorate ! qtmux ! fakesink")),
-            ("positioned8 matrix->qtmux", format!("{pos8} ! audioconvert name=aconv ! audioresample ! {out3} ! audiorate ! qtmux ! fakesink")),
-            ("3ch mask0 ->qtmux", format!("audiotestsrc num-buffers=30 ! {out3} ! qtmux ! fakesink")),
-            ("3ch nomask ->qtmux", "audiotestsrc num-buffers=30 ! audio/x-raw,channels=3,format=S24LE ! qtmux ! fakesink".to_string()),
+            ("A mask0", format!("{src8} ! audioconvert name=aconv ! audio/x-raw,channels=3,channel-mask=(bitmask)0,format=S24LE ! fakesink")),
+            ("B no mask", format!("{src8} ! audioconvert name=aconv ! audio/x-raw,channels=3,format=S24LE ! fakesink")),
+            ("C mask 0x7", format!("{src8} ! audioconvert name=aconv ! audio/x-raw,channels=3,channel-mask=(bitmask)0x7,format=S24LE ! fakesink")),
+            ("D mask 0x7 relabel qtmux", format!("{src8} ! audioconvert name=aconv ! audio/x-raw,channels=3,channel-mask=(bitmask)0x7,format=S24LE ! {relabel} ! audiorate ! qtmux ! fakesink")),
+            ("E positioned src mask0", format!("{pos8} ! audioconvert name=aconv ! audio/x-raw,channels=3,channel-mask=(bitmask)0,format=S24LE ! fakesink")),
+            ("F mask0 2ch", format!("{src8} ! audioconvert name=aconv2 ! audio/x-raw,channels=2,channel-mask=(bitmask)0,format=S24LE ! fakesink")),
+            ("G no matrix 8->8 mask0", format!("{src8} ! audioconvert ! audio/x-raw,channels=8,channel-mask=(bitmask)0,format=S24LE ! fakesink")),
+            ("H mask0 4ch", format!("{src8} ! audioconvert name=aconv4 ! audio/x-raw,channels=4,channel-mask=(bitmask)0,format=S24LE ! fakesink")),
         ];
         for (name, launch) in cases {
             let p = gst::parse::launch(&launch)
@@ -1093,6 +1095,14 @@ mod tests {
                 .unwrap();
             if let Some(aconv) = p.by_name("aconv") {
                 crate::pipeline::set_mix_matrix(&aconv, &rows);
+            }
+            if let Some(aconv) = p.by_name("aconv2") {
+                crate::pipeline::set_mix_matrix(&aconv, &rows[..2]);
+            }
+            if let Some(aconv) = p.by_name("aconv4") {
+                let mut four = rows.clone();
+                four.push((0..8).map(|c| if c == 6 { 1.0 } else { 0.0 }).collect());
+                crate::pipeline::set_mix_matrix(&aconv, &four);
             }
             if p.set_state(gst::State::Playing).is_err() {
                 println!("PROBE {name}: state change failed");
