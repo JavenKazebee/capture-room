@@ -1,5 +1,5 @@
-//! The event WebSocket. Events are JSON with a `type` ([`WsEvent`]) and the
-//! `node_id` they describe. `/api/v1/node/ws` sends this node's own; `/ws`
+//! The event WebSocket. Each message is a [`NodeEvent`]: a `type` ([`WsEvent`])
+//! and the `node_id` it describes. `/api/v1/node/ws` sends this node's own; `/ws`
 //! adds those relayed from peers while it's a controller.
 
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
-use crate::api::types::{TransportState, WsEvent};
+use crate::api::types::{NodeEvent, TransportState, WsEvent};
 use crate::state::AppState;
 
 /// Slow receivers lose the oldest messages. On a controller this also carries
@@ -22,18 +22,10 @@ pub fn channel() -> (broadcast::Sender<String>, broadcast::Receiver<String>) {
 }
 
 /// Serialize `event`, stamped with the `node_id` of the node it describes.
-/// Source and session ids inside events are always local to that node.
 pub fn encode(node_id: &str, event: &WsEvent) -> Option<String> {
-    match serde_json::to_value(event) {
-        Ok(mut value) => {
-            value["node_id"] = node_id.into();
-            Some(value.to_string())
-        }
-        Err(e) => {
-            warn!(error = %e, "failed to serialize WsEvent");
-            None
-        }
-    }
+    serde_json::to_string(&NodeEvent { node_id, event })
+        .inspect_err(|e| warn!(error = %e, "failed to serialize WsEvent"))
+        .ok()
 }
 
 /// How often a client is pinged. One that has sent nothing, not even the
@@ -247,5 +239,15 @@ mod tests {
             .await
             .expect("the silent client was dropped")
             .unwrap();
+    }
+
+    #[test]
+    fn an_event_is_flat_beside_its_node_id() {
+        let event = WsEvent::SourcesChanged;
+        let json: serde_json::Value = serde_json::from_str(&encode("n1", &event).unwrap()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "node_id": "n1", "type": "sources.changed" })
+        );
     }
 }
