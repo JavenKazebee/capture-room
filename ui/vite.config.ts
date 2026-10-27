@@ -59,7 +59,7 @@ export default defineConfig({
   plugins: [vue(), tailwindcss(), thirdPartyLicenses()],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, 'src'),
+      '@': path.resolve(import.meta.dirname, 'src'),
     },
   },
   server: {

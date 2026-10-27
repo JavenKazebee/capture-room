@@ -215,5 +215,6 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter ui type-check
+      - run: pnpm --filter ui test
       # `build` would re-run the type-check above.
       - run: pnpm --filter ui exec vite build
