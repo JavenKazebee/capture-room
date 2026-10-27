@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import { Trash2 } from '@lucide/vue'
 import { useSourcesStore } from '@/stores/sources'
@@ -10,8 +10,8 @@ import { notifyWarn } from '@/lib/notify'
 import { errorMessage, sourceKey } from '@/composables/useApi'
 import { useNodeDevices } from '@/composables/useNodeDevices'
 import { useNodeDecklink } from '@/composables/useNodeDecklink'
+import { useNodeDisplays } from '@/composables/useNodeDisplays'
 import type { ChannelConfig } from '@/types/generated/ChannelConfig'
-import type { DisplayDto } from '@/types/generated/DisplayDto'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import FormField from '@/components/FormField.vue'
@@ -79,24 +79,9 @@ const unavailable = computed(() => {
 
 const devices = useNodeDevices(nodeId)
 const decklink = useNodeDecklink(nodeId)
-const displays = ref<DisplayDto[]>([])
-
-/** The node's screens and audio outputs, for display outputs. */
-function refreshScreens() {
-  devices.refresh()
-  const id = nodeId.value
-  if (!id) return
-  sources
-    .listDisplays(id)
-    .then((d) => {
-      if (nodeId.value === id) displays.value = d
-    })
-    .catch(() => (displays.value = []))
-}
-watch(nodeId, refreshScreens)
+const { displays } = useNodeDisplays(nodeId)
 
 onMounted(async () => {
-  refreshScreens()
   if (!props.editing) return
   try {
     const cfg = await sources.getConfig(props.editing.nodeId, props.editing.id)

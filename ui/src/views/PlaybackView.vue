@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
 import { useViewKeys } from '@/composables/useViewKeys'
 import { registerCommands } from '@/composables/useCommands'
+import { useQueryAction } from '@/composables/useQueryAction'
 import { Plus, Settings2 } from '@lucide/vue'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
@@ -27,8 +27,6 @@ import { TRANSPORT } from '@/components/playback/transport'
 const sources = useSourcesStore()
 const nodes = useNodesStore()
 const playout = usePlayoutStore()
-const route = useRoute()
-const router = useRouter()
 
 const SHORTCUTS: [string[], string][] = [
   [['Space'], 'Play / pause'],
@@ -62,24 +60,19 @@ function editChannel(key: string) {
 
 // From Sources: `?channel=<key>` picks the channel, with `&edit` opening its
 // settings; `?add=channel` opens a new one.
-watch(
-  () => [route.query.channel, route.query.edit, route.query.add],
-  async ([key, edit, add]) => {
-    if (typeof key === 'string') {
-      channelKey.value = key
-      if (edit !== undefined) {
-        await sources.ensureLoaded()
-        editChannel(key)
-      }
-    } else if (add === 'channel') {
-      sheet.value = 'new'
-    } else {
-      return
+useQueryAction(['channel', 'edit', 'add'], async ({ channel: key, edit, add }) => {
+  if (typeof key === 'string') {
+    channelKey.value = key
+    if (edit !== undefined) {
+      await sources.ensureLoaded()
+      editChannel(key)
     }
-    router.replace({ query: {} })
-  },
-  { immediate: true },
-)
+  } else if (add === 'channel') {
+    sheet.value = 'new'
+  } else {
+    return false
+  }
+})
 
 watch(
   channel,

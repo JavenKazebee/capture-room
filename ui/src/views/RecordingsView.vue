@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useStorage } from '@vueuse/core'
-import { useRoute, useRouter } from 'vue-router'
 import { registerCommands } from '@/composables/useCommands'
+import { useQueryAction } from '@/composables/useQueryAction'
+import { useTableSelectionCommands } from '@/composables/useTableSelectionCommands'
 import { reloadAll } from '@/composables/useWebSocket'
 import { useSecondClock } from '@/composables/useSecondClock'
 import { useViewKeys } from '@/composables/useViewKeys'
-import { Download, History, ListChecks, Play, Trash2, X } from '@lucide/vue'
+import { Download, History, Play, Trash2 } from '@lucide/vue'
 import { FetchError } from 'ofetch'
 import { toast } from 'vue-sonner'
 import { downloadUrl, errorMessage, recordingFileUrl } from '@/composables/useApi'
@@ -87,26 +88,19 @@ function select(s: RecordingSession) {
 }
 
 // From the command palette: `?select=<node>/<id>` opens a recording, clearing filters that hide it.
-const route = useRoute()
-const router = useRouter()
-watch(
-  () => [route.query.select, recordings.sessions.length] as const,
-  async ([want]) => {
-    if (typeof want !== 'string') return
-    const s = recordings.sessions.find((x) => key(x) === want)
-    if (!s) return
-    if (!rows.value.includes(s)) {
-      statusFilter.value = 'all'
-      nodeFilter.value = 'all'
-    }
-    filter.value = ''
-    selectedKey.value = want
-    router.replace({ query: {} })
-    await nextTick()
-    document.querySelector(`[data-row-key="${CSS.escape(want)}"]`)?.scrollIntoView({ block: 'nearest' })
-  },
-  { immediate: true },
-)
+useQueryAction(['select'], async ({ select: want }) => {
+  if (typeof want !== 'string') return
+  const s = recordings.sessions.find((x) => key(x) === want)
+  if (!s) return false
+  if (!rows.value.includes(s)) {
+    statusFilter.value = 'all'
+    nodeFilter.value = 'all'
+  }
+  filter.value = ''
+  selectedKey.value = want
+  await nextTick()
+  document.querySelector(`[data-row-key="${CSS.escape(want)}"]`)?.scrollIntoView({ block: 'nearest' })
+}, { when: () => recordings.sessions.length })
 
 registerCommands(() =>
   recordings.hasOlder
@@ -168,19 +162,12 @@ const columns = computed<Column<RecordingSession>[]>(() => [
 const checked = useSelection()
 const checkedSessions = computed(() => recordings.sessions.filter((s) => checked.selected.value.has(key(s))))
 
-registerCommands(() => [
-  {
-    id: 'recordings:select-all',
-    title: 'Select all recordings shown',
-    group: 'This page',
-    icon: ListChecks,
-    keywords: ['bulk', 'multiple', 'check'],
-    run: () => checked.selectAll((table.value?.displayedRows ?? []).map(key)),
-  },
-  ...(checked.count.value
-    ? [{ id: 'recordings:clear-selection', title: 'Clear selection', group: 'This page' as const, icon: X, keywords: ['deselect', 'none'], run: checked.clearSelection }]
-    : []),
-])
+useTableSelectionCommands({
+  id: 'recordings',
+  noun: 'recordings',
+  selection: checked,
+  shown: () => (table.value?.displayedRows ?? []).map(key),
+})
 
 const bulkConfirm = ref<'remove' | 'files' | null>(null)
 

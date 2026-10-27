@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useEventListener } from '@vueuse/core'
 import { toast } from 'vue-sonner'
 import { Copy, Loader2, Lock, Plus, RotateCcw, Search, Trash2 } from '@lucide/vue'
@@ -10,6 +9,8 @@ import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordDeskStore } from '@/stores/recordDesk'
 import { errorMessage } from '@/composables/useApi'
+import { useQueryAction } from '@/composables/useQueryAction'
+import { useUnsavedGuard } from '@/composables/useUnsavedGuard'
 import { notifyError } from '@/lib/notify'
 import { CODECS, clashingLegs, legProblems } from '@/lib/codecs'
 import { advancedProblems } from '@/lib/advanced'
@@ -27,8 +28,6 @@ const store = usePresetsStore()
 const sources = useSourcesStore()
 const nodes = useNodesStore()
 const desk = useRecordDeskStore()
-const route = useRoute()
-const router = useRouter()
 
 const query = ref('')
 const listed = computed(() => {
@@ -81,20 +80,8 @@ function loadPreset(p: PresetDto) {
   load(p.id, p.name, p.outputs.length ? p.outputs : [blankLeg()])
 }
 
-// Switching away from unsaved changes asks first. The dialog closes itself
-// before its confirm fires, so closing must not drop the pending switch.
-const pendingSwitch = ref<(() => void) | null>(null)
-const confirmSwitch = ref(false)
-function guarded(fn: () => void) {
-  if (!dirty.value) return fn()
-  pendingSwitch.value = fn
-  confirmSwitch.value = true
-}
-function discardAndSwitch() {
-  const fn = pendingSwitch.value
-  pendingSwitch.value = null
-  fn?.()
-}
+// Switching away from unsaved changes, or leaving the page, asks first.
+const { confirmOpen: confirmSwitch, guarded, discard: discardAndSwitch } = useUnsavedGuard(dirty)
 
 function select(id: string) {
   if (id === selectedId.value) return
@@ -128,8 +115,6 @@ function revert() {
   if (selected.value) loadPreset(selected.value)
   else if (selectedId.value === 'new') load('new', '', [blankLeg()])
 }
-
-onBeforeRouteLeave(() => !dirty.value || confirm('Discard unsaved preset changes?'))
 
 function addOutput() {
   const n = draftLegs.value.length + 1
@@ -231,17 +216,19 @@ function pickInitial() {
   else load(DEFAULT_PRESET.id, DEFAULT_PRESET.name, [blankLeg()])
 }
 
+const ready = ref(false)
 onMounted(async () => {
   if (!store.presets.length) await store.load()
   pickInitial()
-  // "New preset…" from a Record picker lands here with ?new=1, and ?for= the
-  // feeds to apply it to.
-  if (route.query.new) {
-    create()
-    pendingFor.value = ([] as unknown[]).concat(route.query.for ?? []).filter((k): k is string => typeof k === 'string')
-    router.replace({ query: {} })
-  }
+  ready.value = true
 })
+
+// "New preset…" from a Record picker lands here with ?new=1, and ?for= the feeds to apply it to.
+useQueryAction(['new', 'for'], (q) => {
+  if (!q.new) return
+  create()
+  pendingFor.value = ([] as unknown[]).concat(q.for ?? []).filter((k): k is string => typeof k === 'string')
+}, { when: () => ready.value })
 
 // A preset updated elsewhere refreshes the editor unless there are local edits.
 watch(selected, (p) => p && !dirty.value && p.id === selectedId.value && loadPreset(p))

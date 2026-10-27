@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { ListChecks, MonitorPlay, Pencil, Plus, Radio, RadioTower, RefreshCw, Trash2, X } from '@lucide/vue'
+import { MonitorPlay, Pencil, Plus, Radio, RadioTower, RefreshCw, Trash2 } from '@lucide/vue'
 import { CONFIGURED_TYPES, useSourcesStore, type Source } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordingsStore } from '@/stores/recordings'
 import { useRecordDeskStore } from '@/stores/recordDesk'
 import { notifyError } from '@/lib/notify'
 import { registerCommands } from '@/composables/useCommands'
+import { useQueryAction } from '@/composables/useQueryAction'
+import { useTableSelectionCommands } from '@/composables/useTableSelectionCommands'
 import { reloadAll } from '@/composables/useWebSocket'
 import { useSelection } from '@/composables/useSelection'
 import { BulkSkip, bulkToast, runBulk } from '@/lib/bulk'
@@ -107,18 +109,12 @@ function openEdit(src: Source) {
 }
 
 // From the command palette: `?edit=<source key>` opens that source's settings.
-const route = useRoute()
-watch(
-  () => route.query.edit,
-  async (key) => {
-    if (typeof key !== 'string') return
-    await store.ensureLoaded()
-    const src = store.sources.find((s) => s.key === key)
-    router.replace({ query: {} })
-    if (src) openEdit(src)
-  },
-  { immediate: true },
-)
+useQueryAction(['edit'], async ({ edit: key }) => {
+  if (typeof key !== 'string') return
+  await store.ensureLoaded()
+  const src = store.sources.find((s) => s.key === key)
+  if (src) openEdit(src)
+})
 
 registerCommands(() => [
   { id: 'sources:add', title: 'Add source', group: 'This page', icon: Plus, keywords: ['new', 'create'], run: openCreate },
@@ -144,19 +140,12 @@ const checkedSources = computed(() => store.sources.filter((s) => checked.select
 const bulkDeleting = ref(false)
 
 const table = ref<{ displayedRows: Source[] }>()
-registerCommands(() => [
-  {
-    id: 'sources:select-all',
-    title: 'Select all sources shown',
-    group: 'This page',
-    icon: ListChecks,
-    keywords: ['bulk', 'multiple', 'check'],
-    run: () => checked.selectAll((table.value?.displayedRows ?? []).map((s) => s.key)),
-  },
-  ...(checked.count.value
-    ? [{ id: 'sources:clear-selection', title: 'Clear selection', group: 'This page' as const, icon: X, keywords: ['deselect', 'none'], run: checked.clearSelection }]
-    : []),
-])
+useTableSelectionCommands({
+  id: 'sources',
+  noun: 'sources',
+  selection: checked,
+  shown: () => (table.value?.displayedRows ?? []).map((s) => s.key),
+})
 
 async function bulkDelete() {
   const result = await runBulk(checkedSources.value, (s) =>

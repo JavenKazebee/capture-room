@@ -2,14 +2,11 @@
 import { computed, onMounted, ref } from 'vue'
 import { toast } from 'vue-sonner'
 import { RefreshCw } from '@lucide/vue'
-import { api } from '@/composables/useApi'
 import { checkAuth, generateToken, signOut } from '@/composables/useAuth'
 import { notifyError } from '@/lib/notify'
 import { plural } from '@/lib/format'
 import { useNodesStore } from '@/stores/nodes'
-import type { AccessTokenDto } from '@/types/generated/AccessTokenDto'
-import type { AccessTokenResultDto } from '@/types/generated/AccessTokenResultDto'
-import type { AccessTokenRequest } from '@/types/generated/AccessTokenRequest'
+import { useSettingsStore } from '@/stores/settings'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import CopyButton from '@/components/common/CopyButton.vue'
@@ -18,12 +15,12 @@ const nodes = useNodesStore()
 const peers = computed(() => nodes.nodes.length - 1)
 const scope = computed(() => (peers.value ? `this node and its ${plural(peers.value, 'other node')}` : 'this node'))
 
-/** This node's token and pairing code; `null` until loaded. */
-const current = ref<AccessTokenDto | null>(null)
+const settings = useSettingsStore()
+const current = computed(() => settings.accessToken)
 
 async function load() {
   try {
-    current.value = await api<AccessTokenDto>('/access-token')
+    await settings.loadAccessToken()
   } catch (e) {
     notifyError("Couldn't load the access token", e)
   }
@@ -41,10 +38,7 @@ function startEdit() {
 async function save(token: string) {
   saving.value = true
   try {
-    const { failed } = await api<AccessTokenResultDto>('/access-token', {
-      method: 'PUT',
-      body: { token } satisfies AccessTokenRequest,
-    })
+    const failed = await settings.setAccessToken(token)
     await checkAuth()
     await load()
     draft.value = null
