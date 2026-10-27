@@ -28,6 +28,7 @@ use winit::window::{Fullscreen, WindowLevel};
 use winit::window::{Window, WindowId};
 
 use crate::api::types::{DisplayDto, DisplayModeDto};
+use crate::power;
 
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -245,7 +246,7 @@ struct OutputWindow {
 struct WindowLoop {
     windows: HashMap<WindowId, OutputWindow>,
     /// Keeps the screens from sleeping while any output window is open.
-    awake: Option<power::KeepAwake>,
+    awake: Option<power::DisplayAwake>,
     /// The menu bar icon to show once the loop runs, if any.
     tray_config: Option<crate::tray::Config>,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -450,7 +451,7 @@ impl WindowLoop {
         info!(screen, mode = %description, "display window open");
         self.windows.insert(id, output);
         if self.awake.is_none() {
-            self.awake = power::KeepAwake::new();
+            self.awake = Some(power::keep_display_awake());
         }
         Ok((id, handle, description, connected))
     }
@@ -984,145 +985,6 @@ mod mac {
             } else {
                 let _: () = msg_send![window, orderOut: std::ptr::null::<AnyObject>()];
             }
-        }
-    }
-}
-
-/// Screen sleep. A sleeping screen drops out of the screen list (and its
-/// output goes dark), so screens are woken before listing or opening, and
-/// kept awake while an output shows.
-#[cfg(target_os = "macos")]
-mod power {
-    use std::ffi::{c_char, c_void, CString};
-    use std::time::{Duration, Instant};
-
-    use tracing::warn;
-
-    type CFStringRef = *const c_void;
-    const UTF8: u32 = 0x0800_0100;
-    const ASSERTION_ON: u32 = 255;
-    /// `kIOPMUserActiveLocal`
-    const USER_ACTIVE_LOCAL: u32 = 0;
-
-    #[link(name = "CoreFoundation", kind = "framework")]
-    extern "C" {
-        fn CFStringCreateWithCString(
-            alloc: *const c_void,
-            s: *const c_char,
-            encoding: u32,
-        ) -> CFStringRef;
-        fn CFRelease(cf: *const c_void);
-    }
-
-    #[link(name = "IOKit", kind = "framework")]
-    extern "C" {
-        fn IOPMAssertionCreateWithName(
-            kind: CFStringRef,
-            level: u32,
-            name: CFStringRef,
-            id: *mut u32,
-        ) -> i32;
-        fn IOPMAssertionDeclareUserActivity(name: CFStringRef, kind: u32, id: *mut u32) -> i32;
-        fn IOPMAssertionRelease(id: u32) -> i32;
-    }
-
-    #[link(name = "CoreGraphics", kind = "framework")]
-    extern "C" {
-        fn CGGetActiveDisplayList(max: u32, ids: *mut u32, count: *mut u32) -> i32;
-        fn CGGetOnlineDisplayList(max: u32, ids: *mut u32, count: *mut u32) -> i32;
-    }
-
-    struct CfString(CFStringRef);
-
-    impl CfString {
-        fn new(s: &str) -> Self {
-            let c = CString::new(s).expect("no NUL");
-            // SAFETY: a valid C string; the result is released in `drop`.
-            Self(unsafe { CFStringCreateWithCString(std::ptr::null(), c.as_ptr(), UTF8) })
-        }
-    }
-
-    impl Drop for CfString {
-        fn drop(&mut self) {
-            if !self.0.is_null() {
-                // SAFETY: created by us, released once.
-                unsafe { CFRelease(self.0) }
-            }
-        }
-    }
-
-    const NAME: &str = "Capture Room display output";
-
-    fn display_count(list: unsafe extern "C" fn(u32, *mut u32, *mut u32) -> i32) -> u32 {
-        let mut ids = [0u32; 32];
-        let mut count = 0u32;
-        // SAFETY: the buffer holds `ids.len()` entries.
-        let err = unsafe { list(ids.len() as u32, ids.as_mut_ptr(), &mut count) };
-        if err == 0 {
-            count
-        } else {
-            0
-        }
-    }
-
-    /// Wake sleeping screens (as a key press would), waiting briefly for them.
-    pub fn wake_screens() {
-        let online = display_count(CGGetOnlineDisplayList);
-        if display_count(CGGetActiveDisplayList) >= online {
-            return;
-        }
-        let name = CfString::new(NAME);
-        let mut id = 0u32;
-        // SAFETY: valid string and out pointer.
-        let err = unsafe { IOPMAssertionDeclareUserActivity(name.0, USER_ACTIVE_LOCAL, &mut id) };
-        if err != 0 {
-            warn!(error = err, "couldn't wake the screens");
-            return;
-        }
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while display_count(CGGetActiveDisplayList) < online && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        // SAFETY: the assertion we just made.
-        unsafe { IOPMAssertionRelease(id) };
-    }
-
-    /// Screens stay awake until dropped.
-    pub struct KeepAwake(u32);
-
-    impl KeepAwake {
-        pub fn new() -> Option<Self> {
-            let kind = CfString::new("PreventUserIdleDisplaySleep");
-            let name = CfString::new(NAME);
-            let mut id = 0u32;
-            // SAFETY: valid strings and out pointer.
-            let err = unsafe { IOPMAssertionCreateWithName(kind.0, ASSERTION_ON, name.0, &mut id) };
-            if err != 0 {
-                warn!(error = err, "couldn't keep the screens awake");
-                return None;
-            }
-            Some(Self(id))
-        }
-    }
-
-    impl Drop for KeepAwake {
-        fn drop(&mut self) {
-            // SAFETY: the assertion made in `new`, released once.
-            unsafe { IOPMAssertionRelease(self.0) };
-        }
-    }
-}
-
-/// Elsewhere screens are left to the OS for now.
-#[cfg(not(target_os = "macos"))]
-mod power {
-    pub fn wake_screens() {}
-
-    pub struct KeepAwake;
-
-    impl KeepAwake {
-        pub fn new() -> Option<Self> {
-            None
         }
     }
 }
