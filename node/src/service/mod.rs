@@ -7,9 +7,11 @@ use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-use anyhow::{bail, Context};
+use anyhow::bail;
+use anyhow::{Context, Result};
+
+use crate::api::types::UpdateChannel;
 
 #[cfg(any(unix, windows))]
 pub mod log_rotation;
@@ -61,6 +63,10 @@ pub enum Command {
         /// API and UI port [default: the installed service's, else 7700].
         #[arg(long)]
         port: Option<u16>,
+        /// Offer pre-releases (betas, release candidates) as updates too
+        /// (remembered; Settings › Updates changes it).
+        #[arg(long)]
+        prerelease: bool,
     },
     /// Stop the service and remove it and the app. Recordings stay.
     Uninstall {
@@ -80,7 +86,14 @@ pub enum Command {
 /// Run a `capture-room service …` command.
 pub fn run_command(command: Command) -> Result<()> {
     match command {
-        Command::Install { controller, port } => {
+        Command::Install {
+            controller,
+            port,
+            prerelease,
+        } => {
+            if prerelease {
+                set_update_channel(UpdateChannel::Prerelease)?;
+            }
             let installed = platform::install(controller, port)?;
             println!(
                 "Capture Room is running: http://localhost:{}",
@@ -121,6 +134,25 @@ pub fn run_command(command: Command) -> Result<()> {
         Command::Run => platform::run_supervisor()?,
     }
     Ok(())
+}
+
+/// Set the channel in the service's database before it starts, not as a
+/// service argument: that would set it again on every start, undoing a change
+/// made in Settings.
+fn set_update_channel(channel: UpdateChannel) -> Result<()> {
+    let db = installed_db().unwrap_or_else(|| data_dir().join("capture-room.db"));
+    if let Some(dir) = db.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            let pool = crate::db::init(&db).await?;
+            crate::db::update_channel_set(&pool, channel).await?;
+            pool.close().await;
+            anyhow::Ok(())
+        })
 }
 
 /// The port the installed service runs on, if it's installed.

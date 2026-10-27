@@ -20,7 +20,7 @@ use crate::api::types::{
     BenchmarkRunDto, BenchmarkStatus, ClipEnd, ConfiguredSourceDto, DecklinkProfile, MediaItemDto,
     MonitorSettingsDto, NdiConnect, NdiSubscriptionsInput, PresetDto, PresetOutputInput,
     RecordingSessionDto, ReplayCodec, ReplayConfigInput, ScheduleDto, ScheduleRunDto,
-    ScheduleRunStatus,
+    ScheduleRunStatus, UpdateChannel,
 };
 
 fn connect_options(db_path: &Path) -> SqliteConnectOptions {
@@ -600,6 +600,7 @@ pub async fn ndi_subscriptions_set(pool: &SqlitePool, subs: &NdiSubscriptionsInp
 }
 
 const DECKLINK_PROFILES: &str = "decklink_profiles";
+const UPDATE_CHANNEL: &str = "update_channel";
 const SCREENCASTS: &str = "screencasts";
 
 /// Each Decklink card's profile, by card key (cards left at the default
@@ -628,6 +629,17 @@ pub async fn screencasts_get(pool: &SqlitePool) -> Result<HashMap<String, Choice
 
 pub async fn screencasts_set(pool: &SqlitePool, choices: &HashMap<String, Choice>) -> Result<()> {
     config_set(pool, SCREENCASTS, &serde_json::to_string(choices)?).await
+}
+
+pub async fn update_channel_get(pool: &SqlitePool) -> Result<UpdateChannel> {
+    Ok(config_get(pool, UPDATE_CHANNEL)
+        .await?
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default())
+}
+
+pub async fn update_channel_set(pool: &SqlitePool, channel: UpdateChannel) -> Result<()> {
+    config_set(pool, UPDATE_CHANNEL, &serde_json::to_string(&channel)?).await
 }
 
 /// Each source with a replay buffer, and its config.

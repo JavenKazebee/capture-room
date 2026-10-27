@@ -291,6 +291,9 @@ async fn run(
     session::spawn_quit_on_signal(Arc::clone(&state));
     session::spawn_power_keeper(Arc::clone(&state));
     session::spawn_screencast_saver(Arc::clone(&state));
+    state
+        .updater
+        .set_channel(db::update_channel_get(&state.db).await?);
     update::spawn_checker(Arc::clone(&state));
     // Without a menu bar, nothing else signs a browser in: print a link.
     let print_sign_in_link = tray_actions.is_none();

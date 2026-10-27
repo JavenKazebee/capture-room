@@ -10,6 +10,7 @@ import type { ClockMode } from '@/types/generated/ClockMode'
 import type { ControllerClockDto } from '@/types/generated/ControllerClockDto'
 import type { MonitorSettingsDto } from '@/types/generated/MonitorSettingsDto'
 import type { NodeSettingsDto } from '@/types/generated/NodeSettingsDto'
+import type { UpdateChannel } from '@/types/generated/UpdateChannel'
 import type { UpdateNodeSettingsRequest } from '@/types/generated/UpdateNodeSettingsRequest'
 
 /** Settings that span nodes: monitoring on each node, the controller's clock and the shared access token. */
@@ -39,7 +40,7 @@ export const useSettingsStore = defineStore('settings', () => {
   /** Set `monitor` on every reachable node; the nodes it failed on, each with its error. */
   async function applyMonitor(monitor: MonitorSettingsDto) {
     const targets = nodes.reachable
-    const body = { name: null, monitor } satisfies UpdateNodeSettingsRequest
+    const body = { name: null, monitor, update_channel: null } satisfies UpdateNodeSettingsRequest
     const results = await Promise.allSettled(
       targets.map((n) => nodeApi(n.id)<NodeSettingsDto>('/settings', { method: 'PUT', body })),
     )
@@ -53,6 +54,14 @@ export const useSettingsStore = defineStore('settings', () => {
       }
     })
     return { applied: targets.length - failed.length, failed }
+  }
+
+  /** Which releases this node offers as updates. Its nodes follow its version, so only its own matters. */
+  async function setUpdateChannel(channel: UpdateChannel) {
+    const self = nodes.self
+    if (!self) return
+    const body = { name: null, monitor: null, update_channel: channel } satisfies UpdateNodeSettingsRequest
+    nodes.self = await nodeApi(self.node_id)<NodeSettingsDto>('/settings', { method: 'PUT', body })
   }
 
   /** `null` until loaded, or while this instance isn't a controller. */
@@ -94,6 +103,7 @@ export const useSettingsStore = defineStore('settings', () => {
     loadMonitors,
     monitorFor,
     applyMonitor,
+    setUpdateChannel,
     clock,
     clockError: clockLoad.error,
     loadClock,

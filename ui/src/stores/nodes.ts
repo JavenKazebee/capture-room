@@ -128,7 +128,7 @@ export const useNodesStore = defineStore('nodes', () => {
   async function rename(id: string, name: string) {
     const settings = await nodeApi(id)<NodeSettingsDto>('/settings', {
       method: 'PUT',
-      body: { name, monitor: null } satisfies UpdateNodeSettingsRequest,
+      body: { name, monitor: null, update_channel: null } satisfies UpdateNodeSettingsRequest,
     })
     renamed.set(id, { name: settings.node_name, until: Date.now() + 15_000 })
     const node = nodes.value.find((n) => n.id === id)

@@ -4,6 +4,7 @@ import {
   CalendarOff,
   Circle,
   Clock,
+  Download,
   Film,
   Gauge,
   Info,
@@ -43,6 +44,7 @@ const SETTINGS_SECTIONS = [
   { hash: 'monitoring', label: 'Monitoring', icon: Gauge, keywords: ['thumbnail', 'meter', 'levels'] },
   { hash: 'clock-sync', label: 'Clock sync', icon: Clock, keywords: ['ptp', 'ntp', 'time'] },
   { hash: 'access-token', label: 'Access token', icon: KeyRound, keywords: ['password', 'sign in', 'auth', 'security'] },
+  { hash: 'updates', label: 'Updates', icon: Download, keywords: ['pre-release', 'beta', 'release candidate', 'channel', 'version'] },
   { hash: 'about', label: 'About', icon: Info, keywords: ['version', 'uptime', 'fingerprint'] },
 ]
 

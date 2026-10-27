@@ -186,6 +186,7 @@ async fn settings_dto(state: &AppState) -> NodeSettingsDto {
         node_name: state.node_name(),
         is_controller: state.is_controller().await,
         monitor: *state.source_manager.read().await.monitor_config(),
+        update_channel: state.updater.channel(),
     }
 }
 
@@ -214,6 +215,12 @@ async fn put_settings(
             .write()
             .await
             .apply_monitor_config(monitor);
+    }
+    if let Some(channel) = req.update_channel {
+        db::update_channel_set(&state.db, channel).await?;
+        state.updater.set_channel(channel);
+        let state = Arc::clone(&state);
+        tokio::spawn(async move { crate::update::check(&state).await });
     }
     state.emit(&WsEvent::NodeUpdated);
     Ok(Json(settings_dto(&state).await))

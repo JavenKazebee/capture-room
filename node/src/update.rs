@@ -1,5 +1,11 @@
 //! Updating a node to the newest GitHub release.
 //!
+//! On the stable channel the newest release is `releases/latest`, which
+//! GitHub keeps to non-pre-releases; on the pre-release channel it's the
+//! highest version in the repository's release list that has this platform's
+//! archive, pre-releases or not, so a node on a beta moves on to the release
+//! after it. Either way the version is only offered, never installed unasked.
+//!
 //! Each release has `latest.json` and, per platform, an app archive with a
 //! minisign signature checked against the compiled-in key (so only our
 //! releases install, whoever asks). The archive is unpacked beside the app,
@@ -21,7 +27,7 @@ use anyhow::{bail, ensure, Context, Result};
 use futures_util::StreamExt;
 use tracing::{info, warn};
 
-use crate::api::types::{UpdatePhase, UpdateStatusDto};
+use crate::api::types::{UpdateChannel, UpdatePhase, UpdateStatusDto};
 use crate::service;
 use crate::state::AppState;
 
@@ -71,6 +77,21 @@ impl Updater {
 
     fn busy(&self) -> bool {
         self.status.lock().unwrap().phase != UpdatePhase::Idle
+    }
+
+    pub fn channel(&self) -> UpdateChannel {
+        self.status.lock().unwrap().channel
+    }
+
+    /// Takes effect at the next check; what the last one found is dropped.
+    pub fn set_channel(&self, channel: UpdateChannel) {
+        self.set(|s| {
+            if s.channel != channel {
+                s.channel = channel;
+                s.latest = None;
+                s.available = false;
+            }
+        });
     }
 }
 
@@ -167,12 +188,34 @@ struct Latest {
     version: String,
 }
 
-pub async fn check(state: &AppState) {
-    if state.updater.busy() {
-        return;
-    }
-    state.updater.set(|s| s.phase = UpdatePhase::Checking);
-    let result = async {
+#[derive(serde::Deserialize)]
+struct Release {
+    tag_name: String,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    assets: Vec<Asset>,
+}
+
+#[derive(serde::Deserialize)]
+struct Asset {
+    name: String,
+}
+
+/// The highest version among published releases that have `asset`. A release
+/// still uploading its archives isn't offered until they're all there.
+fn newest(releases: &[Release], asset: &str) -> Option<semver::Version> {
+    releases
+        .iter()
+        .filter(|r| !r.draft && r.assets.iter().any(|a| a.name == asset))
+        .filter_map(|r| semver::Version::parse(r.tag_name.trim_start_matches('v')).ok())
+        .max()
+}
+
+/// The newest release on `channel`.
+async fn latest(state: &AppState, channel: UpdateChannel) -> Result<String> {
+    // A test folder has one latest.json, whatever the channel.
+    if channel == UpdateChannel::Stable || std::env::var(service::RELEASES_ENV).is_ok() {
         let latest: Latest = state
             .http
             .get(url(None, "latest.json"))
@@ -182,26 +225,69 @@ pub async fn check(state: &AppState) {
             .error_for_status()?
             .json()
             .await?;
-        let newer = semver::Version::parse(&latest.version)?
-            > semver::Version::parse(env!("CARGO_PKG_VERSION"))?;
-        anyhow::Ok((latest.version, newer))
+        return Ok(latest.version);
     }
-    .await;
-    state.updater.set(|s| {
-        s.phase = UpdatePhase::Idle;
-        s.checked_at = Some(chrono::Utc::now().to_rfc3339());
-        match result {
-            Ok((latest, newer)) => {
-                s.latest = Some(latest);
-                s.available = newer;
-                s.error = None;
-            }
-            Err(e) => {
-                warn!(error = %e, "update check failed");
-                s.error = Some(format!("Couldn't check for updates: {e}"));
-            }
+    let releases: Vec<Release> = state
+        .http
+        .get(format!(
+            "https://api.github.com/repos/{REPO}/releases?per_page=30"
+        ))
+        // GitHub's API refuses requests without one.
+        .header(
+            reqwest::header::USER_AGENT,
+            concat!("capture-room/", env!("CARGO_PKG_VERSION")),
+        )
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let newest = newest(&releases, &asset()).context("no release has this platform's app")?;
+    Ok(newest.to_string())
+}
+
+pub async fn check(state: &AppState) {
+    if state.updater.busy() {
+        return;
+    }
+    state.updater.set(|s| s.phase = UpdatePhase::Checking);
+    loop {
+        let channel = state.updater.channel();
+        let result = async {
+            let latest = latest(state, channel).await?;
+            let newer = semver::Version::parse(&latest)?
+                > semver::Version::parse(env!("CARGO_PKG_VERSION"))?;
+            anyhow::Ok((latest, newer))
         }
-    });
+        .await;
+        let mut done = true;
+        state.updater.set(|s| {
+            // The channel changed meanwhile (its own check found this one
+            // running): look again on the new one.
+            if s.channel != channel {
+                done = false;
+                return;
+            }
+            s.phase = UpdatePhase::Idle;
+            s.checked_at = Some(chrono::Utc::now().to_rfc3339());
+            match result {
+                Ok((latest, newer)) => {
+                    s.latest = Some(latest);
+                    s.available = newer;
+                    s.error = None;
+                }
+                Err(e) => {
+                    warn!(error = %e, "update check failed");
+                    s.error = Some(format!("Couldn't check for updates: {e}"));
+                }
+            }
+        });
+        if done {
+            return;
+        }
+    }
 }
 
 /// Start updating to `version`, or the newest release, in the background.
@@ -511,5 +597,31 @@ mod tests {
         assert!(to.join("lib/plugins/a.dll").exists());
         assert!(!blocked.join("app.exe").exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn newest_takes_the_highest_release_with_the_app() {
+        let release = |tag: &str, draft: bool, assets: &[&str]| Release {
+            tag_name: tag.into(),
+            draft,
+            assets: assets.iter().map(|a| Asset { name: (*a).into() }).collect(),
+        };
+        let app = "capture-room-linux-x86_64.tar.gz";
+        let releases = [
+            release("v0.1.0", false, &[app]),
+            release("v0.2.0-beta.2", false, &[app]),
+            release("v0.2.0-beta.10", false, &[app]),
+            // Still uploading, or a draft: not offered.
+            release("v0.2.0-rc.1", false, &["latest.json"]),
+            release("v0.3.0", true, &[app]),
+            release("not-a-version", false, &[app]),
+        ];
+        assert_eq!(newest(&releases, app).unwrap().to_string(), "0.2.0-beta.10");
+        let with_stable = [
+            release("v0.2.0", false, &[app]),
+            release("v0.2.0-rc.1", false, &[app]),
+        ];
+        assert_eq!(newest(&with_stable, app).unwrap().to_string(), "0.2.0");
+        assert!(newest(&releases, "capture-room-windows-x86_64.tar.gz").is_none());
     }
 }
