@@ -1,7 +1,8 @@
-import { defineStore, storeToRefs } from 'pinia'
+import { defineStore } from 'pinia'
 import { computed, reactive, ref, shallowRef, triggerRef, watch } from 'vue'
 import { nodeApi } from '@/composables/useApi'
 import { needsSignIn } from '@/composables/useAuth'
+import { reconnectingSocket } from '@/lib/reconnectingSocket'
 import { useEventsStore, type LogEntry } from '@/stores/events'
 import { useNodesStore } from '@/stores/nodes'
 import type { LogLevel } from '@/types/generated/LogLevel'
@@ -31,13 +32,12 @@ export interface LogRow {
 const MAX_ROWS = 20_000
 /** Lines fetched per node when the view opens, and per "Load older". */
 const PAGE = 1000
-const BASE_DELAY = 500
-const MAX_DELAY = 3_000
 
 function fromLine(l: LogLine, nodeId: string): LogRow {
   return {
+    // `seq` starts over when the node restarts, so the time tells the runs apart.
     // Stand-in lines (seq 0) are never repeated by a fetch, so any unique key does.
-    key: l.seq ? `${nodeId}/${l.seq}` : `${nodeId}/x${Math.random()}`,
+    key: l.seq ? `${nodeId}/${l.at}/${l.seq}` : `${nodeId}/x${Math.random()}`,
     at: new Date(l.at),
     level: l.level,
     node_id: nodeId,
@@ -81,9 +81,6 @@ export const useLogsStore = defineStore('logs', () => {
   const loadingOlder = ref(false)
 
   let users = 0
-  let socket: WebSocket | null = null
-  let attempt = 0
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let lastEventId = 0
   let stopWatches: (() => void)[] = []
 
@@ -126,39 +123,23 @@ export const useLogsStore = defineStore('logs', () => {
     add(fresh.map(fromEntry), false)
   }
 
+  const socket = reconnectingSocket({
+    path: '/ws/logs',
+    shouldReconnect: () => users > 0 && !needsSignIn.value,
+    onOpen(reconnect) {
+      send()
+      // Lines logged while disconnected.
+      if (reconnect) for (const id of nodeIds.value) void fetchNode(id)
+    },
+    onMessage(data) {
+      const line = data as LogLine
+      if (line.node_id) add([fromLine(line, line.node_id)], false)
+    },
+  })
+
   function send() {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return
     const sub: LogSubscription = { nodes: nodeIds.value, level: level.value }
     socket.send(JSON.stringify(sub))
-  }
-
-  function connect() {
-    if (socket || reconnectTimer || needsSignIn.value || users === 0) return
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    const ws = new WebSocket(`${proto}://${location.host}/ws/logs`)
-    socket = ws
-    ws.addEventListener('open', () => {
-      attempt = 0
-      send()
-    })
-    ws.addEventListener('message', (ev) => {
-      if (typeof ev.data !== 'string') return
-      const line = JSON.parse(ev.data) as LogLine
-      if (line.node_id) add([fromLine(line, line.node_id)], false)
-    })
-    ws.addEventListener('close', () => {
-      socket = null
-      if (users === 0) return
-      const delay = Math.min(BASE_DELAY * 2 ** attempt, MAX_DELAY)
-      attempt++
-      reconnectTimer = setTimeout(() => {
-        reconnectTimer = null
-        connect()
-        // Lines logged while disconnected.
-        for (const id of nodeIds.value) void fetchNode(id)
-      }, delay)
-    })
-    ws.addEventListener('error', () => ws.close())
   }
 
   function reset() {
@@ -178,11 +159,11 @@ export const useLogsStore = defineStore('logs', () => {
   /** Start streaming; call `close` when the view goes. */
   function open() {
     if (users++ > 0) return
-    connect()
+    socket.connect()
     void reload()
     stopWatches = [
-      // The ref itself: a full log stays at the same length as it moves on.
-      watch(storeToRefs(events).entries, takeEvents),
+      // The newest id: a full log stays at the same length, and the same array, as it moves on.
+      watch(() => events.entries.at(-1)?.id, takeEvents),
       watch(nodeIds, (ids, old) => {
         send()
         for (const id of ids) if (!old.includes(id)) void fetchNode(id)
@@ -195,10 +176,7 @@ export const useLogsStore = defineStore('logs', () => {
     if (--users > 0) return
     for (const stop of stopWatches) stop()
     stopWatches = []
-    if (reconnectTimer) clearTimeout(reconnectTimer)
-    reconnectTimer = null
-    socket?.close()
-    socket = null
+    socket.close()
   }
 
   /** The next page back for every node (or one) that has more. */

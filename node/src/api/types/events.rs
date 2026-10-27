@@ -111,6 +111,16 @@ pub enum WsEvent {
     },
 }
 
+/// One `/ws` message: an event and the node it describes. Source and session
+/// ids inside it are local to that node.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct NodeEvent<'a> {
+    pub node_id: &'a str,
+    #[serde(flatten)]
+    pub event: &'a WsEvent,
+}
+
 /// The sources a thumbnail socket's client shows, and the most frames per
 /// second it wants of each. Sent as a text message; each replaces the last.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

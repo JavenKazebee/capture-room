@@ -13,20 +13,10 @@ import { DEFAULT_PRESET } from '@/stores/presets'
 import { runReconnectReloads } from '@/lib/reconnect'
 import { checkAuth, needsSignIn } from '@/composables/useAuth'
 import { plural } from '@/lib/format'
-import type { WsEvent } from '@/types/generated/WsEvent'
+import { reconnectingSocket } from '@/lib/reconnectingSocket'
+import type { NodeEvent } from '@/types/generated/NodeEvent'
 
 export type WsStatus = 'connecting' | 'connected' | 'disconnected'
-
-// The server is on the local network (or this machine): retry often, so the
-// page catches up within a few seconds of it coming back.
-const BASE_DELAY = 500
-const MAX_DELAY = 3_000
-
-let socket: WebSocket | null = null
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-let attempt = 0
-/** Set once the first connection opens; any later open is a reconnect. */
-let connectedBefore = false
 
 export const wsStatus = ref<WsStatus>('disconnected')
 /** Failed connection attempts since the socket was last open; 0 while connected. */
@@ -34,54 +24,31 @@ export const reconnectAttempt = ref(0)
 /** Whether the socket has opened at least once since the page loaded. */
 export const wsEverConnected = ref(false)
 
-function connect() {
-  if (socket && socket.readyState <= WebSocket.OPEN) return
+const socket = reconnectingSocket({
+  path: '/ws',
   // Refused until signed in; signing in reloads the page.
-  if (needsSignIn.value) return
-
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  socket = new WebSocket(`${proto}://${location.host}/ws`)
-  wsStatus.value = 'connecting'
-
-  socket.addEventListener('open', () => {
+  shouldReconnect: () => !needsSignIn.value,
+  onConnecting: () => (wsStatus.value = 'connecting'),
+  onOpen(reconnect) {
     wsStatus.value = 'connected'
-    if (connectedBefore) useEventsStore().log('info', 'Reconnected to server')
-    attempt = 0
     reconnectAttempt.value = 0
     wsEverConnected.value = true
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer)
-      reconnectTimer = null
+    if (reconnect) {
+      useEventsStore().log('info', 'Reconnected to server')
+      // Events sent while disconnected are lost (a recording that stopped or
+      // failed, a node that went away), so reload rather than show stale state.
+      reloadAfterReconnect()
     }
-    // Events sent while disconnected are lost (a recording that stopped or
-    // failed, a node that went away), so reload rather than show stale state.
-    if (connectedBefore) reloadAfterReconnect()
-    connectedBefore = true
-  })
-
-  socket.addEventListener('message', (ev) => {
-    try {
-      handleEvent(JSON.parse(ev.data as string))
-    } catch {
-      // ignore malformed frames
-    }
-  })
-
-  socket.addEventListener('close', () => {
-    if (wsStatus.value === 'connected') useEventsStore().log('warn', 'Lost connection to server — reconnecting')
+  },
+  onMessage: (data) => handleEvent(data as NodeEvent),
+  onClose(wasOpen) {
+    if (wasOpen) useEventsStore().log('warn', 'Lost connection to server — reconnecting')
     wsStatus.value = 'disconnected'
+    reconnectAttempt.value = socket.attempt
     // A changed token closes nothing else the page would notice.
     checkAuth()
-    const delay = Math.min(BASE_DELAY * 2 ** attempt, MAX_DELAY)
-    attempt++
-    reconnectAttempt.value++
-    reconnectTimer = setTimeout(connect, delay)
-  })
-
-  socket.addEventListener('error', () => {
-    socket?.close()
-  })
-}
+  },
+})
 
 /** Reload after missed events: nodes, sources and recordings, then every `onReconnect` handler. */
 async function reloadAfterReconnect() {
@@ -91,13 +58,7 @@ async function reloadAfterReconnect() {
 
 /** Connect now instead of waiting out the backoff (the tab came back, the network did). */
 export function reconnectNow() {
-  if (wsStatus.value !== 'disconnected') return
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer)
-    reconnectTimer = null
-  }
-  attempt = 0
-  connect()
+  socket.reconnectNow()
 }
 
 /** Reload nodes, then every reachable node's sources and recordings. */
@@ -106,10 +67,6 @@ export async function reloadAll() {
   await nodes.load()
   await Promise.all([useSourcesStore().loadSources(), useRecordingsStore().load()])
 }
-
-// Every event carries the `node_id` it describes; source and session ids
-// inside it are local to that node.
-type NodeEvent = WsEvent & { node_id: string }
 
 function handleEvent(event: NodeEvent) {
   const sources = useSourcesStore()
@@ -199,12 +156,7 @@ function handleEvent(event: NodeEvent) {
 }
 
 export function startWebSocket() {
-  setTimeout(connect, 0)
-  window.addEventListener('online', reconnectNow)
-  window.addEventListener('focus', reconnectNow)
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') reconnectNow()
-  })
+  setTimeout(socket.connect, 0)
 }
 
 /** Record the notable events in the event log, before the stores apply them. */
