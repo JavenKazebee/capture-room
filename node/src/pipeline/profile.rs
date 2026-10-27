@@ -295,6 +295,9 @@ pub enum VideoEncoder {
     VtH264,
     VtH265,
     VtProRes,
+    /// VA-API (Linux, AMD and Intel GPUs through Mesa or iHD).
+    VaH264,
+    VaH265,
     Uncompressed,
 }
 
@@ -308,12 +311,17 @@ impl VideoEncoder {
             Self::VtH264 => "vtenc_h264",
             Self::VtH265 => "vtenc_h265",
             Self::VtProRes => "vtenc_prores",
+            Self::VaH264 => "vah264enc",
+            Self::VaH265 => "vah265enc",
             Self::Uncompressed => "identity",
         }
     }
 
     pub fn is_hardware(self) -> bool {
-        matches!(self, Self::VtH264 | Self::VtH265 | Self::VtProRes)
+        matches!(
+            self,
+            Self::VtH264 | Self::VtH265 | Self::VtProRes | Self::VaH264 | Self::VaH265
+        )
     }
 }
 
@@ -351,12 +359,14 @@ pub const DEFAULT_QUALITY: u8 = 70;
 /// Every encoder recording can use that this node has, by element name.
 pub fn available_encoders() -> Vec<String> {
     use VideoEncoder::*;
-    [VtH264, VtH265, VtProRes, X264, X265, Vp9, ProResKs]
-        .into_iter()
-        .map(VideoEncoder::element)
-        .filter(|name| crate::plugins::has(name))
-        .map(String::from)
-        .collect()
+    [
+        VtH264, VtH265, VtProRes, VaH264, VaH265, X264, X265, Vp9, ProResKs,
+    ]
+    .into_iter()
+    .map(VideoEncoder::element)
+    .filter(|name| crate::plugins::has(name))
+    .map(String::from)
+    .collect()
 }
 
 /// Whether a node with `available` encoders has one `profile` can use.
@@ -473,8 +483,8 @@ impl RecordingProfile {
     }
 
     /// The encoders this leg can use, best first: hardware where the platform
-    /// has it, then software. VideoToolbox H.264/H.265 only take 4:2:0, so
-    /// 4:2:2 and 4:4:4 go straight to software.
+    /// has it, then software. Hardware H.264/H.265 only take 4:2:0, so 4:2:2
+    /// and 4:4:4 go straight to software.
     pub fn encoders(&self) -> Vec<VideoEncoder> {
         let all = self.encoders_for_codec();
         all.iter()
@@ -495,9 +505,9 @@ impl RecordingProfile {
         use VideoEncoder::*;
         let yuv420 = self.chroma == ChromaSubsampling::Yuv420;
         match self.video_codec {
-            VideoCodec::H264 if yuv420 => &[VtH264, X264],
+            VideoCodec::H264 if yuv420 => &[VtH264, VaH264, X264],
             VideoCodec::H264 => &[X264],
-            VideoCodec::H265 if yuv420 => &[VtH265, X265],
+            VideoCodec::H265 if yuv420 => &[VtH265, VaH265, X265],
             VideoCodec::H265 => &[X265],
             VideoCodec::Vp9 => &[Vp9],
             VideoCodec::ProRes4444
@@ -522,6 +532,8 @@ impl RecordingProfile {
                 ChromaSubsampling::Yuv422 => "Y42B",
                 ChromaSubsampling::Yuv444 => "Y444",
             }),
+            // Every VA-API driver encodes from NV12; not all take I420.
+            VideoEncoder::VaH264 | VideoEncoder::VaH265 => Some("NV12"),
             // Profile 0 (4:2:0) is the VP9 everything plays; an RGB source
             // would give 4:4:4 Profile 1.
             VideoEncoder::Vp9 => Some("I420"),
@@ -888,11 +900,11 @@ fn parse_framerate(s: &str) -> Option<(u32, u32)> {
             .ok()
             .filter(|f: &f64| f.is_finite() && *f > 0.0 && *f <= 1000.0)?;
         let whole = fps.round();
-        if (fps - whole).abs() < 1e-9 {
+        if whole > 0.0 && (fps - whole).abs() < 1e-9 {
             return Some((whole as u32, 1));
         }
         let ntsc = (fps * 1.001).round();
-        if (fps - ntsc * 1000.0 / 1001.0).abs() < 0.006 {
+        if ntsc > 0.0 && (fps - ntsc * 1000.0 / 1001.0).abs() < 0.006 {
             return Some((ntsc as u32 * 1000, 1001));
         }
         let milli = (fps * 1000.0).round() as u32;
@@ -941,6 +953,10 @@ mod tests {
         assert_eq!(parse_framerate("abc"), None);
         assert_eq!(parse_framerate("-29.97"), None);
         assert_eq!(parse_framerate("30/0"), None);
+        // Rates that round to zero fps.
+        assert_eq!(parse_framerate("0.004"), Some((1, 250)));
+        assert_eq!(parse_framerate("0.0004"), None);
+        assert_eq!(parse_framerate("0.0000000001"), None);
     }
 
     #[test]
@@ -1097,7 +1113,16 @@ mod tests {
     #[test]
     fn picks_encoders_and_audio() {
         let mut p = RecordingProfile::from_output(&leg("a", Container::Mov, "x")).unwrap();
-        assert_eq!(p.encoders(), [VideoEncoder::VtH264, VideoEncoder::X264]);
+        assert_eq!(
+            p.encoders(),
+            [
+                VideoEncoder::VtH264,
+                VideoEncoder::VaH264,
+                VideoEncoder::X264
+            ]
+        );
+        p.advanced.encoder = EncoderChoice::Hardware;
+        assert_eq!(p.encoders(), [VideoEncoder::VtH264, VideoEncoder::VaH264]);
         p.advanced.encoder = EncoderChoice::Software;
         assert_eq!(p.encoders(), [VideoEncoder::X264]);
         p.advanced.encoder = EncoderChoice::Auto;
@@ -1122,13 +1147,15 @@ mod tests {
         let software = ["x264enc".to_string()];
         assert_eq!(
             missing_encoder(&outputs, &legs, &software, "studio-pc").as_deref(),
-            Some("output \"hw\": no hardware encoder on studio-pc (needs vtenc_h264)")
+            Some("output \"hw\": no hardware encoder on studio-pc (needs vtenc_h264 or vah264enc)")
         );
         let all = ["vtenc_h264".to_string(), "x264enc".to_string()];
         assert_eq!(missing_encoder(&outputs, &legs, &all, "mac"), None);
+        let linux = ["vah264enc".to_string(), "x264enc".to_string()];
+        assert_eq!(missing_encoder(&outputs, &legs, &linux, "linux"), None);
         assert_eq!(
             missing_encoder(&outputs[..1], &legs[..1], &[], "bare").as_deref(),
-            Some("output \"sw\": no encoder on bare (needs vtenc_h264 or x264enc)")
+            Some("output \"sw\": no encoder on bare (needs vtenc_h264 or vah264enc or x264enc)")
         );
     }
 
@@ -1283,5 +1310,58 @@ mod tests {
             parse_optional(&Some("1920*1080".into()), parse_resolution),
             None
         );
+    }
+
+    /// Writes `incompatible()` as `codecContainers.json` beside the ts-rs
+    /// bindings, so the editor greys out exactly what saving would reject.
+    #[cfg(feature = "export-types")]
+    #[test]
+    fn export_codec_containers() {
+        use VideoCodec::*;
+        let codecs = [
+            H264,
+            H265,
+            Vp9,
+            ProRes4444,
+            ProRes422Hq,
+            ProRes422,
+            ProRes422Lt,
+            ProRes422Proxy,
+            Uncompressed,
+        ];
+        // Fails to compile when a codec is added, until it's listed above.
+        for codec in codecs {
+            match codec {
+                H264 | H265 | Vp9 | ProRes4444 | ProRes422Hq | ProRes422 | ProRes422Lt
+                | ProRes422Proxy | Uncompressed => {}
+            }
+        }
+        let containers = [Container::Mov, Container::Mp4, Container::Mkv];
+        for container in containers {
+            match container {
+                Container::Mov | Container::Mp4 | Container::Mkv => {}
+            }
+        }
+
+        let key = |v: serde_json::Value| v.as_str().unwrap().to_owned();
+        let table: serde_json::Map<_, _> = codecs
+            .iter()
+            .map(|&codec| {
+                let row: serde_json::Map<_, _> = containers
+                    .iter()
+                    .map(|&container| {
+                        (
+                            key(serde_json::json!(container)),
+                            serde_json::json!(incompatible(codec, container)),
+                        )
+                    })
+                    .collect();
+                (key(serde_json::json!(codec)), row.into())
+            })
+            .collect();
+
+        let dir = PathBuf::from(std::env::var("TS_RS_EXPORT_DIR").unwrap());
+        let json = serde_json::to_string_pretty(&table).unwrap() + "\n";
+        std::fs::write(dir.join("codecContainers.json"), json).unwrap();
     }
 }

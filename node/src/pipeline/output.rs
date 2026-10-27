@@ -499,7 +499,7 @@ pub const SRT_MAX_AUDIO_CHANNELS: u32 = 8;
 pub const SRT_ELEMENTS: &[&str] = &["srtsink", "mpegtsmux", "h264parse", "avenc_aac"];
 
 /// H.264 encoders for a live stream, best first.
-pub const LIVE_H264: &[&str] = &["vtenc_h264", "x264enc"];
+pub const LIVE_H264: &[&str] = &["vtenc_h264", "vah264enc", "x264enc"];
 
 /// The first live H.264 encoder this node has, and its properties for
 /// streaming: low latency, no B-frames, a keyframe every second (so a
@@ -512,17 +512,22 @@ pub(crate) fn live_h264(
         .iter()
         .copied()
         .find(|f| crate::plugins::has(f))
-        .ok_or_else(|| anyhow!("no H.264 encoder (needs x264enc or vtenc_h264)"))?;
+        .ok_or_else(|| anyhow!("no H.264 encoder (needs {})", LIVE_H264.join(" or ")))?;
     let mut props = vec![("bitrate", bitrate_kbps.to_string())];
+    let (n, d) = program.fps;
+    let keyint = (f64::from(n) / f64::from(d.max(1))).round().max(1.0);
     match factory {
         "vtenc_h264" => props.extend([
             ("realtime", "true".to_string()),
             ("allow-frame-reordering", "false".to_string()),
             ("max-keyframe-interval-duration", "1000000000".to_string()),
         ]),
+        "vah264enc" => props.extend([
+            ("rate-control", "cbr".to_string()),
+            ("b-frames", "0".to_string()),
+            ("key-int-max", keyint.to_string()),
+        ]),
         _ => {
-            let (n, d) = program.fps;
-            let keyint = (f64::from(n) / f64::from(d.max(1))).round().max(1.0);
             props.extend([
                 ("tune", "zerolatency".to_string()),
                 ("speed-preset", "veryfast".to_string()),

@@ -221,9 +221,9 @@ jobs:
 
   # Every platform job: needs: version; checks out, builds the UI, signs
   # capture-room-<os>-<arch>.tar.gz (+ .sha256, and .minisig with the
-  # release-key action); uploads dist/* as the artifact capture-room-<os>;
-  # smoke-tests its archives; and is added to publish's needs. File names
-  # must not clash across platforms: the artifacts are merged into one folder.
+  # release-key action); uploads dist/* as the artifact capture-room-<os>; and
+  # is added to publish's needs. File names must not clash across platforms:
+  # the artifacts are merged into one folder.
 
   publish:
     name: Publish
