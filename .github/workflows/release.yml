@@ -99,6 +99,18 @@ jobs:
           # Long enough to re-run a failed publish.
           retention-days: 7
 
+      # Last, so a failing archive is still uploaded to look at; publish
+      # needs this job, so it never releases one. Rosetta runs the x86_64
+      # build where the runner has it.
+      - name: Smoke test
+        run: |
+          scripts/smoke-test.sh dist/capture-room-macos-aarch64.tar.gz
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            scripts/smoke-test.sh dist/capture-room-macos-x86_64.tar.gz
+          else
+            echo "::warning::No Rosetta on this runner: the x86_64 archive isn't smoke-tested."
+          fi
+
   linux:
     name: Linux app
     needs: version
@@ -144,6 +156,11 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 7
+
+      # As in the macOS job. With the GStreamer installed above: the archive
+      # uses the distro's, as install.sh sets up.
+      - name: Smoke test
+        run: scripts/smoke-test.sh dist/capture-room-linux-x86_64.tar.gz
 
   windows:
     name: Windows app
@@ -196,6 +213,11 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 7
+
+      # As in the macOS job.
+      - name: Smoke test
+        shell: pwsh
+        run: scripts/windows/smoke-test.ps1 dist/capture-room-windows-x86_64.tar.gz
 
   # Every platform job: needs: version; checks out, builds the UI, signs
   # capture-room-<os>-<arch>.tar.gz (+ .sha256, and .minisig with the
