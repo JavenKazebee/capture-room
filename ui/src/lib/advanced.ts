@@ -200,23 +200,28 @@ export type AdvancedField =
   | 'split_minutes'
   | 'split_gb'
 
-/** Client-side copies of the server's checks (`check_advanced`), for inline feedback. */
+const wholeIn = (n: number, min: number, max: number) => Number.isInteger(n) && n >= min && n <= max
+
+/**
+ * Client-side copies of the server's checks (`check_advanced`), for inline feedback.
+ * `advancedCases.json`, written by `profile.rs`, holds the legs both must agree on.
+ * Integer fields also need whole numbers here: the server's types can't hold a fraction.
+ */
 export function advancedProblems(leg: PresetOutputInput) {
   const a = leg.advanced
   const p: Partial<Record<AdvancedField, string>> = {}
   const enc = encoderChoiceProblem(leg, a.encoder)
   if (enc) p.encoder = enc
-  if (a.quality != null && !(a.quality >= 1 && a.quality <= 100)) p.quality = 'Use 1–100'
+  if (a.quality != null && !wholeIn(a.quality, 1, 100)) p.quality = 'Use 1–100'
   if (a.keyframe_secs != null && !(a.keyframe_secs >= 0.1 && a.keyframe_secs <= 60)) p.keyframe_secs = 'Use 0.1–60 seconds'
-  if (a.audio_bitrate_kbps != null && !(a.audio_bitrate_kbps >= 32 && a.audio_bitrate_kbps <= 512))
-    p.audio_bitrate_kbps = 'Use 32–512 kbps'
-  if (a.split_minutes != null && !(Number.isInteger(a.split_minutes) && a.split_minutes >= 1 && a.split_minutes <= 1440))
-    p.split_minutes = 'Use 1–1440 whole minutes'
+  if (a.audio_bitrate_kbps != null && !wholeIn(a.audio_bitrate_kbps, 32, 512)) p.audio_bitrate_kbps = 'Use 32–512 kbps'
+  if (a.split_minutes != null && !wholeIn(a.split_minutes, 1, 1440)) p.split_minutes = 'Use 1–1440 whole minutes'
   if (a.split_gb != null && !(a.split_gb >= 0.1 && a.split_gb <= 10000)) p.split_gb = 'Use 0.1–10,000 GB'
   const audio = audioCodecProblem(a.audio_codec, leg.container)
   if (audio) p.audio_codec = audio
   if (a.audio_channels === 'pick') {
     if (!a.channel_pick.length) p.channel_pick = 'List channels, e.g. 1-2 or 3, 4'
+    else if (!a.channel_pick.every((c) => wholeIn(c, 1, 64))) p.channel_pick = 'Channels are numbered 1–64'
     else if (a.channel_pick.length > 2 && resolvedAudio(leg) !== 'pcm')
       p.channel_pick = 'AAC and Opus take 1 or 2 channels; use PCM for more'
   }

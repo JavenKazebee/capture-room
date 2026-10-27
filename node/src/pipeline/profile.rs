@@ -1159,39 +1159,340 @@ mod tests {
         );
     }
 
+    /// The UI field (`AdvancedField` in `ui/src/lib/advanced.ts`) each
+    /// `check_advanced` reason belongs to.
+    fn advanced_field(reason: &str) -> &'static str {
+        match reason {
+            "this codec has no hardware encoder"
+            | "hardware H.264/H.265 encoders take 4:2:0 only"
+            | "this codec has no software encoder" => "encoder",
+            "quality must be 1–100" => "quality",
+            "keyframe interval must be 0.1–60 seconds" => "keyframe_secs",
+            "split every 1–1440 minutes" => "split_minutes",
+            "split at 0.1–10,000 GB" => "split_gb",
+            "audio bitrate must be 32–512 kbps" => "audio_bitrate_kbps",
+            "PCM audio can only be recorded to .mov or .mkv"
+            | "Opus audio can only be recorded to .mkv" => "audio_codec",
+            "pick at least one channel, numbered 1–64"
+            | "AAC and Opus take 1 or 2 picked channels; use PCM for more" => "channel_pick",
+            _ => panic!("no UI field for {reason:?}: add it here and to advancedProblems"),
+        }
+    }
+
+    /// Legs paired with the field `check_advanced` rejects, if any. Exported
+    /// for the UI's `advancedProblems` to flag exactly the same legs.
+    fn advanced_cases() -> Vec<(&'static str, PresetOutputInput, Option<&'static str>)> {
+        use VideoCodec::*;
+        let out = |codec, container, chroma, advanced| PresetOutputInput {
+            codec,
+            chroma,
+            advanced,
+            ..leg("a", container, "x")
+        };
+        let h264 = |advanced| out(H264, Container::Mp4, ChromaSubsampling::Yuv420, advanced);
+        let pick = |codec, container, audio_codec, channel_pick| {
+            let advanced = OutputAdvanced {
+                audio_codec,
+                audio_channels: AudioChannels::Pick,
+                channel_pick,
+                ..Default::default()
+            };
+            out(codec, container, ChromaSubsampling::Yuv420, advanced)
+        };
+        let d = OutputAdvanced::default;
+        let hw = || OutputAdvanced {
+            encoder: EncoderChoice::Hardware,
+            ..d()
+        };
+        let sw = || OutputAdvanced {
+            encoder: EncoderChoice::Software,
+            ..d()
+        };
+        let audio = |audio_codec| OutputAdvanced { audio_codec, ..d() };
+        let (c420, c422, c444) = (
+            ChromaSubsampling::Yuv420,
+            ChromaSubsampling::Yuv422,
+            ChromaSubsampling::Yuv444,
+        );
+        let (mov, mp4, mkv) = (Container::Mov, Container::Mp4, Container::Mkv);
+        use AudioCodecChoice::{Aac, Auto, Opus, Pcm};
+        vec![
+            ("defaults", h264(d()), None),
+            ("ProRes defaults", out(ProRes422, mov, c420, d()), None),
+            ("hardware 4:2:0", h264(hw()), None),
+            (
+                "hardware 4:2:2",
+                out(H264, mp4, c422, hw()),
+                Some("encoder"),
+            ),
+            (
+                "hardware H.265 4:4:4",
+                out(H265, mkv, c444, hw()),
+                Some("encoder"),
+            ),
+            ("hardware VP9", out(Vp9, mkv, c420, hw()), Some("encoder")),
+            ("hardware ProRes", out(ProRes4444, mov, c420, hw()), None),
+            (
+                "hardware uncompressed",
+                out(Uncompressed, mkv, c420, hw()),
+                Some("encoder"),
+            ),
+            ("software H.265 4:4:4", out(H265, mkv, c444, sw()), None),
+            (
+                "software uncompressed",
+                out(Uncompressed, mov, c420, sw()),
+                None,
+            ),
+            (
+                "quality 0",
+                h264(OutputAdvanced {
+                    quality: Some(0),
+                    ..d()
+                }),
+                Some("quality"),
+            ),
+            (
+                "quality 1",
+                h264(OutputAdvanced {
+                    quality: Some(1),
+                    ..d()
+                }),
+                None,
+            ),
+            (
+                "quality 100",
+                h264(OutputAdvanced {
+                    quality: Some(100),
+                    ..d()
+                }),
+                None,
+            ),
+            (
+                "quality 101",
+                h264(OutputAdvanced {
+                    quality: Some(101),
+                    ..d()
+                }),
+                Some("quality"),
+            ),
+            (
+                "keyframes 0",
+                h264(OutputAdvanced {
+                    keyframe_secs: Some(0.0),
+                    ..d()
+                }),
+                Some("keyframe_secs"),
+            ),
+            (
+                "keyframes 0.05",
+                h264(OutputAdvanced {
+                    keyframe_secs: Some(0.05),
+                    ..d()
+                }),
+                Some("keyframe_secs"),
+            ),
+            (
+                "keyframes 0.1",
+                h264(OutputAdvanced {
+                    keyframe_secs: Some(0.1),
+                    ..d()
+                }),
+                None,
+            ),
+            (
+                "keyframes 60",
+                h264(OutputAdvanced {
+                    keyframe_secs: Some(60.0),
+                    ..d()
+                }),
+                None,
+            ),
+            (
+                "keyframes 60.5",
+                h264(OutputAdvanced {
+                    keyframe_secs: Some(60.5),
+                    ..d()
+                }),
+                Some("keyframe_secs"),
+            ),
+            (
+                "split 0 min",
+                h264(OutputAdvanced {
+                    split_minutes: Some(0),
+                    ..d()
+                }),
+                Some("split_minutes"),
+            ),
+            (
+                "split 1 min",
+                h264(OutputAdvanced {
+                    split_minutes: Some(1),
+                    ..d()
+                }),
+                None,
+            ),
+            (
+                "split 1440 min",
+                h264(OutputAdvanced {
+                    split_minutes: Some(1440),
+                    ..d()
+                }),
+                None,
+            ),
+            (
+                "split 1441 min",
+                h264(OutputAdvanced {
+                    split_minutes: Some(1441),
+                    ..d()
+                }),
+                Some("split_minutes"),
+            ),
+            (
+                "split 0.05 GB",
+                h264(OutputAdvanced {
+                    split_gb: Some(0.05),
+                    ..d()
+                }),
+                Some("split_gb"),
+            ),
+            (
+                "split 0.1 GB",
+                h264(OutputAdvanced {
+                    split_gb: Some(0.1),
+                    ..d()
+                }),
+                None,
+            ),
+            (
+                "split 10000 GB",
+                h264(OutputAdvanced {
+                    split_gb: Some(10_000.0),
+                    ..d()
+                }),
+                None,
+            ),
+            (
+                "split 10000.5 GB",
+                h264(OutputAdvanced {
+                    split_gb: Some(10_000.5),
+                    ..d()
+                }),
+                Some("split_gb"),
+            ),
+            (
+                "audio 31 kbps",
+                h264(OutputAdvanced {
+                    audio_bitrate_kbps: Some(31),
+                    ..d()
+                }),
+                Some("audio_bitrate_kbps"),
+            ),
+            (
+                "audio 32 kbps",
+                h264(OutputAdvanced {
+                    audio_bitrate_kbps: Some(32),
+                    ..d()
+                }),
+                None,
+            ),
+            (
+                "audio 512 kbps",
+                h264(OutputAdvanced {
+                    audio_bitrate_kbps: Some(512),
+                    ..d()
+                }),
+                None,
+            ),
+            (
+                "audio 513 kbps",
+                h264(OutputAdvanced {
+                    audio_bitrate_kbps: Some(513),
+                    ..d()
+                }),
+                Some("audio_bitrate_kbps"),
+            ),
+            ("PCM in .mp4", h264(audio(Pcm)), Some("audio_codec")),
+            ("PCM in .mov", out(H264, mov, c420, audio(Pcm)), None),
+            (
+                "Opus in .mov",
+                out(H264, mov, c420, audio(Opus)),
+                Some("audio_codec"),
+            ),
+            ("Opus in .mp4", h264(audio(Opus)), Some("audio_codec")),
+            ("Opus in .mkv", out(H264, mkv, c420, audio(Opus)), None),
+            ("AAC in .mkv", out(H264, mkv, c420, audio(Aac)), None),
+            (
+                "pick nothing",
+                pick(H264, mp4, Auto, vec![]),
+                Some("channel_pick"),
+            ),
+            (
+                "pick channel 0",
+                pick(H264, mp4, Auto, vec![0]),
+                Some("channel_pick"),
+            ),
+            (
+                "pick channel 65",
+                pick(H264, mp4, Auto, vec![65]),
+                Some("channel_pick"),
+            ),
+            (
+                "pick channels 1 and 64",
+                pick(H264, mp4, Auto, vec![1, 64]),
+                None,
+            ),
+            (
+                "pick 3 to AAC",
+                pick(H264, mp4, Auto, vec![1, 2, 3]),
+                Some("channel_pick"),
+            ),
+            (
+                "pick 3 to Opus",
+                pick(Vp9, mkv, Auto, vec![1, 2, 3]),
+                Some("channel_pick"),
+            ),
+            ("pick 3 to PCM", pick(H264, mov, Pcm, vec![1, 2, 3]), None),
+            (
+                "pick 3 to ProRes",
+                pick(ProRes422, mov, Auto, vec![1, 2, 3]),
+                None,
+            ),
+            (
+                "pick 3 to uncompressed",
+                pick(Uncompressed, mkv, Auto, vec![1, 2, 3]),
+                None,
+            ),
+            (
+                "unpicked channel 0",
+                h264(OutputAdvanced {
+                    channel_pick: vec![0],
+                    ..d()
+                }),
+                None,
+            ),
+        ]
+    }
+
     #[test]
     fn checks_advanced_settings() {
-        let check = |f: &dyn Fn(&mut PresetOutputInput)| {
-            let mut o = leg("a", Container::Mov, "x");
-            f(&mut o);
-            RecordingProfile::from_output(&o).map(|_| ())
-        };
-        assert!(check(&|_| {}).is_ok());
-        assert!(check(&|o| o.chroma = ChromaSubsampling::Yuv422).is_ok());
-        assert!(check(&|o| {
-            o.chroma = ChromaSubsampling::Yuv422;
-            o.advanced.encoder = EncoderChoice::Hardware;
-        })
-        .is_err());
-        assert!(check(&|o| {
-            o.codec = VideoCodec::Vp9;
-            o.container = Container::Mkv;
-            o.advanced.encoder = EncoderChoice::Hardware;
-        })
-        .is_err());
-        assert!(check(&|o| o.advanced.audio_codec = AudioCodecChoice::Opus).is_err());
-        assert!(check(&|o| o.advanced.keyframe_secs = Some(0.0)).is_err());
-        assert!(check(&|o| {
-            o.advanced.audio_channels = AudioChannels::Pick;
-            o.advanced.channel_pick = vec![1, 2, 3];
-        })
-        .is_err());
-        assert!(check(&|o| {
-            o.advanced.audio_codec = AudioCodecChoice::Pcm;
-            o.advanced.audio_channels = AudioChannels::Pick;
-            o.advanced.channel_pick = vec![1, 2, 3];
-        })
-        .is_ok());
+        for (name, o, want) in advanced_cases() {
+            let got = RecordingProfile::from_output(&o).err().map(advanced_field);
+            assert_eq!(got, want, "{name}");
+        }
+    }
+
+    /// Writes `advanced_cases()` as `advancedCases.json` beside the ts-rs
+    /// bindings, so a check changed on one side fails the UI's tests.
+    #[cfg(feature = "export-types")]
+    #[test]
+    fn export_advanced_cases() {
+        let cases: Vec<_> = advanced_cases()
+            .into_iter()
+            .map(|(name, leg, error)| serde_json::json!({ "name": name, "leg": leg, "error": error }))
+            .collect();
+        let dir = PathBuf::from(std::env::var("TS_RS_EXPORT_DIR").unwrap());
+        let json = serde_json::to_string_pretty(&cases).unwrap() + "\n";
+        std::fs::write(dir.join("advancedCases.json"), json).unwrap();
     }
 
     #[test]
