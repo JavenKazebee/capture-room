@@ -17,7 +17,7 @@ use gstreamer::{self as gst, prelude::*};
 
 use super::{live, InputSource};
 use crate::api::types::{
-    ChannelConfig, LiveVideoFormat, OutputConfig, SourceCapabilitiesDto, SourceType,
+    ChannelConfig, OutputConfig, SourceCapabilitiesDto, SourceType, VideoFormat,
 };
 
 mod lanes;
@@ -80,7 +80,8 @@ impl InputSource for ChannelSource {
         Some(SourceCapabilitiesDto {
             max_width: f.width,
             max_height: f.height,
-            max_framerate: [f.fps_num, f.fps_den],
+            fps_num: f.fps_num,
+            fps_den: f.fps_den,
             audio_channels: self.config.audio_channels,
         })
     }
@@ -120,7 +121,7 @@ impl InputSource for ChannelSource {
 }
 
 /// The program's video caps: the channel's size and rate, progressive I420.
-fn program_caps(format: &LiveVideoFormat) -> gst::Caps {
+fn program_caps(format: &VideoFormat) -> gst::Caps {
     let base = gst::Caps::builder("video/x-raw")
         .field("format", "I420")
         .field("colorimetry", "bt709")

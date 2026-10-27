@@ -23,11 +23,11 @@ use super::{ghost_pad, InputSource};
 use crate::api::types::{
     ConfiguredSourceDto, DecklinkCardDto, DecklinkConnection, DecklinkDeviceDto, DecklinkModeDto,
     DecklinkProfile, DecklinkSourceConfig, DecklinkStatusDto, DecklinkUseDto, LinkState,
-    OutputConfig, SourceCapabilitiesDto, SourceConfig, SourceType,
+    OutputConfig, SourceCapabilitiesDto, SourceConfig, SourceType, VideoFormat,
 };
 use crate::pipeline::monitor::MonitorPipeline;
 use crate::pipeline::output::{OutputPipeline, OutputSink, PipelineOutput, Program, RunningOutput};
-use crate::pipeline::{capsfilter, make_el, set_mix_matrix, set_property};
+use crate::pipeline::{capsfilter, make_el, numbered_channels, set_mix_matrix, set_property};
 
 pub const SOURCE_ELEMENTS: &[&str] = &["decklinkvideosrc", "decklinkaudiosrc"];
 pub const OUTPUT_ELEMENTS: &[&str] = &["decklinkvideosink", "decklinkaudiosink"];
@@ -97,10 +97,7 @@ pub fn driver_installed() -> bool {
 pub struct Mode {
     pub nick: &'static str,
     pub label: &'static str,
-    pub width: u32,
-    pub height: u32,
-    pub fps_num: u32,
-    pub fps_den: u32,
+    pub format: VideoFormat,
     pub interlaced: bool,
 }
 
@@ -115,10 +112,7 @@ const fn mode(
     Mode {
         nick,
         label,
-        width,
-        height,
-        fps_num: fps.0,
-        fps_den: fps.1,
+        format: VideoFormat::new(width, height, fps),
         interlaced,
     }
 }
@@ -165,10 +159,7 @@ impl From<&Mode> for DecklinkModeDto {
         Self {
             mode: m.nick.into(),
             label: m.label.into(),
-            width: m.width,
-            height: m.height,
-            fps_num: m.fps_num,
-            fps_den: m.fps_den,
+            format: m.format,
             interlaced: m.interlaced,
         }
     }
@@ -176,15 +167,14 @@ impl From<&Mode> for DecklinkModeDto {
 
 /// The mode an output plays `program` in: `pinned` (which must match its size
 /// and rate) or the matching progressive mode. Interlaced output isn't supported yet.
-pub fn output_mode(
-    size: (u32, u32),
-    fps: (u32, u32),
-    pinned: Option<&str>,
-) -> Result<&'static Mode, String> {
-    let same_rate = |m: &Mode| m.fps_num as u64 * fps.1 as u64 == fps.0 as u64 * m.fps_den as u64;
-    let fits = |m: &Mode| (m.width, m.height) == size && same_rate(m);
-    let rate = fps.0 as f64 / fps.1.max(1) as f64;
-    let program = format!("{}x{} at {rate:.2} fps", size.0, size.1);
+pub fn output_mode(program: VideoFormat, pinned: Option<&str>) -> Result<&'static Mode, String> {
+    let fits = |m: &Mode| m.format.size() == program.size() && m.format.same_rate(&program);
+    let program = format!(
+        "{}x{} at {:.2} fps",
+        program.width,
+        program.height,
+        program.fps()
+    );
     match pinned.filter(|p| !p.is_empty()) {
         Some(nick) => {
             let m = find_mode(nick).ok_or_else(|| format!("unknown SDI mode {nick}"))?;
@@ -381,10 +371,11 @@ fn device_modes(caps: Option<gst::Caps>) -> Vec<&'static Mode> {
                 let interlaced = s
                     .get::<&str>("interlace-mode")
                     .is_ok_and(|i| i != "progressive");
-                int("width") == Some(m.width as i32)
-                    && int("height") == Some(m.height as i32)
+                int("width") == Some(m.format.width as i32)
+                    && int("height") == Some(m.format.height as i32)
                     && rate.is_some_and(|r| {
-                        r.numer() as i64 * m.fps_den as i64 == m.fps_num as i64 * r.denom() as i64
+                        r.numer() as i64 * m.format.fps_den as i64
+                            == m.format.fps_num as i64 * r.denom() as i64
                     })
                     && interlaced == m.interlaced
             })
@@ -735,8 +726,8 @@ impl OutputSink for DecklinkOutput {
         if !d.playout {
             bail!("{} can't play out", d.name);
         }
-        let mode = output_mode(self.program.size, self.program.fps, self.mode.as_deref())
-            .map_err(|e| anyhow!(e))?;
+        let mode =
+            output_mode(self.program.format, self.mode.as_deref()).map_err(|e| anyhow!(e))?;
         let (output, vsink) = self.build(&d, mode)?;
         let pipeline = PipelineOutput::start(monitor, self.label(), output)?;
         Ok(Box::new(DecklinkRunning {
@@ -755,35 +746,41 @@ impl DecklinkOutput {
         let vsink = d.element("decklinkvideosink", "vsink", profile)?;
         set_property(&vsink, "mode", mode.nick)?;
         let asink = d.element("decklinkaudiosink", "asink", DecklinkProfile::Default)?;
-        let channels = self.program.audio_channels.max(1);
-        let embedded = embedded_channels(channels);
+        let [spread, acaps, numbered] = audio_spread(self.program.audio_channels)?;
         let vcaps = capsfilter(
             "vcaps",
             gst::Caps::builder("video/x-raw")
                 .field("format", "UYVY")
-                .field("width", mode.width as i32)
-                .field("height", mode.height as i32)
-                .build(),
-        )?;
-        // The program's channels first, then silence up to what SDI carries.
-        let spread = make_el("audioconvert", "aspread")?;
-        set_mix_matrix(&spread, &spread_matrix(channels, embedded));
-        let acaps = capsfilter(
-            "acaps",
-            gst::Caps::builder("audio/x-raw")
-                .field("rate", 48000)
-                .field("channels", embedded as i32)
-                .field("channel-mask", gst::Bitmask::new(0))
+                .field("width", mode.format.width as i32)
+                .field("height", mode.format.height as i32)
                 .build(),
         )?;
         consumer
             .pipeline
-            .add_many([&vcaps, &vsink, &spread, &acaps, &asink])
+            .add_many([&vcaps, &vsink, &spread, &acaps, &numbered, &asink])
             .context("add Decklink output")?;
-        consumer.video_chain(&[&vcaps, &vsink])?;
-        consumer.audio_chain(&[&spread, &acaps, &asink])?;
+        consumer.video_chain(&[], &[&vcaps, &vsink])?;
+        consumer.audio_chain(&[], &[&spread, &acaps, &numbered, &asink])?;
         Ok((output, vsink))
     }
+}
+
+/// The program's `channels` first, then silence up to what SDI carries, as
+/// numbered channels.
+fn audio_spread(channels: u32) -> Result<[gst::Element; 3]> {
+    let channels = channels.max(1);
+    let embedded = embedded_channels(channels);
+    let spread = make_el("audioconvert", "aspread")?;
+    set_mix_matrix(&spread, &spread_matrix(channels, embedded));
+    // Mask left open for the matrix: see `numbered_channels`.
+    let acaps = capsfilter(
+        "acaps",
+        gst::Caps::builder("audio/x-raw")
+            .field("rate", 48000)
+            .field("channels", embedded as i32)
+            .build(),
+    )?;
+    Ok([spread, acaps, numbered_channels("anumbered")?])
 }
 
 /// `audioconvert` matrix putting `channels` on the first of `embedded`.
@@ -837,24 +834,24 @@ mod tests {
 
     #[test]
     fn output_mode_matches_program() {
-        let m = output_mode((1920, 1080), (60000, 1001), None).unwrap();
+        let m = output_mode(VideoFormat::new(1920, 1080, (60000, 1001)), None).unwrap();
         assert_eq!(m.nick, "1080p5994");
-        let m = output_mode((3840, 2160), (25, 1), None).unwrap();
+        let m = output_mode(VideoFormat::new(3840, 2160, (25, 1)), None).unwrap();
         assert_eq!(m.nick, "2160p25");
         // Same rate written differently.
-        let m = output_mode((1280, 720), (120, 2), None).unwrap();
+        let m = output_mode(VideoFormat::new(1280, 720, (120, 2)), None).unwrap();
         assert_eq!(m.nick, "720p60");
-        assert!(output_mode((1000, 1000), (30, 1), None).is_err());
+        assert!(output_mode(VideoFormat::new(1000, 1000, (30, 1)), None).is_err());
     }
 
     #[test]
     fn output_mode_checks_pinned() {
-        assert!(output_mode((1920, 1080), (50, 1), Some("1080p50")).is_ok());
-        assert!(output_mode((1920, 1080), (50, 1), Some("1080p5994")).is_err());
-        assert!(output_mode((1920, 1080), (25, 1), Some("1080i50")).is_err());
-        assert!(output_mode((1920, 1080), (50, 1), Some("nope")).is_err());
+        assert!(output_mode(VideoFormat::new(1920, 1080, (50, 1)), Some("1080p50")).is_ok());
+        assert!(output_mode(VideoFormat::new(1920, 1080, (50, 1)), Some("1080p5994")).is_err());
+        assert!(output_mode(VideoFormat::new(1920, 1080, (25, 1)), Some("1080i50")).is_err());
+        assert!(output_mode(VideoFormat::new(1920, 1080, (50, 1)), Some("nope")).is_err());
         // Empty means unset.
-        assert!(output_mode((1920, 1080), (50, 1), Some("")).is_ok());
+        assert!(output_mode(VideoFormat::new(1920, 1080, (50, 1)), Some("")).is_ok());
     }
 
     #[test]
@@ -864,6 +861,45 @@ mod tests {
         assert_eq!(embedded_channels(3), 8);
         assert_eq!(embedded_channels(8), 8);
         assert_eq!(embedded_channels(12), 16);
+    }
+
+    /// Any program channel count reaches SDI as numbered channels.
+    #[test]
+    fn spread_negotiates_numbered_channels() {
+        gst::init().unwrap();
+        for channels in [1, 2, 3, 6, 8, 12, 16] {
+            let pipeline = gst::parse::launch(&format!(
+                "audiotestsrc num-buffers=5 ! audio/x-raw,channels={channels} \
+                 ! audioconvert ! audioresample name=in"
+            ))
+            .unwrap()
+            .downcast::<gst::Pipeline>()
+            .unwrap();
+            let [spread, acaps, numbered] = audio_spread(channels).unwrap();
+            let sink = make_el("fakesink", "sink").unwrap();
+            pipeline
+                .add_many([&spread, &acaps, &numbered, &sink])
+                .unwrap();
+            let input = pipeline.by_name("in").unwrap();
+            gst::Element::link_many([&input, &spread, &acaps, &numbered, &sink]).unwrap();
+            pipeline.set_state(gst::State::Playing).unwrap();
+            let msg = pipeline.bus().unwrap().timed_pop_filtered(
+                gst::ClockTime::from_seconds(5),
+                &[gst::MessageType::Eos, gst::MessageType::Error],
+            );
+            let caps = sink.static_pad("sink").unwrap().current_caps();
+            pipeline.set_state(gst::State::Null).unwrap();
+            if let Some(gst::MessageView::Error(e)) = msg.as_ref().map(|m| m.view()) {
+                panic!("{channels} channels: {} {:?}", e.error(), e.debug());
+            }
+            assert!(msg.is_some(), "{channels} channels: no EOS");
+            let s = caps.unwrap().structure(0).unwrap().to_owned();
+            assert_eq!(
+                s.get::<i32>("channels").unwrap() as u32,
+                embedded_channels(channels)
+            );
+            assert_eq!(s.get::<gst::Bitmask>("channel-mask").unwrap().0, 0);
+        }
     }
 
     #[test]

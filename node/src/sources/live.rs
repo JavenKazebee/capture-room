@@ -16,9 +16,9 @@ use gstreamer_video as gst_video;
 use tracing::{info, warn};
 
 use super::add_chain;
-use crate::api::types::{LinkState, LiveVideoFormat};
+use crate::api::types::{LinkState, VideoFormat};
 use crate::pipeline::timecode::{drop_frame_flags, running_time};
-use crate::pipeline::{capsfilter, make_el, set_mix_matrix, set_property};
+use crate::pipeline::{capsfilter, make_el, numbered_channels, set_mix_matrix, set_property};
 
 /// Rate every live source's audio is resampled to.
 pub const AUDIO_RATE: i32 = 48_000;
@@ -102,7 +102,7 @@ pub struct LiveInput<'a> {
     pub source: gst::Element,
     pub audio: LiveAudio,
     /// Hold video to this size and rate instead of the source's first.
-    pub format: Option<&'a LiveVideoFormat>,
+    pub format: Option<&'a VideoFormat>,
     pub tracker: &'a Arc<LinkTracker>,
     /// Link the source's pads straight in, not through `fallbacksrc`: for a
     /// server that comes and goes with its publisher (WHIP) and mustn't be
@@ -212,7 +212,7 @@ pub(crate) fn video_output(
     bin: &gst::Bin,
     id: &str,
     caps: gst::Caps,
-) -> Result<(Inputs, Arc<Mutex<VideoFormat>>)> {
+) -> Result<(Inputs, Arc<Mutex<InputCaps>>)> {
     let compositor = make_el("compositor", &format!("live-vsync-{id}"))?;
     set_property(&compositor, "background", "black")?;
     let timecode = LastTimecode::default();
@@ -222,7 +222,7 @@ pub(crate) fn video_output(
     );
     let out_vcaps = capsfilter(&format!("live-outvcaps-{id}"), caps.clone())?;
     add_chain(bin, &[&compositor, &out_vcaps], "video")?;
-    let format = Arc::new(Mutex::new(VideoFormat {
+    let format = Arc::new(Mutex::new(InputCaps {
         pre: pre_compositor_caps(&caps),
         inputs: Vec::new(),
         out: out_vcaps.downgrade(),
@@ -306,14 +306,14 @@ pub(crate) fn channel_layout(channels: u32) -> u64 {
 
 /// The video format inputs are converted to, and who has to know when it's
 /// locked.
-pub(crate) struct VideoFormat {
+pub(crate) struct InputCaps {
     /// Caps for each input's converters (see [`pre_compositor_caps`]).
     pre: gst::Caps,
     inputs: Vec<glib::WeakRef<gst::Element>>,
     out: glib::WeakRef<gst::Element>,
 }
 
-impl VideoFormat {
+impl InputCaps {
     pub(crate) fn lock(&mut self, lock: &gst::Caps) {
         // Before the compositor, only what the converters can always produce:
         // stricter caps reach fallbacksrc's black source, which fails to negotiate.
@@ -334,7 +334,7 @@ type LastTimecode = Arc<Mutex<Option<(gst::ClockTime, gst_video::ValidVideoTimeC
 #[derive(Clone)]
 enum Kind {
     /// The format inputs are converted to, and their timecode.
-    Video(Arc<Mutex<VideoFormat>>, LastTimecode),
+    Video(Arc<Mutex<InputCaps>>, LastTimecode),
     /// The mixer's caps, and a channel-picking matrix.
     Audio(gst::Caps, Option<Vec<Vec<f32>>>),
 }
@@ -403,14 +403,30 @@ impl Inputs {
             }
             Kind::Audio(caps, matrix) => {
                 let conv = make_el("audioconvert", &name("aconv"))?;
+                let numbered = caps
+                    .structure(0)
+                    .and_then(|s| s.get::<gst::Bitmask>("channel-mask").ok())
+                    .is_some_and(|m| m.0 == 0);
+                let mut out = caps.clone();
                 if let Some(rows) = matrix {
                     set_mix_matrix(&conv, rows);
+                    if numbered {
+                        // Mask left open for the matrix: see `numbered_channels`.
+                        out.make_mut()
+                            .structure_mut(0)
+                            .context("audio caps")?
+                            .remove_field("channel-mask");
+                    }
                 }
-                vec![
+                let mut chain = vec![
                     conv,
                     make_el("audioresample", &name("aresample"))?,
-                    capsfilter(&name("acaps"), caps.clone())?,
-                ]
+                    capsfilter(&name("acaps"), out)?,
+                ];
+                if matrix.is_some() && numbered {
+                    chain.push(numbered_channels(&name("anumbered"))?);
+                }
+                chain
             }
         };
         bin.add_many(&elements).context("add live input")?;
@@ -674,7 +690,7 @@ pub(crate) fn add_background(bin: &gst::Bin, id: &str, compositor: &gst::Element
 }
 
 /// Check a configured format: a zero rate or size would fail (or panic) building caps.
-pub fn validate_format(format: Option<&LiveVideoFormat>) -> Result<(), String> {
+pub fn validate_format(format: Option<&VideoFormat>) -> Result<(), String> {
     match format {
         Some(f) if f.width == 0 || f.height == 0 || f.fps_num == 0 || f.fps_den == 0 => {
             Err("the format needs a size and frame rate".into())
@@ -686,7 +702,7 @@ pub fn validate_format(format: Option<&LiveVideoFormat>) -> Result<(), String> {
 /// Caps before the source's format is known: the configured format, or any
 /// size at the default rate. The rate must be set, or the compositor takes the
 /// slowest a branch accepts (the thumbnails' 1 fps).
-fn initial_video_caps(format: Option<&LiveVideoFormat>) -> gst::Caps {
+fn initial_video_caps(format: Option<&VideoFormat>) -> gst::Caps {
     match format {
         Some(f) => gst::Caps::builder("video/x-raw")
             .field("width", f.width as i32)
@@ -715,7 +731,7 @@ fn initial_video_caps(format: Option<&LiveVideoFormat>) -> gst::Caps {
 fn watch_source(
     source: &gst::Element,
     tracker: Arc<LinkTracker>,
-    format: Option<LiveVideoFormat>,
+    format: Option<VideoFormat>,
     on_lock: impl Fn(&gst::Caps) + Send + Sync + 'static,
 ) {
     let locked = Arc::new(AtomicBool::new(false));
@@ -785,7 +801,7 @@ fn pre_compositor_caps(lock: &gst::Caps) -> gst::Caps {
 }
 
 /// Output caps for a source whose first video caps are `caps`.
-pub(crate) fn lock_caps(caps: &gst::CapsRef, format: Option<&LiveVideoFormat>) -> gst::Caps {
+pub(crate) fn lock_caps(caps: &gst::CapsRef, format: Option<&VideoFormat>) -> gst::Caps {
     let s = caps.structure(0);
     let int = |name: &str| s.and_then(|s| s.get::<i32>(name).ok());
     let frac = |name: &str| s.and_then(|s| s.get::<gst::Fraction>(name).ok());
@@ -1075,6 +1091,71 @@ mod tests {
             locked.iter().all(|c| c.contains("width=(int)1280")),
             "locked to the placeholder: {caps:#?}"
         );
+    }
+
+    /// Picked device channels reach the mixer as numbered channels, from
+    /// positioned and numbered devices alike.
+    #[test]
+    fn device_picks_negotiate() {
+        gst::init().unwrap();
+        let cases: [(&str, u32, &[u32]); 4] = [
+            ("channels=8", 8, &[2]),
+            ("channels=8", 8, &[1, 3, 5]),
+            (
+                "channels=16,channel-mask=(bitmask)0",
+                16,
+                &[1, 2, 3, 4, 5, 6],
+            ),
+            (
+                "channels=16,channel-mask=(bitmask)0",
+                16,
+                &[9, 10, 11, 12, 13, 14, 15, 16, 1, 2, 3, 4],
+            ),
+        ];
+        for (device_caps, inputs, channels) in cases {
+            // The mixer and picking chain as `build_bin` makes them for a device.
+            let bin = gst::Bin::new();
+            let mixer = audio_output(&bin, "t", channels.len() as u32, true).unwrap();
+            let picker = Inputs {
+                kind: Kind::Audio(mixer.audio_caps(), Some(pick_matrix(inputs, channels))),
+                ..mixer
+            };
+            let device = gst::parse::bin_from_description(
+                &format!("audiotestsrc is-live=1 ! capsfilter caps=\"audio/x-raw,{device_caps}\""),
+                true,
+            )
+            .unwrap();
+            bin.add(&device).unwrap();
+            let chain = picker.add("dev").unwrap();
+            device
+                .static_pad("src")
+                .unwrap()
+                .link(&chain.sink().unwrap())
+                .unwrap();
+            let picked = Arc::new(AtomicU64::new(0));
+            let picked_ = picked.clone();
+            chain.pad.add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+                picked_.fetch_add(1, Ordering::Relaxed);
+                gst::PadProbeReturn::Ok
+            });
+
+            let pipeline = gst::Pipeline::new();
+            let a = Arc::new(Sink::default());
+            let asink = counting_sink(a.clone());
+            pipeline.add_many([bin.upcast_ref(), &asink]).unwrap();
+            bin.link_pads(Some("audio"), &asink, None).unwrap();
+            pipeline.set_state(gst::State::Playing).unwrap();
+            std::thread::sleep(Duration::from_millis(500));
+            pipeline.set_state(gst::State::Null).unwrap();
+
+            assert!(
+                picked.load(Ordering::Relaxed) > 0,
+                "{channels:?} of {device_caps}: no audio from the device"
+            );
+            let caps = a.caps.lock().unwrap();
+            let want = format!("channels=(int){}", channels.len());
+            assert!(caps.iter().all(|c| c.contains(&want)), "{caps:#?}");
+        }
     }
 
     /// Locked caps are fixed, with mono multiview and every flag pinned, so

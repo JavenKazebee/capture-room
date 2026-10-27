@@ -13,7 +13,7 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct ChannelConfig {
-    pub format: LiveVideoFormat,
+    pub format: VideoFormat,
     #[serde(default = "default_channel_audio")]
     pub audio_channels: u32,
     #[serde(default)]

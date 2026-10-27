@@ -105,13 +105,13 @@ impl WhepOutput {
             .request_pad_simple("audio_%u")
             .context("WHEP audio pad")?;
         consumer
-            .video_chain(&[])?
+            .video_chain(&[], &[])?
             .static_pad("src")
             .context("videoconvert src pad")?
             .link(&video_pad)
             .context("link WHEP video → sink")?;
         consumer
-            .audio_chain(&[&stereo])?
+            .audio_chain(&[], &[&stereo])?
             .static_pad("src")
             .context("stereo src pad")?
             .link(&audio_pad)
@@ -152,7 +152,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::api::types::{ChannelConfig, LiveVideoFormat, MonitorSettingsDto};
+    use crate::api::types::{ChannelConfig, MonitorSettingsDto, VideoFormat};
     use crate::pipeline::output::OutputLeg;
     use crate::sources::channel::ChannelSource;
 
@@ -174,7 +174,7 @@ mod tests {
             "c".into(),
             "c".into(),
             ChannelConfig {
-                format: LiveVideoFormat {
+                format: VideoFormat {
                     width: 640,
                     height: 360,
                     fps_num: 30,

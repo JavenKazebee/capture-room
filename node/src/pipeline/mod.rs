@@ -18,6 +18,7 @@ pub mod rtsp;
 pub mod timecode;
 pub mod whep;
 
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -26,6 +27,7 @@ use gstreamer::{self as gst, glib, prelude::*};
 use gstreamer_app as gst_app;
 use gstreamer_utils::{ConsumptionLink, StreamProducer};
 use tokio::sync::watch;
+use tracing::warn;
 
 use monitor::MonitorPipeline;
 
@@ -260,6 +262,23 @@ pub(crate) fn set_mix_matrix(aconv: &gst::Element, rows: &[Vec<f32>]) {
     aconv.set_property("mix-matrix", matrix);
 }
 
+/// `capssetter` relabelling audio as plain numbered channels
+/// (`channel-mask` 0), samples untouched. On GStreamer 1.24 `audioconvert`
+/// with a mix matrix won't negotiate mask 0 for fewer than 9 channels unless
+/// it's also the input's count, so the caps ahead of this leave the mask open.
+pub(crate) fn numbered_channels(name: &str) -> Result<gst::Element> {
+    gst::ElementFactory::make("capssetter")
+        .name(name)
+        .property(
+            "caps",
+            gst::Caps::builder("audio/x-raw")
+                .field("channel-mask", gst::Bitmask::new(0))
+                .build(),
+        )
+        .build()
+        .with_context(|| format!("create {name}"))
+}
+
 /// Link a new request pad of `tee` to `sink`'s static sink pad.
 pub(super) fn link_tee(tee: &gst::Element, sink: &gst::Element) -> Result<()> {
     tee.request_pad_simple("src_%u")
@@ -313,27 +332,80 @@ impl ConsumerPipeline {
         Ok(())
     }
 
-    /// Link the video appsrc through a new `videoconvert`, then through
-    /// `then` (already in the pipeline), in order: the last element linked.
-    pub fn video_chain(&self, then: &[&gst::Element]) -> Result<gst::Element> {
-        let convert = [make_el("videoconvert", "vconv")?];
-        self.chain(self.video_src.upcast_ref(), &convert, then, "video")
+    /// Keep the pipeline's first error in [`Self::error`] and call `on_first`
+    /// with it. Errors and EOS stay on the bus for whoever waits on it; the
+    /// rest is dropped so a long-running pipeline doesn't pile up messages.
+    /// Runs on the streaming thread that posted the error, so `on_first`
+    /// must not block.
+    pub fn watch_errors(
+        &self,
+        on_first: impl Fn(&gst::message::Error) + Send + Sync + 'static,
+    ) -> Result<()> {
+        self.watch_errors_and(on_first, |_| {})
     }
 
-    /// Link the audio appsrc through a new `audioconvert → audioresample`,
-    /// so `then` can take any format, then through `then` (already in the
-    /// pipeline), in order: the last element linked.
-    pub fn audio_chain(&self, then: &[&gst::Element]) -> Result<gst::Element> {
+    /// [`Self::watch_errors`], also handing `on_element` each element
+    /// message's structure.
+    pub fn watch_errors_and(
+        &self,
+        on_first: impl Fn(&gst::message::Error) + Send + Sync + 'static,
+        on_element: impl Fn(&gst::StructureRef) + Send + Sync + 'static,
+    ) -> Result<()> {
+        let first = self.error.clone();
+        self.pipeline
+            .bus()
+            .with_context(|| format!("{} has no bus", self.pipeline.name()))?
+            .set_sync_handler(move |_, msg| match msg.view() {
+                gst::MessageView::Error(err) => {
+                    if first.set(err) {
+                        on_first(err);
+                    }
+                    gst::BusSyncReply::Pass
+                }
+                gst::MessageView::Eos(_) => gst::BusSyncReply::Pass,
+                gst::MessageView::Element(e) => {
+                    if let Some(s) = e.structure() {
+                        on_element(s);
+                    }
+                    gst::BusSyncReply::Drop
+                }
+                _ => gst::BusSyncReply::Drop,
+            });
+        Ok(())
+    }
+
+    /// Link the video appsrc through `before`, a new `videoconvert`, then
+    /// `then` (both already in the pipeline), in order: the last element
+    /// linked.
+    pub fn video_chain(
+        &self,
+        before: &[&gst::Element],
+        then: &[&gst::Element],
+    ) -> Result<gst::Element> {
+        let convert = [make_el("videoconvert", "vconv")?];
+        self.chain(self.video_src.upcast_ref(), before, &convert, then, "video")
+    }
+
+    /// Link the audio appsrc through `before`, a new `audioconvert →
+    /// audioresample` (so `then` can take any format; the `audioconvert` is
+    /// `aconv`), then `then` (both already in the pipeline), in order: the
+    /// last element linked.
+    pub fn audio_chain(
+        &self,
+        before: &[&gst::Element],
+        then: &[&gst::Element],
+    ) -> Result<gst::Element> {
         let convert = [
             make_el("audioconvert", "aconv")?,
             make_el("audioresample", "aresample")?,
         ];
-        self.chain(self.audio_src.upcast_ref(), &convert, then, "audio")
+        self.chain(self.audio_src.upcast_ref(), before, &convert, then, "audio")
     }
 
     fn chain(
         &self,
         src: &gst::Element,
+        before: &[&gst::Element],
         convert: &[gst::Element],
         then: &[&gst::Element],
         kind: &str,
@@ -342,6 +414,7 @@ impl ConsumerPipeline {
             .add_many(convert)
             .with_context(|| format!("add {kind} convert"))?;
         let chain: Vec<&gst::Element> = std::iter::once(src)
+            .chain(before.iter().copied())
             .chain(convert)
             .chain(then.iter().copied())
             .collect();
@@ -410,15 +483,57 @@ pub(super) fn audio_hold_queue() -> Result<gst::Element> {
         .context("create audio queue")
 }
 
-/// qtmux fails on PCM that jumps ("timestamps are drifting"): a file
-/// source's loop, a dropout. This fills gaps with silence and trims
-/// overlaps, from the first sample on.
-pub(super) fn pcm_audiorate() -> Result<gst::Element> {
-    gst::ElementFactory::make("audiorate")
+/// The end of a PCM chain into qtmux: 24-bit, and an `audiorate`, as qtmux
+/// fails on PCM that jumps ("timestamps are drifting"): a file source's
+/// loop, a dropout. It fills gaps with silence and trims overlaps, from the
+/// first sample on.
+pub(super) fn pcm_tail() -> Result<[gst::Element; 2]> {
+    let caps = capsfilter(
+        "apcm-caps",
+        gst::Caps::builder("audio/x-raw")
+            .field("format", "S24LE")
+            .build(),
+    )?;
+    let rate = gst::ElementFactory::make("audiorate")
         .name("arate")
         .property("skip-to-first", true)
         .build()
-        .context("create audiorate")
+        .context("create audiorate")?;
+    Ok([caps, rate])
+}
+
+/// The first of `encoders` that `build` succeeds with, logging those that
+/// fail. A hardware encoder can be listed and still fail to open (no
+/// device, a rate control the driver lacks), so the next is tried.
+pub(super) fn first_that_builds<E: Copy + Into<&'static str>, T>(
+    encoders: &[E],
+    mut build: impl FnMut(E) -> Result<T>,
+) -> Result<T> {
+    let mut last_err = None;
+    for &encoder in encoders {
+        match build(encoder) {
+            Ok(built) => return Ok(built),
+            Err(e) => {
+                let name: &'static str = encoder.into();
+                warn!(encoder = name, error = %format!("{e:#}"), "encoder unavailable, trying the next");
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no encoder available")))
+}
+
+/// Delete `path`, logging rather than returning a failure: for files a
+/// pipeline leaves behind. One already gone is fine. Whether it was deleted.
+pub(super) fn remove_quietly(path: &Path) -> bool {
+    match std::fs::remove_file(path) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => {
+            warn!(path = ?path, error = %e, "can't delete file");
+            false
+        }
+    }
 }
 
 pub(super) fn handle_level_message(s: &gst::StructureRef, meter: &AudioMeter) {

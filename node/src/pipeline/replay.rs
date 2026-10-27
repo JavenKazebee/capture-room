@@ -23,8 +23,8 @@ use tracing::{info, warn};
 use super::monitor::MonitorPipeline;
 use super::timecode::stamp_time_of_day;
 use super::{
-    audio_hold_queue, capsfilter, make_el, mark_prores_keyframes, pcm_audiorate, set_property,
-    share_clock, start_or_reason, ConsumerPipeline,
+    audio_hold_queue, capsfilter, first_that_builds, make_el, mark_prores_keyframes, pcm_tail,
+    remove_quietly, set_property, share_clock, start_or_reason, ConsumerPipeline,
 };
 use crate::api::types::ReplayCodec;
 
@@ -190,14 +190,14 @@ impl Index {
                 break;
             }
             let oldest = self.segments.pop_front().unwrap();
-            remove(&oldest.path);
+            remove_quietly(&oldest.path);
         }
     }
 
     fn opened(&mut self, path: PathBuf, start: gst::ClockTime) {
         // One left open by a leg that stopped is incomplete.
         if let Some((stale, _)) = self.open.replace((path, start)) {
-            remove(&stale);
+            remove_quietly(&stale);
         }
     }
 
@@ -206,7 +206,7 @@ impl Index {
             return;
         };
         if open != path || end <= start {
-            remove(path);
+            remove_quietly(path);
             return;
         }
         let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -359,14 +359,6 @@ fn remove_dir(dir: &Path) {
     }
 }
 
-fn remove(path: &Path) {
-    if let Err(e) = std::fs::remove_file(path) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            warn!(path = ?path, error = %e, "can't delete replay segment");
-        }
-    }
-}
-
 pub struct ReplayLeg {
     /// Dropping it loses the segment being written (it has no index yet).
     consumer: ConsumerPipeline,
@@ -399,21 +391,15 @@ impl ReplayLeg {
             i.dir.clone()
         };
         std::fs::create_dir_all(&dir).with_context(|| format!("can't create {}", dir.display()))?;
-        let mut last_err = None;
-        for &encoder in codec.encoders() {
-            match Self::build(codec, encoder, index, name, &clock, base) {
-                Ok(mut leg) => {
-                    leg.consumer.connect(monitor)?;
-                    info!(name, encoder, "replay buffer recording");
-                    return Ok(leg);
-                }
-                Err(e) => {
-                    warn!(encoder, error = %format!("{e:#}"), "replay encoder unavailable");
-                    last_err = Some(e);
-                }
-            }
+        if codec.encoders().is_empty() {
+            return Err(anyhow!("no encoder for {codec:?}"));
         }
-        Err(last_err.unwrap_or_else(|| anyhow!("no encoder for {codec:?}")))
+        let mut leg = first_that_builds(codec.encoders(), |encoder| {
+            Self::build(codec, encoder, index, name, &clock, base)
+        })?;
+        leg.consumer.connect(monitor)?;
+        info!(name, encoder = leg.encoder, "replay buffer recording");
+        Ok(leg)
     }
 
     fn build(
@@ -425,152 +411,63 @@ impl ReplayLeg {
         base: gst::ClockTime,
     ) -> Result<Self> {
         let consumer = ConsumerPipeline::new(&format!("replay-{name}"));
-        let ConsumerPipeline {
-            pipeline,
-            video_src,
-            audio_src,
-            error,
-            ..
-        } = &consumer;
-
-        let mut video = vec![
-            video_src.clone().upcast::<gst::Element>(),
-            make_el("videoconvert", "vconv")?,
-        ];
-        let venc = make_el(encoder, "venc")?;
-        let set = |k: &str, v: &str| set_property(&venc, k, v);
-        match encoder {
-            "vtenc_prores" => mark_prores_keyframes(&venc)?,
-            "avenc_prores_ks" => set("profile", "proxy")?,
-            "vtenc_h264" => {
-                set("realtime", "true")?;
-                set("allow-frame-reordering", "false")?;
-                set("max-keyframe-interval", "1")?;
-                // Matches ProRes Proxy's VMAF at ~60% of its size. A bitrate
-                // is ignored when every frame is a keyframe.
-                set("quality", "0.75")?;
-            }
-            "x264enc" => {
-                set("key-int-max", "1")?;
-                set("speed-preset", "superfast")?;
-                set("pass", "qual")?;
-                set("quantizer", "18")?;
-                // `qual` caps the rate at `bitrate` (2 Mbit/s by default):
-                // lift the cap so the quantizer alone sets the quality.
-                set("bitrate", "2048000")?;
-            }
-            "jpegenc" => {
-                // jpegdec reads JPEG as full-range BT.601; limited-range
-                // BT.709 input comes back with lifted blacks and shifted
-                // colours.
-                video.push(capsfilter(
-                    "venc-caps",
-                    gst::Caps::builder("video/x-raw")
-                        .field("format", "I420")
-                        .field("colorimetry", "1:4:0:0")
-                        .build(),
-                )?);
-                set("quality", "85")?;
-            }
-            _ => {}
-        }
-        video.push(venc);
-        match codec {
-            // vtenc_prores picks its profile from downstream caps.
-            ReplayCodec::ProresProxy if encoder == "vtenc_prores" => video.push(capsfilter(
-                "venc-out-caps",
-                gst::Caps::builder("video/x-prores")
-                    .field("variant", "proxy")
-                    .build(),
-            )?),
-            ReplayCodec::H264Intra => video.push(make_el("h264parse", "vparse")?),
-            ReplayCodec::ProresProxy | ReplayCodec::Mjpeg => {}
-        }
-
-        let audio = vec![
-            audio_src.clone().upcast::<gst::Element>(),
-            audio_hold_queue()?,
-            make_el("audioconvert", "aconv")?,
-            make_el("audioresample", "aresample")?,
-            capsfilter(
-                "aout-caps",
-                gst::Caps::builder("audio/x-raw")
-                    .field("format", "S24LE")
-                    .build(),
-            )?,
-            pcm_audiorate()?,
-        ];
-
-        let muxer = make_el("qtmux", "mux")?;
-        let sink = gst::ElementFactory::make("splitmuxsink")
-            .name("sink")
-            .property("muxer", &muxer)
-            .property("max-size-time", SEGMENT.nseconds())
-            // Every frame is a keyframe.
-            .property("send-keyframe-requests", false)
-            .build()
-            .context("create splitmuxsink")?;
-        let numbering = Arc::downgrade(index);
-        sink.connect("format-location", false, move |_| {
-            let index = numbering.upgrade()?;
-            let mut index = index.lock().unwrap();
-            let file = index.dir.join(format!("{:08}.mov", index.next_number));
-            index.next_number += 1;
-            Some(file.to_string_lossy().into_owned().to_value())
-        });
+        let video = video_encoder(codec, encoder)?;
+        let audio = [audio_hold_queue()?]
+            .into_iter()
+            .chain(pcm_tail()?)
+            .collect::<Vec<_>>();
+        let sink = segment_sink(index)?;
 
         // Each file's span from splitmuxsink's messages, in running time
         // shared with the monitor.
         let messages = Arc::downgrade(index);
-        let error_ref = error.clone();
         let leg_name = name.to_string();
-        pipeline
-            .bus()
-            .context("replay pipeline has no bus")?
-            .set_sync_handler(move |_, msg| {
-                match msg.view() {
-                    gst::MessageView::Element(e) => {
-                        let Some(s) = e.structure() else {
-                            return gst::BusSyncReply::Drop;
-                        };
-                        let opened = s.name() == "splitmuxsink-fragment-opened";
-                        if !opened && s.name() != "splitmuxsink-fragment-closed" {
-                            return gst::BusSyncReply::Drop;
-                        }
-                        let (Ok(location), Ok(rt), Some(index)) = (
-                            s.get::<String>("location"),
-                            s.get::<gst::ClockTime>("running-time"),
-                            messages.upgrade(),
-                        ) else {
-                            return gst::BusSyncReply::Drop;
-                        };
-                        let mut index = index.lock().unwrap();
-                        if opened {
-                            index.opened(PathBuf::from(location), base + rt);
-                        } else {
-                            index.closed(Path::new(&location), base + rt);
-                        }
-                    }
-                    // Logged once: a later error only follows from the first.
-                    gst::MessageView::Error(err) if error_ref.set(err) => {
-                        warn!(name = %leg_name, error = %err.error(), debug = ?err.debug(), "replay buffer failed");
-                    }
-                    _ => {}
+        consumer.watch_errors_and(
+            move |err| {
+                warn!(name = %leg_name, error = %err.error(), debug = ?err.debug(), "replay buffer failed");
+            },
+            move |s| {
+                let opened = s.name() == "splitmuxsink-fragment-opened";
+                if !opened && s.name() != "splitmuxsink-fragment-closed" {
+                    return;
                 }
-                gst::BusSyncReply::Drop
-            });
+                let (Ok(location), Ok(rt), Some(index)) = (
+                    s.get::<String>("location"),
+                    s.get::<gst::ClockTime>("running-time"),
+                    messages.upgrade(),
+                ) else {
+                    return;
+                };
+                let mut index = index.lock().unwrap();
+                if opened {
+                    index.opened(PathBuf::from(location), base + rt);
+                } else {
+                    index.closed(Path::new(&location), base + rt);
+                }
+            },
+        )?;
 
+        let ConsumerPipeline {
+            pipeline, error, ..
+        } = &consumer;
         pipeline
-            .add_many(video.iter().chain(&audio).chain([&sink]))
+            .add_many(
+                [&consumer.video_src, &consumer.audio_src]
+                    .into_iter()
+                    .map(|src| src.upcast_ref::<gst::Element>())
+                    .chain(&video)
+                    .chain(&audio)
+                    .chain([&sink]),
+            )
             .context("add replay elements")?;
-        gst::Element::link_many(&video).context("link replay video")?;
-        gst::Element::link_many(&audio).context("link replay audio")?;
-        for (last, pad) in [(video.last(), "video"), (audio.last(), "audio_%u")] {
+        let video_out = consumer.video_chain(&[], &video.iter().collect::<Vec<_>>())?;
+        let audio_out =
+            consumer.audio_chain(&[&audio[0]], &audio[1..].iter().collect::<Vec<_>>())?;
+        for (last, pad) in [(video_out, "video"), (audio_out, "audio_%u")] {
             let sink_pad = sink
                 .request_pad_simple(pad)
                 .with_context(|| format!("splitmuxsink {pad}"))?;
-            last.unwrap()
-                .static_pad("src")
+            last.static_pad("src")
                 .context("src pad")?
                 .link(&sink_pad)
                 .with_context(|| format!("link {encoder} into .mov"))?;
@@ -593,6 +490,84 @@ impl ReplayLeg {
     pub fn error(&self) -> Option<String> {
         self.consumer.error.get()
     }
+}
+
+/// `encoder` set up for `codec`'s all-intra segments, with the elements
+/// around it: from after `videoconvert` to what splitmuxsink takes.
+fn video_encoder(codec: ReplayCodec, encoder: &'static str) -> Result<Vec<gst::Element>> {
+    let mut video = Vec::new();
+    let venc = make_el(encoder, "venc")?;
+    let set = |k: &str, v: &str| set_property(&venc, k, v);
+    match encoder {
+        "vtenc_prores" => mark_prores_keyframes(&venc)?,
+        "avenc_prores_ks" => set("profile", "proxy")?,
+        "vtenc_h264" => {
+            set("realtime", "true")?;
+            set("allow-frame-reordering", "false")?;
+            set("max-keyframe-interval", "1")?;
+            // Matches ProRes Proxy's VMAF at ~60% of its size. A bitrate
+            // is ignored when every frame is a keyframe.
+            set("quality", "0.75")?;
+        }
+        "x264enc" => {
+            set("key-int-max", "1")?;
+            set("speed-preset", "superfast")?;
+            set("pass", "qual")?;
+            set("quantizer", "18")?;
+            // `qual` caps the rate at `bitrate` (2 Mbit/s by default):
+            // lift the cap so the quantizer alone sets the quality.
+            set("bitrate", "2048000")?;
+        }
+        "jpegenc" => {
+            // jpegdec reads JPEG as full-range BT.601; limited-range
+            // BT.709 input comes back with lifted blacks and shifted
+            // colours.
+            video.push(capsfilter(
+                "venc-caps",
+                gst::Caps::builder("video/x-raw")
+                    .field("format", "I420")
+                    .field("colorimetry", "1:4:0:0")
+                    .build(),
+            )?);
+            set("quality", "85")?;
+        }
+        _ => {}
+    }
+    video.push(venc);
+    match codec {
+        // vtenc_prores picks its profile from downstream caps.
+        ReplayCodec::ProresProxy if encoder == "vtenc_prores" => video.push(capsfilter(
+            "venc-out-caps",
+            gst::Caps::builder("video/x-prores")
+                .field("variant", "proxy")
+                .build(),
+        )?),
+        ReplayCodec::H264Intra => video.push(make_el("h264parse", "vparse")?),
+        ReplayCodec::ProresProxy | ReplayCodec::Mjpeg => {}
+    }
+    Ok(video)
+}
+
+/// splitmuxsink writing [`SEGMENT`]-long .mov files numbered by `index`.
+fn segment_sink(index: &ReplayIndex) -> Result<gst::Element> {
+    let muxer = make_el("qtmux", "mux")?;
+    let sink = gst::ElementFactory::make("splitmuxsink")
+        .name("sink")
+        .property("muxer", &muxer)
+        .property("max-size-time", SEGMENT.nseconds())
+        // Every frame is a keyframe.
+        .property("send-keyframe-requests", false)
+        .build()
+        .context("create splitmuxsink")?;
+    let numbering = Arc::downgrade(index);
+    sink.connect("format-location", false, move |_| {
+        let index = numbering.upgrade()?;
+        let mut index = index.lock().unwrap();
+        let file = index.dir.join(format!("{:08}.mov", index.next_number));
+        index.next_number += 1;
+        Some(file.to_string_lossy().into_owned().to_value())
+    });
+    Ok(sink)
 }
 
 /// Keep a span's files in `dir` as a saved clip: hard links, so saving is free
@@ -754,6 +729,11 @@ pub fn export(
 /// to the segment: qtdemux hands out PCM in chunks that straddle the cuts,
 /// and qtmux would drop the first whole and write the last whole.
 ///
+/// Nothing holds the streams back while they wait for the seek, so under load
+/// one can run to the end of the clip first. Its EOS must not reach qtmux
+/// either: that pad would stay finished and lose its stream, or with every
+/// pad finished qtmux would write an empty file before the seek.
+///
 /// splitmuxsrc (seen in 1.24) can flush again after the segment and resend
 /// the in point's buffers under the same segment. With that flush dropped,
 /// the repeats would reach qtmux: extra frames, extra sound, or "Could not
@@ -768,13 +748,18 @@ fn keep_from_seek(pad: &gst::Pad, from: gst::ClockTime) {
     let span = Mutex::new(None::<(gst::ClockTime, Option<gst::ClockTime>)>);
     // The last picture's PTS, or where the last sound ended.
     let reached = Mutex::new(None::<gst::ClockTime>);
-    pad.add_probe(gst::PadProbeType::DATA_DOWNSTREAM, move |pad, info| {
+    // Flushes reach a probe only when asked for. One that got through after
+    // qtmux had started would make filesink truncate the file while qtmux
+    // went on at its old offsets, losing the moov inside an unsized mdat.
+    let kinds = gst::PadProbeType::DATA_DOWNSTREAM | gst::PadProbeType::EVENT_FLUSH;
+    pad.add_probe(kinds, move |pad, info| {
         let open = *span.lock().unwrap();
         match &mut info.data {
             Some(gst::PadProbeData::Event(e)) => match e.view() {
                 gst::EventView::FlushStart(_) | gst::EventView::FlushStop(_) => {
                     gst::PadProbeReturn::Drop
                 }
+                gst::EventView::Eos(_) if open.is_none() => gst::PadProbeReturn::Drop,
                 gst::EventView::Segment(seg) => {
                     // Stream time: splitmuxsrc's segments start at 1000 s
                     // plus the position.
