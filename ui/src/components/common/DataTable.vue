@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/checkbox'
 
 import type { Column } from './dataTable'
+import { rowNavTarget } from './rowNav'
 
 const props = defineProps<{
   tableId: string
@@ -27,7 +28,12 @@ const props = defineProps<{
   selection?: Selection
 }>()
 
-const emit = defineEmits<{ rowClick: [row: T, event: MouseEvent] }>()
+const emit = defineEmits<{
+  /** A click, or Enter on a focused row. */
+  rowClick: [row: T, event: MouseEvent | KeyboardEvent]
+  /** Focus moved to a row with the arrows, Home or End. */
+  rowNavigate: [row: T]
+}>()
 
 const { columns: columnPrefs } = usePreferences()
 
@@ -128,6 +134,34 @@ function onRowClick(r: T, e: MouseEvent) {
   emit('rowClick', r, e)
 }
 
+const root = ref<HTMLElement>()
+
+/** The row Tab lands on (roving tabindex): the last one focused while shown, else the first. */
+const focusKey = ref<string | null>(null)
+const tabStop = computed(() =>
+  focusKey.value != null && displayedKeys.value.includes(focusKey.value) ? focusKey.value : (displayedKeys.value[0] ?? null),
+)
+
+function onRowKeyDown(r: T, e: KeyboardEvent) {
+  // Keys on a row's own buttons, links and switches are theirs.
+  if (e.target !== e.currentTarget || e.ctrlKey || e.metaKey || e.altKey) return
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    emit('rowClick', r, e)
+    return
+  }
+  const keys = displayedKeys.value
+  const i = rowNavTarget(e.key, keys.indexOf(props.rowKey(r)), keys.length)
+  if (i == null) return
+  e.preventDefault()
+  focusKey.value = keys[i]!
+  root.value?.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(keys[i]!)}"]`)?.focus()
+  emit('rowNavigate', displayedRows.value[i]!)
+}
+
+const ariaSort = (c: Column<T>) =>
+  !c.value ? undefined : sort.value?.id !== c.id ? 'none' : sort.value.dir === 'asc' ? 'ascending' : 'descending'
+
 /** Shift-click would otherwise select the text between clicks. */
 function onRowMouseDown(e: MouseEvent) {
   if (props.selection && e.shiftKey) e.preventDefault()
@@ -135,7 +169,7 @@ function onRowMouseDown(e: MouseEvent) {
 </script>
 
 <template>
-  <div class="rounded-lg border border-border bg-card overflow-x-auto">
+  <div ref="root" class="rounded-lg border border-border bg-card overflow-x-auto">
     <table class="w-full text-xs">
       <thead class="bg-muted/40 text-muted-foreground">
         <tr class="border-b border-border">
@@ -152,6 +186,7 @@ function onRowMouseDown(e: MouseEvent) {
             :key="c.id"
             class="h-8 px-3 font-medium whitespace-nowrap select-none"
             :class="[c.align === 'right' ? 'text-right' : 'text-left', c.headerClass]"
+            :aria-sort="ariaSort(c)"
           >
             <button
               v-if="c.value"
@@ -180,9 +215,17 @@ function onRowMouseDown(e: MouseEvent) {
           :key="rowKey(r)"
           :data-row-key="rowKey(r)"
           :data-state="isSelected(r) ? 'selected' : undefined"
-          :class="cn('border-b border-border/60 last:border-b-0 hover:bg-accent/40 data-[state=selected]:bg-primary/5', rowClass?.(r))"
+          :tabindex="rowKey(r) === tabStop ? 0 : -1"
+          :class="
+            cn(
+              'border-b border-border/60 last:border-b-0 hover:bg-accent/40 data-[state=selected]:bg-primary/5 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring',
+              rowClass?.(r),
+            )
+          "
           @click="onRowClick(r, $event)"
           @mousedown="onRowMouseDown"
+          @keydown="onRowKeyDown(r, $event)"
+          @focusin="focusKey = rowKey(r)"
         >
           <td v-if="selection" class="w-px pl-3 pr-0 py-1.5 align-middle cursor-pointer" @click.stop="onCheck(r, $event)">
             <Checkbox :model-value="isSelected(r)" aria-label="Select row" class="align-middle" />

@@ -51,7 +51,8 @@ const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
 ]
 
 const SHORTCUTS: [string[], string][] = [
-  [['↑', '↓'], 'Select the previous or next recording'],
+  [['↑', '↓'], 'Move to the previous or next recording'],
+  [['Enter'], 'Open or close the recording'],
   [['Space'], 'Play or pause'],
   [[shortcut('Click')], 'Add or remove a recording from the selection'],
   [['Shift', 'Click'], 'Select a range'],
@@ -116,23 +117,14 @@ registerCommands(() =>
 const table = ref<{ displayedRows: RecordingSession[] }>()
 const detail = ref<InstanceType<typeof RecordingDetail>>()
 
-/** Moves the selection up or down the table as shown, keeping the row in view. */
-async function step(by: 1 | -1) {
-  const shown = table.value?.displayedRows ?? []
-  if (!shown.length) return
-  const i = shown.findIndex((s) => key(s) === selectedKey.value)
-  const next = shown[i === -1 ? (by === 1 ? 0 : shown.length - 1) : Math.min(Math.max(i + by, 0), shown.length - 1)]!
-  selectedKey.value = key(next)
-  await nextTick()
-  document.querySelector(`[data-row-key="${CSS.escape(key(next))}"]`)?.scrollIntoView({ block: 'nearest' })
+/** With a recording open, moving through the table opens each row in turn. */
+function onNavigate(s: RecordingSession) {
+  if (selectedKey.value) selectedKey.value = key(s)
 }
 
-// Not on buttons, links or the player: Space and the arrows are theirs there.
+// Not on buttons, links or the player: Space is theirs there.
 useViewKeys((e) => {
-  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-    e.preventDefault()
-    void step(e.key === 'ArrowDown' ? 1 : -1)
-  } else if (e.key === ' ' && detail.value) {
+  if (e.key === ' ' && detail.value) {
     e.preventDefault()
     detail.value.togglePlay()
   } else if (e.key === 'Escape' && selectedKey.value) {
@@ -280,6 +272,7 @@ async function loadOlder() {
             :row-class="(s) => (key(s) === selectedKey ? 'bg-accent/60 cursor-pointer' : 'cursor-pointer')"
             :selection="checked"
             @row-click="select"
+            @row-navigate="onNavigate"
           >
             <template #cell-status="{ row }">
               <span class="flex items-center gap-1.5" :class="row.status === 'active' && 'text-tally font-medium'">
