@@ -850,6 +850,25 @@ impl SourceManager {
             }
     }
 
+    /// Whether anything records or plays out, so the machine mustn't sleep:
+    /// a recording (starting or draining too), a replay buffer, or a channel
+    /// that's playing or sending to an output.
+    pub fn busy(&self) -> bool {
+        !self.sessions.is_empty()
+            || !self.reserved.is_empty()
+            || !self.stopping.is_empty()
+            || self.replays.values().any(Self::recording)
+            || self
+                .outputs
+                .values()
+                .any(|c| c.legs.iter().any(|(_, leg)| leg.is_ok()))
+            || self
+                .sources
+                .iter()
+                .filter_map(|s| s.playout())
+                .any(|p| p.status().state != TransportState::Idle)
+    }
+
     /// A recording or replay buffer uses the source.
     fn in_use(&self, id: &str) -> bool {
         self.is_recording(id) || self.replays.contains_key(id)

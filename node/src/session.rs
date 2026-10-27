@@ -23,6 +23,9 @@ const EOS_TIMEOUT: Duration = Duration::from_secs(10);
 const RECOVERY_INTERVAL: Duration = Duration::from_secs(5);
 const RECOVERY_MAX_INTERVAL: Duration = Duration::from_secs(30);
 
+/// How often [`spawn_power_keeper`] checks whether the node is busy.
+const POWER_INTERVAL: Duration = Duration::from_secs(10);
+
 /// Drain a stopping session's legs, persist and broadcast the outcome, and
 /// answer every request waiting on the stop. `source_error`: the session ends
 /// because its monitor failed.
@@ -301,6 +304,19 @@ pub fn spawn_clock_follower(state: Arc<AppState>) {
                 }
             }
             state.emit(&WsEvent::NodeUpdated);
+        }
+    });
+}
+
+/// Keep the machine awake while it records or plays out. Polled, as many
+/// paths start and stop those; idle sleep takes minutes, so a few seconds'
+/// lag doesn't matter.
+pub fn spawn_power_keeper(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            let busy = state.source_manager.read().await.busy();
+            crate::power::keep_system_awake(busy);
+            tokio::time::sleep(POWER_INTERVAL).await;
         }
     });
 }

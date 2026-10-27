@@ -17,6 +17,7 @@ mod display;
 mod logs;
 mod pipeline;
 mod plugins;
+mod power;
 #[cfg(target_os = "windows")]
 mod registry;
 mod service;
@@ -283,6 +284,7 @@ async fn run(
     session::spawn_leg_failure_reporter(Arc::clone(&state), leg_failure_rx);
     session::spawn_leg_file_recorder(Arc::clone(&state), leg_file_rx);
     session::spawn_quit_on_signal(Arc::clone(&state));
+    session::spawn_power_keeper(Arc::clone(&state));
     update::spawn_checker(Arc::clone(&state));
     // Without a menu bar, nothing else signs a browser in: print a link.
     let print_sign_in_link = tray_actions.is_none();
