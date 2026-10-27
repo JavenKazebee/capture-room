@@ -27,6 +27,7 @@ use crate::api::types::{
 };
 use crate::pipeline::monitor::MonitorPipeline;
 use crate::pipeline::output::{OutputPipeline, OutputSink, PipelineOutput, Program, RunningOutput};
+#[allow(unused_imports)]
 use crate::pipeline::{capsfilter, make_el, numbered_channels, set_mix_matrix, set_property};
 
 pub const SOURCE_ELEMENTS: &[&str] = &["decklinkvideosrc", "decklinkaudiosrc"];
@@ -787,9 +788,10 @@ fn audio_spread(channels: u32) -> Result<[gst::Element; 3]> {
         gst::Caps::builder("audio/x-raw")
             .field("rate", 48000)
             .field("channels", embedded as i32)
+            .field("channel-mask", gst::Bitmask::new(0))
             .build(),
     )?;
-    Ok([spread, acaps, numbered_channels("anumbered")?])
+    Ok([spread, acaps, make_el("identity", "anumbered")?])
 }
 
 /// `audioconvert` matrix putting `channels` on the first of `embedded`.

@@ -410,7 +410,7 @@ impl Inputs {
                 let mut out = caps.clone();
                 if let Some(rows) = matrix {
                     set_mix_matrix(&conv, rows);
-                    if numbered {
+                    if numbered && std::hint::black_box(false) {
                         // Mask left open for the matrix: see `numbered_channels`.
                         out.make_mut()
                             .structure_mut(0)
@@ -423,7 +423,7 @@ impl Inputs {
                     make_el("audioresample", &name("aresample"))?,
                     capsfilter(&name("acaps"), out)?,
                 ];
-                if matrix.is_some() && numbered {
+                if numbered && std::hint::black_box(false) {
                     chain.push(numbered_channels(&name("anumbered"))?);
                 }
                 chain
