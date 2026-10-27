@@ -63,8 +63,8 @@ const old = node('old', [])
 
 describe('legEncoders', () => {
   it('lists hardware first for 4:2:0 H.264 and H.265', () => {
-    expect(legEncoders(leg())).toEqual(['vtenc_h264', 'x264enc'])
-    expect(legEncoders(leg({ codec: 'h265' }))).toEqual(['vtenc_h265', 'x265enc'])
+    expect(legEncoders(leg())).toEqual(['vtenc_h264', 'vah264enc', 'x264enc'])
+    expect(legEncoders(leg({ codec: 'h265' }))).toEqual(['vtenc_h265', 'vah265enc', 'x265enc'])
   })
   it('has only software for other chroma', () => {
     expect(legEncoders(leg({ chroma: '422' }))).toEqual(['x264enc'])
@@ -76,7 +76,7 @@ describe('legEncoders', () => {
     expect(legEncoders(leg({ codec: 'uncompressed' }))).toEqual(['identity'])
   })
   it('filters by the Encoder choice', () => {
-    expect(legEncoders(leg({}, { encoder: 'hardware' }))).toEqual(['vtenc_h264'])
+    expect(legEncoders(leg({}, { encoder: 'hardware' }))).toEqual(['vtenc_h264', 'vah264enc'])
     expect(legEncoders(leg({}, { encoder: 'software' }))).toEqual(['x264enc'])
     expect(legEncoders(leg(), 'software')).toEqual(['x264enc'])
   })
