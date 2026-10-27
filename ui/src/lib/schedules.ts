@@ -1,10 +1,8 @@
-import { plural } from '@/lib/format'
+import { pad, plural } from '@/lib/format'
 import { WEEKDAYS } from '@/stores/schedules'
 import type { ScheduleAction } from '@/types/generated/ScheduleAction'
 import type { ScheduleDto } from '@/types/generated/ScheduleDto'
 import type { ScheduleInput } from '@/types/generated/ScheduleInput'
-
-const pad = (n: number) => String(n).padStart(2, '0')
 
 /** `HH:MM` plus `secs`, wrapping past midnight. */
 export function addToTime(time: string, secs: number): string {

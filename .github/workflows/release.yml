@@ -30,7 +30,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          sparse-checkout: node/Cargo.toml
+          sparse-checkout: |
+            node/Cargo.toml
+            ui/package.json
           sparse-checkout-cone-mode: false
 
       # Checked before any build so a mistagged release fails in seconds.
@@ -40,6 +42,11 @@ jobs:
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' node/Cargo.toml | head -1)
           if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
             echo "::error::Tag $GITHUB_REF_NAME doesn't match node/Cargo.toml version $version"
+            exit 1
+          fi
+          ui=$(jq -r .version ui/package.json)
+          if [ "$ui" != "$version" ]; then
+            echo "::error::ui/package.json version $ui doesn't match node/Cargo.toml version $version"
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"

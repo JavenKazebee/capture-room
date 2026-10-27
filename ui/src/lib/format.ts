@@ -1,17 +1,18 @@
-const pad = (n: number) => String(n).padStart(2, '0')
+/** Two digits: `05`. */
+export const pad = (n: number) => String(n).padStart(2, '0')
 
 /** `1 feed`, `2 feeds`. */
 export function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`
 }
 
-/** Elapsed time as `MM:SS`, or `HH:MM:SS` from an hour on. */
 /** A TLS key's fingerprint in groups of four, for reading aloud and comparing; `short` gives the first two. */
 export function formatFingerprint(fp: string, short = false): string {
   const groups = fp.toUpperCase().match(/.{1,4}/g) ?? []
   return (short ? groups.slice(0, 2) : groups).join(' ')
 }
 
+/** Elapsed time as `MM:SS`, or `HH:MM:SS` from an hour on. */
 export function formatDuration(ms: number): string {
   const elapsed = Math.max(0, Math.floor(ms / 1000))
   const h = Math.floor(elapsed / 3600)

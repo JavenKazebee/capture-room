@@ -1,3 +1,4 @@
+import { pad } from '@/lib/format'
 import type { ChromaSubsampling } from '@/types/generated/ChromaSubsampling'
 import type { Container } from '@/types/generated/Container'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
@@ -246,8 +247,6 @@ export function applyPattern(t: string, path: string, multipleOutputs: boolean) 
   const rel = multipleOutputs ? `${path}_{output}` : path
   return `${root === '/' ? '' : root}/${rel}${EXT_SUFFIX}`
 }
-
-const pad = (n: number) => String(n).padStart(2, '0')
 
 /** A name made safe as one path component; mirrors `sanitize` in `profile.rs`. */
 function sanitize(value: string) {

@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { Circle, MonitorPlay, Trash2 } from '@lucide/vue'
 import { errorMessage, sourceKey } from '@/composables/useApi'
+import { pad } from '@/lib/format'
 import { addToTime, monthlyFrom, secondsBetween, WEEKDAY_NAMES, weekOfMonthLabel } from '@/lib/schedules'
 import { useNodesStore } from '@/stores/nodes'
 import { usePlayoutStore } from '@/stores/playout'
@@ -38,7 +39,6 @@ type Row = RecordRow | PlayoutRow
 /** The start item meaning "where it's cued" (a Select can't hold ''). */
 const CUED = 'cued'
 
-const pad = (n: number) => String(n).padStart(2, '0')
 const today = new Date()
 const todayDate = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
 // Monday is bit 0, as on the server.

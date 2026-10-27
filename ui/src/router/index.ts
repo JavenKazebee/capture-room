@@ -83,5 +83,10 @@ export const router = createRouter({
     { path: '/presets', redirect: '/setup/presets' },
     { path: '/nodes', redirect: '/setup/nodes' },
     { path: '/settings', redirect: '/setup/settings' },
+    {
+      path: '/:pathMatch(.*)*',
+      name: 'not-found',
+      component: () => import('@/views/NotFoundView.vue'),
+    },
   ],
 })
