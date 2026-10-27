@@ -22,6 +22,7 @@ pub mod live;
 pub mod manager;
 pub mod ndi;
 mod player;
+pub mod portal;
 pub mod privacy;
 pub mod stream;
 pub mod test;

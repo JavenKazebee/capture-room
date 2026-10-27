@@ -321,6 +321,21 @@ pub fn spawn_power_keeper(state: Arc<AppState>) {
     });
 }
 
+/// Save portal screen choices when they change: each start of a portal
+/// screen renews its restore token, off any async context.
+pub fn spawn_screencast_saver(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let devices = state.source_manager.read().await.devices().clone();
+        let changed = devices.screencasts.watch();
+        loop {
+            changed.notified().await;
+            if let Err(e) = db::screencasts_set(&state.db, &devices.screencasts.all()).await {
+                error!(error = %e, "save screen choices");
+            }
+        }
+    });
+}
+
 /// Report legs that fail mid-recording as they happen. Other legs keep
 /// recording; once all have failed the session is stopped as `error`.
 pub fn spawn_leg_failure_reporter(

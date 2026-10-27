@@ -157,6 +157,13 @@ export const useSourcesStore = defineStore('sources', () => {
     return updated
   }
 
+  /** Open the desktop's screen picker on the node's own display, for a portal screen source. */
+  async function chooseScreen(nodeId: string, id: string) {
+    await nodeApi(nodeId)(`/configured-sources/${id}/screen`, { method: 'POST' })
+    toast.info("Pick a screen in the dialog on the node's display")
+    await refreshNode(nodeId)
+  }
+
   async function deleteSource(nodeId: string, id: string) {
     await nodeApi(nodeId)(`/configured-sources/${id}`, { method: 'DELETE' })
     await refreshNode(nodeId)
@@ -215,6 +222,7 @@ export const useSourcesStore = defineStore('sources', () => {
     getConfig,
     createSource,
     updateSource,
+    chooseScreen,
     deleteSource,
     listFiles,
     alsoOn,

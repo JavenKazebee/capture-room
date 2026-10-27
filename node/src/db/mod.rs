@@ -14,6 +14,8 @@ use std::str::FromStr;
 use std::time::Duration;
 use tracing::info;
 
+use crate::sources::portal::Choice;
+
 use crate::api::types::{
     BenchmarkRunDto, BenchmarkStatus, ClipEnd, ConfiguredSourceDto, DecklinkProfile, MediaItemDto,
     MonitorSettingsDto, NdiConnect, NdiSubscriptionsInput, PresetDto, PresetOutputInput,
@@ -598,6 +600,7 @@ pub async fn ndi_subscriptions_set(pool: &SqlitePool, subs: &NdiSubscriptionsInp
 }
 
 const DECKLINK_PROFILES: &str = "decklink_profiles";
+const SCREENCASTS: &str = "screencasts";
 
 /// Each Decklink card's profile, by card key (cards left at the default
 /// aren't stored).
@@ -613,6 +616,18 @@ pub async fn decklink_profiles_set(
     profiles: &HashMap<String, DecklinkProfile>,
 ) -> Result<()> {
     config_set(pool, DECKLINK_PROFILES, &serde_json::to_string(profiles)?).await
+}
+
+/// The screen chosen for each portal screen source, by source id.
+pub async fn screencasts_get(pool: &SqlitePool) -> Result<HashMap<String, Choice>> {
+    Ok(config_get(pool, SCREENCASTS)
+        .await?
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default())
+}
+
+pub async fn screencasts_set(pool: &SqlitePool, choices: &HashMap<String, Choice>) -> Result<()> {
+    config_set(pool, SCREENCASTS, &serde_json::to_string(choices)?).await
 }
 
 /// Each source with a replay buffer, and its config.

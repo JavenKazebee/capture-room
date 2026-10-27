@@ -4,8 +4,8 @@ import type { VideoFormat } from "./VideoFormat";
 
 /**
  * A capture device on the node (a webcam, an HDMI/USB capture card, or a
- * screen; on Linux only in an X11 session), with audio from another device
- * or silence.
+ * screen; under Wayland, `screen:portal`, picked on the node's display), with
+ * audio from another device or silence.
  */
 export type DeviceSourceConfig = { 
 /**

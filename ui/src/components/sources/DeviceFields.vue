@@ -1,6 +1,11 @@
+<script lang="ts">
+/** The device key of a Wayland screen, picked per source on the node's display. */
+export const PORTAL_SCREEN = 'screen:portal'
+</script>
+
 <script setup lang="ts">
 import { computed } from 'vue'
-import { RefreshCw } from '@lucide/vue'
+import { Monitor, RefreshCw } from '@lucide/vue'
 import type { DeviceSourceConfig } from '@/types/generated/DeviceSourceConfig'
 import type { DeviceDto } from '@/types/generated/DeviceDto'
 import type { DeviceMode } from '@/types/generated/DeviceMode'
@@ -16,8 +21,10 @@ const props = defineProps<{
   devices: DeviceDto[]
   loading: boolean
   error: string | null
+  /** The source is saved with a portal screen, so its screen can be chosen. */
+  screenSaved?: boolean
 }>()
-const emit = defineEmits<{ refresh: [] }>()
+const emit = defineEmits<{ refresh: []; chooseScreen: [] }>()
 
 const cfg = defineModel<DeviceSourceConfig>({ required: true })
 
@@ -109,7 +116,26 @@ const mode = computed({
       No cameras or capture cards on this node. Plug one in and refresh.
     </p>
 
-    <FormField v-if="current" label="Capture format">
+    <div v-if="cfg.video_device === PORTAL_SCREEN" class="-mt-1.5 flex flex-col gap-2">
+      <p class="text-xs text-muted-foreground">
+        The desktop asks which screen to show in a dialog on the node's own display, so someone has to be at it.
+        It remembers the answer across restarts.
+      </p>
+      <Button
+        v-if="screenSaved"
+        type="button"
+        variant="outline"
+        size="sm"
+        class="self-start"
+        @click="emit('chooseScreen')"
+      >
+        <Monitor class="size-3.5" />
+        Choose screen
+      </Button>
+      <p v-else class="text-xs text-muted-foreground">Save the source, then choose its screen here.</p>
+    </div>
+
+    <FormField v-else-if="current" label="Capture format">
       <OptionSelect v-model="mode" :options="modeOptions" />
     </FormField>
 
