@@ -69,23 +69,9 @@ jobs:
         with:
           tool: cargo-about
 
-      # The updater only installs archives signed with the release key
-      # (scripts/release-key.pub); its secret half is the MINISIGN_KEY secret.
-      - name: Release key
-        env:
-          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
-        run: |
-          brew install minisign
-          if [ -z "$MINISIGN_KEY" ]; then
-            if [ "$GITHUB_REF_TYPE" = tag ]; then
-              echo "::error::The MINISIGN_KEY secret isn't set: a release must be signed."
-              exit 1
-            fi
-            echo "::warning::MINISIGN_KEY isn't set: this build is unsigned and nodes won't update to it."
-            exit 0
-          fi
-          printf '%s\n' "$MINISIGN_KEY" > "$RUNNER_TEMP/release.key"
-          echo "MINISIGN_KEY_FILE=$RUNNER_TEMP/release.key" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/release-key
+        with:
+          key: ${{ secrets.MINISIGN_KEY }}
 
       # package.sh's latest.json is for local tests only; publish writes the
       # release's, once every platform has built.
@@ -114,10 +100,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Uncached: releases are rare.
-      - name: Install GStreamer
+      # As in CI, which fills the cache.
+      - name: GStreamer
+        uses: ./.github/actions/gstreamer-linux
         timeout-minutes: 20
-        run: scripts/linux/gstreamer.sh
 
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
@@ -134,24 +120,9 @@ jobs:
         with:
           tool: cargo-about
 
-      # As for macOS: the updater only installs archives signed with the
-      # release key.
-      - name: Release key
-        env:
-          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          sudo -E apt-get install -y --no-install-recommends minisign
-          if [ -z "$MINISIGN_KEY" ]; then
-            if [ "$GITHUB_REF_TYPE" = tag ]; then
-              echo "::error::The MINISIGN_KEY secret isn't set: a release must be signed."
-              exit 1
-            fi
-            echo "::warning::MINISIGN_KEY isn't set: this build is unsigned and nodes won't update to it."
-            exit 0
-          fi
-          printf '%s\n' "$MINISIGN_KEY" > "$RUNNER_TEMP/release.key"
-          echo "MINISIGN_KEY_FILE=$RUNNER_TEMP/release.key" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/release-key
+        with:
+          key: ${{ secrets.MINISIGN_KEY }}
 
       - name: Package
         env:
@@ -195,36 +166,14 @@ jobs:
 
       # The official MSVC build, built against and bundled.
       - name: GStreamer
-        shell: pwsh
-        run: scripts/windows/gstreamer.ps1 $env:GST_VERSION $env:GST_DIR
+        uses: ./.github/actions/gstreamer-windows
+        with:
+          version: ${{ env.GST_VERSION }}
+          dir: ${{ env.GST_DIR }}
 
-      # As in the macOS job. minisign from its author's release.
-      - name: Release key
-        shell: pwsh
-        env:
-          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
-          MINISIGN_VERSION: "0.12"
-        run: |
-          $zip = Join-Path $env:RUNNER_TEMP minisign.zip
-          $url = "https://github.com/jedisct1/minisign/releases/download/$env:MINISIGN_VERSION/minisign-$env:MINISIGN_VERSION-win64.zip"
-          curl.exe -fsSL --retry 3 -o $zip $url
-          if ($LASTEXITCODE) { throw "download failed: $url" }
-          Expand-Archive $zip (Join-Path $env:RUNNER_TEMP minisign)
-          # The zip has an aarch64 and an x86_64 build side by side.
-          $exe = Join-Path $env:RUNNER_TEMP minisign\minisign-win64\x86_64\minisign.exe
-          if (-not (Test-Path $exe)) { throw "no x86_64 minisign.exe in $zip" }
-          Split-Path $exe >> $env:GITHUB_PATH
-          if (-not $env:MINISIGN_KEY) {
-            if ($env:GITHUB_REF_TYPE -eq 'tag') {
-              Write-Output "::error::The MINISIGN_KEY secret isn't set: a release must be signed."
-              exit 1
-            }
-            Write-Output "::warning::MINISIGN_KEY isn't set: this build is unsigned and nodes won't update to it."
-            exit 0
-          }
-          $key = Join-Path $env:RUNNER_TEMP release.key
-          [IO.File]::WriteAllText($key, "$env:MINISIGN_KEY`n")
-          "MINISIGN_KEY_FILE=$key" >> $env:GITHUB_ENV
+      - uses: ./.github/actions/release-key
+        with:
+          key: ${{ secrets.MINISIGN_KEY }}
 
       - name: Package
         shell: pwsh
@@ -242,10 +191,10 @@ jobs:
           retention-days: 7
 
   # Every platform job: needs: version; checks out, builds the UI, signs
-  # capture-room-<os>-<arch>.tar.gz (+ .sha256, and .minisig from MINISIGN_KEY,
-  # refusing an unsigned tag build like macOS does); uploads dist/* as the
-  # artifact capture-room-<os>; and is added to publish's needs. File names must not clash across platforms: the
-  # artifacts are merged into one folder.
+  # capture-room-<os>-<arch>.tar.gz (+ .sha256, and .minisig with the
+  # release-key action); uploads dist/* as the artifact capture-room-<os>; and
+  # is added to publish's needs. File names must not clash across platforms:
+  # the artifacts are merged into one folder.
 
   publish:
     name: Publish

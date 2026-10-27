@@ -1,0 +1,59 @@
+name: Release key
+description: >-
+  Installs minisign and, from the release key, sets MINISIGN_KEY_FILE for the
+  package scripts. The updater only installs archives signed with the release
+  key (scripts/release-key.pub). Without one, a tag build fails and any other
+  build goes on unsigned.
+
+inputs:
+  key:
+    description: The release key's secret half (the MINISIGN_KEY secret).
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Install minisign
+      if: runner.os == 'macOS'
+      shell: bash
+      run: brew install minisign
+
+    - name: Install minisign
+      if: runner.os == 'Linux'
+      shell: bash
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: sudo -E apt-get install -y --no-install-recommends minisign
+
+    # From its author's release.
+    - name: Install minisign
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        MINISIGN_VERSION: "0.12"
+      run: |
+        $zip = Join-Path $env:RUNNER_TEMP minisign.zip
+        $url = "https://github.com/jedisct1/minisign/releases/download/$env:MINISIGN_VERSION/minisign-$env:MINISIGN_VERSION-win64.zip"
+        curl.exe -fsSL --retry 3 -o $zip $url
+        if ($LASTEXITCODE) { throw "download failed: $url" }
+        Expand-Archive $zip (Join-Path $env:RUNNER_TEMP minisign)
+        # The zip has an aarch64 and an x86_64 build side by side.
+        $exe = Join-Path $env:RUNNER_TEMP minisign\minisign-win64\x86_64\minisign.exe
+        if (-not (Test-Path $exe)) { throw "no x86_64 minisign.exe in $zip" }
+        Split-Path $exe >> $env:GITHUB_PATH
+
+    - name: Key file
+      shell: bash
+      env:
+        MINISIGN_KEY: ${{ inputs.key }}
+      run: |
+        if [ -z "$MINISIGN_KEY" ]; then
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "::error::The MINISIGN_KEY secret isn't set: a release must be signed."
+            exit 1
+          fi
+          echo "::warning::MINISIGN_KEY isn't set: this build is unsigned and nodes won't update to it."
+          exit 0
+        fi
+        printf '%s\n' "$MINISIGN_KEY" > "$RUNNER_TEMP/release.key"
+        echo "MINISIGN_KEY_FILE=$RUNNER_TEMP/release.key" >> "$GITHUB_ENV"

@@ -1,0 +1,33 @@
+name: GStreamer on Linux
+description: >-
+  Installs the GStreamer packages in scripts/linux/gstreamer.sh, with the .debs
+  kept in the Actions cache. Give the step a timeout-minutes: composite steps
+  can't have their own.
+
+runs:
+  using: composite
+  steps:
+    # The .debs are cached and apt still installs them, so nothing is
+    # skipped the way cache-apt-pkgs-action's restored files were (the
+    # linker couldn't find some libraries).
+    - name: Restore apt packages
+      id: apt
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ runner.temp }}/apt-archives
+        key: apt-${{ runner.os }}-${{ hashFiles('scripts/linux/gstreamer.sh') }}
+        restore-keys: apt-${{ runner.os }}-
+
+    # About a minute, or seconds from the cache.
+    - name: Install GStreamer
+      shell: bash
+      run: scripts/linux/gstreamer.sh "$RUNNER_TEMP/apt-archives"
+
+    # Saved here rather than at the end of the job, which only saves when
+    # every later step passes.
+    - name: Save apt packages
+      if: steps.apt.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ runner.temp }}/apt-archives
+        key: ${{ steps.apt.outputs.cache-primary-key }}

@@ -1,0 +1,44 @@
+name: GStreamer on Windows
+description: >-
+  Installs the official GStreamer MSVC build with scripts/windows/gstreamer.ps1
+  (cached), and puts its bin, which has pkg-config and the DLLs the tests load,
+  on PATH and its pkg-config files on PKG_CONFIG_PATH.
+
+inputs:
+  version:
+    description: The GStreamer version, e.g. 1.28.8.
+    required: true
+  dir:
+    description: >-
+      Where to install it. Not under Program Files: a space in the path breaks
+      the flags pkg-config prints.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Cache GStreamer
+      uses: actions/cache@v6
+      with:
+        path: ${{ inputs.dir }}
+        key: gstreamer-windows-${{ inputs.version }}-${{ hashFiles('scripts/windows/gstreamer.ps1') }}
+
+    # Does nothing when the cache restored this version.
+    - name: Install GStreamer
+      shell: pwsh
+      env:
+        GST_VERSION: ${{ inputs.version }}
+        GST_DIR: ${{ inputs.dir }}
+      run: scripts/windows/gstreamer.ps1 $env:GST_VERSION $env:GST_DIR
+
+    - name: Point the build at GStreamer
+      shell: pwsh
+      env:
+        GST_DIR: ${{ inputs.dir }}
+      run: |
+        $env:PATH = "$env:GST_DIR\bin;$env:PATH"
+        $env:PKG_CONFIG_PATH = "$env:GST_DIR\lib\pkgconfig"
+        "$env:GST_DIR\bin" >> $env:GITHUB_PATH
+        "PKG_CONFIG_PATH=$env:PKG_CONFIG_PATH" >> $env:GITHUB_ENV
+        (Get-Command pkg-config).Source
+        pkg-config --modversion gstreamer-1.0 gstreamer-webrtc-1.0 gstreamer-rtsp-server-1.0
