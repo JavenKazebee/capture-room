@@ -1,25 +1,23 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useClipboard, useStorage } from '@vueuse/core'
+import { useStorage } from '@vueuse/core'
 import { useSecondClock } from '@/composables/useSecondClock'
+import { useRecordingPlayer } from '@/composables/useRecordingPlayer'
 import { toast } from 'vue-sonner'
-import { ChevronRight, Download, ListPlus, Play, Share2, Trash2, X } from '@lucide/vue'
-import { useRouter } from 'vue-router'
-import { recordingFileUrl } from '@/composables/useApi'
+import { ChevronRight, Play, Trash2, X } from '@lucide/vue'
 import { clockTimeFine, dateTime, elapsedMs, formatDuration, formatTimeRange, plural } from '@/lib/format'
 import { CODECS, CONTAINERS } from '@/lib/codecs'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
 import { outputFiles, previewOutput, useRecordingsStore, type RecordingSession } from '@/stores/recordings'
-import { usePlayoutStore } from '@/stores/playout'
 import type { SessionAudio } from '@/types/generated/SessionAudio'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
-import CopyButton from '@/components/common/CopyButton.vue'
 import KeyValueList from '@/components/common/KeyValueList.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
+import RecordingOutputs from './RecordingOutputs.vue'
 
 const props = defineProps<{ session: RecordingSession }>()
 defineEmits<{ close: [] }>()
@@ -27,108 +25,28 @@ defineEmits<{ close: [] }>()
 const recordings = useRecordingsStore()
 const nodes = useNodesStore()
 const now = useSecondClock()
-const clipboard = useClipboard({ legacy: true })
 
 const s = computed(() => props.session)
 const live = computed(() => s.value.status === 'active')
 
-/** The file playing, by path, since deleting a file shifts the indexes after it. */
-const playing = ref<{ output: number; path: string } | null>(initialPlaying())
-function initialPlaying() {
-  const output = previewOutput(props.session)
-  const path = output === -1 ? undefined : outputFiles(props.session, output)[0]
-  return path === undefined ? null : { output, path }
-}
-/** The playing file's index in its output, `-1` once it's been deleted. */
-const playingFile = computed(() =>
-  playing.value ? (outputs.value[playing.value.output]?.files.indexOf(playing.value.path) ?? -1) : -1,
-)
-const playingDeleted = computed(() => !!playing.value && playingFile.value === -1)
-const playError = ref(false)
-const video = ref<HTMLVideoElement>()
-/** Starts playback as soon as a file loads — only once someone picks a file, not on open. */
-const autoplay = ref(false)
+const AUDIO: Record<SessionAudio, string> = { pcm: 'PCM', aac: 'AAC', opus: 'Opus' }
 
-const playingUrl = computed(() =>
-  playing.value && !live.value && playingFile.value !== -1
-    ? recordingFileUrl(s.value.node_id, s.value.id, playing.value.output, playingFile.value)
-    : null,
-)
-
-/** What the player shows, for the caption under it. */
-const playingCaption = computed(() => {
-  if (!playingUrl.value || !playing.value) return null
-  const o = outputs.value[playing.value.output]
-  if (!o) return null
-  return {
-    output: o.name,
-    file: fileName(playing.value.path),
-    part: o.files.length > 1 ? `${playingFile.value + 1} of ${o.files.length}` : null,
-  }
-})
-
-function play(output: number, file: number) {
-  if (!canPlay(output)) return
-  if (isPlaying(output, file) && video.value && !playError.value) {
-    // Already loaded: play it from the start.
-    video.value.currentTime = 0
-    void video.value.play()
-    return
-  }
-  const path = outputs.value[output]?.files[file]
-  if (path === undefined) return
-  playing.value = { output, path }
-  playError.value = false
-  autoplay.value = true
-}
-
-const isPlaying = (output: number, file: number) => !live.value && playing.value?.output === output && playingFile.value === file
-
-const canPlay = (output: number) => !live.value && !!s.value.outputs[output]?.playable
-
-/** Plays or pauses the loaded file, or starts the preview file when nothing's loaded yet. */
-function togglePlay() {
-  if (video.value && !playError.value) {
-    if (video.value.paused) void video.value.play()
-    else video.value.pause()
-    return
-  }
-  const output = previewOutput(s.value)
-  if (output !== -1) play(output, 0)
-}
-defineExpose({ togglePlay })
-
-const playout = usePlayoutStore()
-const router = useRouter()
-
-/** Adds a file to its node's media library, for playing out from Playback. */
-async function addToMedia(path: string) {
-  try {
-    const item = await playout.addMedia(s.value.node_id, path, s.value.id)
-    toast.success(`Added ${item.name} to the media library`, {
-      action: { label: 'Open Playback', onClick: () => router.push('/playback') },
-    })
-  } catch (e) {
-    notifyError('Could not add the file to the media library', e, s.value.node_id)
-  }
-}
-
-/** Shares a file's download link through the OS share sheet, or copies it where there isn't one. */
-async function share(output: number, file: number, path: string) {
-  const url = new URL(recordingFileUrl(s.value.node_id, s.value.id, output, file, true), window.location.origin).href
-  if (navigator.share) {
-    try {
-      await navigator.share({ title: fileName(path), url })
-      return
-    } catch (e) {
-      if (e instanceof DOMException && e.name === 'AbortError') return
-      // Fall through to copying.
+const outputs = computed(() =>
+  s.value.output_paths.map((path, i) => {
+    const o = s.value.outputs[i]
+    return {
+      name: o?.name ?? `Output ${i + 1}`,
+      format: o ? `${CODECS[o.codec]} · ${AUDIO[o.audio]} · ${CONTAINERS[o.container]}` : null,
+      files: outputFiles(s.value, i),
+      dropped: s.value.dropped_frames[i] ?? 0,
+      path,
     }
-  }
-  await clipboard.copy(url)
-  if (clipboard.copied.value) toast.success('Download link copied', { description: 'Anyone who can reach this Capture Room can open it.' })
-  else toast.error('Could not copy the link', { description: url })
-}
+  }),
+)
+
+const player = useRecordingPlayer(s, outputs)
+const { playError, autoplay, playingUrl, playingCaption, playingDeleted, canPlay, isPlaying, play, togglePlay } = player
+defineExpose({ togglePlay })
 
 /** Why there's no preview, when there isn't one. */
 const noPreview = computed(() => {
@@ -188,22 +106,6 @@ function clockLabel(domain: string, synchronized: boolean) {
   return synchronized ? `${what}, synchronized start` : what
 }
 
-const AUDIO: Record<SessionAudio, string> = { pcm: 'PCM', aac: 'AAC', opus: 'Opus' }
-
-const outputs = computed(() =>
-  s.value.output_paths.map((path, i) => {
-    const o = s.value.outputs[i]
-    return {
-      name: o?.name ?? `Output ${i + 1}`,
-      format: o ? `${CODECS[o.codec]} · ${AUDIO[o.audio]} · ${CONTAINERS[o.container]}` : null,
-      files: outputFiles(s.value, i),
-      dropped: s.value.dropped_frames[i] ?? 0,
-      path,
-    }
-  }),
-)
-
-const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path
 
 const confirmRemove = ref(false)
 const confirmDeleteAll = ref(false)
@@ -229,26 +131,6 @@ async function deleteAll() {
     notifyError('Could not delete every file. The recording stays, listing those left', e, s.value.node_id)
   }
 }
-
-/** The single file awaiting confirmation to delete. */
-const deleting = ref<{ output: number; file: number; path: string } | null>(null)
-const confirmDeleteFile = computed({
-  get: () => deleting.value !== null,
-  set: (open) => {
-    if (!open) deleting.value = null
-  },
-})
-
-async function deleteFile() {
-  const d = deleting.value
-  if (!d) return
-  try {
-    await recordings.deleteFile(s.value.node_id, s.value.id, d.output, d.file, d.path)
-    toast.success(`Deleted ${fileName(d.path)}`)
-  } catch (e) {
-    notifyError(`Could not delete ${fileName(d.path)}`, e, s.value.node_id)
-  }
-}
 </script>
 
 <template>
@@ -257,7 +139,7 @@ async function deleteFile() {
       <div class="bg-black aspect-video grid place-items-center">
         <video
           v-if="playingUrl && !playError"
-          ref="video"
+          :ref="player.video"
           :key="playingUrl"
           :src="playingUrl"
           :autoplay="autoplay"
@@ -330,91 +212,13 @@ async function deleteFile() {
       <div class="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
         <p v-if="s.error_message" class="text-xs text-destructive break-words">{{ s.error_message }}</p>
 
-        <section class="space-y-1.5">
-          <h3 class="section-title">Outputs</h3>
-          <div v-for="(o, i) in outputs" :key="i" class="rounded-md border border-border">
-            <div class="flex items-baseline gap-2 px-2.5 py-1.5 border-b border-border/60">
-              <span class="text-xs font-medium">{{ o.name }}</span>
-              <span v-if="o.format" class="text-[11px] text-muted-foreground truncate">{{ o.format }}</span>
-              <div class="flex-1" />
-              <span v-if="o.dropped" class="num text-[11px] text-warning shrink-0" title="Video frames dropped because this output's encoder couldn't keep up">
-                {{ o.dropped.toLocaleString() }} dropped
-              </span>
-            </div>
-            <ul class="divide-y divide-border/60">
-              <li
-                v-for="(f, j) in o.files"
-                :key="f"
-                class="flex items-center gap-1 px-2.5 py-1 text-xs"
-                :class="[
-                  canPlay(i) && 'cursor-pointer hover:bg-accent/40',
-                  isPlaying(i, j) && 'bg-accent/60',
-                ]"
-                :role="canPlay(i) ? 'button' : undefined"
-                :tabindex="canPlay(i) ? 0 : undefined"
-                :aria-label="canPlay(i) ? `Play ${fileName(f)}` : undefined"
-                :aria-current="isPlaying(i, j) || undefined"
-                :title="!live && !canPlay(i) ? 'This format can\'t play in a browser. Download it to watch.' : undefined"
-                @click="play(i, j)"
-                @keydown.enter.self.prevent="play(i, j)"
-                @keydown.space.self.prevent="play(i, j)"
-              >
-                <span class="w-3.5 shrink-0 grid place-items-center">
-                  <Play v-if="isPlaying(i, j)" class="size-3 text-primary fill-current" />
-                  <Play v-else-if="canPlay(i)" class="size-3 text-muted-foreground/50" />
-                </span>
-                <span
-                  class="num truncate flex-1"
-                  :class="isPlaying(i, j) ? 'text-foreground' : canPlay(i) || live ? 'text-muted-foreground' : 'text-muted-foreground/60'"
-                  :title="f"
-                >
-                  {{ fileName(f) }}
-                </span>
-                <span v-if="isPlaying(i, j)" class="text-[10px] font-medium uppercase tracking-wider text-primary shrink-0 mr-1">Playing</span>
-                <CopyButton :value="f" size="md" :label="`Copy path on ${nodes.labelOf(s.node_id)}`" />
-                <Tooltip v-if="!live">
-                  <TooltipTrigger as-child>
-                    <button class="icon-btn" :aria-label="`Add ${fileName(f)} to the media library`" @click.stop="addToMedia(f)"><ListPlus class="size-3.5" /></button>
-                  </TooltipTrigger>
-                  <TooltipContent>Add to media library (for Playback)</TooltipContent>
-                </Tooltip>
-                <Tooltip v-if="!live">
-                  <TooltipTrigger as-child>
-                    <button class="icon-btn" :aria-label="`Share ${fileName(f)}`" @click.stop="share(i, j, f)"><Share2 class="size-3.5" /></button>
-                  </TooltipTrigger>
-                  <TooltipContent>Share download link</TooltipContent>
-                </Tooltip>
-                <Tooltip v-if="!live">
-                  <TooltipTrigger as-child>
-                    <a
-                      class="icon-btn"
-                      :href="recordingFileUrl(s.node_id, s.id, i, j, true)"
-                      :aria-label="`Download ${fileName(f)}`"
-                      download
-                      @click.stop
-                    >
-                      <Download class="size-3.5" />
-                    </a>
-                  </TooltipTrigger>
-                  <TooltipContent>Download</TooltipContent>
-                </Tooltip>
-                <Tooltip v-if="!live">
-                  <TooltipTrigger as-child>
-                    <button
-                      class="icon-btn hover:text-destructive!"
-                      :aria-label="`Delete ${fileName(f)}`"
-                      @click.stop="deleting = { output: i, file: j, path: f }"
-                    >
-                      <Trash2 class="size-3.5" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>Delete file</TooltipContent>
-                </Tooltip>
-              </li>
-              <li v-if="!o.files.length" class="px-2.5 py-1 text-xs italic text-muted-foreground/60">No files</li>
-            </ul>
-          </div>
-        </section>
+        <RecordingOutputs
+          :session="s"
+          :outputs="outputs"
+          :can-play="canPlay"
+          :is-playing="isPlaying"
+          @play="play"
+        />
 
         <Collapsible v-model:open="detailsOpen">
           <CollapsibleTrigger class="flex items-center gap-1 section-title hover:text-foreground">
@@ -443,13 +247,6 @@ async function deleteFile() {
       :description="`${filesLabel(fileCount)} on ${nodes.labelOf(s.node_id)} will be permanently deleted from disk, and the session removed from Recordings on every client. This can't be undone.`"
       :confirm-label="`Delete ${filesLabel(fileCount)}`"
       @confirm="deleteAll"
-    />
-    <ConfirmDialog
-      v-model:open="confirmDeleteFile"
-      :title="`Delete ${deleting ? fileName(deleting.path) : ''}?`"
-      :description="`The file will be permanently deleted from ${nodes.labelOf(s.node_id)}'s disk. This can't be undone. The session stays in history.`"
-      confirm-label="Delete file"
-      @confirm="deleteFile"
     />
   </section>
 </template>

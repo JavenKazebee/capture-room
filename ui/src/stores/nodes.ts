@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { FetchError } from 'ofetch'
 import { computed, ref } from 'vue'
 import { api, nodeApi } from '@/composables/useApi'
 import { loadState } from '@/lib/loadState'
@@ -14,6 +15,11 @@ import type { UpdateNodeSettingsRequest } from '@/types/generated/UpdateNodeSett
  * A node's address as other machines reach its media: its `url`, else the UI's own address.
  * `origin` is plain HTTP, where players reach `/whep` without trusting the node's certificate.
  */
+/** Adding or approving a node failed because it doesn't use this controller's token yet: ask for its pairing code. */
+export function needsPairingCode(e: unknown) {
+  return e instanceof FetchError && e.statusCode === 409
+}
+
 export function nodeAddress(url: string | null | undefined): { hostname: string; origin: string } {
   let at: { hostname: string; host: string } = window.location
   if (url) {

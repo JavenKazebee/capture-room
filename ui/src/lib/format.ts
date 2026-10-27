@@ -133,3 +133,6 @@ export function parseClock(text: string): number | null {
   const secs = parts.reduce((total, p) => total * 60 + Number(p), 0)
   return Math.round(secs * 1000)
 }
+
+/** The last part of a path, on any OS. */
+export const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path
