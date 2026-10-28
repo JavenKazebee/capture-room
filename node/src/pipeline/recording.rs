@@ -241,9 +241,9 @@ impl RecordingLeg {
         drop_until(
             &self.consumer.video_src,
             start_rt,
-            Some(Arc::clone(&self.first_frame)),
+            Arc::clone(&self.first_frame),
         )?;
-        drop_until(&self.consumer.audio_src, start_rt, None)?;
+        drop_until_video(&self.consumer.audio_src, Arc::clone(&self.first_frame))?;
         if let (Some(pad), Some(base), Some(offset)) =
             (&self.timecode_pad, self.base_time, utc_offset_us)
         {
@@ -351,7 +351,7 @@ impl RecordingLeg {
 fn drop_until(
     src: &gst_app::AppSrc,
     start: Option<gst::ClockTime>,
-    first: Option<Arc<AtomicU64>>,
+    first: Arc<AtomicU64>,
 ) -> Result<()> {
     let pad = src.static_pad("src").context("appsrc src pad")?;
     pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
@@ -364,12 +364,30 @@ fn drop_until(
         if start.is_some_and(|start| rt < start) {
             return gst::PadProbeReturn::Drop;
         }
-        if let Some(first) = &first {
-            first.store(rt.nseconds(), Ordering::Release);
-        }
+        first.store(rt.nseconds(), Ordering::Release);
         gst::PadProbeReturn::Remove
     })
     .context("add start gate")?;
+    Ok(())
+}
+
+/// Drop `src`'s buffers due before the first video frame [`drop_until`] let
+/// through. Audio that starts first makes the muxer open the video track
+/// with an empty edit, which QuickTime shows as a black first frame.
+fn drop_until_video(src: &gst_app::AppSrc, first_video: Arc<AtomicU64>) -> Result<()> {
+    let pad = src.static_pad("src").context("appsrc src pad")?;
+    pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
+        let Some(pts) = info.buffer().and_then(|b| b.pts()) else {
+            return gst::PadProbeReturn::Ok;
+        };
+        let rt = running_time(pad, pts).unwrap_or(pts);
+        let first = first_video.load(Ordering::Acquire);
+        if first == u64::MAX || rt.nseconds() < first {
+            return gst::PadProbeReturn::Drop;
+        }
+        gst::PadProbeReturn::Remove
+    })
+    .context("add audio start gate")?;
     Ok(())
 }
 
@@ -919,7 +937,8 @@ mod tests {
     }
 
     /// A MOV leg's file carries the timecode of its first frame's time of
-    /// day on the clock (drop-frame at 29.97), from the UTC mapping given.
+    /// day on the clock (drop-frame at 29.97), from the UTC mapping given,
+    /// and its audio doesn't start before its video.
     #[tokio::test(flavor = "multi_thread")]
     async fn mov_files_carry_time_of_day_timecode() {
         gst::init().unwrap();
@@ -998,6 +1017,21 @@ mod tests {
                 let got = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 println!("file timecode {got}, expected {want}");
                 assert_eq!(got, want, "the file's timecode");
+                // An empty edit before the video, which players show as
+                // black, makes it start after zero.
+                let out = std::process::Command::new("ffprobe")
+                    .args(["-v", "error", "-select_streams", "v:0"])
+                    .args(["-show_entries", "stream=start_time", "-of", "csv=p=0"])
+                    .arg(&file)
+                    .output()
+                    .unwrap();
+                let start = String::from_utf8_lossy(&out.stdout);
+                let start = start.lines().next().unwrap_or_default().trim();
+                assert_eq!(
+                    start.parse::<f64>().ok(),
+                    Some(0.0),
+                    "video start {start:?}"
+                );
             }
             Err(_) => println!("no ffprobe: not reading the file back"),
         }
