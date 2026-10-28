@@ -75,8 +75,8 @@ pub fn access(permission: Permission) -> Option<Access> {
     imp::access(permission)
 }
 
-/// Show macOS's camera or microphone prompt; it only appears the first time.
-/// Not offered for screen recording: macOS can't say whether it has asked.
+/// Show macOS's prompt; it only appears the first time. Screen recording
+/// applies from the node's next launch.
 pub fn request(permission: Permission) {
     imp::request(permission)
 }
@@ -116,11 +116,31 @@ pub fn check(kind: DeviceKind, device: &str) -> Result<()> {
 
 #[cfg(target_os = "macos")]
 mod imp {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
     use block2::RcBlock;
     use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject, Bool};
 
     use super::{Access, Permission};
+
+    /// How long `access` waits for AVFoundation's answer: it comes at once
+    /// when access is decided, and waits only on a prompt that's still open.
+    const ANSWER_WAIT: Duration = Duration::from_millis(200);
+
+    /// The node has shown the camera or microphone prompt since it started.
+    static ASKED_CAMERA: AtomicBool = AtomicBool::new(false);
+    static ASKED_MICROPHONE: AtomicBool = AtomicBool::new(false);
+
+    fn asked(permission: Permission) -> Option<&'static AtomicBool> {
+        match permission {
+            Permission::Camera => Some(&ASKED_CAMERA),
+            Permission::Microphone => Some(&ASKED_MICROPHONE),
+            Permission::ScreenRecording => None,
+        }
+    }
 
     #[link(name = "AVFoundation", kind = "framework")]
     extern "C" {
@@ -131,6 +151,7 @@ mod imp {
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
         fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGRequestScreenCaptureAccess() -> bool;
     }
 
     /// `AVAuthorizationStatus`
@@ -158,17 +179,40 @@ mod imp {
         let class = AnyClass::get(c"AVCaptureDevice")?;
         // SAFETY: a class method taking an AVMediaType, returning an NSInteger.
         let status: isize = unsafe { msg_send![class, authorizationStatusForMediaType: media] };
-        Some(match status {
-            AUTHORIZED => Access::Granted,
-            NOT_DETERMINED => Access::NotAsked,
-            _ => Access::Denied,
+        let asked = asked(permission).is_some_and(|a| a.load(Ordering::Relaxed));
+        match status {
+            AUTHORIZED => return Some(Access::Granted),
+            // Asking would show the prompt.
+            NOT_DETERMINED if !asked => return Some(Access::NotAsked),
+            _ => {}
+        }
+        // The status can miss a grant made outside AVFoundation: CoreAudio's
+        // own prompt, or System Settings while the node runs. Asking again
+        // answers from the real state, without a prompt once it's decided.
+        let (tx, rx) = mpsc::channel();
+        let done = RcBlock::new(move |granted: Bool| {
+            let _ = tx.send(granted.as_bool());
+        });
+        // SAFETY: as in `request`.
+        let _: () = unsafe {
+            msg_send![class, requestAccessForMediaType: media, completionHandler: &*done]
+        };
+        Some(match rx.recv_timeout(ANSWER_WAIT) {
+            Ok(true) => Access::Granted,
+            Ok(false) => Access::Denied,
+            Err(_) => Access::NotAsked,
         })
     }
 
     pub fn request(permission: Permission) {
         let Some(media) = media(permission) else {
+            // SAFETY: no arguments; shows the prompt the first time only.
+            unsafe { CGRequestScreenCaptureAccess() };
             return;
         };
+        if let Some(asked) = asked(permission) {
+            asked.store(true, Ordering::Relaxed);
+        }
         let Some(class) = AnyClass::get(c"AVCaptureDevice") else {
             return;
         };

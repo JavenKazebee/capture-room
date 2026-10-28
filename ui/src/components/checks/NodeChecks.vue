@@ -67,19 +67,12 @@ const asking = ref<string | null>(null)
 let disposed = false
 onScopeDispose(() => (disposed = true))
 
-/** Show the prompt on the node, then re-check until it's answered (or a minute passes). */
+/** Show the prompt on the node, then re-check until it's answered. */
 async function ask(c: CheckDto) {
   asking.value = c.id
   try {
-    await store.request(props.node.id, c.id)
     // Stops when the page is left, too.
-    for (let i = 0; i < 30 && !disposed; i++) {
-      await new Promise((r) => setTimeout(r, 2000))
-      if (disposed) break
-      await store.loadForNode(props.node.id)
-      const now = store.byNode.get(props.node.id)?.checks.find((x) => x.id === c.id)
-      if (!now || now.status !== c.status) break
-    }
+    await store.ask(props.node.id, c.id, () => disposed)
   } catch (e) {
     notifyError(`Couldn't ask macOS for ${c.label}`, e, props.node.id)
   } finally {
@@ -149,7 +142,7 @@ async function ask(c: CheckDto) {
                   @click="ask(c)"
                 >
                   <ShieldQuestion class="size-3.5" />
-                  {{ asking === c.id ? 'Waiting for an answer…' : 'Ask macOS' }}
+                  {{ asking === c.id ? 'Waiting for an answer…' : 'Request access' }}
                 </Button>
                 <Button v-if="local && c.fix.settings_url" as-child variant="outline" size="sm" class="h-7 gap-1.5 text-xs">
                   <a :href="c.fix.settings_url"><Settings2 class="size-3.5" /> Open System Settings</a>

@@ -312,6 +312,7 @@ async function save() {
       <DeviceFields
         v-else-if="kind === 'device'"
         v-model="device"
+        :node-id="nodeId"
         :devices="nodeDevices.devices.value"
         :loading="nodeDevices.loading.value"
         :error="nodeDevices.error.value"

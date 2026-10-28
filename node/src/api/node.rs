@@ -544,14 +544,8 @@ async fn get_checks(State(state): State<Arc<AppState>>) -> ApiResult<Json<NodeCh
 /// Ask the OS to show a permission prompt on this machine; answers once it
 /// has been asked (the prompt may still be open).
 async fn post_check_request(Json(req): Json<CheckRequest>) -> ApiResult<StatusCode> {
-    use crate::sources::privacy::Permission;
     let permission =
         crate::checks::permission_of(&req.id).ok_or_else(|| ApiError::bad("not a permission"))?;
-    if permission == Permission::ScreenRecording {
-        return Err(ApiError::bad(
-            "macOS only asks about screen recording once: allow it in System Settings",
-        ));
-    }
     tokio::task::spawn_blocking(move || crate::sources::privacy::request(permission)).await?;
     Ok(StatusCode::NO_CONTENT)
 }

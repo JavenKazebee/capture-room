@@ -70,10 +70,23 @@ export const useChecksStore = defineStore('checks', () => {
     return all(nodeId).filter(isProblem).length
   }
 
-  /** Ask the node's OS to show its prompt for a permission. */
-  async function request(nodeId: string, id: string) {
+  /**
+   * Ask the node's OS to show its prompt for a permission, then re-check until it's answered, a
+   * minute passes or `stop()` says so. Screen recording changes only once the node restarts, so
+   * it isn't waited for.
+   */
+  async function ask(nodeId: string, id: string, stop: () => boolean = () => false) {
+    const before = byNode.get(nodeId)?.checks.find((c) => c.id === id)?.status
     await nodeApi(nodeId)('/checks/request', { method: 'POST', body: { id } satisfies CheckRequest })
+    if (id === 'screen_recording') return
+    for (let i = 0; i < 30 && !stop(); i++) {
+      await new Promise((r) => setTimeout(r, 2000))
+      if (stop()) break
+      await loadForNode(nodeId)
+      const now = byNode.get(nodeId)?.checks.find((c) => c.id === id)
+      if (!now || now.status !== before) break
+    }
   }
 
-  return { byNode, reachability, load, loadForNode, all, problems, request }
+  return { byNode, reachability, load, loadForNode, all, problems, ask }
 })

@@ -5,6 +5,7 @@ import type { DeviceDto } from '@/types/generated/DeviceDto'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
+import PermissionNotice from '@/components/checks/PermissionNotice.vue'
 import { AUDIO_CHANNEL_OPTIONS } from '@/lib/videoFormats'
 
 /** A live source's audio: its own (`sourceLabel`), an audio device's picked channels, or silence. */
@@ -13,7 +14,10 @@ const props = defineProps<{
   devices: DeviceDto[]
   /** "Stream", "Publisher"; omit for sources without audio of their own. */
   sourceLabel?: string
+  /** The devices' node, to say when macOS keeps its audio devices off the list. */
+  nodeId?: string
 }>()
+const emit = defineEmits<{ refresh: [] }>()
 
 const plan = defineModel<AudioPlan>({ required: true })
 
@@ -125,6 +129,9 @@ const pickedLabel = computed(() => {
         Plays silence while the source has no audio.
       </p>
     </template>
-    <p v-if="inputs.length === 0" class="text-xs text-muted-foreground">No audio inputs on this node.</p>
+    <template v-if="inputs.length === 0">
+      <p class="text-xs text-muted-foreground">No audio inputs on this node.</p>
+      <PermissionNotice v-if="nodeId" :node-id="nodeId" permission="microphone" @answered="emit('refresh')" />
+    </template>
   </div>
 </template>

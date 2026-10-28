@@ -6,7 +6,7 @@
 //! so a recording never sees the format change.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -189,6 +189,7 @@ pub fn build_bin(input: LiveInput) -> Result<gst::Bin> {
         } => {
             let fb = fallback(&format!("live-afb-{id}"), false, true)?;
             fb.set_property("source", &element);
+            log_fallback(&fb, id);
             bin.add(&fb).context("add audio device")?;
             let picker = Inputs {
                 kind: Kind::Audio(
@@ -418,11 +419,23 @@ impl Inputs {
                             .remove_field("channel-mask");
                     }
                 }
-                let mut chain = vec![
+                let mut chain = Vec::new();
+                if let Some(inputs) = matrix.as_ref().and_then(|rows| rows.first()) {
+                    // The matrix only takes as many channels as it has
+                    // columns: a device that gives fewer than it was listed
+                    // with otherwise fails to link, and fallbacksrc plays
+                    // silence instead.
+                    let width = gst::Caps::builder("audio/x-raw")
+                        .field("channels", inputs.len() as i32)
+                        .build();
+                    chain.push(make_el("audioconvert", &name("ain"))?);
+                    chain.push(capsfilter(&name("ainputs"), width)?);
+                }
+                chain.extend([
                     conv,
                     make_el("audioresample", &name("aresample"))?,
                     capsfilter(&name("acaps"), out)?,
-                ];
+                ]);
                 if matrix.is_some() && numbered {
                     chain.push(numbered_channels(&name("anumbered"))?);
                 }
@@ -579,6 +592,27 @@ pub(super) fn fallback(name: &str, video: bool, audio: bool) -> Result<gst::Elem
     // Black right away, so the monitor has frames before the source connects.
     fb.set_property("immediate-fallback", true);
     Ok(fb)
+}
+
+/// Warn each time `fb` gives up on its source and plays silence: fallbacksrc
+/// handles the source's error itself, so it's seen nowhere else.
+fn log_fallback(fb: &gst::Element, id: &str) {
+    let id = id.to_string();
+    let retries = AtomicU64::new(0);
+    fb.connect_notify(Some("statistics"), move |fb, _| {
+        let stats = fb.property::<gst::Structure>("statistics");
+        let n = stats.get::<u64>("num-retry").unwrap_or(0);
+        if n <= retries.swap(n, Ordering::Relaxed) {
+            return;
+        }
+        let reason = stats
+            .value("last-retry-reason")
+            .ok()
+            .and_then(|v| glib::EnumValue::from_value(v))
+            .map(|(_, v)| v.nick().to_string())
+            .unwrap_or_default();
+        warn!(source = %id, reason, retries = n, "audio device failed; playing silence while it retries");
+    });
 }
 
 /// Link `src`'s `kind` pad to `chain` when it appears (fallbacksrc's pads
@@ -869,8 +903,6 @@ fn pick_matrix(inputs: u32, channels: &[u32]) -> Vec<Vec<f32>> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicU64;
-
     use gstreamer_app as gst_app;
 
     use super::*;
@@ -1094,11 +1126,14 @@ mod tests {
     }
 
     /// Picked device channels reach the mixer as numbered channels, from
-    /// positioned and numbered devices alike.
+    /// positioned and numbered devices alike, and from a mono device listed
+    /// with 2 (its caps can offer stereo too).
     #[test]
     fn device_picks_negotiate() {
         gst::init().unwrap();
-        let cases: [(&str, u32, &[u32]); 4] = [
+        let cases: [(&str, u32, &[u32]); 6] = [
+            ("channels=1", 2, &[1, 2]),
+            ("channels=1", 1, &[1]),
             ("channels=8", 8, &[2]),
             ("channels=8", 8, &[1, 3, 5]),
             (
