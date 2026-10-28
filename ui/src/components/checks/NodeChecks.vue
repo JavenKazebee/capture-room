@@ -2,6 +2,7 @@
 import { computed, onScopeDispose, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { ArrowRight, ExternalLink, Settings2, ShieldQuestion } from '@lucide/vue'
+import { encodersByKind } from '@/lib/advanced'
 import { notifyError } from '@/lib/notify'
 import { browserIsOn, isProblem, useChecksStore } from '@/stores/checks'
 import type { CheckDto } from '@/types/generated/CheckDto'
@@ -51,6 +52,16 @@ function status(c: CheckDto): { dot: 'ok' | 'warn' | 'error' | 'off' | 'info'; l
       return { dot: 'off', label: 'Unknown', class: 'text-muted-foreground' }
   }
 }
+
+/** Recording encoders the node has; empty until it reports them. */
+const encoders = computed(() => {
+  if (!props.node.encoders.length) return []
+  const { hardware, software } = encodersByKind(props.node.encoders)
+  return [
+    { kind: 'Hardware', names: hardware },
+    { kind: 'Software', names: software },
+  ]
+})
 
 const asking = ref<string | null>(null)
 let disposed = false
@@ -157,6 +168,18 @@ async function ask(c: CheckDto) {
           <span class="text-xs whitespace-nowrap" :class="status(c).class">{{ status(c).label }}</span>
         </li>
       </ul>
+    </div>
+
+    <div v-if="encoders.length" class="px-4 pt-3 pb-3">
+      <h3 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">Encoders</h3>
+      <dl class="divide-y divide-border">
+        <div v-for="k in encoders" :key="k.kind" class="py-2 grid grid-cols-[6rem_1fr] gap-x-2.5 items-baseline">
+          <dt class="text-sm font-medium">{{ k.kind }}</dt>
+          <dd class="text-xs" :class="k.names.length ? 'text-foreground' : 'text-muted-foreground'">
+            {{ k.names.length ? k.names.join(', ') : 'None' }}
+          </dd>
+        </div>
+      </dl>
     </div>
   </section>
 </template>

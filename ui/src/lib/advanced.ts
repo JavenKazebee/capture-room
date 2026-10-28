@@ -58,6 +58,34 @@ const HARDWARE = new Set([
   'mfh264enc',
 ])
 
+const CODEC_NAMES: Record<string, string> = {
+  vtenc_h264: 'H.264',
+  vtenc_h265: 'H.265',
+  vtenc_prores: 'ProRes',
+  vah264enc: 'H.264',
+  vah265enc: 'H.265',
+  amfh264enc: 'H.264',
+  amfh265enc: 'H.265',
+  mfh264enc: 'H.264',
+  x264enc: 'H.264',
+  x265enc: 'H.265',
+  vp9enc: 'VP9',
+  avenc_prores_ks: 'ProRes',
+}
+
+/** A node's encoders (element names) by kind, named for people: "VideoToolbox H.264". */
+export function encodersByKind(encoders: string[]): { hardware: string[]; software: string[] } {
+  const known = encoders.filter((e) => e in CODEC_NAMES)
+  const name = (e: string) => {
+    const [family, codec] = [ENCODER_NAMES[e]!, CODEC_NAMES[e]!]
+    return family.endsWith(codec) ? family : `${family} ${codec}`
+  }
+  return {
+    hardware: known.filter((e) => HARDWARE.has(e)).map(name),
+    software: known.filter((e) => !HARDWARE.has(e)).map(name),
+  }
+}
+
 export const isProRes = (leg: Pick<PresetOutputInput, 'codec'>) => leg.codec.startsWith('prores')
 
 /** Encoder elements for a leg's codec, best first, before the Encoder choice filters them. */

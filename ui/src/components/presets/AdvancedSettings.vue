@@ -78,9 +78,10 @@ const encoderOptions = computed(() =>
   }),
 )
 
-/** What the encoder resolves to on each node, for the help popover. */
+/** What the encoder resolves to on each node; just the encoder with one node. */
 const encoderNote = computed(() => {
   const on = encoderOnNodes(leg.value, nodes.nodes)
+  if (on.length === 1) return `→ ${on[0]!.encoder}`
   return on.length ? on.map((n) => `${n.node}: ${n.encoder}`).join(' · ') : undefined
 })
 
@@ -162,7 +163,7 @@ const splitGb = computed({
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 [&>*]:min-w-0">
           <h4 class="group-title">Video</h4>
 
-          <FormField v-if="leg.codec !== 'uncompressed'" :help="FIELD_HELP.encoder" :help-note="encoderNote">
+          <FormField v-if="leg.codec !== 'uncompressed'" :help="FIELD_HELP.encoder">
             <template #label>Encoder <span v-if="changed('encoder')" class="dot" /></template>
             <OptionSelect
               :model-value="a.encoder"
@@ -170,6 +171,7 @@ const splitGb = computed({
               @update:model-value="(v: EncoderChoice) => set('encoder', v)"
             />
             <span v-if="problems.encoder" class="text-[11px] text-destructive">{{ problems.encoder }}</span>
+            <span v-else-if="encoderNote" class="text-[11px] text-muted-foreground" :title="encoderNote">{{ encoderNote }}</span>
           </FormField>
           <FormField v-else label="Encoder" :help="FIELD_HELP.encoderFixed">
             <span class="fixed-value">None</span>
