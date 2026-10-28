@@ -598,9 +598,14 @@ pub fn save(span: &ReplaySpan, dir: &Path) -> Result<Vec<String>> {
 /// in an NLE.
 ///
 /// ```text
-/// splitmuxsrc ─┬→ [keep_from_seek] → qtmux → filesink
-///              └→ [keep_from_seek] ↗
+/// splitmuxsrc ─┬→ [keep_from_seek] ─────────────→ qtmux → filesink
+///              └→ [keep_from_seek] → audiorate ↗
 /// ```
+///
+/// Where two files meet, the sound's timestamps can be several ms apart on
+/// a loaded machine, though the samples follow on. qtmux writes PCM back to
+/// back, so a gap would pull the rest of the sound early against the
+/// pictures: audiorate fills it with silence (and drops any overlap).
 pub fn export(
     files: &[String],
     from: gst::ClockTime,
@@ -626,8 +631,9 @@ pub fn export(
     mux.link(&sink).context("link qtmux")?;
     let (started_tx, started) = std::sync::mpsc::channel::<()>();
     let mux_weak = mux.downgrade();
+    let pipeline_weak = pipeline.downgrade();
     src.connect_pad_added(move |_, pad| {
-        let Some(mux) = mux_weak.upgrade() else {
+        let (Some(mux), Some(pipeline)) = (mux_weak.upgrade(), pipeline_weak.upgrade()) else {
             return;
         };
         let video = pad.name().starts_with("video");
@@ -664,8 +670,13 @@ pub fn export(
                         Some(base.useconds() as i64 + position + offset)
                     });
                 }
-                if let Err(e) = pad.link(&sink) {
-                    warn!(pad = %pad.name(), error = ?e, "can't export replay stream");
+                let linked = if video {
+                    pad.link(&sink).map(|_| ()).map_err(|e| anyhow!("{e:?}"))
+                } else {
+                    link_through_audiorate(&pipeline, pad, &sink)
+                };
+                if let Err(e) = linked {
+                    warn!(pad = %pad.name(), error = %e, "can't export replay stream");
                 }
             }
             None => warn!(pad = %pad.name(), "qtmux has no pad for replay stream"),
@@ -741,6 +752,22 @@ pub fn export(
 /// pictures at or before the last one are dropped, and sound is trimmed to
 /// start where the last buffer ended (which also takes out any overlap
 /// where two files meet).
+/// `pad` → audiorate → `sink`, the audiorate keeping the sound to its
+/// timestamps to the sample (its default lets 40 ms of drift through).
+fn link_through_audiorate(pipeline: &gst::Pipeline, pad: &gst::Pad, sink: &gst::Pad) -> Result<()> {
+    let rate = make_el("audiorate", &format!("rate-{}", pad.name()))?;
+    rate.set_property("tolerance", 0u64);
+    pipeline.add(&rate).context("add audiorate")?;
+    rate.sync_state_with_parent().context("start audiorate")?;
+    pad.link(&rate.static_pad("sink").context("audiorate sink")?)
+        .context("link audiorate")?;
+    rate.static_pad("src")
+        .context("audiorate src")?
+        .link(sink)
+        .context("link audiorate to qtmux")?;
+    Ok(())
+}
+
 fn keep_from_seek(pad: &gst::Pad, from: gst::ClockTime) {
     // An accurate seek's segment starts where it was asked to.
     const NEAR: gst::ClockTime = gst::ClockTime::from_mseconds(1);
