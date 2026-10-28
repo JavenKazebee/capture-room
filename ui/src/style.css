@@ -152,6 +152,13 @@ html { font-size: 15px; }
 html[data-density="compact"] { font-size: 14px; }
 html[data-density="comfortable"] { font-size: 16px; }
 
+/* Linux renders Inter without hinting, so 400 and 500 look thin there. */
+html[data-platform="linux"] {
+  --font-weight-normal: 450;
+  --font-weight-medium: 550;
+  font-weight: 450;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

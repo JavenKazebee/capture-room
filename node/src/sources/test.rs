@@ -98,7 +98,7 @@ impl InputSource for TestSource {
     }
 
     fn timecode(&self) -> Option<String> {
-        let now = chrono::Utc::now();
+        let now = chrono::Local::now();
         let fps = self.config.fps_num as f64 / self.config.fps_den.max(1) as f64;
         // nanosecond() exceeds 1e9 during a leap second; keep frames in range.
         let frac = (now.nanosecond() as f64 / 1_000_000_000.0).min(0.999_999);
