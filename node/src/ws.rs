@@ -208,6 +208,7 @@ pub fn spawn_emitter(state: Arc<AppState>) {
                         timecode: source.timecode(),
                         error: mgr.monitor_error(source.id()),
                         link: mgr.link(source.as_ref()),
+                        capabilities: crate::api::node::capabilities(&mgr, source.as_ref()),
                     });
                 }
                 let buffers = mgr.replay_buffers(state.clock.utc_offset_us());

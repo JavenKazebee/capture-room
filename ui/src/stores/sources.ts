@@ -14,7 +14,6 @@ import type { DecklinkStatusDto } from '@/types/generated/DecklinkStatusDto'
 import type { DeviceDto } from '@/types/generated/DeviceDto'
 import type { DisplayDto } from '@/types/generated/DisplayDto'
 import type { DirListingDto } from '@/types/generated/DirListingDto'
-import type { LinkState } from '@/types/generated/LinkState'
 import type { SourceDto } from '@/types/generated/SourceDto'
 import type { SourceType } from '@/types/generated/SourceType'
 
@@ -33,6 +32,9 @@ export const audioLevels = shallowReactive(new Map<string, ChannelLevelDto[]>())
 export type ConfiguredKind = Exclude<SourceType, 'ndi'>
 export const CONFIGURED_TYPES: readonly SourceType[] = ['test', 'file', 'stream', 'device', 'decklink', 'whip', 'channel']
 
+/** The parts of a source that `feed.status` repeats every second. */
+type FeedStatus = Pick<SourceDto, 'timecode' | 'error' | 'link' | 'capabilities'>
+
 export const useSourcesStore = defineStore('sources', () => {
   const nodes = useNodesStore()
   const sources = ref<Source[]>([])
@@ -41,20 +43,15 @@ export const useSourcesStore = defineStore('sources', () => {
     return list.map((s) => ({ ...s, node_id: nodeId, key: sourceKey(nodeId, s.id) }))
   }
 
-  /** Apply a `feed.status` event: the current timecode, monitor error and link state. */
-  function updateStatus(
-    nodeId: string,
-    sourceId: string,
-    tc: string | null,
-    error: string | null,
-    link: LinkState | null,
-  ) {
+  /** Apply a `feed.status` event: the current timecode, monitor error, link state and format. */
+  function updateStatus(nodeId: string, sourceId: string, status: FeedStatus) {
     const key = sourceKey(nodeId, sourceId)
     const s = sources.value.find((s) => s.key === key)
     if (!s) return
-    s.timecode = tc
-    s.error = error
-    s.link = link
+    s.timecode = status.timecode
+    s.error = status.error
+    s.link = status.link
+    if (status.capabilities) s.capabilities = status.capabilities
   }
 
   const byKey = computed(() => new Map(sources.value.map((s) => [s.key, s])))
