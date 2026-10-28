@@ -56,7 +56,15 @@ jobs:
 
       - name: Tests
         if: ${{ !cancelled() }}
-        run: cargo test
+        run: |
+          fails=0
+          for i in $(seq 12); do
+            cargo test -p capture-room --features export-types 2>&1 | tee out.txt | tail -3
+            if grep -q "saved_clip_outlives_buffer_and_exports ... FAILED" out.txt; then
+              fails=$((fails+1)); sed -n '/---- pipeline::replay::tests::saved_clip_outlives_buffer_and_exports stdout/,/^failures:/p' out.txt | head -400
+            fi
+          done
+          echo "FLAKES $fails / 12"
 
       - uses: taiki-e/install-action@v2
         if: ${{ !cancelled() }}

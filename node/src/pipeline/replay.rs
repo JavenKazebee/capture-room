@@ -761,6 +761,7 @@ fn keep_from_seek(pad: &gst::Pad, from: gst::ClockTime) {
                 }
                 gst::EventView::Eos(_) if open.is_none() => gst::PadProbeReturn::Drop,
                 gst::EventView::Segment(seg) => {
+                    println!("DIAG {} segment {:?}", pad.name(), seg.segment());
                     // Stream time: splitmuxsrc's segments start at 1000 s
                     // plus the position.
                     let segment = seg.segment().downcast_ref::<gst::ClockTime>();
@@ -797,6 +798,12 @@ fn keep_from_seek(pad: &gst::Pad, from: gst::ClockTime) {
                 }
                 let floor = reached.map_or(start, |r| r.max(start));
                 let end = buffer.duration().map(|d| pts + d);
+                println!(
+                    "DIAG audio pts={pts} dur={:?} reached={:?} start={start} stop={stop:?} gap_ns={}",
+                    buffer.duration(),
+                    *reached,
+                    reached.map_or(0i128, |r| pts.nseconds() as i128 - r.nseconds() as i128)
+                );
                 let head = (pts < floor).then(|| floor - pts);
                 let tail = match (stop, end) {
                     (Some(stop), Some(end)) if end > stop => Some(end - stop),
@@ -1216,6 +1223,10 @@ mod tests {
         let from = start + gst::ClockTime::from_mseconds(500);
         let span = Index::clip(&index, from, Some(from + gst::ClockTime::SECOND)).unwrap();
         assert_eq!(span.files.len(), 2);
+        println!(
+            "DIAG span base={} from={from} to={:?} files={:?}",
+            span.base, span.to, span.files
+        );
         let clip_dir = root.join("clip");
         let files = save(&span, &clip_dir).unwrap();
         let (base, from, to) = (span.base, span.from, span.to);
