@@ -120,7 +120,7 @@ function handleEvent(event: NodeEvent) {
       break
 
     case 'feed.status':
-      sources.updateStatus(nodeId, event.source_id, event.timecode, event.error, event.link)
+      sources.updateStatus(nodeId, event.source_id, event)
       break
 
     case 'audio.levels':

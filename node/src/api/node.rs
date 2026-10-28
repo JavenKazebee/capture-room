@@ -26,9 +26,9 @@ use crate::api::types::{
     ConfiguredSourceRequest, CreateFolderRequest, DecklinkProfileRequest, DecklinkStatusDto,
     DeviceDto, DirListingDto, DisplayDto, FolderDto, FolderListingDto, NdiSubscriptionsDto,
     NdiSubscriptionsInput, NodeCapacityDto, NodeChecksDto, NodeSettingsDto, NodeStatus,
-    OutputConfig, RecordingSessionDto, RecordingStatus, RecordingsQuery, SourceConfig, SourceDto,
-    StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest, UpdateRequest,
-    UpdateStatusDto, VolumeCheckDto, WsEvent,
+    OutputConfig, RecordingSessionDto, RecordingStatus, RecordingsQuery, SourceCapabilitiesDto,
+    SourceConfig, SourceDto, StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest,
+    UpdateRequest, UpdateStatusDto, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
 use crate::capacity::{Capacity, Load, Setup};
@@ -1243,9 +1243,28 @@ fn source_to_dto(mgr: &SourceManager, s: &dyn InputSource) -> SourceDto {
         connected: mgr.is_monitored(s.id()),
         error: mgr.monitor_error(s.id()),
         timecode: s.timecode(),
-        capabilities: s.capabilities(),
+        capabilities: capabilities(mgr, s),
         link: mgr.link(s),
     }
+}
+
+/// What the source says it produces, or else what its monitor negotiated:
+/// devices, streams and cards only know their format once connected.
+pub(crate) fn capabilities(
+    mgr: &SourceManager,
+    s: &dyn InputSource,
+) -> Option<SourceCapabilitiesDto> {
+    s.capabilities().or_else(|| {
+        let format = mgr.source_format(s.id());
+        let ((max_width, max_height), (fps_num, fps_den)) = (format.size?, format.rate?);
+        Some(SourceCapabilitiesDto {
+            max_width,
+            max_height,
+            fps_num,
+            fps_den,
+            audio_channels: format.audio.map_or(0, |(channels, _)| channels),
+        })
+    })
 }
 
 /// After a configured-source change: the change itself is saved, so a
