@@ -76,12 +76,10 @@ enum Command {
     },
     Show(WindowId, bool),
     Close(WindowId),
-    /// The node's status, for the menu bar icon (none on Linux yet).
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    /// The node's status, for the menu bar icon.
     Tray(crate::tray::Status),
     /// A menu bar item was picked.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    Menu(tray_icon::menu::MenuId),
+    Menu(crate::tray::MenuId),
     Quit,
 }
 
@@ -97,7 +95,6 @@ impl Displays {
     }
 
     /// Show the node's status on its menu bar icon, if it has one.
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub fn show_status(&self, status: crate::tray::Status) {
         if let Some(proxy) = &self.proxy {
             let _ = proxy.send_event(Command::Tray(status));
@@ -179,7 +176,6 @@ pub fn run<T: Send + 'static>(
         .expect("start the node thread");
     let mut window_loop = WindowLoop {
         tray_config: tray,
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
         proxy: Some(event_loop.create_proxy()),
         ..WindowLoop::default()
     };
@@ -238,9 +234,7 @@ struct WindowLoop {
     awake: Option<power::DisplayAwake>,
     /// The menu bar icon to show once the loop runs, if any.
     tray_config: Option<crate::tray::Config>,
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
     tray: Option<crate::tray::Tray>,
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
     proxy: Option<EventLoopProxy<Command>>,
 }
 
@@ -255,24 +249,19 @@ impl ApplicationHandler<Command> for WindowLoop {
         let Some(config) = self.tray_config.take() else {
             return;
         };
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        {
-            let proxy = std::sync::Mutex::new(self.proxy.clone());
-            let on_menu = move |id| {
-                if let Some(proxy) = proxy.lock().unwrap().as_ref() {
-                    let _ = proxy.send_event(Command::Menu(id));
-                }
-            };
-            match crate::tray::Tray::new(config, on_menu) {
-                Ok(tray) => {
-                    info!("menu bar icon shown");
-                    self.tray = Some(tray);
-                }
-                Err(e) => warn!(error = %e, "couldn't show the menu bar icon"),
+        let proxy = std::sync::Mutex::new(self.proxy.clone());
+        let on_menu = move |id| {
+            if let Some(proxy) = proxy.lock().unwrap().as_ref() {
+                let _ = proxy.send_event(Command::Menu(id));
             }
+        };
+        match crate::tray::Tray::new(config, on_menu) {
+            Ok(tray) => {
+                info!("menu bar icon shown");
+                self.tray = Some(tray);
+            }
+            Err(e) => warn!(error = %e, "couldn't show the menu bar icon"),
         }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        match config {}
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, command: Command) {
@@ -307,13 +296,11 @@ impl ApplicationHandler<Command> for WindowLoop {
                     self.awake = None;
                 }
             }
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
             Command::Tray(status) => {
                 if let Some(tray) = &mut self.tray {
                     tray.show(status);
                 }
             }
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
             Command::Menu(id) => {
                 if let Some(tray) = &mut self.tray {
                     tray.picked(&id);

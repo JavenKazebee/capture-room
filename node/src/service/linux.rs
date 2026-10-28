@@ -9,9 +9,9 @@
 //! headless node starts at boot, not at its user's first login.
 //!
 //! GStreamer is the distro's (`install.sh` installs the packages); only the
-//! gst-plugins-rs elements are in the binary. There's no tray icon, and
-//! display outputs only get a screen when the desktop has imported `DISPLAY`
-//! or `WAYLAND_DISPLAY` into the user manager, which a headless boot hasn't.
+//! gst-plugins-rs elements are in the binary. The tray icon and display
+//! outputs only appear when the desktop has imported `DISPLAY` or
+//! `WAYLAND_DISPLAY` into the user manager, which a headless boot hasn't.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

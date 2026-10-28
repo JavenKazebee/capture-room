@@ -53,9 +53,12 @@ into `~/.local/bin`, and runs it as a systemd user service that updates itself. 
 on lingering (`loginctl enable-linger`) so the node starts at boot, before anyone logs
 in. The same options as on macOS go after `bash -s --`.
 
-There's no tray icon. On the machine itself, `capture-room` (no arguments) opens the UI
-signed in; from another computer, sign in with the access token
-(`capture-room access-token show`). Capture devices (`/dev/video*`) need the user in the
+On a desktop, the node shows a tray icon (a StatusNotifierItem) with the same menu as
+on macOS. KDE and most other desktops show it; GNOME needs the
+[AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/).
+Copy Access Token needs `wl-copy` (wl-clipboard) or `xclip`. Without a tray, `capture-room`
+(no arguments) opens the UI signed in on the machine itself; from another computer, sign
+in with the access token (`capture-room access-token show`). Capture devices (`/dev/video*`) need the user in the
 `video` group on a headless machine; Setup › Checks says so.
 
 NDI Tools isn't made for Linux, and the NDI Runtime isn't bundled. For NDI, install the
@@ -93,7 +96,7 @@ command that allows it.
 
 ## Getting started
 
-1. **Open the UI.** Click the menu bar icon (the tray icon on Windows) › Open Capture
+1. **Open the UI.** Click the menu bar icon (the tray icon on Windows and Linux) › Open Capture
    Room; it opens the browser already signed in. A node without a menu bar (run from a
    terminal) prints a one-time sign-in link instead, good for 10 minutes. From another computer, go to
    `https://<machine>:7700`, accept the self-signed certificate, and sign in with the

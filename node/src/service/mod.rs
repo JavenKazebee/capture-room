@@ -184,14 +184,12 @@ pub fn log_file() -> Option<PathBuf> {
 }
 
 /// Whether the service starts the node when the user logs in. For the menu
-/// bar icon, which Linux doesn't have yet.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+/// bar icon.
 pub fn start_at_login() -> bool {
     platform::start_at_login()
 }
 
 /// Turn starting at login on or off; the running node carries on.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn set_start_at_login(on: bool) -> Result<()> {
     platform::set_start_at_login(on)
 }
@@ -242,19 +240,35 @@ pub fn open_url(url: &str) {
 }
 
 /// Put `text` on the clipboard, for the menu bar icon.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn copy_to_clipboard(text: &str) -> Result<()> {
     use std::io::Write;
     #[cfg(target_os = "macos")]
-    let copier = "pbcopy";
+    let copiers: &[&[&str]] = &[&["pbcopy"]];
     #[cfg(target_os = "windows")]
-    let copier = "clip";
-    let mut child = std::process::Command::new(copier)
-        .stdin(std::process::Stdio::piped())
-        .spawn()?;
-    child.stdin.take().unwrap().write_all(text.as_bytes())?;
-    anyhow::ensure!(child.wait()?.success(), "{copier} failed");
-    Ok(())
+    let copiers: &[&[&str]] = &[&["clip"]];
+    // Not in the distros' base installs; each stays behind to serve the
+    // clipboard, as it has to on both window systems.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let copiers: &[&[&str]] = &[
+        &["wl-copy"],
+        &["xclip", "-selection", "clipboard"],
+        &["xsel", "--clipboard", "--input"],
+    ];
+    for copier in copiers {
+        let mut child = match std::process::Command::new(copier[0])
+            .args(&copier[1..])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
+        child.stdin.take().unwrap().write_all(text.as_bytes())?;
+        anyhow::ensure!(child.wait()?.success(), "{} failed", copier[0]);
+        return Ok(());
+    }
+    anyhow::bail!("no clipboard tool: install wl-clipboard or xclip")
 }
 
 pub struct Installed {
