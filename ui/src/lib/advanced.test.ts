@@ -8,6 +8,7 @@ import {
   defaultAdvanced,
   encoderChoiceProblem,
   encoderOnNodes,
+  encodersByKind,
   encoderWarning,
   fitAdvanced,
   formatChannels,
@@ -110,6 +111,15 @@ describe('encoderChoiceProblem', () => {
     expect(encoderChoiceProblem(leg({ chroma: '422' }), 'hardware')).toBe('Hardware encoders take 4:2:0 only')
     expect(encoderChoiceProblem(leg({ codec: 'vp9' }), 'hardware')).toBe('No hardware encoder for this codec')
     expect(encoderChoiceProblem(leg({ codec: 'uncompressed' }), 'hardware')).toBe('No hardware encoder for this codec')
+  })
+})
+
+describe('encoders by kind', () => {
+  it('splits and names a node\'s encoders', () => {
+    expect(encodersByKind(['vtenc_h264', 'vtenc_h265', 'x264enc', 'avenc_prores_ks', 'mystery'])).toEqual({
+      hardware: ['VideoToolbox H.264', 'VideoToolbox H.265'],
+      software: ['x264 H.264', 'FFmpeg ProRes'],
+    })
   })
 })
 
