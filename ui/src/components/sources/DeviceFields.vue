@@ -16,12 +16,12 @@ import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
 import AudioPlanField from './AudioPlanField.vue'
 
-/** A capture device (camera, capture card, screen) and the audio paired with it. */
+/** A capture device (camera, USB capture device, screen) and the audio paired with it. */
 const props = defineProps<{
   devices: DeviceDto[]
   loading: boolean
   error: string | null
-  /** The source is saved with a portal screen, so its screen can be chosen. */
+  /** The source is saved with a portal screen; otherwise choosing a screen saves it first. */
   screenSaved?: boolean
 }>()
 const emit = defineEmits<{ refresh: []; chooseScreen: [] }>()
@@ -113,26 +113,18 @@ const mode = computed({
     </FormField>
     <p v-if="error" class="-mt-1.5 text-xs text-destructive">{{ error }}</p>
     <p v-else-if="!loading && !video.length" class="-mt-1.5 text-xs text-muted-foreground">
-      No cameras or capture cards on this node. Plug one in and refresh.
+      No cameras or screens on this node. Plug one in and refresh.
     </p>
 
     <div v-if="cfg.video_device === PORTAL_SCREEN" class="-mt-1.5 flex flex-col gap-2">
       <p class="text-xs text-muted-foreground">
-        The desktop asks which screen to show in a dialog on the node's own display, so someone has to be at it.
-        It remembers the answer across restarts.
+        The desktop asks which screen to show in a dialog on the node's own display. It remembers the answer across
+        restarts.
       </p>
-      <Button
-        v-if="screenSaved"
-        type="button"
-        variant="outline"
-        size="sm"
-        class="self-start"
-        @click="emit('chooseScreen')"
-      >
+      <Button type="button" variant="outline" size="sm" class="self-start" @click="emit('chooseScreen')">
         <Monitor class="size-3.5" />
-        Choose screen
+        {{ screenSaved ? 'Choose screen' : 'Save and choose screen' }}
       </Button>
-      <p v-else class="text-xs text-muted-foreground">Save the source, then choose its screen here.</p>
     </div>
 
     <FormField v-else-if="current" label="Capture format">

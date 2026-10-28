@@ -3,9 +3,9 @@ import { CalendarClock, Circle, Film, History, Monitor, MonitorPlay, ScrollText,
 /** Top-level workspaces: operating desks plus Setup. */
 export const workspaces = [
   { to: '/record', label: 'Record', icon: Circle },
+  { to: '/recordings', label: 'Recordings', icon: Film },
   { to: '/playback', label: 'Playback', icon: MonitorPlay },
   { to: '/replay', label: 'Replay', icon: History },
-  { to: '/recordings', label: 'Recordings', icon: Film },
   { to: '/schedule', label: 'Schedule', icon: CalendarClock },
   { to: '/setup', label: 'Setup', icon: Wrench },
 ]

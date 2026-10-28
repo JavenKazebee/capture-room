@@ -79,7 +79,7 @@ const outputTypes = computed(
 )
 const unavailable = computed(() => {
   const t = node.value?.source_types.find((t) => t.source_type === 'channel')
-  return t?.missing.length ? `This node can't run channels: it lacks ${t.missing.join(', ')}.` : null
+  return t?.missing.length ? `Channels need ${t.missing.join(', ')}.` : null
 })
 
 const devices = useNodeDevices(nodeId)

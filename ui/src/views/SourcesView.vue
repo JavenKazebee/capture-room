@@ -116,6 +116,11 @@ useQueryAction(['edit'], async ({ edit: key }) => {
   if (src) openEdit(src)
 })
 
+// From Checks: `?ndi` opens the NDI senders.
+useQueryAction(['ndi'], () => {
+  ndiOpen.value = true
+})
+
 registerCommands(() => [
   { id: 'sources:add', title: 'Add source', group: 'This page', icon: Plus, keywords: ['new', 'create'], run: openCreate },
   { id: 'sources:ndi', title: 'Show NDI senders', group: 'This page', icon: RadioTower, keywords: ['ndi', 'network'], run: () => (ndiOpen.value = true) },

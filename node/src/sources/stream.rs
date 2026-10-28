@@ -213,9 +213,7 @@ pub fn validate(
         .find(|(s, _)| *s == scheme)
         .ok_or_else(|| format!("{scheme}:// isn't supported"))?;
     if !available(element) {
-        return Err(format!(
-            "{scheme}:// needs {element}, which isn't installed on this node"
-        ));
+        return Err(format!("{scheme}:// needs {element}: see Setup › Checks"));
     }
     let (host, port) = host_port(url);
     if host.is_empty() && listen_port(cfg).is_none() {

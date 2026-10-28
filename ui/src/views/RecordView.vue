@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useViewKeys } from '@/composables/useViewKeys'
-import { Circle, Eye, FilterX, ListChecks, Square, X } from '@lucide/vue'
+import { Circle, Eye, FilterX, ListChecks, Plus, Square, X } from '@lucide/vue'
 import { registerCommands, type Command } from '@/composables/useCommands'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
@@ -26,6 +26,7 @@ import ToolbarField from '@/components/common/ToolbarField.vue'
 import ToolbarSearch from '@/components/common/ToolbarSearch.vue'
 import FeedTile from '@/components/record/FeedTile.vue'
 import { useFitTiles } from '@/components/record/useFitTiles'
+import SourceFormSheet from '@/components/sources/SourceFormSheet.vue'
 
 const sources = useSourcesStore()
 const nodes = useNodesStore()
@@ -33,9 +34,12 @@ const desk = useRecordDeskStore()
 const { tileSize, tileFit, overlays } = usePreferences()
 
 const gridScroller = ref<HTMLElement>()
-const fit = useFitTiles(gridScroller, computed(() => desk.visible.length), { gap: 16, min: 160, max: 960 })
+// The Add source tile takes a slot too.
+const fit = useFitTiles(gridScroller, computed(() => desk.visible.length + 1), { gap: 16, min: 160, max: 960 })
 /** The tile width in use: fitted, or the one picked on the slider. */
 const tileWidth = computed(() => (tileFit.value ? fit.size.value : tileSize.value))
+
+const adding = ref(false)
 
 const nodeOptions = computed(() => [
   { value: 'all', label: 'All nodes' },
@@ -84,6 +88,7 @@ registerCommands(() => {
   if (scopeLive.value.length) {
     out.push({ id: 'record:scope-stop', title: `Stop ${scope}`, detail: `${scopeLive.value.length} recording`, group: 'This page', icon: Square, iconClass: 'text-tally!', keywords: ['end', 'bulk'], run: () => desk.bulk('stop', scopeLive.value) })
   }
+  out.push({ id: 'record:add-source', title: 'Add source', group: 'This page', icon: Plus, keywords: ['new', 'create', 'feed'], run: () => (adding.value = true) })
   out.push({ id: 'record:select-all', title: 'Select all visible feeds', group: 'This page', icon: ListChecks, shortcut: shortcut('A'), keywords: ['selection'], run: () => desk.selectAll() })
   if (desk.filtered) {
     out.push({ id: 'record:clear-filters', title: 'Clear filters', group: 'This page', icon: FilterX, keywords: ['reset', 'show all'], run: () => desk.clearFilters() })
@@ -191,12 +196,9 @@ useViewKeys((e) => {
       :class="wsStatus !== 'connected' && 'opacity-60'"
       @click.self="desk.clearSelection()"
     >
-      <div v-if="sources.sources.length === 0" class="text-center text-muted-foreground py-24">
-        <p class="text-sm font-medium text-foreground mb-1">No feeds yet</p>
-        <p class="text-xs">
-          Add a test source or scan for NDI sources in
-          <RouterLink to="/setup/sources" class="text-primary hover:underline">Setup → Sources</RouterLink>.
-        </p>
+      <div v-if="sources.sources.length === 0" class="flex flex-col items-center gap-3 text-center text-muted-foreground py-24">
+        <p class="text-sm font-medium text-foreground">No feeds yet</p>
+        <Button size="sm" class="gap-1.5" @click="adding = true"><Plus class="size-3.5" /> Add source</Button>
       </div>
       <div v-else-if="desk.visible.length === 0" class="text-center text-muted-foreground py-24 text-xs">
         No feeds match the filters.
@@ -209,8 +211,17 @@ useViewKeys((e) => {
         @click.self="desk.clearSelection()"
       >
         <FeedTile v-for="source in desk.visible" :key="source.key" :source="source" />
+        <button
+          type="button"
+          class="min-h-24 aspect-video rounded-lg border border-dashed border-border flex flex-col items-center justify-center gap-1.5 text-xs text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
+          @click="adding = true"
+        >
+          <Plus class="size-5" />
+          Add source
+        </button>
       </div>
     </div>
+    <SourceFormSheet v-if="adding" :source="null" @close="adding = false" />
   
 
   </div>

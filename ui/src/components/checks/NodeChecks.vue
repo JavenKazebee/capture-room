@@ -126,7 +126,13 @@ async function ask(c: CheckDto) {
               <span class="text-sm font-medium">{{ c.label }}</span>
               <span class="text-xs text-muted-foreground">{{ c.needed_for }}</span>
             </div>
-            <p class="text-xs mt-0.5" :class="isProblem(c) ? 'text-foreground' : 'text-muted-foreground'">{{ c.summary }}</p>
+            <p class="text-xs mt-0.5" :class="isProblem(c) ? 'text-foreground' : 'text-muted-foreground'">
+              {{ c.summary }}
+              <!-- A check that's fine still links to where its setting is. -->
+              <RouterLink v-if="c.status === 'ok' && c.fix?.route" :to="c.fix.route.path" class="text-primary hover:underline">
+                {{ c.fix.route.label }}
+              </RouterLink>
+            </p>
             <p v-if="c.used_by.length" class="text-xs text-muted-foreground mt-0.5">
               Needed by {{ c.used_by.join(', ') }}
             </p>

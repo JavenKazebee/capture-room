@@ -44,15 +44,20 @@ const LATENCY: Duration = Duration::from_millis(200);
 
 /// Why this node can't use Decklink cards, if it can't.
 pub fn unavailable(has: impl Fn(&str) -> bool) -> Option<String> {
+    missing(has).map(|m| format!("Needs {m}"))
+}
+
+/// What this node lacks to use Decklink cards, if anything.
+pub fn missing(has: impl Fn(&str) -> bool) -> Option<String> {
     if let Some(e) = SOURCE_ELEMENTS
         .iter()
         .chain(OUTPUT_ELEMENTS)
         .find(|e| !has(e))
     {
-        return Some(format!("GStreamer's decklink plugin is missing ({e})"));
+        return Some(format!("GStreamer's decklink plugin ({e})"));
     }
     if !driver_installed() {
-        return Some("Blackmagic Desktop Video isn't installed".into());
+        return Some("Blackmagic Desktop Video".into());
     }
     None
 }

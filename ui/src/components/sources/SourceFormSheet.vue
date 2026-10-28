@@ -41,7 +41,7 @@ const nodes = computed(() => nodesStore.reachable)
 type Kind = ConfiguredKind
 
 const NAME_PLACEHOLDERS: Record<Kind, string> = {
-  test: 'Camera 1 sim',
+  test: 'Test pattern',
   file: 'Camera 1 footage',
   stream: 'Stage cam (RTSP)',
   device: 'Cam Link 1',
@@ -65,7 +65,7 @@ const KIND_DESCRIPTIONS: Record<Kind, string> = {
   test: 'A synthetic feed: a video pattern plus a test audio signal.',
   file: "A media file on the node's disk, played in a loop as a live feed.",
   stream: 'A network stream. If it drops, the feed plays black and silence and recordings keep going until it reconnects.',
-  device: 'A camera, capture card or screen on the node, with audio from one of its audio inputs.',
+  device: 'A camera, USB capture device or screen on the node, with audio from one of its audio inputs.',
   decklink: 'An SDI (or HDMI) input on a Blackmagic Decklink card, with its embedded audio.',
   whip: 'An endpoint on the node that OBS or a browser publishes WebRTC to. Black and silence while nobody publishes.',
   channel: 'Plays clips from the media library out at a fixed format, operated from Playback. Black and silence when nothing plays.',
@@ -110,13 +110,38 @@ const unavailable = computed(() => {
   const out: Partial<Record<Kind, string>> = {}
   for (const t of node.value?.source_types ?? []) {
     if (t.missing.length && t.source_type !== 'ndi') {
-      out[t.source_type] = `Not available: this node lacks ${t.missing.join(', ')}`
+      out[t.source_type] = `Needs ${t.missing.join(', ')}`
     }
   }
   return out
 })
 const nodeDevices = useNodeDevices(nodeId)
 const nodeDecklink = useNodeDecklink(nodeId)
+
+/** The name the node gives a source saved without one (`default_name` in `api/node.rs`). */
+const defaultName = computed(() => {
+  switch (kind.value) {
+    case 'device':
+      if (device.value.video_device === PORTAL_SCREEN) return 'Screen'
+      return nodeDevices.devices.value.find((d) => d.key === device.value.video_device)?.name ?? ''
+    case 'decklink':
+      return nodeDecklink.status.value.cards.flatMap((c) => c.devices).find((d) => d.key === decklink.value.device)?.name ?? ''
+    case 'file':
+      return filePath.value.split(/[\\/]/).pop()?.replace(/\.[^.]*$/, '') ?? ''
+    case 'stream':
+      try {
+        return new URL(stream.value.url.trim()).hostname
+      } catch {
+        return ''
+      }
+    case 'whip':
+      return `WHIP :${whip.value.port}`
+    case 'test':
+      return 'Test pattern'
+    default:
+      return ''
+  }
+})
 
 function pickKind(k: Kind) {
   kind.value = k
@@ -144,13 +169,17 @@ function pickKind(k: Kind) {
   })
 }
 
-/** The device the source was saved with: its screen can be chosen only once it's saved as a portal screen. */
+/** The device the source was saved with: the node picks a screen only for a source saved as a portal screen. */
 const savedVideoDevice = ref<string | null>(null)
 
 async function chooseScreen() {
-  if (!props.source) return
+  let id = props.source?.id
+  if (!id || savedVideoDevice.value !== PORTAL_SCREEN) {
+    id = (await save())?.id
+    if (!id) return
+  }
   try {
-    await store.chooseScreen(nodeId.value, props.source.id)
+    await store.chooseScreen(nodeId.value, id)
   } catch (e) {
     notifyError("Couldn't open the screen picker", e, nodeId.value)
   }
@@ -239,31 +268,27 @@ function formConfig(): ConfiguredSourceRequest['config'] {
   }
 }
 
+/** Save and close; returns the saved source, or null if it wasn't. A blank name is filled in by the node. */
 async function save() {
-  if (saving.value) return
-  if (!name.value.trim()) {
-    formError.value = 'Name is required.'
-    return
-  }
+  if (saving.value) return null
   const problem = formProblem()
   if (problem) {
     formError.value = problem
-    return
+    return null
   }
   const req: ConfiguredSourceRequest = { name: name.value, config: formConfig() }
   saving.value = true
   formError.value = null
   try {
-    if (props.source) {
-      await store.updateSource(nodeId.value, props.source.id, req)
-      toast.success(`Saved ${req.name}`)
-    } else {
-      await store.createSource(nodeId.value, req)
-      toast.success(`Added ${req.name}`)
-    }
+    const saved = props.source
+      ? await store.updateSource(nodeId.value, props.source.id, req)
+      : await store.createSource(nodeId.value, req)
+    toast.success(`${props.source ? 'Saved' : 'Added'} ${saved.name}`)
     emit('close')
+    return saved
   } catch (e) {
     formError.value = errorMessage(e, 'Save failed.')
+    return null
   } finally {
     saving.value = false
   }
@@ -299,7 +324,7 @@ async function save() {
       </button>
 
       <FormField v-if="kind" label="Name" class="col-span-2">
-        <Input v-model="name" :placeholder="NAME_PLACEHOLDERS[kind]" />
+        <Input v-model="name" :placeholder="defaultName || NAME_PLACEHOLDERS[kind]" />
       </FormField>
 
       <StreamFields

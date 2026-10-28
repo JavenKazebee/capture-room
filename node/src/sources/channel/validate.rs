@@ -169,9 +169,7 @@ fn unique(
 /// `kind` outputs need every one of `elements`.
 fn needs(kind: &str, elements: &[&str], available: &dyn Fn(&str) -> bool) -> Result<(), String> {
     match elements.iter().find(|e| !available(e)) {
-        Some(missing) => Err(format!(
-            "{kind} outputs need {missing}, which isn't installed on this node"
-        )),
+        Some(missing) => Err(format!("{kind} outputs need {missing}: see Setup › Checks")),
         None => Ok(()),
     }
 }
@@ -182,7 +180,7 @@ fn needs_h264(kind: &str, available: &dyn Fn(&str) -> bool) -> Result<(), String
         return Ok(());
     }
     Err(format!(
-        "{kind} outputs need an H.264 encoder (x264enc), which isn't installed on this node"
+        "{kind} outputs need an H.264 encoder (x264enc): see Setup › Checks"
     ))
 }
 
