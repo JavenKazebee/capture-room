@@ -422,8 +422,7 @@ fn decklink_check(configured: &[ConfiguredSourceDto]) -> CheckDto {
         }
     } else {
         CheckFix {
-            steps: "Install Blackmagic Desktop Video on this machine, then restart the node: \
-                    the decklink plugin only looks for the driver once."
+            steps: "Install Blackmagic Desktop Video on this machine, then restart the node."
                 .into(),
             link: Some(CheckLink {
                 url: "https://www.blackmagicdesign.com/support/family/capture-and-playback".into(),
@@ -446,7 +445,7 @@ fn ndi_intake_check(ndi: &NdiSubscriptionsDto) -> CheckDto {
         "ndi_intake",
         CheckGroup::Network,
         "NDI intake",
-        "Keeping a node from pulling NDI feeds it doesn't use",
+        "How many NDI feeds this node takes in, used or not",
     );
     c.required = false;
     let connected = ndi.senders.iter().filter(|s| s.connected).count();
@@ -455,6 +454,14 @@ fn ndi_intake_check(ndi: &NdiSubscriptionsDto) -> CheckDto {
         NdiConnect::Chosen => format!("Connects to chosen senders: {}.", senders(connected)),
         NdiConnect::All => format!("Connects to every sender it finds: {}.", senders(connected)),
     };
+    // Where the setting is, whether or not it needs changing.
+    let mut fix = CheckFix {
+        route: Some(crate::api::types::CheckRoute {
+            path: "/setup/sources?ndi=1".into(),
+            label: "NDI senders".into(),
+        }),
+        ..Default::default()
+    };
     if ndi.connect == NdiConnect::All && connected > NDI_INTAKE_WARN {
         c.status = CheckStatus::Missing;
         c.summary = format!(
@@ -462,13 +469,11 @@ fn ndi_intake_check(ndi: &NdiSubscriptionsDto) -> CheckDto {
             senders(connected),
             connected * 130
         );
-        c.fix = Some(CheckFix {
-            steps: "If this node only needs some of them (a replay node, say), set it to connect \
-                    only to those in Setup › Sources › NDI senders."
-                .into(),
-            ..Default::default()
-        });
+        fix.steps = "If this node only needs some of them (a replay node, say), connect only to \
+                     those."
+            .into();
     }
+    c.fix = Some(fix);
     c
 }
 

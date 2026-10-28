@@ -44,6 +44,11 @@ export const router = createRouter({
       component: () => import('@/views/RecordView.vue'),
     },
     {
+      path: '/recordings',
+      name: 'recordings',
+      component: () => import('@/views/RecordingsView.vue'),
+    },
+    {
       path: '/playback',
       name: 'playback',
       component: () => import('@/views/PlaybackView.vue'),
@@ -52,11 +57,6 @@ export const router = createRouter({
       path: '/replay',
       name: 'replay',
       component: () => import('@/views/ReplayView.vue'),
-    },
-    {
-      path: '/recordings',
-      name: 'recordings',
-      component: () => import('@/views/RecordingsView.vue'),
     },
     {
       path: '/schedule',

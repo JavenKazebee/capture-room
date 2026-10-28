@@ -305,7 +305,8 @@ async fn validated(
     mut req: ConfiguredSourceRequest,
 ) -> ApiResult<ConfiguredSourceRequest> {
     req.name = req.name.trim().to_string();
-    if req.name.is_empty() {
+    // A channel's name goes into its checks below, so it can't be filled in after.
+    if req.name.is_empty() && matches!(req.config, SourceConfig::Channel(_)) {
         return Err(ApiError::bad("name is required"));
     }
     let devices = state.source_manager.read().await.devices().clone();
@@ -378,7 +379,36 @@ async fn validated(
         cfg.path = cfg.path.trim().to_string();
         cfg.media = Some(super::probe(cfg.path.clone()).await?);
     }
+    if req.name.is_empty() {
+        req.name = default_name(&req.config);
+    }
     Ok(req)
+}
+
+/// A name for a source saved without one: what it captures, as the
+/// validation above filled it in.
+fn default_name(config: &SourceConfig) -> String {
+    let name = match config {
+        SourceConfig::Device(c) if c.video_device == portal::KEY => "Screen".into(),
+        SourceConfig::Device(c) => c.video_device_name.clone(),
+        SourceConfig::Decklink(c) => c.device_name.clone(),
+        SourceConfig::File(c) => std::path::Path::new(&c.path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        SourceConfig::Stream(c) => reqwest::Url::parse(&c.url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+            .unwrap_or_else(|| c.url.clone()),
+        SourceConfig::Test(_) => "Test pattern".into(),
+        SourceConfig::Whip(c) => format!("WHIP :{}", c.port),
+        SourceConfig::Channel(_) => String::new(),
+    };
+    if name.is_empty() {
+        "Source".into()
+    } else {
+        name
+    }
 }
 
 async fn post_configured_source(
@@ -1321,6 +1351,22 @@ async fn build_legs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_blank_name_defaults_to_what_is_captured() {
+        let file = SourceConfig::File(crate::api::types::FileSourceConfig {
+            path: "/media/Camera 1.mov".into(),
+            media: None,
+        });
+        assert_eq!(default_name(&file), "Camera 1");
+        let stream = SourceConfig::Stream(
+            serde_json::from_value(
+                serde_json::json!({ "url": "rtsp://user:pw@10.0.0.5:554/live" }),
+            )
+            .unwrap(),
+        );
+        assert_eq!(default_name(&stream), "10.0.0.5");
+    }
 
     fn session(output_paths: &[&str], files: Vec<Vec<&str>>) -> RecordingSessionDto {
         RecordingSessionDto {

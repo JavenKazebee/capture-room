@@ -141,8 +141,8 @@ pub fn source_types(can_display: bool) -> Vec<SourceTypeSupport> {
     }
     // Decklink needs the driver too: unavailable without it, with why.
     let mut decklink = support(SourceType::Decklink, &[]);
-    match crate::sources::decklink::unavailable(has) {
-        Some(reason) => decklink.missing.push(reason),
+    match crate::sources::decklink::missing(has) {
+        Some(missing) => decklink.missing.push(missing),
         None => channel.protocols.push("decklink".into()),
     }
     vec![stream, device, whip, channel, decklink]

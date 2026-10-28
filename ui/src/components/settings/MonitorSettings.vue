@@ -118,7 +118,7 @@ const meterRates = computed(() =>
   <section id="monitoring" class="space-y-2 scroll-mt-4">
     <div>
       <h2 class="text-base font-semibold tracking-tight">Monitoring</h2>
-      <p class="text-xs text-muted-foreground">How each source's thumbnail and audio meter are sampled for the Record view. Shared by every node.</p>
+      <p class="text-xs text-muted-foreground">How each source's thumbnail and audio meter are sampled for the Record view. Applies to every node this controller manages.</p>
     </div>
     <LoadError :error="monitorError" :retry="retryMonitoring" />
     <div class="rounded-lg border border-border bg-card overflow-hidden">
