@@ -58,13 +58,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           fails=0
-          for i in $(seq 20); do
+          for i in $(seq 50); do
             cargo test -p capture-room --features export-types 2>&1 | tee out.txt | tail -3
             if grep -q "saved_clip_outlives_buffer_and_exports ... FAILED" out.txt; then
               fails=$((fails+1)); grep -E "DIAG|of sound for" out.txt | head -400
             fi
           done
-          echo "FLAKES $fails / 20"
+          echo "FLAKES $fails / 50"
 
       - uses: taiki-e/install-action@v2
         if: ${{ !cancelled() }}
