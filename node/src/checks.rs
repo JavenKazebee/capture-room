@@ -111,7 +111,13 @@ fn permission_check(
         Permission::Camera => ("Camera", "Capture cards, USB HDMI dongles and webcams"),
         Permission::Microphone => (
             "Microphone",
-            "Audio from audio devices: interfaces, a dongle's own audio, Dante Virtual Soundcard",
+            if cfg!(target_os = "macos") {
+                "Listing and using audio devices: interfaces, a dongle's own audio, Dante \
+                 Virtual Soundcard, outputs for a display's sound"
+            } else {
+                "Audio from audio devices: interfaces, a dongle's own audio, Dante Virtual \
+                 Soundcard"
+            },
         ),
         Permission::ScreenRecording => ("Screen Recording", "Capturing this machine's screens"),
     };
@@ -138,9 +144,15 @@ fn permission_check(
         Access::Granted => c.summary = "Allowed.".into(),
         Access::NotAsked => {
             c.status = CheckStatus::NotAsked;
-            c.summary = "macOS hasn't asked yet; it will the first time a source needs it.".into();
+            c.summary = if permission == Permission::Microphone {
+                // See `sources::device::AUDIO_CLASSES`.
+                "macOS hasn't asked yet. Audio devices are listed once it's allowed."
+            } else {
+                "macOS hasn't asked yet; it will the first time a source needs it."
+            }
+            .into();
             c.fix = Some(settings(
-                "Ask macOS now, and allow it in the prompt on this machine.".into(),
+                "Request access, and allow it in the prompt on this machine.".into(),
                 true,
             ));
         }
@@ -158,18 +170,18 @@ fn permission_check(
         }
         Access::Denied => {
             c.status = CheckStatus::Missing;
-            // macOS doesn't say whether it has asked about screen recording,
-            // and only asks once, so offering its prompt would mostly do nothing.
+            // macOS doesn't say whether it has asked about screen recording;
+            // asking again does nothing once it has.
             if permission == Permission::ScreenRecording {
                 c.summary = "Not allowed (or not asked yet).".into();
                 c.fix = Some(settings(
                     format!(
-                        "In System Settings › Privacy & Security › {pane}, turn it on for {}; \
-                         if it isn't listed, add it with +. Then restart the node: macOS \
-                         applies it on the next launch.",
+                        "Request access to have macOS ask, or turn it on in System Settings › \
+                         Privacy & Security › {pane} for {}; if it isn't listed, add it with +. \
+                         Then restart the node: macOS applies it on the next launch.",
                         who
                     ),
-                    false,
+                    true,
                 ));
             } else {
                 c.summary = "Denied.".into();

@@ -14,10 +14,12 @@ import { withPairedAudio } from '@/lib/deviceAudio'
 import { Button } from '@/components/ui/button'
 import FormField from '@/components/FormField.vue'
 import OptionSelect from '@/components/OptionSelect.vue'
+import PermissionNotice from '@/components/checks/PermissionNotice.vue'
 import AudioPlanField from './AudioPlanField.vue'
 
 /** A capture device (camera, capture card, screen) and the audio paired with it. */
 const props = defineProps<{
+  nodeId: string
   devices: DeviceDto[]
   loading: boolean
   error: string | null
@@ -30,6 +32,7 @@ const cfg = defineModel<DeviceSourceConfig>({ required: true })
 
 const video = computed(() => props.devices.filter((d) => d.kind === 'video' || d.kind === 'screen'))
 const current = computed(() => video.value.find((d) => d.key === cfg.value.video_device))
+const hasScreens = computed(() => video.value.some((d) => d.kind === 'screen'))
 
 function modeLabel(m: DeviceMode) {
   const rate = m.fps_num ? ` ${fpsLabel([m.fps_num, m.fps_den])}` : ''
@@ -115,6 +118,13 @@ const mode = computed({
     <p v-else-if="!loading && !video.length" class="-mt-1.5 text-xs text-muted-foreground">
       No cameras or capture cards on this node. Plug one in and refresh.
     </p>
+    <PermissionNotice
+      v-if="!loading && !hasScreens"
+      :node-id="nodeId"
+      permission="screen_recording"
+      class="-mt-1.5"
+      @answered="emit('refresh')"
+    />
 
     <div v-if="cfg.video_device === PORTAL_SCREEN" class="-mt-1.5 flex flex-col gap-2">
       <p class="text-xs text-muted-foreground">
@@ -139,6 +149,6 @@ const mode = computed({
       <OptionSelect v-model="mode" :options="modeOptions" />
     </FormField>
 
-    <AudioPlanField v-model="cfg.audio" :devices="devices" />
+    <AudioPlanField v-model="cfg.audio" :devices="devices" :node-id="nodeId" @refresh="emit('refresh')" />
   </div>
 </template>

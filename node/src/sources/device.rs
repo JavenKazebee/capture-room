@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
 use gstreamer::{self as gst, prelude::*};
@@ -17,15 +17,16 @@ use crate::pipeline::{capsfilter, make_el};
 
 /// Device classes the monitor watches. Screens are `Source/Monitor` on
 /// Windows and Linux under X11 (`super::x11`) and video sources on macOS;
-/// under Wayland they come from the portal (`super::portal`), not a provider. Audio sinks play display outputs'
-/// sound; Decklink playout sub-devices are hardware video sinks.
-const CLASSES: &[&str] = &[
-    "Video/Source",
-    "Audio/Source",
-    "Source/Monitor",
-    "Audio/Sink",
-    "Video/Sink/Hardware",
-];
+/// under Wayland they come from the portal (`super::portal`), not a provider.
+/// Decklink playout sub-devices are hardware video sinks.
+const CLASSES: &[&str] = &["Video/Source", "Source/Monitor", "Video/Sink/Hardware"];
+
+/// Audio inputs, and the outputs that play display outputs' sound. Watched by
+/// a monitor of their own: macOS's CoreAudio provider opens every input to
+/// probe it, sources and sinks alike, which shows the microphone prompt. So
+/// on macOS they wait until microphone access is allowed, and the prompt
+/// comes from Setup › Checks.
+const AUDIO_CLASSES: &[&str] = &["Audio/Source", "Audio/Sink"];
 
 /// Modes listed per video device, at most.
 const MAX_MODES: usize = 32;
@@ -35,6 +36,8 @@ const MAX_MODES: usize = 32;
 /// device's stable key is found is platform-specific.
 pub struct LocalDevices {
     monitor: gst::DeviceMonitor,
+    /// Started by [`Self::watch_audio`].
+    audio: Mutex<Option<gst::DeviceMonitor>>,
     pub decklink_profiles: Profiles,
     pub screencasts: Screencasts,
 }
@@ -42,22 +45,31 @@ pub struct LocalDevices {
 impl LocalDevices {
     /// Blocking: starting a monitor probes the providers.
     pub fn start() -> Self {
-        let monitor = gst::DeviceMonitor::new();
-        // PipeWire's provider hides the v4l2 and PulseAudio ones it
-        // duplicates; show them, and skip PipeWire's (see `usable`).
-        monitor.set_show_all_devices(true);
-        for class in CLASSES {
-            monitor.add_filter(Some(class), None);
-        }
-        if let Err(e) = monitor.start() {
-            warn!("device monitor failed to start: {e}");
-        }
-        portal::start();
-        Self {
-            monitor,
+        let devices = Self {
+            monitor: start_monitor(CLASSES),
+            audio: Mutex::new(None),
             decklink_profiles: Profiles::default(),
             screencasts: Screencasts::default(),
+        };
+        devices.watch_audio();
+        portal::start();
+        devices
+    }
+
+    /// Start watching audio devices, once the OS allows it. Blocking the
+    /// first time: starting a monitor probes the providers.
+    pub fn watch_audio(&self) {
+        let mut audio = self.audio.lock().unwrap();
+        if audio.is_some() || !audio_allowed() {
+            return;
         }
+        *audio = Some(start_monitor(AUDIO_CLASSES));
+    }
+
+    /// Whether audio devices are listed; on macOS, not until microphone
+    /// access is allowed.
+    pub fn watching_audio(&self) -> bool {
+        self.audio.lock().unwrap().is_some()
     }
 
     /// No devices: a monitor that's never started.
@@ -65,24 +77,27 @@ impl LocalDevices {
     pub fn none() -> Self {
         Self {
             monitor: gst::DeviceMonitor::new(),
+            audio: Mutex::new(None),
             decklink_profiles: Profiles::default(),
             screencasts: Screencasts::default(),
         }
     }
 
     pub(super) fn all(&self) -> Vec<gst::Device> {
-        self.monitor.devices().into_iter().collect()
+        let audio = self.audio.lock().unwrap();
+        let audio = audio.iter().flat_map(|m| m.devices());
+        self.monitor.devices().into_iter().chain(audio).collect()
     }
 
+    /// Blocking if microphone access was allowed since the last call: see
+    /// [`Self::watch_audio`].
     pub fn list(&self) -> Vec<DeviceDto> {
+        // Picks up a microphone grant made since the last look.
+        self.watch_audio();
         let mut seen = BTreeSet::new();
         // Decklink sub-devices are listed by `GET /decklink` instead.
-        let devices: Vec<gst::Device> = self
-            .monitor
-            .devices()
-            .into_iter()
-            .filter(|d| !is_decklink(d))
-            .collect();
+        let devices: Vec<gst::Device> =
+            self.all().into_iter().filter(|d| !is_decklink(d)).collect();
         let has_pulse = devices.iter().any(is_pulse);
         let mut list: Vec<(bool, DeviceDto)> = devices
             .into_iter()
@@ -102,16 +117,22 @@ impl LocalDevices {
     }
 
     fn find(&self, key: &str) -> Option<gst::Device> {
-        self.monitor
-            .devices()
-            .into_iter()
-            .find(|d| device_key(d) == key)
+        self.all().into_iter().find(|d| device_key(d) == key)
     }
 
     fn element(&self, key: &str, name: &str) -> Result<(gst::Element, DeviceDto)> {
-        let device = self
-            .find(key)
-            .ok_or_else(|| anyhow!("{} isn't connected", display(key, name)))?;
+        let device = self.find(key).ok_or_else(|| {
+            let audio = key.starts_with("audio:") || key.starts_with("output:");
+            if audio && !self.watching_audio() {
+                anyhow!(
+                    "macOS hasn't allowed microphone access, needed to list audio devices like \
+                     {}: allow it in Setup › Checks",
+                    display(key, name)
+                )
+            } else {
+                anyhow!("{} isn't connected", display(key, name))
+            }
+        })?;
         let dto = describe(&device);
         super::privacy::check(dto.kind, &dto.name)?;
         Ok((open(&device)?, dto))
@@ -155,7 +176,30 @@ impl LocalDevices {
 impl Drop for LocalDevices {
     fn drop(&mut self) {
         self.monitor.stop();
+        if let Some(audio) = self.audio.get_mut().unwrap().as_ref() {
+            audio.stop();
+        }
     }
+}
+
+fn start_monitor(classes: &[&str]) -> gst::DeviceMonitor {
+    let monitor = gst::DeviceMonitor::new();
+    // PipeWire's provider hides the v4l2 and PulseAudio ones it
+    // duplicates; show them, and skip PipeWire's (see `usable`).
+    monitor.set_show_all_devices(true);
+    for class in classes {
+        monitor.add_filter(Some(class), None);
+    }
+    if let Err(e) = monitor.start() {
+        warn!("device monitor failed to start: {e}");
+    }
+    monitor
+}
+
+/// Whether the OS lets the node probe audio devices without a prompt.
+fn audio_allowed() -> bool {
+    use super::privacy::{access, Access, Permission};
+    !cfg!(target_os = "macos") || access(Permission::Microphone) == Some(Access::Granted)
 }
 
 /// An element capturing from `device` that finds it again after a replug:
@@ -674,5 +718,92 @@ mod tests {
         assert_eq!(link_to(&links, &missing), None);
         assert_eq!(link_to(&dir.join("none"), &target), None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod mac_tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use gstreamer_app as gst_app;
+
+    use super::*;
+
+    /// The built-in microphone is mono but offers stereo too, so it's listed
+    /// with 2 channels; both picked, it still plays sound, not the fallback's
+    /// silence.
+    #[test]
+    #[ignore = "opens the built-in microphone (needs microphone access); run with --ignored"]
+    fn built_in_microphone_has_level() {
+        gst::init().unwrap();
+        gstfallbackswitch::plugin_register_static().unwrap();
+        let devices = LocalDevices::start();
+        assert!(
+            devices.watching_audio(),
+            "macOS hasn't allowed microphone access"
+        );
+        let mic = devices
+            .list()
+            .into_iter()
+            .find(|d| d.key == "audio:BuiltInMicrophoneDevice")
+            .expect("a built-in microphone");
+        let channels = vec![1, 2];
+        let audio = devices
+            .audio(&AudioPlan::Device {
+                device_key: mic.key.clone(),
+                channels,
+            })
+            .unwrap();
+        let tracker = Arc::new(LinkTracker::default());
+        let bin = live::build_bin(LiveInput {
+            id: "mic",
+            source: make_el("videotestsrc", "v").unwrap(),
+            audio,
+            format: None,
+            tracker: &tracker,
+            direct: false,
+            latency: None,
+        })
+        .unwrap();
+
+        // Peak sample, in thousandths.
+        let peak = Arc::new(AtomicU32::new(0));
+        let peak_ = peak.clone();
+        let sink = gst_app::AppSink::builder()
+            .caps(
+                &gst::Caps::builder("audio/x-raw")
+                    .field("format", "F32LE")
+                    .build(),
+            )
+            .sync(false)
+            .build();
+        sink.set_callbacks(
+            gst_app::AppSinkCallbacks::builder()
+                .new_sample(move |s| {
+                    let sample = s.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                    let map = sample.buffer().unwrap().map_readable().unwrap();
+                    for f in map.as_chunks::<4>().0 {
+                        let v = f32::from_le_bytes(*f).abs();
+                        peak_.fetch_max((v * 1000.0) as u32, Ordering::Relaxed);
+                    }
+                    Ok(gst::FlowSuccess::Ok)
+                })
+                .build(),
+        );
+        let vsink = make_el("fakesink", "vsink").unwrap();
+        let pipeline = gst::Pipeline::new();
+        pipeline
+            .add_many([bin.upcast_ref(), sink.upcast_ref(), &vsink])
+            .unwrap();
+        bin.link_pads(Some("audio"), &sink, None).unwrap();
+        bin.link_pads(Some("video"), &vsink, None).unwrap();
+        pipeline.set_state(gst::State::Playing).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        let fb = bin.by_name("live-afb-mic").unwrap();
+        let stats = fb.property::<gst::Structure>("statistics");
+        pipeline.set_state(gst::State::Null).unwrap();
+
+        assert_eq!(stats.get::<u64>("num-retry").unwrap(), 0, "{stats}");
+        assert!(peak.load(Ordering::Relaxed) > 0, "only silence");
     }
 }
