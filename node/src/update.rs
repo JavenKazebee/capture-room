@@ -70,7 +70,6 @@ impl Updater {
 
     /// Show why an update couldn't start, on the menu bar icon (the API
     /// answers with the error instead).
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub fn fail(&self, error: String) {
         self.set(|s| s.error = Some(error));
     }
