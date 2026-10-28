@@ -84,6 +84,12 @@ pub fn install(controller: bool, port: Option<u16>) -> Result<Installed> {
 
     let mut job = Dictionary::new();
     job.insert("Label".into(), LABEL.into());
+    // Login Items and the "Background Items Added" alert name a bare job after
+    // its executable; this ties it to the app bundle so they say Capture Room.
+    job.insert(
+        "AssociatedBundleIdentifiers".into(),
+        Value::Array(vec![LABEL.into()]),
+    );
     job.insert(
         "ProgramArguments".into(),
         Value::Array(args.into_iter().map(Value::from).collect()),
