@@ -89,6 +89,71 @@ fn replay_root(folder: &str, node_id: &str) -> std::path::PathBuf {
     storage::default_folder().join(folder).join(node_id)
 }
 
+/// Raise the open-file limit as far as the system allows. A recording feed
+/// holds about a dozen (its files, and a socket pair for each pipeline's
+/// bus), and macOS starts an app with 256: fewer than 20 feeds.
+#[cfg(unix)]
+fn raise_open_file_limit() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `limit` is an rlimit, which is what this call writes.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        warn!(error = %std::io::Error::last_os_error(), "couldn't read the open-file limit");
+        return;
+    }
+    // macOS reports no hard limit but refuses more than this.
+    #[cfg(target_os = "macos")]
+    let max = limit.rlim_max.min(macos_max_files_per_process());
+    #[cfg(not(target_os = "macos"))]
+    let max = limit.rlim_max;
+    if max <= limit.rlim_cur {
+        return;
+    }
+    let raised = libc::rlimit {
+        rlim_cur: max,
+        rlim_max: limit.rlim_max,
+    };
+    // SAFETY: a valid rlimit, read by the call.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } == 0 {
+        info!(
+            from = limit.rlim_cur,
+            to = max,
+            "raised the open-file limit"
+        );
+    } else {
+        warn!(
+            limit = limit.rlim_cur,
+            error = %std::io::Error::last_os_error(),
+            "couldn't raise the open-file limit; recording many feeds may fail"
+        );
+    }
+}
+
+/// `kern.maxfilesperproc`, or the classic 10240 if it can't be read.
+#[cfg(target_os = "macos")]
+fn macos_max_files_per_process() -> libc::rlim_t {
+    let mut max: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>();
+    // SAFETY: the name is a C string and `max` is an int `len` bytes long,
+    // which is what this sysctl writes.
+    let ok = unsafe {
+        libc::sysctlbyname(
+            c"kern.maxfilesperproc".as_ptr(),
+            (&mut max as *mut libc::c_int).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    } == 0;
+    if ok && max > 0 {
+        max as libc::rlim_t
+    } else {
+        10240
+    }
+}
+
 fn main() -> Result<()> {
     let mut args = Args::parse();
     match args.command.take() {
@@ -148,6 +213,8 @@ async fn run(
     }
     #[cfg(unix)]
     service::log_rotation::spawn();
+    #[cfg(unix)]
+    raise_open_file_limit();
 
     if let Some(dir) = &bundled_gst {
         info!(dir = %dir.display(), "using the GStreamer bundled in");
