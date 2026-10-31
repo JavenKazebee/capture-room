@@ -10,14 +10,17 @@
 //! the channel's exact format (or double the rate for 29.97), the window goes
 //! exclusive in that mode, which sets the screen to it (what an HDMI→SDI
 //! converter needs); otherwise it fills the screen and the video is scaled.
+//! Under Wayland it's always scaled: the window loop runs on XWayland, which
+//! can't really change a screen's mode.
 
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
@@ -35,6 +38,10 @@ mod mac;
 
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Set when the window loop panicked: its windows are gone, and the node
+/// carries on without display outputs.
+static LOOP_LOST: AtomicBool = AtomicBool::new(false);
+
 pub struct DisplayWindow {
     proxy: EventLoopProxy<Command>,
     id: WindowId,
@@ -49,6 +56,11 @@ pub struct DisplayWindow {
 impl DisplayWindow {
     pub fn connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)
+    }
+
+    /// Whether the window loop stopped, taking this window with it.
+    pub fn lost(&self) -> bool {
+        LOOP_LOST.load(Ordering::Relaxed)
     }
 
     /// Show or hide the window (it stays open, in its mode).
@@ -179,8 +191,21 @@ pub fn run<T: Send + 'static>(
         proxy: Some(event_loop.create_proxy()),
         ..WindowLoop::default()
     };
-    if let Err(e) = event_loop.run_app(&mut window_loop) {
-        warn!(error = %e, "window loop failed");
+    // winit's X11 backend `expect`s on XRandR errors (a mode change the
+    // server refuses), on this thread: unwinding past here would end the
+    // process, and a service manager restarting it would reopen the output
+    // and fail again. Lose the windows instead and keep the node.
+    let run = std::panic::catch_unwind(AssertUnwindSafe(|| event_loop.run_app(&mut window_loop)));
+    match run {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => warn!(error = %e, "window loop failed"),
+        Err(_) => {
+            LOOP_LOST.store(true, Ordering::Relaxed);
+            error!("window loop panicked: display outputs stopped until the node restarts");
+            // Closing its windows puts their screens' modes back, which can
+            // panic the same way.
+            std::mem::forget(window_loop);
+        }
     }
     match node.join() {
         Ok(result) => result,
@@ -390,7 +415,9 @@ impl WindowLoop {
             .available_monitors()
             .find(|m| display_id(m) == screen)
             .ok_or_else(|| format!("display {screen} isn't connected"))?;
-        let mode = best_mode(&monitor, format);
+        let exact = best_mode(&monitor, format);
+        let mode_refused = exact.is_some() && !can_set_mode();
+        let mode = exact.filter(|_| !mode_refused);
         let attributes = Window::default_attributes()
             .with_title("Capture Room output")
             .with_decorations(false);
@@ -409,10 +436,14 @@ impl WindowLoop {
                     size.height,
                     monitor.refresh_rate_millihertz().unwrap_or(0),
                 );
-                format!(
-                    "{current} (no {}×{} mode at the channel's rate: scaled)",
-                    format.width, format.height
-                )
+                if mode_refused {
+                    format!("{current} (Wayland can't change the screen's mode: scaled)")
+                } else {
+                    format!(
+                        "{current} (no {}×{} mode at the channel's rate: scaled)",
+                        format.width, format.height
+                    )
+                }
             }
         };
         // Named, where the OS gives a name: "LG HDR 4K · 1920×1080 at 60 Hz".
@@ -605,6 +636,20 @@ pub fn refresh_rates(format: VideoFormat) -> [u32; 2] {
 /// 59940 or a few mHz either side.
 fn same_rate(mode: u32, wanted: u32) -> bool {
     mode.abs_diff(wanted) <= 10
+}
+
+/// Whether a window may set its screen's mode. Under Wayland the window is an
+/// XWayland one, and XWayland only emulates mode changes: winit's X11 backend
+/// panics when one fails, so the window fills the screen and scales instead.
+fn can_set_mode() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        crate::sources::x11::x11_session()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
 }
 
 /// The screen's mode at `format`'s size and a rate that suits it.

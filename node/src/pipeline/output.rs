@@ -450,6 +450,9 @@ struct DisplayRunning {
 
 impl RunningOutput for DisplayRunning {
     fn error(&self) -> Option<String> {
+        if self.window.lost() {
+            return Some("the window system failed; restart the node to show this output".into());
+        }
         if !self.window.connected() {
             return Some(
                 "the screen is unplugged; the output comes back when it's plugged in".into(),
