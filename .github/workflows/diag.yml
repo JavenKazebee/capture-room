@@ -42,8 +42,8 @@ jobs:
       - name: Build tests
         shell: bash
         run: |
-          cargo test --no-run 2>&1 | tee build.txt
-          exe=$(grep -o 'src/main.rs ([^)]*)' build.txt | sed -E 's/.*\((.*)\)/\1/')
+          cargo test --no-run --color never 2>&1 | tee build.txt
+          exe=$(grep -o 'src.main\.rs ([^)]*)' build.txt | sed -E 's/.*\((.*)\)/\1/')
           echo "EXE=$exe" >> $GITHUB_ENV
           echo "exe: $exe"
       - name: Loop tests under cdb
