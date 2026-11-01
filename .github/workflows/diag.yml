@@ -6,12 +6,18 @@ on:
 
 jobs:
   windows:
-    name: Windows exit crash (shard ${{ matrix.shard }})
+    name: ${{ matrix.subset.name }} ${{ matrix.shard }}
     runs-on: windows-2025
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5]
+        shard: [a, b]
+        subset:
+          - { name: no-gst, args: "--skip pipeline:: --skip sources:: --skip clock::" }
+          - { name: pipeline, args: "pipeline::" }
+          - { name: sources, args: "sources::" }
+          - { name: clock, args: "clock::" }
+          - { name: all, args: "" }
     steps:
       - uses: actions/checkout@v7
       - name: GStreamer
@@ -46,35 +52,24 @@ jobs:
           exe=$(grep -o 'src.main\.rs ([^)]*)' build.txt | sed -E 's/.*\((.*)\)/\1/')
           echo "EXE=$exe" >> $GITHUB_ENV
           echo "exe: $exe"
-      - name: Loop tests under cdb
-        shell: pwsh
+      - name: Loop subset
+        shell: bash
         working-directory: node
         run: |
-          $cdb = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Filter cdb.exe | Where-Object { $_.FullName -match "x64" } | Select-Object -First 1 -ExpandProperty FullName
-          $env:_NT_SYMBOL_PATH = "srv*C:\symcache*https://msdl.microsoft.com/download/symbols;$env:GITHUB_WORKSPACE\target\debug\deps"
-          $exe = Join-Path $env:GITHUB_WORKSPACE $env:EXE
-          $cmds = 'sxe -c ".echo CRASH_FASTFAIL; .lines -e; r; kn 80; .echo ALL_THREADS; ~*kn 40; .echo MODULES; lm; q" c0000409; sxe -c ".echo CRASH_AV; kn 80; ~*kn 40; q" av; sxi ld; sxi ud; sxi ct; sxi et; g'
-          $crashes = 0
-          for ($i = 1; $i -le 60; $i++) {
-            & $cdb -G -c $cmds $exe 2>&1 | Out-File -Encoding utf8 out.txt
-            $text = Get-Content out.txt -Raw
-            if ($text -match "CRASH_") {
-              $crashes++
-              "===== RUN $i CRASHED"
-              Get-Content out.txt | Select-String -Pattern "test result|CRASH_" | ForEach-Object { $_.Line }
-              $lines = Get-Content out.txt
-              $idx = ($lines | Select-String -Pattern "CRASH_" | Select-Object -First 1).LineNumber
-              $lines[($idx-1)..($lines.Length-1)] | Select-Object -First 2500
-            } elseif ($text -notmatch "test result: ok") {
-              "===== RUN $i OTHER"; Get-Content out.txt -Tail 40
-            }
-          }
-          "CRASHES $crashes / 60"
-          exit 0
+          exe="$GITHUB_WORKSPACE/$EXE"
+          fails=0
+          for i in $(seq 100); do
+            "$exe" ${{ matrix.subset.args }} > out.txt 2>&1
+            code=$?
+            if [ $code -ne 0 ]; then
+              fails=$((fails+1)); echo "RUN $i EXIT $code"; grep -E "test result|FAILED|panicked" out.txt | head -5
+            fi
+          done
+          echo "CRASHES ${{ matrix.subset.name }} $fails / 100"
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
-          name: dumps-${{ matrix.shard }}
+          name: dumps-${{ matrix.subset.name }}-${{ matrix.shard }}
           path: C:\dumps
           if-no-files-found: ignore
           retention-days: 5
