@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v7
       - name: GStreamer
@@ -40,30 +40,37 @@ jobs:
           Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Filter cdb.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
           exit 0
       - name: Build tests
-        run: cargo test --no-run
-      - name: Loop tests
         shell: bash
         run: |
-          fails=0
-          for i in $(seq 50); do
-            export GST_REGISTRY="C:\\reg\\$i.bin"
-            if ! cargo test --bin capture-room > out.txt 2>&1; then
-              fails=$((fails+1)); echo "RUN $i FAILED"; tail -8 out.txt
-            fi
-          done
-          echo "CRASHES $fails / 50"
-          ls -la /c/dumps || true
-      - name: Analyze dumps
-        if: ${{ !cancelled() }}
+          cargo test --no-run 2>&1 | tee build.txt
+          exe=$(grep -o 'src/main.rs ([^)]*)' build.txt | sed -E 's/.*\((.*)\)/\1/')
+          echo "EXE=$exe" >> $GITHUB_ENV
+          echo "exe: $exe"
+      - name: Loop tests under cdb
         shell: pwsh
+        working-directory: node
         run: |
-          $cdb = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Filter cdb.exe -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match "x64" } | Select-Object -First 1 -ExpandProperty FullName
-          "cdb: $cdb"
-          $env:_NT_SYMBOL_PATH = "srv*C:\symcache*https://msdl.microsoft.com/download/symbols;C:\gstreamer\1.0\msvc_x86_64\bin;C:\gstreamer\1.0\msvc_x86_64\lib\gstreamer-1.0;$env:GITHUB_WORKSPACE\target\debug\deps"
-          foreach ($d in Get-ChildItem C:\dumps -Filter *.dmp -ErrorAction SilentlyContinue | Select-Object -First 3) {
-            "===== $($d.Name)"
-            if ($cdb) { & $cdb -z $d.FullName -c ".lines -e; .ecxr; kn 60; !analyze -v; ~*kn 40; lm; q" 2>&1 | Select-Object -First 1500 }
+          $cdb = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Filter cdb.exe | Where-Object { $_.FullName -match "x64" } | Select-Object -First 1 -ExpandProperty FullName
+          $env:_NT_SYMBOL_PATH = "srv*C:\symcache*https://msdl.microsoft.com/download/symbols;$env:GITHUB_WORKSPACE\target\debug\deps"
+          $exe = Join-Path $env:GITHUB_WORKSPACE $env:EXE
+          $cmds = 'sxe -c ".echo CRASH_FASTFAIL; .lines -e; r; kn 80; .echo ALL_THREADS; ~*kn 40; .echo MODULES; lm; q" c0000409; sxe -c ".echo CRASH_AV; kn 80; ~*kn 40; q" av; sxi ld; sxi ud; sxi ct; sxi et; g'
+          $crashes = 0
+          for ($i = 1; $i -le 60; $i++) {
+            & $cdb -G -c $cmds $exe 2>&1 | Out-File -Encoding utf8 out.txt
+            $text = Get-Content out.txt -Raw
+            if ($text -match "CRASH_") {
+              $crashes++
+              "===== RUN $i CRASHED"
+              Get-Content out.txt | Select-String -Pattern "test result|CRASH_" | ForEach-Object { $_.Line }
+              $lines = Get-Content out.txt
+              $idx = ($lines | Select-String -Pattern "CRASH_" | Select-Object -First 1).LineNumber
+              $lines[($idx-1)..($lines.Length-1)] | Select-Object -First 2500
+            } elseif ($text -notmatch "test result: ok") {
+              "===== RUN $i OTHER"; Get-Content out.txt -Tail 40
+            }
           }
+          "CRASHES $crashes / 60"
+          exit 0
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
