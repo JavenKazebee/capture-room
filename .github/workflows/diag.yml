@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
       - name: GStreamer
@@ -34,6 +34,9 @@ jobs:
           Set-ItemProperty -Path "$k\LocalDumps" -Name DumpFolder -Value "C:\dumps" -Type ExpandString
           Set-ItemProperty -Path "$k\LocalDumps" -Name DumpType -Value 2 -Type DWord
           Set-ItemProperty -Path "$k\LocalDumps" -Name DumpCount -Value 20 -Type DWord
+          powershell -Command "[Environment]::FailFast('dump sanity check')"; "failfast exit: $LASTEXITCODE"
+          Start-Sleep 5; Get-ChildItem C:\dumps
+          Remove-Item C:\dumps\* -Force -ErrorAction SilentlyContinue
           Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Filter cdb.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
       - name: Build tests
         run: cargo test --no-run
@@ -41,12 +44,13 @@ jobs:
         shell: bash
         run: |
           fails=0
-          for i in $(seq 40); do
+          for i in $(seq 50); do
+            export GST_REGISTRY="C:\\reg\\$i.bin"
             if ! cargo test --bin capture-room > out.txt 2>&1; then
               fails=$((fails+1)); echo "RUN $i FAILED"; tail -8 out.txt
             fi
           done
-          echo "CRASHES $fails / 40"
+          echo "CRASHES $fails / 50"
           ls -la /c/dumps || true
       - name: Analyze dumps
         if: ${{ !cancelled() }}
