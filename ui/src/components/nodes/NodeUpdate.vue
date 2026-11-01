@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Download, LoaderCircle, TriangleAlert } from '@lucide/vue'
+import { Download, LoaderCircle, Sparkles, TriangleAlert } from '@lucide/vue'
 import { nodeApi } from '@/composables/useApi'
 import { notifyError } from '@/lib/notify'
 import { olderThan } from '@/lib/version'
@@ -9,6 +9,8 @@ import type { NodeDto } from '@/types/generated/NodeDto'
 import type { UpdateRequest } from '@/types/generated/UpdateRequest'
 import type { UpdateStatusDto } from '@/types/generated/UpdateStatusDto'
 import { Button } from '@/components/ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import ReleaseNotes from './ReleaseNotes.vue'
 
 /**
  * A node's software update. Only the installed app updates itself, so nodes run from a shell
@@ -92,7 +94,7 @@ watch(
 </script>
 
 <template>
-  <template v-if="shown && status">
+  <div v-if="shown && status" class="flex items-center gap-1.5">
     <span v-if="updating" class="flex items-center gap-1.5 text-xs text-muted-foreground">
       <LoaderCircle class="size-3.5 animate-spin" /> {{ progress }} <span class="num">{{ target ?? status.latest }}</span>
     </span>
@@ -118,8 +120,19 @@ watch(
     >
       <Download class="size-3.5" /> Update to <span class="num">{{ status.latest }}</span>
     </Button>
+    <Popover v-if="!updating && !target && status.available && status.notes">
+      <PopoverTrigger as-child>
+        <Button variant="ghost" size="sm" class="h-7 gap-1.5 text-xs">
+          <Sparkles class="size-3.5" /> What's new
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" class="w-96 max-h-[60vh] overflow-y-auto p-3">
+        <p class="text-sm font-medium">What's new in <span class="num">{{ status.latest }}</span></p>
+        <ReleaseNotes :notes="status.notes" :url="status.notes_url" />
+      </PopoverContent>
+    </Popover>
     <span v-if="status.error && !updating" class="text-destructive" :title="status.error">
       <TriangleAlert class="size-3.5" />
     </span>
-  </template>
+  </div>
 </template>

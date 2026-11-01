@@ -77,6 +77,10 @@ pub struct UpdateStatusDto {
     /// Which releases `latest` is from.
     #[serde(default)]
     pub channel: UpdateChannel,
+    /// `latest`'s highlights (markdown), if its release has any.
+    pub notes: Option<String>,
+    /// `latest`'s release page.
+    pub notes_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

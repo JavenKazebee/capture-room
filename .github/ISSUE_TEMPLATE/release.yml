@@ -25,7 +25,7 @@ body:
         - [ ] Bump `version` in `node/Cargo.toml` (and `Cargo.lock`) and `ui/package.json` in a PR, and merge it
         - [ ] Tag `vX.Y.Z` on that commit and push the tag
         - [ ] The release has every platform's archive and `.minisig`, `latest.json`, `install.sh` and `install.ps1`
-        - [ ] Write the highlights at the top of the release notes, above the generated list
+        - [ ] Write the highlights at the top of the draft release, above the first `##` heading (the app shows only that part), then publish it
         - [ ] An installed node offers the update and installs it
         - [ ] Close the milestone
     validations:

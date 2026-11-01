@@ -6,6 +6,11 @@
 //! archive, pre-releases or not, so a node on a beta moves on to the release
 //! after it. Either way the version is only offered, never installed unasked.
 //!
+//! The release body's highlights (what comes before its first `##` heading)
+//! go out with the version, for the UI's "What's new". Releases are created
+//! as drafts, which nodes never see, so the highlights are written before any
+//! node reads the body.
+//!
 //! Each release has `latest.json` and, per platform, an app archive with a
 //! minisign signature checked against the compiled-in key (so only our
 //! releases install, whoever asks). The archive is unpacked beside the app,
@@ -88,6 +93,8 @@ impl Updater {
             if s.channel != channel {
                 s.channel = channel;
                 s.latest = None;
+                s.notes = None;
+                s.notes_url = None;
                 s.available = false;
             }
         });
@@ -194,6 +201,10 @@ struct Release {
     draft: bool,
     #[serde(default)]
     assets: Vec<Asset>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -203,18 +214,68 @@ struct Asset {
 
 /// The highest version among published releases that have `asset`. A release
 /// still uploading its archives isn't offered until they're all there.
-fn newest(releases: &[Release], asset: &str) -> Option<semver::Version> {
+fn newest<'a>(releases: &'a [Release], asset: &str) -> Option<(semver::Version, &'a Release)> {
     releases
         .iter()
         .filter(|r| !r.draft && r.assets.iter().any(|a| a.name == asset))
-        .filter_map(|r| semver::Version::parse(r.tag_name.trim_start_matches('v')).ok())
-        .max()
+        .filter_map(|r| {
+            Some((
+                semver::Version::parse(r.tag_name.trim_start_matches('v')).ok()?,
+                r,
+            ))
+        })
+        .max_by(|a, b| a.0.cmp(&b.0))
 }
 
-/// The newest release on `channel`.
-async fn latest(state: &AppState, channel: UpdateChannel) -> Result<String> {
+/// The part of a release body above its first `##` heading, if any.
+fn highlights(body: &str) -> Option<String> {
+    let mut lines = Vec::new();
+    for line in body.lines() {
+        if line.starts_with("## ") {
+            break;
+        }
+        lines.push(line.trim_end());
+    }
+    let text = lines.join("\n").trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+/// What a check found.
+struct Found {
+    version: String,
+    notes: Option<String>,
+    notes_url: Option<String>,
+}
+
+impl Found {
+    fn from_release(version: String, release: Option<&Release>) -> Self {
+        Self {
+            version,
+            notes: release.and_then(|r| r.body.as_deref()).and_then(highlights),
+            notes_url: release.and_then(|r| r.html_url.clone()),
+        }
+    }
+}
+
+/// A GitHub API request.
+fn github(state: &AppState, path: &str) -> reqwest::RequestBuilder {
+    state
+        .http
+        .get(format!("https://api.github.com/repos/{REPO}/{path}"))
+        // GitHub's API refuses requests without one.
+        .header(
+            reqwest::header::USER_AGENT,
+            concat!("capture-room/", env!("CARGO_PKG_VERSION")),
+        )
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .timeout(Duration::from_secs(30))
+}
+
+/// The newest release on `channel`, with its highlights.
+async fn latest(state: &AppState, channel: UpdateChannel) -> Result<Found> {
+    let test_folder = std::env::var(service::RELEASES_ENV).is_ok();
     // A test folder has one latest.json, whatever the channel.
-    if channel == UpdateChannel::Stable || std::env::var(service::RELEASES_ENV).is_ok() {
+    if channel == UpdateChannel::Stable || test_folder {
         let latest: Latest = state
             .http
             .get(url(None, "latest.json"))
@@ -224,27 +285,34 @@ async fn latest(state: &AppState, channel: UpdateChannel) -> Result<String> {
             .error_for_status()?
             .json()
             .await?;
-        return Ok(latest.version);
+        if test_folder {
+            return Ok(Found::from_release(latest.version, None));
+        }
+        // The notes are extra: the version stands without them.
+        let release = async {
+            anyhow::Ok(
+                github(state, &format!("releases/tags/v{}", latest.version))
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<Release>()
+                    .await?,
+            )
+        }
+        .await
+        .inspect_err(|e| warn!(error = %e, "couldn't fetch the release notes"))
+        .ok();
+        return Ok(Found::from_release(latest.version, release.as_ref()));
     }
-    let releases: Vec<Release> = state
-        .http
-        .get(format!(
-            "https://api.github.com/repos/{REPO}/releases?per_page=30"
-        ))
-        // GitHub's API refuses requests without one.
-        .header(
-            reqwest::header::USER_AGENT,
-            concat!("capture-room/", env!("CARGO_PKG_VERSION")),
-        )
-        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
-        .timeout(Duration::from_secs(30))
+    let releases: Vec<Release> = github(state, "releases?per_page=30")
         .send()
         .await?
         .error_for_status()?
         .json()
         .await?;
-    let newest = newest(&releases, &asset()).context("no release has this platform's app")?;
-    Ok(newest.to_string())
+    let (version, release) =
+        newest(&releases, &asset()).context("no release has this platform's app")?;
+    Ok(Found::from_release(version.to_string(), Some(release)))
 }
 
 pub async fn check(state: &AppState) {
@@ -255,10 +323,10 @@ pub async fn check(state: &AppState) {
     loop {
         let channel = state.updater.channel();
         let result = async {
-            let latest = latest(state, channel).await?;
-            let newer = semver::Version::parse(&latest)?
+            let found = latest(state, channel).await?;
+            let newer = semver::Version::parse(&found.version)?
                 > semver::Version::parse(env!("CARGO_PKG_VERSION"))?;
-            anyhow::Ok((latest, newer))
+            anyhow::Ok((found, newer))
         }
         .await;
         let mut done = true;
@@ -272,8 +340,10 @@ pub async fn check(state: &AppState) {
             s.phase = UpdatePhase::Idle;
             s.checked_at = Some(chrono::Utc::now().to_rfc3339());
             match result {
-                Ok((latest, newer)) => {
-                    s.latest = Some(latest);
+                Ok((found, newer)) => {
+                    s.latest = Some(found.version);
+                    s.notes = found.notes;
+                    s.notes_url = found.notes_url;
                     s.available = newer;
                     s.error = None;
                 }
@@ -604,7 +674,10 @@ mod tests {
             tag_name: tag.into(),
             draft,
             assets: assets.iter().map(|a| Asset { name: (*a).into() }).collect(),
+            body: None,
+            html_url: None,
         };
+        let newest = |releases: &[Release], app: &str| newest(releases, app).map(|(v, _)| v);
         let app = "capture-room-linux-x86_64.tar.gz";
         let releases = [
             release("v0.1.0", false, &[app]),
@@ -622,5 +695,20 @@ mod tests {
         ];
         assert_eq!(newest(&with_stable, app).unwrap().to_string(), "0.2.0");
         assert!(newest(&releases, "capture-room-windows-x86_64.tar.gz").is_none());
+    }
+
+    #[test]
+    fn highlights_stop_at_the_first_section() {
+        assert_eq!(
+            highlights("Replays export with sound.\n\n- Faster\n").as_deref(),
+            Some("Replays export with sound.\n\n- Faster")
+        );
+        assert_eq!(highlights("## Fixes\n- One"), None);
+        assert_eq!(
+            highlights("Big news.\r\n\r\n## What's Changed\r\n* A by @b").as_deref(),
+            Some("Big news.")
+        );
+        assert_eq!(highlights("\n  \n## Fixes"), None);
+        assert_eq!(highlights(""), None);
     }
 }

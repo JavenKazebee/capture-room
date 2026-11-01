@@ -15,6 +15,7 @@ import SignIn from '@/components/auth/SignIn.vue'
 import { authStatus, checkAuth, needsSignIn } from '@/composables/useAuth'
 import CommandPalette from '@/components/app/CommandPalette.vue'
 import DisconnectedOverlay from '@/components/app/DisconnectedOverlay.vue'
+import WhatsNewDialog from '@/components/app/WhatsNewDialog.vue'
 
 const { colorMode } = usePreferences()
 const storage = useStorageStore()
@@ -65,6 +66,7 @@ useEventListener('keydown', (e: KeyboardEvent) => {
 
       <CommandPalette v-model:open="commandOpen" />
       <DisconnectedOverlay />
+      <WhatsNewDialog />
     </template>
     <Toaster :theme="colorMode === 'light' ? 'light' : 'dark'" position="bottom-right" rich-colors close-button />
   </TooltipProvider>

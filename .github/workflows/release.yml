@@ -1,8 +1,10 @@
 name: Release
 
 # Pushing a tag vX.Y.Z (matching node/Cargo.toml's version) builds the apps,
-# signs them with the release key, and publishes them with latest.json (what
-# the updater checks), install.sh and install.ps1 as a GitHub release. A
+# signs them with the release key, and uploads them with latest.json (what
+# the updater checks), install.sh and install.ps1 as a draft GitHub release,
+# which nodes don't see until it's published by hand, once its highlights are
+# written (nodes show them, and cache them as they find the release). A
 # version with a pre-release part (v0.2.0-beta.1) is published as a GitHub
 # pre-release, which releases/latest skips: only nodes on the pre-release
 # update channel are offered it. Run by hand, it builds the same files as one
@@ -268,6 +270,8 @@ jobs:
 
       # The stable updater and install.sh read releases/latest, which skips
       # pre-releases; a 0.2.0-beta.1 must be one or every node would take it.
+      # A draft until the highlights are written: releases/latest and the
+      # pre-release channel both skip drafts.
       - name: Publish release
         if: github.ref_type == 'tag'
         env:
@@ -276,7 +280,7 @@ jobs:
         run: |
           pre=()
           if [[ $VERSION == *-* ]]; then pre=(--prerelease); fi
-          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes "${pre[@]}"
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes --draft "${pre[@]}"
 
       # The same files as a release, flat, so the folder can be served as
       # CAPTURE_ROOM_RELEASES to test the updater.
