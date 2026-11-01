@@ -23,6 +23,7 @@ import StorageVolumeBar from '@/components/common/StorageVolumeBar.vue'
 import LoadError from '@/components/common/LoadError.vue'
 import NodeCapacity from './NodeCapacity.vue'
 import NodeUpdate from './NodeUpdate.vue'
+import NodeVersion from './NodeVersion.vue'
 
 /**
  * One node: identity, activity, storage, capacity. Sections keep their height whether the
@@ -202,7 +203,7 @@ async function saveRename() {
         <span class="num truncate">{{ node.url || 'local' }}</span>
         <CopyButton v-if="node.url" :value="node.url" />
         <template v-if="node.healthy">
-          <span>·</span><span class="num shrink-0">v{{ node.version }}</span>
+          <span>·</span><NodeVersion :node="node" />
           <span>·</span><span class="shrink-0">up <span class="num">{{ formatUptime(node.uptime_secs) }}</span></span>
         </template>
         <template v-else>
