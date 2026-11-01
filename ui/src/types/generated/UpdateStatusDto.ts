@@ -33,4 +33,12 @@ error: string | null, checked_at: string | null,
 /**
  * Which releases `latest` is from.
  */
-channel: UpdateChannel, };
+channel: UpdateChannel, 
+/**
+ * `latest`'s highlights (markdown), if its release has any.
+ */
+notes: string | null, 
+/**
+ * `latest`'s release page.
+ */
+notes_url: string | null, };

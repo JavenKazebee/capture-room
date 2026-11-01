@@ -290,7 +290,7 @@ async function saveRename() {
 
     <NodeCapacity :node="node" :recording="stats.recording" />
 
-    <footer class="mt-auto flex items-center gap-1.5 px-3 py-2 border-t border-border">
+    <footer class="mt-auto flex flex-wrap items-center gap-1.5 px-3 py-2 border-t border-border">
       <Button variant="ghost" size="sm" class="h-7 gap-1.5 text-xs" :disabled="!node.healthy" @click="openInRecord">
         <Video class="size-3.5" /> Open in Record
       </Button>

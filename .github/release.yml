@@ -1,5 +1,6 @@
 # The "All changes" list GitHub generates for a release, grouped by the merged PRs'
-# labels. The highlights above it are written by hand when the release is made.
+# labels. The highlights above it are written by hand in the draft release before
+# it's published; the app shows everything above the first `##` heading.
 changelog:
   categories:
     - title: New
