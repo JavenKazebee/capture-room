@@ -17,7 +17,7 @@ import ProgramMonitor from '@/components/playback/ProgramMonitor.vue'
 import { useChannelChoice } from '@/composables/useChannelChoice'
 import AngleList from '@/components/replay/AngleList.vue'
 import AngleLive from '@/components/replay/AngleLive.vue'
-import BuffersSheet from '@/components/replay/BuffersSheet.vue'
+import BuffersDialog from '@/components/replay/BuffersDialog.vue'
 import ReplayTimeline from '@/components/replay/ReplayTimeline.vue'
 import BehindLive from '@/components/replay/BehindLive.vue'
 import ClipList from '@/components/replay/ClipList.vue'
@@ -361,5 +361,5 @@ onMounted(() => sources.ensureLoaded())
     </div>
   </div>
 
-  <BuffersSheet v-if="buffersOpen" @close="buffersOpen = false" />
+  <BuffersDialog v-if="buffersOpen" @close="buffersOpen = false" />
 </template>

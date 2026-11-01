@@ -9,15 +9,17 @@ import { useReplayStore } from '@/stores/replay'
 import { notifyError, notifyWarn } from '@/lib/notify'
 import { formatBytes } from '@/lib/format'
 import type { ReplayCodec } from '@/types/generated/ReplayCodec'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet'
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import OptionSelect from '@/components/OptionSelect.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 
@@ -34,7 +36,7 @@ const capacity = useCapacityStore()
 
 const DEFAULT_MINUTES = 30
 
-// Sizes aren't pushed (they change every segment): fetch them as the sheet opens.
+// Sizes aren't pushed (they change every segment): fetch them as the dialog opens.
 onMounted(() => replay.loadAll())
 
 /** Every source but playout channels, grouped by node when there are several. */
@@ -110,17 +112,17 @@ function setMinutes(s: Source, text: string | number) {
 </script>
 
 <template>
-  <Sheet :open="true" @update:open="(v) => !v && emit('close')">
-    <SheetContent class="flex flex-col gap-0 p-0 w-full sm:max-w-lg">
-      <SheetHeader class="border-b border-border">
-        <SheetTitle>Replay buffers</SheetTitle>
-        <SheetDescription>
+  <Dialog :open="true" @update:open="(v) => !v && emit('close')">
+    <DialogContent class="flex flex-col gap-0 p-0 max-h-[85vh] overflow-hidden sm:max-w-lg">
+      <DialogHeader class="shrink-0 border-b border-border px-4 py-3 pr-10">
+        <DialogTitle>Replay buffers</DialogTitle>
+        <DialogDescription>
           A source with a buffer records continuously on its node, keeping the last few minutes to replay. The
           oldest is deleted as it goes; nothing is kept when the node restarts.
-        </SheetDescription>
-      </SheetHeader>
+        </DialogDescription>
+      </DialogHeader>
 
-      <div class="flex-1 overflow-y-auto divide-y divide-border">
+      <div class="flex-1 min-h-0 overflow-y-auto divide-y divide-border">
         <p v-if="!candidates.length" class="p-4 text-sm text-muted-foreground">No sources yet: add some in Setup › Sources.</p>
         <div v-for="s in candidates" :key="s.key" class="p-4 flex flex-col gap-3">
           <div class="flex items-center gap-2 min-w-0">
@@ -178,6 +180,10 @@ function setMinutes(s: Source, text: string | number) {
           </template>
         </div>
       </div>
-    </SheetContent>
-  </Sheet>
+
+      <DialogFooter class="shrink-0 border-t border-border px-4 py-3 flex-row items-center justify-end">
+        <Button @click="emit('close')">Done</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
 </template>
