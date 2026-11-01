@@ -59,8 +59,8 @@ jobs:
           exe="$GITHUB_WORKSPACE/$EXE"
           fails=0
           for i in $(seq 100); do
-            "$exe" ${{ matrix.subset.args }} > out.txt 2>&1
-            code=$?
+            code=0
+            "$exe" ${{ matrix.subset.args }} > out.txt 2>&1 || code=$?
             if [ $code -ne 0 ]; then
               fails=$((fails+1)); echo "RUN $i EXIT $code"; grep -E "test result|FAILED|panicked" out.txt | head -5
             fi
