@@ -1,0 +1,68 @@
+name: DIAG exit crash
+
+on:
+  push:
+    branches: [claude/diag-exit-crash]
+
+jobs:
+  windows:
+    name: Windows exit crash (shard ${{ matrix.shard }})
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - name: GStreamer
+        uses: ./.github/actions/gstreamer-windows
+        with:
+          version: 1.28.8
+          dir: C:\gstreamer\1.0\msvc_x86_64
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: mkdir -p ui/dist
+        shell: bash
+      - name: Enable crash dumps
+        shell: pwsh
+        run: |
+          New-Item -Force -Path "C:\dumps" -ItemType Directory | Out-Null
+          $k = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting"
+          Set-ItemProperty -Path $k -Name Disabled -Value 0 -Type DWord
+          Set-ItemProperty -Path $k -Name DontShowUI -Value 1 -Type DWord
+          New-Item -Force -Path "$k\LocalDumps" | Out-Null
+          Set-ItemProperty -Path "$k\LocalDumps" -Name DumpFolder -Value "C:\dumps" -Type ExpandString
+          Set-ItemProperty -Path "$k\LocalDumps" -Name DumpType -Value 2 -Type DWord
+          Set-ItemProperty -Path "$k\LocalDumps" -Name DumpCount -Value 20 -Type DWord
+          Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Filter cdb.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+      - name: Build tests
+        run: cargo test --no-run
+      - name: Loop tests
+        shell: bash
+        run: |
+          fails=0
+          for i in $(seq 40); do
+            if ! cargo test --bin capture-room > out.txt 2>&1; then
+              fails=$((fails+1)); echo "RUN $i FAILED"; tail -8 out.txt
+            fi
+          done
+          echo "CRASHES $fails / 40"
+          ls -la /c/dumps || true
+      - name: Analyze dumps
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $cdb = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Filter cdb.exe -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match "x64" } | Select-Object -First 1 -ExpandProperty FullName
+          "cdb: $cdb"
+          $env:_NT_SYMBOL_PATH = "srv*C:\symcache*https://msdl.microsoft.com/download/symbols;C:\gstreamer\1.0\msvc_x86_64\bin;C:\gstreamer\1.0\msvc_x86_64\lib\gstreamer-1.0;$env:GITHUB_WORKSPACE\target\debug\deps"
+          foreach ($d in Get-ChildItem C:\dumps -Filter *.dmp -ErrorAction SilentlyContinue | Select-Object -First 3) {
+            "===== $($d.Name)"
+            if ($cdb) { & $cdb -z $d.FullName -c ".lines -e; .ecxr; kn 60; !analyze -v; ~*kn 40; lm; q" 2>&1 | Select-Object -First 1500 }
+          }
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: dumps-${{ matrix.shard }}
+          path: C:\dumps
+          if-no-files-found: ignore
+          retention-days: 5
