@@ -55,7 +55,7 @@ fn is_x11(session_type: Option<&str>, display: bool, wayland_display: bool) -> b
     }
 }
 
-fn x11_session() -> bool {
+pub(crate) fn x11_session() -> bool {
     is_x11(
         std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
         std::env::var_os("DISPLAY").is_some(),
