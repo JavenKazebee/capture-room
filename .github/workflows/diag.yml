@@ -11,12 +11,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [a, b]
+        shard: [a, b, c]
         subset:
-          - { name: no-gst, args: "--skip pipeline:: --skip sources:: --skip clock::" }
-          - { name: pipeline, args: "pipeline::" }
-          - { name: sources, args: "sources::" }
-          - { name: clock, args: "clock::" }
           - { name: all, args: "" }
     steps:
       - uses: actions/checkout@v7
@@ -62,8 +58,9 @@ jobs:
             code=0
             "$exe" ${{ matrix.subset.args }} > out.txt 2>&1 || code=$?
             if [ $code -ne 0 ]; then
-              fails=$((fails+1)); echo "RUN $i EXIT $code"; grep -E "test result|FAILED|panicked" out.txt | head -5
+              fails=$((fails+1)); echo "RUN $i EXIT $code"; grep -E "test result|FAILED|panicked|EXITDIAG" out.txt | head -80
             fi
+            if [ $i -le 3 ]; then echo "--- run $i threads at exit"; grep EXITDIAG out.txt; fi
           done
           echo "CRASHES ${{ matrix.subset.name }} $fails / 100"
       - uses: actions/upload-artifact@v7

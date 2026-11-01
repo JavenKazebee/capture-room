@@ -14,6 +14,8 @@ mod clock;
 mod controller;
 mod db;
 mod display;
+#[cfg(all(test, windows))]
+mod exitdiag;
 mod logs;
 mod pipeline;
 mod plugins;
