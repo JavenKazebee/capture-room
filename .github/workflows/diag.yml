@@ -38,6 +38,7 @@ jobs:
           Start-Sleep 5; Get-ChildItem C:\dumps
           Remove-Item C:\dumps\* -Force -ErrorAction SilentlyContinue
           Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Recurse -Filter cdb.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+          exit 0
       - name: Build tests
         run: cargo test --no-run
       - name: Loop tests
