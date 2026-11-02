@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [a, b, c]
+        shard: [a, b, c, d]
         subset:
           - { name: all, args: "" }
     steps:

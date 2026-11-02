@@ -1527,7 +1527,7 @@ mod tests {
             MonitorSettingsDto::default(),
             (gst::SystemClock::obtain(), "test".into()),
             NdiMonitor::start(),
-            Arc::new(LocalDevices::start()),
+            Arc::new(LocalDevices::none()),
             Displays::none(),
             failures,
             files,

@@ -16,6 +16,8 @@ mod db;
 mod display;
 #[cfg(all(test, windows))]
 mod exitdiag;
+#[cfg(all(test, target_os = "macos"))]
+mod exitdiag_mac;
 mod logs;
 mod pipeline;
 mod plugins;
