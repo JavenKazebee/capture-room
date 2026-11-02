@@ -178,30 +178,41 @@ pub(crate) fn set_state(
 ///
 /// It's let go at exit, before the library's own static destructors run:
 /// left running, its threads outlive them and the process crashes on the way
-/// out.
+/// out. On Windows they run when the DLL unloads, after `ExitProcess` has
+/// killed those threads, and abort.
 pub(crate) fn hold_srt() {
     let mut held = SRT_HELD.lock().unwrap();
     if held.is_some() {
         return;
     }
     *held = gst::ElementFactory::make("srtsink").build().ok();
-    #[cfg(unix)]
     if held.is_some() {
         static RELEASE: std::sync::Once = std::sync::Once::new();
         // Registered after the library loaded, so it runs before its destructors.
         RELEASE.call_once(|| unsafe {
-            libc::atexit(release_srt);
+            atexit(release_srt_at_exit);
         });
     }
 }
 
 static SRT_HELD: Mutex<Option<gst::Element>> = Mutex::new(None);
 
-#[cfg(unix)]
-extern "C" fn release_srt() {
+// The C runtime's own: the libc crate is a dependency on Unix only.
+extern "C" {
+    fn atexit(cb: extern "C" fn()) -> std::ffi::c_int;
+}
+
+/// Let go of [`hold_srt`]'s hold. `atexit` covers returning from `main`;
+/// call this before `std::process::exit`, which on Windows ends the process
+/// without running `atexit` handlers.
+pub(crate) fn release_srt() {
     if let Ok(mut held) = SRT_HELD.lock() {
         held.take();
     }
+}
+
+extern "C" fn release_srt_at_exit() {
+    release_srt();
 }
 
 pub(crate) fn make_el(factory: &str, name: &str) -> Result<gst::Element> {
