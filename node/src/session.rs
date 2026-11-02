@@ -130,6 +130,7 @@ pub async fn stop_all_recordings(state: &Arc<AppState>) {
 pub async fn quit(state: &Arc<AppState>, code: i32) -> ! {
     stop_all_recordings(state).await;
     info!(code, "quitting");
+    crate::pipeline::release_srt();
     std::process::exit(code)
 }
 
