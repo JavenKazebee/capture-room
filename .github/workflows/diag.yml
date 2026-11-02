@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [a, b, c, d]
+        shard: [a, b, c, d, e, f]
         subset:
           - { name: all, args: "" }
     steps:
@@ -58,9 +58,9 @@ jobs:
             code=0
             "$exe" ${{ matrix.subset.args }} > out.txt 2>&1 || code=$?
             if [ $code -ne 0 ]; then
-              fails=$((fails+1)); echo "RUN $i EXIT $code"; grep -E "test result|FAILED|panicked|EXITDIAG" out.txt | head -80
+              fails=$((fails+1)); echo "RUN $i EXIT $code"; grep -E "test result|FAILED|panicked|EXITDIAG FAULT|EXITDIAG   " out.txt | head -120
             fi
-            if [ $i -le 3 ]; then echo "--- run $i threads at exit"; grep EXITDIAG out.txt; fi
+            if [ $i -le 1 ]; then echo "--- run $i threads at exit"; grep EXITDIAG out.txt || true; fi
           done
           echo "CRASHES ${{ matrix.subset.name }} $fails / 100"
       - uses: actions/upload-artifact@v7

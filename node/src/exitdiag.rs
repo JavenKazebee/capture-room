@@ -38,6 +38,35 @@ extern "system" {
 }
 extern "C" {
     fn atexit(cb: extern "C" fn()) -> i32;
+    fn signal(sig: i32, handler: usize) -> usize;
+    fn _set_invalid_parameter_handler(h: usize) -> usize;
+    fn _set_purecall_handler(h: usize) -> usize;
+}
+#[link(name = "kernel32")]
+extern "system" {
+    fn RtlCaptureStackBackTrace(skip: u32, n: u32, frames: *mut *mut c_void, hash: *mut u32)
+        -> u16;
+}
+
+fn stack(what: &str) {
+    unsafe {
+        let mut frames = [std::ptr::null_mut(); 62];
+        let n = RtlCaptureStackBackTrace(0, 62, frames.as_mut_ptr(), std::ptr::null_mut());
+        eprintln!("EXITDIAG FAULT {what} on thread {}", GetCurrentThreadId());
+        for f in &frames[..n as usize] {
+            eprintln!("EXITDIAG   {}", module_of(*f));
+        }
+    }
+}
+
+extern "C" fn on_abort(_sig: i32) {
+    stack("SIGABRT");
+}
+extern "C" fn on_invalid(_e: *const u16, _f: *const u16, _file: *const u16, _line: u32, _r: usize) {
+    stack("invalid parameter");
+}
+extern "C" fn on_purecall() {
+    stack("pure virtual call");
 }
 
 fn module_of(addr: *const c_void) -> String {
@@ -107,6 +136,9 @@ extern "C" fn dump() {
 extern "C" fn init() {
     unsafe {
         atexit(dump);
+        signal(22, on_abort as usize);
+        _set_invalid_parameter_handler(on_invalid as usize);
+        _set_purecall_handler(on_purecall as usize);
     }
 }
 
