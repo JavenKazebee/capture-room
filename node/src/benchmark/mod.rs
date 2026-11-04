@@ -86,7 +86,7 @@ pub async fn start(state: &Arc<AppState>, req: BenchmarkRequest) -> ApiResult<Be
     // Checked after taking the slot: a recording or buffer starting from here
     // on cancels this run instead.
     let channels_running = check_idle(state).await?;
-    let memory = MemoryWatch::new();
+    let memory = MemoryWatch::new().map_err(ApiError::Internal)?;
     if memory.budget.short(memory.budget.baseline) {
         return Err(ApiError::Conflict(
             "this node is too short of memory to benchmark: close something and try again",

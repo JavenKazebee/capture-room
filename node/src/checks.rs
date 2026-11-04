@@ -252,7 +252,9 @@ fn permission_holder() -> Option<String> {
 
     static HOLDER: OnceLock<String> = OnceLock::new();
     let holder = HOLDER.get_or_init(|| {
-        let mut sys = System::new();
+        let Ok(mut sys) = System::new() else {
+            return "capture-room".to_string();
+        };
         let kind = ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet);
         let mut pid = Pid::from_u32(std::process::id());
         // Bounded, in case of a cycle.

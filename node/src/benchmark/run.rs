@@ -188,7 +188,7 @@ impl Run {
     /// Search for the most feeds the node sustains. Returns the closing message.
     async fn search(&mut self, feeds: &mut Vec<Feed>) -> Result<String, Stop> {
         let mut search = Search::new(self.dto.max_feeds);
-        let mut system = System::new();
+        let mut system = System::new()?;
         // Why the search was capped below the feed limit.
         let mut capped: Option<String> = None;
 
