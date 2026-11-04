@@ -4,4 +4,4 @@ import type { PresetOutputInput } from "./PresetOutputInput";
 /**
  * A preset, as stored in `presets` (plus its outputs) and as served.
  */
-export type PresetDto = { id: string, name: string, outputs: Array<PresetOutputInput>, created_at: string, updated_at: string, version: number, };
+export type PresetDto = { id: string, name: string, outputs: Array<PresetOutputInput>, created_at: string, updated_at: string, };
