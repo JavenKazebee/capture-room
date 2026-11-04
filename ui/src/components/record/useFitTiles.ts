@@ -55,5 +55,5 @@ export function useFitTiles(
     immediate: true,
   })
 
-  return { size, caption, measure }
+  return { size, caption, measure, width }
 }
