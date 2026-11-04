@@ -59,8 +59,8 @@ pub(super) struct MemoryWatch {
 }
 
 impl MemoryWatch {
-    pub(super) fn new() -> Self {
-        let mut system = System::new();
+    pub(super) fn new() -> anyhow::Result<Self> {
+        let mut system = System::new()?;
         system.refresh_memory();
         let total = system.total_memory();
         let mut watch = Self {
@@ -68,7 +68,7 @@ impl MemoryWatch {
             budget: MemoryBudget::new(total, 0),
         };
         watch.budget = MemoryBudget::new(total, watch.available());
-        watch
+        Ok(watch)
     }
 
     /// Memory new feeds could have. On macOS, the kernel's free share (as

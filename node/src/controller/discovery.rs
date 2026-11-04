@@ -35,7 +35,7 @@ const PRUNE_AFTER_FAILURES: u32 = 3;
 /// This machine's hostname without a trailing `.local` (macOS often reports
 /// `name.local`). `$HOSTNAME` is a shell variable and usually isn't exported.
 pub fn local_hostname() -> Option<String> {
-    let name = sysinfo::System::host_name()?;
+    let name = sysinfo::System::host_name().ok()?;
     let name = name.trim_end_matches('.');
     let name = name.strip_suffix(".local").unwrap_or(name);
     (!name.is_empty()).then(|| name.to_string())

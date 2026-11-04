@@ -31,9 +31,10 @@ const PSEUDO_FS: &[&str] = &[
 /// Writable mounted volumes, one per filesystem. Read-only mounts (disk images,
 /// the sealed macOS system volume) are left out. Blocking.
 pub fn list_volumes() -> Vec<StorageVolumeDto> {
-    let disks = Disks::new_with_refreshed_list();
+    let Ok(disks) = Disks::new_with_refreshed_list() else {
+        return Vec::new();
+    };
     let volumes: Vec<StorageVolumeDto> = disks
-        .list()
         .iter()
         .filter(|d| {
             let fs = d.file_system().to_string_lossy().to_lowercase();
