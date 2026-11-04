@@ -76,7 +76,7 @@ libc = "0.2"
 tray-icon = "0.26"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-zbus = { version = "6", default-features = false, features = ["tokio"] }
+zbus = { version = "6", default-features = false, features = ["proxy", "tokio"] }
 # The tray icon (`tray`): a StatusNotifierItem over D-Bus.
 ksni = { version = "0.3", default-features = false, features = ["tokio", "blocking"] }
 # Monitor geometry for X11 screen sources (`sources::x11`); winit already uses it.

@@ -291,8 +291,8 @@ mod imp {
 #[cfg(target_os = "linux")]
 mod imp {
     use tracing::info;
-    use zbus::zvariant::OwnedFd;
     use zbus::Connection;
+    use zbus::OwnedFd;
 
     use super::{warn, Locks, NAME, WHY_DISPLAY, WHY_SYSTEM};
 
