@@ -1,4 +1,6 @@
-import { createSharedComposable, useNow } from '@vueuse/core'
+import { createSharedComposable, useIntervalFn, useNow } from '@vueuse/core'
 
 /** The time now, ticking each second: one timer for every component that shows it. */
-export const useSecondClock = createSharedComposable(() => useNow({ interval: 1000 }))
+export const useSecondClock = createSharedComposable(() =>
+  useNow({ scheduler: (cb) => useIntervalFn(cb, 1000) }),
+)
