@@ -173,7 +173,7 @@ useQueryAction(['new', 'for'], (q) => {
             :aria-invalid="!isBuiltIn && !draftName.trim()"
           />
           <span v-if="selected" class="text-[11px] text-muted-foreground">
-            v{{ selected.version }} · updated {{ dateTime(selected.updated_at, { year: true }) }}
+            updated {{ dateTime(selected.updated_at, { year: true }) }}
           </span>
           <div class="flex-1" />
           <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" @click="draft.duplicate">

@@ -296,7 +296,6 @@ async fn post_preset(
         name: req.name,
         created_at: now.clone(),
         updated_at: now,
-        version: 1,
     };
     db::preset_insert(&state.db, &preset).await?;
     Ok((StatusCode::CREATED, Json(preset)))

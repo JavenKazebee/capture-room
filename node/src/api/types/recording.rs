@@ -327,7 +327,6 @@ pub struct PresetDto {
     pub outputs: Vec<PresetOutputInput>,
     pub created_at: String,
     pub updated_at: String,
-    pub version: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -385,7 +385,6 @@ fn default_preset() -> PresetDto {
         }],
         created_at: String::new(),
         updated_at: String::new(),
-        version: 1,
     }
 }
 

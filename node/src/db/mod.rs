@@ -294,7 +294,7 @@ pub async fn session_get(pool: &SqlitePool, id: &str) -> Result<Option<Recording
 
 pub async fn presets_list(pool: &SqlitePool) -> Result<Vec<PresetDto>> {
     let mut presets = sqlx::query_as::<_, PresetDto>(
-        "SELECT id, name, created_at, updated_at, version FROM presets ORDER BY name",
+        "SELECT id, name, created_at, updated_at FROM presets ORDER BY name",
     )
     .fetch_all(pool)
     .await?;
@@ -323,14 +323,13 @@ pub async fn presets_list(pool: &SqlitePool) -> Result<Vec<PresetDto>> {
 pub async fn preset_insert(pool: &SqlitePool, p: &PresetDto) -> Result<()> {
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO presets (id, name, created_at, updated_at, version)
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO presets (id, name, created_at, updated_at)
+         VALUES (?, ?, ?, ?)",
     )
     .bind(&p.id)
     .bind(&p.name)
     .bind(&p.created_at)
     .bind(&p.updated_at)
-    .bind(p.version)
     .execute(&mut *tx)
     .await?;
     preset_outputs_replace(&mut tx, &p.id, &p.outputs).await?;
@@ -349,8 +348,8 @@ pub async fn preset_update(
 ) -> Result<Option<PresetDto>> {
     let mut tx = pool.begin().await?;
     let preset = sqlx::query_as::<_, PresetDto>(
-        "UPDATE presets SET name = ?, updated_at = ?, version = version + 1 WHERE id = ?
-         RETURNING id, name, created_at, updated_at, version",
+        "UPDATE presets SET name = ?, updated_at = ? WHERE id = ?
+         RETURNING id, name, created_at, updated_at",
     )
     .bind(name)
     .bind(updated_at)
@@ -1305,7 +1304,6 @@ mod tests {
             outputs: vec![leg("b"), leg("a")],
             created_at: String::new(),
             updated_at: String::new(),
-            version: 1,
         };
         preset_insert(&pool, &preset).await.unwrap();
         assert_eq!(names(&presets_list(&pool).await.unwrap()[0]), ["b", "a"]);
