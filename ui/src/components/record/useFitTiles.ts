@@ -20,8 +20,10 @@ export function useFitTiles(
   }
   useResizeObserver(container, read)
   watch(container, read, { flush: 'post', immediate: true })
-  /** Height of a tile below its picture: name and controls. Measured once tiles render. */
-  const caption = ref(76)
+  /** Height of a tile's caption box below its picture: name and controls. Measured once tiles render. */
+  const caption = ref(74)
+  /** A tile's border, top plus bottom. The picture sits inside it, so it narrows the picture too. */
+  const frame = ref(2)
 
   const size = computed(() => {
     const n = count.value
@@ -31,17 +33,20 @@ export function useFitTiles(
     for (let cols = 1; cols <= n; cols++) {
       const rows = Math.ceil(n / cols)
       const byWidth = (width.value - (cols - 1) * gap) / cols
-      const byHeight = (((height.value - (rows - 1) * gap) / rows - caption.value) * 16) / 9
+      const byHeight = (((height.value - (rows - 1) * gap) / rows - caption.value - frame.value) * 16) / 9 + frame.value
       best = Math.max(best, Math.min(byWidth, byHeight))
     }
     return Math.floor(Math.min(Math.max(best, min), max))
   })
 
-  /** Only a tile already laid out at the fitted width counts: one mid-layout reads wildly tall and pins the size at `min`. */
+  /** Unrounded: tiles land on fractional pixels, and anything drawn as picture plus `caption` should match exactly. */
   function measure(tile: Element | null | undefined) {
-    if (!(tile instanceof HTMLElement) || Math.abs(tile.offsetWidth - size.value) > 2) return
-    const h = Math.round(tile.offsetHeight - (tile.offsetWidth * 9) / 16)
-    if (h > 0 && h < 400 && Math.abs(h - caption.value) > 1) caption.value = h
+    const picture = tile?.firstElementChild
+    if (!(tile instanceof HTMLElement) || !(picture instanceof HTMLElement)) return
+    const border = tile.offsetHeight - tile.clientHeight
+    const h = tile.getBoundingClientRect().height - picture.getBoundingClientRect().height - border
+    if (h > 0 && h < 400 && Math.abs(h - caption.value) > 0.01) caption.value = h
+    frame.value = border
   }
 
   // Tiles reflow after a size change; measure the new caption once they have.
@@ -50,5 +55,5 @@ export function useFitTiles(
     immediate: true,
   })
 
-  return { size, measure }
+  return { size, caption, measure }
 }

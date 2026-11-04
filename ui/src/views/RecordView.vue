@@ -211,13 +211,18 @@ useViewKeys((e) => {
         @click.self="desk.clearSelection()"
       >
         <FeedTile v-for="source in desk.visible" :key="source.key" :source="source" />
+        <!-- A tile's picture plus its measured caption, so it matches the feed tiles beside it. -->
         <button
           type="button"
-          class="min-h-24 aspect-video rounded-lg border border-dashed border-border flex flex-col items-center justify-center gap-1.5 text-xs text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
+          class="relative self-start rounded-lg border border-dashed border-border flex flex-col text-xs text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
           @click="adding = true"
         >
-          <Plus class="size-5" />
-          Add source
+          <span class="aspect-video" />
+          <span :style="{ height: `${fit.caption.value}px` }" />
+          <span class="absolute inset-0 flex flex-col items-center justify-center gap-1.5">
+            <Plus class="size-5" />
+            Add source
+          </span>
         </button>
       </div>
     </div>
