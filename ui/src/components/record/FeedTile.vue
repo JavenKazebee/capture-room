@@ -19,7 +19,8 @@ import PresetSelect from './PresetSelect.vue'
 import FeedInfo from './FeedInfo.vue'
 import TallyBadge from '@/components/common/TallyBadge.vue'
 
-const props = defineProps<{ source: Source }>()
+/** `tabStop`: the one tile Tab lands on (roving tabindex). */
+const props = defineProps<{ source: Source; tabStop?: boolean }>()
 
 const desk = useRecordDeskStore()
 const recordings = useRecordingsStore()
@@ -30,6 +31,7 @@ const session = computed(() => recordings.activeForSource(props.source.node_id, 
 const selected = computed(() => desk.selected.has(props.source.key))
 const busy = computed(() => desk.busy.has(props.source.key))
 const channels = computed(() => audioLevels.get(props.source.key) ?? [])
+const tile = ref<HTMLElement | null>(null)
 const picture = ref<HTMLElement | null>(null)
 const thumb = useThumbnail(toRef(props, 'source'), picture)
 
@@ -69,6 +71,21 @@ function onClick(e: MouseEvent) {
   else desk.select(props.source.key, e.ctrlKey || e.metaKey ? 'toggle' : 'only')
 }
 
+// Tabbing onto a tile focuses it, as arrowing does; focus on its own controls doesn't.
+function onFocusIn(e: FocusEvent) {
+  if (e.target === e.currentTarget) desk.focusedKey = props.source.key
+}
+
+// Closing the info popover hands focus back to the tile, not its Info button, so Space still records.
+// A click elsewhere that closed it keeps the focus it gave.
+function onInfoClosed(e: Event) {
+  e.preventDefault()
+  const a = document.activeElement
+  if (!a || a === document.body || tile.value?.contains(a) || a.closest('[data-slot="popover-content"]')) {
+    tile.value?.focus({ preventScroll: true })
+  }
+}
+
 // A session that ends on its own in error is worth a log line.
 watch(session, (now, prev) => {
   if (now || !prev) return
@@ -86,12 +103,18 @@ watch(session, (now, prev) => {
   <Popover v-model:open="infoOpen">
     <PopoverAnchor as-child>
       <div
+        ref="tile"
         data-feed-tile
-        class="group relative rounded-lg border bg-card overflow-hidden flex flex-col cursor-pointer select-none transition-shadow"
+        :data-key="source.key"
+        :tabindex="tabStop ? 0 : -1"
+        :aria-label="source.display_name"
+        class="group relative rounded-lg border bg-card overflow-hidden flex flex-col cursor-pointer select-none transition-shadow focus-visible:shadow-[0_0_0_6px_var(--background),0_0_0_8px_var(--foreground)]"
         :class="[
           session ? 'border-tally ring-1 ring-tally' : 'border-border hover:border-foreground/20',
-          selected && 'outline-2 outline-offset-2 outline-primary',
+          // Selection owns the outline; focus is the wider ring drawn outside it.
+          selected ? 'outline-2 outline-offset-2 outline-primary' : 'outline-none',
         ]"
+        @focusin="onFocusIn"
         @click="onClick"
       >
         <div ref="picture" class="relative flex bg-black aspect-video">
@@ -220,7 +243,7 @@ watch(session, (now, prev) => {
         </div>
       </div>
     </PopoverAnchor>
-    <PopoverContent side="right" align="start" :side-offset="8" :collision-padding="12" class="w-[34rem] p-3">
+    <PopoverContent side="right" align="start" :side-offset="8" :collision-padding="12" class="w-[34rem] p-3" @close-auto-focus="onInfoClosed">
       <FeedInfo :source="source" />
     </PopoverContent>
   </Popover>

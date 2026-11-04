@@ -26,6 +26,7 @@ import ToolbarField from '@/components/common/ToolbarField.vue'
 import ToolbarSearch from '@/components/common/ToolbarSearch.vue'
 import FeedTile from '@/components/record/FeedTile.vue'
 import { useFitTiles } from '@/components/record/useFitTiles'
+import { gridColumns, gridNavTarget } from '@/components/record/gridNav'
 import SourceFormSheet from '@/components/sources/SourceFormSheet.vue'
 
 const sources = useSourcesStore()
@@ -34,10 +35,53 @@ const desk = useRecordDeskStore()
 const { tileSize, tileFit, overlays } = usePreferences()
 
 const gridScroller = ref<HTMLElement>()
+const GAP = 16
 // The Add source tile takes a slot too.
-const fit = useFitTiles(gridScroller, computed(() => desk.visible.length + 1), { gap: 16, min: 160, max: 960 })
+const fit = useFitTiles(gridScroller, computed(() => desk.visible.length + 1), { gap: GAP, min: 160, max: 960 })
 /** The tile width in use: fitted, or the one picked on the slider. */
 const tileWidth = computed(() => (tileFit.value ? fit.size.value : tileSize.value))
+
+/** Columns the grid lays out right now; it changes with the slider, Fit and the window. */
+const columns = computed(() => gridColumns(fit.width.value, tileWidth.value, GAP))
+
+const gridEl = ref<HTMLElement>()
+/** The focused tile when it's shown, else the first: where Tab lands and arrows start. */
+const tabStopKey = computed(() =>
+  desk.visible.some((s) => s.key === desk.focusedKey) ? desk.focusedKey : (desk.visible[0]?.key ?? null),
+)
+
+function focusTile(key: string) {
+  desk.focusedKey = key
+  gridEl.value?.querySelector<HTMLElement>(`[data-key="${CSS.escape(key)}"]`)?.focus()
+}
+
+/** Arrow keys move the focused tile; returns whether the key was one. */
+function moveFocus(e: KeyboardEvent, fromKey: string | null) {
+  const keys = desk.visible.map((s) => s.key)
+  const i = gridNavTarget(e.key, fromKey ? keys.indexOf(fromKey) : -1, keys.length, columns.value)
+  if (i == null) return false
+  e.preventDefault()
+  focusTile(keys[i]!)
+  return true
+}
+
+/** Keys on a tile, or on one of its plain buttons (arrows only, so Space/Enter still press them). */
+function onGridKeyDown(e: KeyboardEvent) {
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
+  const target = e.target as HTMLElement
+  const tile = target.closest<HTMLElement>('[data-feed-tile]')
+  if (!tile) return
+  const onTile = target === tile
+  if (!onTile && !(target.tagName === 'BUTTON' && !target.hasAttribute('role'))) return
+  if (moveFocus(e, tile.dataset.key ?? null) || !onTile) return
+  if (e.key === ' ' || e.key === 'Enter') {
+    e.preventDefault()
+    // Holding the key would start then stop.
+    if (e.repeat) return
+    const source = desk.visible.find((s) => s.key === tile.dataset.key)
+    if (source) desk.toggle(source)
+  }
+}
 
 const adding = ref(false)
 
@@ -71,7 +115,9 @@ const SHORTCUTS: [string[], string][] = [
   [[shortcut('Click')], 'Add or remove a feed from the selection'],
   [['Shift', 'Click'], 'Select a range'],
   [[shortcut('A')], 'Select all visible feeds'],
-  [['I'], 'Details for the last feed clicked'],
+  [['←', '→', '↑', '↓'], 'Move between feeds'],
+  [['Space'], 'Record or stop the focused feed'],
+  [['I'], 'Details for the focused feed'],
   [['Esc'], 'Close details, then clear the selection'],
 ]
 // Record/Stop act on the scope: the selection, or every visible feed when nothing is selected.
@@ -107,6 +153,12 @@ useViewKeys((e) => {
   } else if (e.key.toLowerCase() === 'a' && (e.ctrlKey || e.metaKey)) {
     e.preventDefault()
     desk.selectAll()
+  } else if (e.target === document.body && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+    // Nothing has focus (page load, a click on the background): arrows pick up at the focused tile.
+    if (e.key.startsWith('Arrow') && tabStopKey.value) {
+      e.preventDefault()
+      focusTile(tabStopKey.value)
+    }
   }
 }, { alsoIgnore: '[role="listbox"]', modifiers: true })
 </script>
@@ -206,11 +258,13 @@ useViewKeys((e) => {
       </div>
       <div
         v-else
+        ref="gridEl"
         class="grid gap-4"
         :style="{ gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${tileWidth}px), ${tileWidth}px))` }"
         @click.self="desk.clearSelection()"
+        @keydown="onGridKeyDown"
       >
-        <FeedTile v-for="source in desk.visible" :key="source.key" :source="source" />
+        <FeedTile v-for="source in desk.visible" :key="source.key" :source="source" :tab-stop="source.key === tabStopKey" />
         <!-- A tile's picture plus its measured caption, so it matches the feed tiles beside it. -->
         <button
           type="button"
