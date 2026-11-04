@@ -56,7 +56,7 @@ const receiveAt = computed(() => {
       class="h-7 font-mono text-[0.6875rem]"
       placeholder="srt://:9000"
       :aria-label="`SRT URL for output ${index + 1}`"
-      @update:model-value="(v) => emit('update', { url: String(v) })"
+      @update:model-value="(v: string) => emit('update', { url: v })"
     />
     <div class="grid grid-cols-3 gap-2">
       <BitrateField :model-value="output.bitrate_kbps" @update:model-value="(v) => emit('update', { bitrate_kbps: v })" />
