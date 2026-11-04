@@ -6,6 +6,7 @@ import { useNodesStore } from '@/stores/nodes'
 import { useSettingsStore } from '@/stores/settings'
 import type { UpdateChannel } from '@/types/generated/UpdateChannel'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 
 /** Which releases this node offers as updates. Nodes are updated to their controller's version, so it's set here only. */
 const nodes = useNodesStore()
@@ -13,12 +14,20 @@ const settings = useSettingsStore()
 
 const channel = computed(() => nodes.self?.update_channel ?? null)
 const saving = ref(false)
+const confirmingPrerelease = ref(false)
 
-async function onChannel(value: unknown) {
+// The toggle follows the node's saved channel, so it stays on Stable while the warning is open
+// and after Cancel.
+function onChannel(value: unknown) {
   if ((value !== 'stable' && value !== 'prerelease') || value === channel.value) return
+  if (value === 'prerelease') confirmingPrerelease.value = true
+  else void apply(value)
+}
+
+async function apply(value: UpdateChannel) {
   saving.value = true
   try {
-    await settings.setUpdateChannel(value as UpdateChannel)
+    await settings.setUpdateChannel(value)
     toast.success(value === 'prerelease' ? 'Pre-releases will be offered as updates' : 'Only stable releases will be offered')
   } catch (e) {
     notifyError("Couldn't change the update channel", e)
@@ -58,5 +67,15 @@ async function onChannel(value: unknown) {
         </ToggleGroup>
       </div>
     </div>
+    <ConfirmDialog
+      v-model:open="confirmingPrerelease"
+      title="Offer pre-releases?"
+      confirm-label="Offer pre-releases"
+      confirm-variant="default"
+      @confirm="apply('prerelease')"
+    >
+      Pre-releases are less tested than stable releases and may have bugs that affect a show. The choice applies
+      only to this node; other nodes keep their own channel.
+    </ConfirmDialog>
   </section>
 </template>
