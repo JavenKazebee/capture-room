@@ -8,12 +8,17 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { Button } from '@/components/ui/button'
+import { Button, type ButtonVariants } from '@/components/ui/button'
 
-/** Confirmation for a destructive action. Open it with `v-model:open`. */
+/** Confirmation for a destructive or risky action. Open it with `v-model:open`. */
 withDefaults(
-  defineProps<{ title: string; description?: string; confirmLabel?: string }>(),
-  { confirmLabel: 'Delete' },
+  defineProps<{
+    title: string
+    description?: string
+    confirmLabel?: string
+    confirmVariant?: ButtonVariants['variant']
+  }>(),
+  { confirmLabel: 'Delete', confirmVariant: 'destructive' },
 )
 const open = defineModel<boolean>('open', { required: true })
 const emit = defineEmits<{ confirm: [] }>()
@@ -37,7 +42,7 @@ function confirm() {
       </AlertDialogHeader>
       <AlertDialogFooter>
         <AlertDialogCancel>Cancel</AlertDialogCancel>
-        <Button variant="destructive" @click="confirm">{{ confirmLabel }}</Button>
+        <Button :variant="confirmVariant" @click="confirm">{{ confirmLabel }}</Button>
       </AlertDialogFooter>
     </AlertDialogContent>
   </AlertDialog>
