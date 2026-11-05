@@ -1,17 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, toRef, watch } from 'vue'
-import { useSecondClock } from '@/composables/useSecondClock'
 import { Check, Info } from '@lucide/vue'
-import { audioLevels, type Source } from '@/stores/sources'
+import type { Source } from '@/stores/sources'
 import { totalDropped, useRecordingsStore } from '@/stores/recordings'
 import { useRecordDeskStore } from '@/stores/recordDesk'
 import { useNodesStore } from '@/stores/nodes'
 import { useEventsStore } from '@/stores/events'
 import { usePreferences } from '@/composables/usePreferences'
 import { useThumbnail } from '@/composables/useThumbnail'
-import { elapsedMs, formatDuration } from '@/lib/format'
-import { formatLabel } from '@/lib/sourceFormat'
-import { LINK } from '@/lib/linkState'
+import { useFeedState } from './useFeedState'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import AudioMeter from '@/components/AudioMeter.vue'
@@ -21,16 +18,15 @@ import TallyBadge from '@/components/common/TallyBadge.vue'
 
 /** `tabStop`: the one tile Tab lands on (roving tabindex). */
 const props = defineProps<{ source: Source; tabStop?: boolean }>()
+const emit = defineEmits<{ expand: [] }>()
 
 const desk = useRecordDeskStore()
 const recordings = useRecordingsStore()
 const nodes = useNodesStore()
 const { overlays } = usePreferences()
 
-const session = computed(() => recordings.activeForSource(props.source.node_id, props.source.id))
+const { session, busy, channels, preset, duration, noSignal, format } = useFeedState(toRef(props, 'source'))
 const selected = computed(() => desk.selected.has(props.source.key))
-const busy = computed(() => desk.busy.has(props.source.key))
-const channels = computed(() => audioLevels.get(props.source.key) ?? [])
 const tile = ref<HTMLElement | null>(null)
 const picture = ref<HTMLElement | null>(null)
 const thumb = useThumbnail(toRef(props, 'source'), picture)
@@ -43,32 +39,15 @@ const infoOpen = computed({
   },
 })
 
-const preset = computed({
-  get: () => desk.presetIdOf(props.source.key),
-  set: (id: string) => desk.setPreset(props.source.key, id),
-})
-
-const now = useSecondClock()
-const duration = computed(() =>
-  session.value ? formatDuration(elapsedMs(session.value.started_at, null, now.value)) : '',
-)
-
-/** A live source that isn't delivering frames (it plays black and silence). */
-const noSignal = computed(() => {
-  const link = props.source.link
-  return link && link !== 'live' && !props.source.error ? LINK[link] : null
-})
-
-const format = computed(() => {
-  const c = props.source.capabilities
-  return c
-    ? formatLabel({ width: c.max_width, height: c.max_height, fps_num: c.fps_num, fps_den: c.fps_den })
-    : null
-})
-
 function onClick(e: MouseEvent) {
   if (e.shiftKey) desk.selectRange(props.source.key)
   else desk.select(props.source.key, e.ctrlKey || e.metaKey ? 'toggle' : 'only')
+}
+
+// Double-clicking a control (Record, the preset) is just two clicks on it.
+function onDblClick(e: MouseEvent) {
+  if ((e.target as HTMLElement).closest('button, input, select, [role="combobox"]')) return
+  emit('expand')
 }
 
 // Tabbing onto a tile focuses it, as arrowing does; focus on its own controls doesn't.
@@ -116,6 +95,7 @@ watch(session, (now, prev) => {
         ]"
         @focusin="onFocusIn"
         @click="onClick"
+        @dblclick="onDblClick"
       >
         <div ref="picture" class="relative flex bg-black aspect-video">
           <div class="flex-1 relative overflow-hidden">
