@@ -113,14 +113,14 @@ function startedAt(r: RecordingSession) {
     </section>
 
     <div class="grid grid-cols-2 gap-x-5 gap-y-3 items-start">
-      <section v-for="(leg, i) in legs" :key="i" class="space-y-1.5 min-w-0">
-        <h3 class="section-title">{{ leg.name || (legs.length > 1 ? `Output ${i + 1}` : 'Output') }}</h3>
-        <KeyValueList :items="legFacts(leg)" />
-      </section>
-
       <section class="space-y-1.5 min-w-0">
         <h3 class="section-title">Source</h3>
         <KeyValueList :items="sourceFacts" />
+      </section>
+
+      <section v-for="(leg, i) in legs" :key="i" class="space-y-1.5 min-w-0">
+        <h3 class="section-title">{{ leg.name || (legs.length > 1 ? `Output ${i + 1}` : 'Output') }}</h3>
+        <KeyValueList :items="legFacts(leg)" />
       </section>
 
       <section v-if="history.length" class="space-y-1.5 min-w-0">
