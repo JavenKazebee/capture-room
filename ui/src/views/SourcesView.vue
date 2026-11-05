@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { MonitorPlay, Pencil, Plus, Radio, RadioTower, RefreshCw, Trash2 } from '@lucide/vue'
+import { Eye, EyeOff, MonitorPlay, Pencil, Plus, Radio, RadioTower, RefreshCw, Trash2 } from '@lucide/vue'
 import { CONFIGURED_TYPES, useSourcesStore, type Source } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { useRecordingsStore } from '@/stores/recordings'
@@ -223,6 +223,9 @@ onMounted(() => store.ensureLoaded())
       </template>
       <template #cell-name="{ row }">
         <div class="font-medium text-sm">{{ row.display_name }}</div>
+        <div v-if="row.thumbnail_hidden" class="flex items-center gap-1 text-xs text-muted-foreground">
+          <EyeOff class="size-3" /> Thumbnail hidden
+        </div>
         <div v-if="store.alsoOn(row).length" class="text-xs text-muted-foreground">
           Also on {{ store.alsoOn(row).map(nodesStore.nameOf).join(', ') }}
         </div>
@@ -256,6 +259,19 @@ onMounted(() => store.ensureLoaded())
               <button class="row-btn" @click="router.push({ path: '/playback', query: { channel: row.key } })"><MonitorPlay class="size-3.5" /></button>
             </TooltipTrigger>
             <TooltipContent>Open in Playback</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <button
+                class="row-btn"
+                :aria-label="row.thumbnail_hidden ? 'Show thumbnail' : 'Hide thumbnail'"
+                @click="store.setThumbnailHidden(row, !row.thumbnail_hidden)"
+              >
+                <Eye v-if="row.thumbnail_hidden" class="size-3.5" />
+                <EyeOff v-else class="size-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{{ row.thumbnail_hidden ? 'Show thumbnail' : 'Hide thumbnail (saves the node making it)' }}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger as-child>

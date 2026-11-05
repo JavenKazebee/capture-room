@@ -24,7 +24,7 @@
 //! [`Work::run`] starts each source's pipelines on their own thread, so a
 //! slow source doesn't hold up the others.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -450,6 +450,9 @@ pub struct SourceManager {
     replay_root: PathBuf,
     /// Where saved replay clips keep their files, a folder each.
     clip_root: PathBuf,
+    /// Sources whose thumbnails aren't made, by id; kept for sources that
+    /// aren't there now (an NDI sender that's off), so they stay hidden.
+    hidden_thumbnails: HashSet<String>,
 }
 
 impl SourceManager {
@@ -486,6 +489,33 @@ impl SourceManager {
             clip_root: std::env::temp_dir()
                 .join("capture-room-replay-clips")
                 .join(std::process::id().to_string()),
+            hidden_thumbnails: HashSet::new(),
+        }
+    }
+
+    /// Set before any monitor starts.
+    pub fn set_hidden_thumbnails(&mut self, ids: HashSet<String>) {
+        self.hidden_thumbnails = ids;
+    }
+
+    pub fn hidden_thumbnails(&self) -> &HashSet<String> {
+        &self.hidden_thumbnails
+    }
+
+    pub fn thumbnail_hidden(&self, source_id: &str) -> bool {
+        self.hidden_thumbnails.contains(source_id)
+    }
+
+    /// Stop or start making `source_id`'s thumbnails, now and whenever its
+    /// monitor starts again.
+    pub fn set_thumbnail_hidden(&mut self, source_id: &str, hidden: bool) {
+        if hidden {
+            self.hidden_thumbnails.insert(source_id.to_string());
+        } else {
+            self.hidden_thumbnails.remove(source_id);
+        }
+        if let Some(monitor) = self.monitors.get(source_id) {
+            monitor.set_thumbnails(!hidden);
         }
     }
 
@@ -737,6 +767,9 @@ impl SourceManager {
                 let listed = self.sources.iter().any(|s| Arc::ptr_eq(s, &source));
                 match pipeline {
                     Ok(pipeline) if listed && !self.monitors.contains_key(&id) => {
+                        if self.hidden_thumbnails.contains(&id) {
+                            pipeline.set_thumbnails(false);
+                        }
                         self.monitors.insert(id.clone(), pipeline);
                         self.start_errors.remove(&id);
                     }

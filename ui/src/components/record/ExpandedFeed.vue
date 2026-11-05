@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, toRef } from 'vue'
-import { Minimize2 } from '@lucide/vue'
-import type { Source } from '@/stores/sources'
+import { Eye, EyeOff, Minimize2 } from '@lucide/vue'
+import { useSourcesStore, type Source } from '@/stores/sources'
 import { totalDropped } from '@/stores/recordings'
 import { useRecordDeskStore } from '@/stores/recordDesk'
 import { useNodesStore } from '@/stores/nodes'
@@ -18,6 +18,7 @@ const props = defineProps<{ source: Source }>()
 const emit = defineEmits<{ close: [] }>()
 
 const desk = useRecordDeskStore()
+const sources = useSourcesStore()
 const nodes = useNodesStore()
 const { overlays } = usePreferences()
 
@@ -55,6 +56,20 @@ function onKeyDown(e: KeyboardEvent) {
         >
           <span class="text-destructive font-medium">Source failed</span>
           <span class="text-zinc-400">{{ source.error }}</span>
+        </div>
+        <div
+          v-else-if="source.thumbnail_hidden"
+          class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-zinc-500 text-sm"
+        >
+          <EyeOff class="size-5" />
+          Thumbnail hidden
+          <button
+            class="rounded px-2 py-0.5 text-zinc-300 hover:text-white hover:bg-white/10"
+            @click="sources.setThumbnailHidden(source, false)"
+            @dblclick.stop
+          >
+            Show
+          </button>
         </div>
         <img
           v-else-if="thumb.src.value"
@@ -138,6 +153,17 @@ function onKeyDown(e: KeyboardEvent) {
         <span v-if="session" class="size-2 rounded-[1px] bg-current" />
         <span v-else class="size-2 rounded-full bg-tally" />
         {{ session ? 'Stop' : 'Record' }}
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        class="h-7 w-7 p-0 shrink-0"
+        :aria-label="source.thumbnail_hidden ? 'Show thumbnail' : 'Hide thumbnail'"
+        :title="source.thumbnail_hidden ? 'Show thumbnail' : 'Hide thumbnail (saves the node making it)'"
+        @click="sources.setThumbnailHidden(source, !source.thumbnail_hidden)"
+      >
+        <Eye v-if="source.thumbnail_hidden" class="size-3.5" />
+        <EyeOff v-else class="size-3.5" />
       </Button>
       <Button
         variant="ghost"

@@ -16,6 +16,7 @@ import type { DisplayDto } from '@/types/generated/DisplayDto'
 import type { DirListingDto } from '@/types/generated/DirListingDto'
 import type { SourceDto } from '@/types/generated/SourceDto'
 import type { SourceType } from '@/types/generated/SourceType'
+import type { ThumbnailVisibilityRequest } from '@/types/generated/ThumbnailVisibilityRequest'
 
 /** A node's source tagged with the node it lives on (`id` is only unique per node). */
 export type Source = SourceDto & {
@@ -166,6 +167,21 @@ export const useSourcesStore = defineStore('sources', () => {
     await refreshNode(nodeId)
   }
 
+  /** Stop or start making `s`'s thumbnail on its node. Shown at once; put back if the node refuses. */
+  async function setThumbnailHidden(s: Source, hidden: boolean) {
+    const live = () => sources.value.find((o) => o.key === s.key)
+    const target = live()
+    if (target) target.thumbnail_hidden = hidden
+    try {
+      const body: ThumbnailVisibilityRequest = { hidden }
+      await nodeApi(s.node_id)(`/sources/${encodeURIComponent(s.id)}/thumbnail`, { method: 'PUT', body })
+    } catch (e) {
+      const now = live()
+      if (now) now.thumbnail_hidden = !hidden
+      notifyError(`Couldn't ${hidden ? 'hide' : 'show'} the thumbnail: ${s.display_name}`, e, s.node_id)
+    }
+  }
+
   /** Other nodes on the same NDI sender as `s` (an NDI source's id is the sender's name). */
   function alsoOn(s: Source): string[] {
     if (s.source_type !== 'ndi') return []
@@ -221,6 +237,7 @@ export const useSourcesStore = defineStore('sources', () => {
     updateSource,
     chooseScreen,
     deleteSource,
+    setThumbnailHidden,
     listFiles,
     alsoOn,
     nameOf,

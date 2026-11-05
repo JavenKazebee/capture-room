@@ -292,6 +292,7 @@ async fn run(
     );
     source_manager.set_node_name(&node_name);
     source_manager.set_ndi_subscriptions(db::ndi_subscriptions_get(&pool).await?);
+    source_manager.set_hidden_thumbnails(db::hidden_thumbnails_get(&pool).await?);
     source_manager.set_replay_root(
         replay_root(".replay", &node_id),
         replay_root(".replay-clips", &node_id),

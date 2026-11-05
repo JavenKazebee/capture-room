@@ -27,8 +27,8 @@ use crate::api::types::{
     DeviceDto, DirListingDto, DisplayDto, FolderDto, FolderListingDto, NdiSubscriptionsDto,
     NdiSubscriptionsInput, NodeCapacityDto, NodeChecksDto, NodeSettingsDto, NodeStatus,
     OutputConfig, RecordingSessionDto, RecordingStatus, RecordingsQuery, SourceCapabilitiesDto,
-    SourceConfig, SourceDto, StartRecordingRequest, StorageVolumeDto, UpdateNodeSettingsRequest,
-    UpdateRequest, UpdateStatusDto, VolumeCheckDto, WsEvent,
+    SourceConfig, SourceDto, StartRecordingRequest, StorageVolumeDto, ThumbnailVisibilityRequest,
+    UpdateNodeSettingsRequest, UpdateRequest, UpdateStatusDto, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
 use crate::capacity::{Capacity, Load, Setup};
@@ -69,6 +69,10 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/sources/scan", post(post_scan))
         .route("/ndi", get(get_ndi).put(put_ndi))
         .route("/sources/{id}", get(get_source))
+        .route(
+            "/sources/{id}/thumbnail",
+            axum::routing::put(put_source_thumbnail),
+        )
         .route(
             "/configured-sources",
             get(get_configured_sources).post(post_configured_source),
@@ -259,6 +263,21 @@ async fn get_source(
         .get_source(&id)
         .ok_or(ApiError::NotFound("source not found"))?;
     Ok(Json(source_to_dto(&mgr, source)))
+}
+
+/// Hide or show a source's thumbnail. The source needn't be there now: an
+/// NDI sender that's off stays hidden when it's back.
+async fn put_source_thumbnail(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<ThumbnailVisibilityRequest>,
+) -> ApiResult<Json<()>> {
+    let mut mgr = state.source_manager.write().await;
+    mgr.set_thumbnail_hidden(&id, req.hidden);
+    db::hidden_thumbnails_set(&state.db, mgr.hidden_thumbnails()).await?;
+    drop(mgr);
+    state.emit(&WsEvent::SourcesChanged);
+    Ok(Json(()))
 }
 
 async fn post_scan(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<SourceDto>>> {
@@ -1269,6 +1288,7 @@ fn source_to_dto(mgr: &SourceManager, s: &dyn InputSource) -> SourceDto {
         timecode: s.timecode(),
         capabilities: capabilities(mgr, s),
         link: mgr.link(s),
+        thumbnail_hidden: mgr.thumbnail_hidden(s.id()),
     }
 }
 

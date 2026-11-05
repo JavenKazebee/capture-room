@@ -4,7 +4,8 @@ import type { Source } from '@/stores/sources'
 
 /**
  * `source`'s live thumbnail (monitored sources only), while this is mounted
- * and, given `el`, while that element is on screen.
+ * and, given `el`, while that element is on screen. None for a source whose
+ * thumbnail is hidden: its node doesn't make one.
  */
 export function useThumbnail(source: Readonly<Ref<Source | null>>, el?: Readonly<Ref<HTMLElement | null>>) {
   const onScreen = ref(!el)
@@ -23,7 +24,9 @@ export function useThumbnail(source: Readonly<Ref<Source | null>>, el?: Readonly
     onScopeDispose(() => observer.disconnect())
   }
 
-  const key = computed(() => (source.value && onScreen.value ? source.value.key : null))
+  const key = computed(() =>
+    source.value && onScreen.value && !source.value.thumbnail_hidden ? source.value.key : null,
+  )
   let unwatch: (() => void) | null = null
   watch(
     key,
