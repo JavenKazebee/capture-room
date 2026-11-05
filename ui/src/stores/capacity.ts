@@ -14,6 +14,8 @@ import { REPLAY_CODECS } from '@/lib/codecs'
 import { nodeLoadErrors } from '@/lib/loadState'
 import { onReconnect } from '@/lib/reconnect'
 import type { CapacityCheckRequest } from '@/types/generated/CapacityCheckRequest'
+import type { PresetEstimateDto } from '@/types/generated/PresetEstimateDto'
+import type { PresetEstimateRequest } from '@/types/generated/PresetEstimateRequest'
 
 /** Recording time left on a volume below which the UI warns. */
 export const LOW_TIME_SECS = 3600
@@ -117,6 +119,14 @@ export const useCapacityStore = defineStore('capacity', () => {
     })
   }
 
+  /** What one source recorded with `outputs` would cost on the node, per source format, before any is chosen. */
+  function estimate(nodeId: string, outputs: PresetOutputInput[]) {
+    return nodeApi(nodeId)<PresetEstimateDto>('/capacity/estimate', {
+      method: 'POST',
+      body: { outputs } satisfies PresetEstimateRequest,
+    })
+  }
+
   /** Fetch again whatever was loaded: after a reconnect, when events may have been missed. */
   async function reloadLoaded() {
     await Promise.all([
@@ -127,5 +137,5 @@ export const useCapacityStore = defineStore('capacity', () => {
 
   onReconnect(reloadLoaded)
 
-  return { capacity, errors, runs, load, loadRuns, applyRun, start, cancel, remove, check, checkReplay, checkChannel }
+  return { capacity, errors, runs, load, loadRuns, applyRun, start, cancel, remove, check, checkReplay, checkChannel, estimate }
 })

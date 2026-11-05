@@ -6,8 +6,8 @@
 //! share less than assumed), so it's a guide.
 
 use crate::api::types::{
-    BenchmarkRunDto, BenchmarkStatus, CapacityVerdict, OutputAdvanced, OutputConfig,
-    PresetOutputInput, ProfileCapacityDto, ReplayCodec,
+    BenchmarkRunDto, BenchmarkStatus, CapacityVerdict, FormatEstimateDto, OutputAdvanced,
+    OutputConfig, PresetOutputInput, ProfileCapacityDto, ReplayCodec, VideoFormat,
 };
 use crate::pipeline::monitor::SourceFormat;
 
@@ -267,6 +267,55 @@ impl Capacity {
             .map(|p| found(p, sustained(p) * p.pixel_rate() / pixel_rate, true))
     }
 
+    /// What one feed of setup `key` costs for each distinct format among
+    /// `sources`, most common first (ties by size); one unknown-format entry
+    /// when none has a known format.
+    pub fn per_format(
+        &self,
+        key: &str,
+        sources: impl IntoIterator<Item = SourceFormat>,
+    ) -> Vec<FormatEstimateDto> {
+        let mut counts: Vec<(VideoFormat, u32)> = Vec::new();
+        for f in sources {
+            let (Some((w, h)), Some(rate)) = (f.size, f.rate) else {
+                continue;
+            };
+            let format = VideoFormat::new(w, h, rate);
+            match counts.iter_mut().find(|(c, _)| *c == format) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((format, 1)),
+            }
+        }
+        counts.sort_by_key(|(f, n)| (std::cmp::Reverse(*n), std::cmp::Reverse(f.width * f.height)));
+        let estimate = |format: Option<VideoFormat>, sources: u32| {
+            let m = self.lookup(
+                key,
+                SourceFormat {
+                    size: format.map(|f| (f.width, f.height)),
+                    rate: format.map(|f| (f.fps_num, f.fps_den)),
+                    audio: None,
+                },
+            );
+            FormatEstimateDto {
+                format,
+                sources,
+                feeds: m.as_ref().map(|m| m.feeds),
+                estimated: m.is_some_and(|m| m.estimated),
+            }
+        };
+        if counts.is_empty() {
+            return vec![estimate(None, 0)];
+        }
+        counts
+            .into_iter()
+            .map(|(f, n)| estimate(Some(f), n))
+            .collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.profiles.is_empty()
+    }
+
     /// Add up feeds of `(outputs key, source format)`.
     pub fn load<'a>(&self, feeds: impl IntoIterator<Item = (&'a str, SourceFormat)>) -> Load {
         let mut total = Load::default();
@@ -504,6 +553,40 @@ mod tests {
         ]);
         assert_eq!(cap.profiles().len(), 1);
         assert_eq!(cap.profiles()[0].sustainable_feeds, 3);
+    }
+
+    #[test]
+    fn per_format_groups_sources() {
+        let cap = Capacity::from_runs(&[run(
+            "hd",
+            (1920, 1080, 30, 1),
+            4,
+            &[true, true, true, true, false],
+        )]);
+        let key = outputs_key(&[output("x", "y")]);
+        let hd = format(1920, 1080, 30, 1);
+        let sd = format(1280, 720, 30, 1);
+        let unknown = SourceFormat::default();
+
+        let est = cap.per_format(&key, [sd, hd, unknown, hd]);
+        assert_eq!(est.len(), 2);
+        assert_eq!(est[0].format, Some(VideoFormat::new(1920, 1080, (30, 1))));
+        assert_eq!(
+            (est[0].sources, est[0].feeds, est[0].estimated),
+            (2, Some(4.0), false)
+        );
+        assert_eq!(est[1].sources, 1);
+        assert!(est[1].estimated);
+
+        // No known format: the newest result as is, flagged.
+        let est = cap.per_format(&key, [unknown]);
+        assert_eq!(est.len(), 1);
+        assert_eq!((est[0].format, est[0].sources), (None, 0));
+        assert_eq!((est[0].feeds, est[0].estimated), (Some(4.0), true));
+
+        // Not benchmarked with these outputs.
+        let est = cap.per_format("other", [hd]);
+        assert_eq!((est[0].feeds, est[0].estimated), (None, false));
     }
 
     #[test]

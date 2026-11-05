@@ -21,6 +21,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import OutputCard from '@/components/presets/OutputCard.vue'
 import PresetList from '@/components/presets/PresetList.vue'
+import PresetCapacity from '@/components/presets/PresetCapacity.vue'
 
 const store = usePresetsStore()
 const sources = useSourcesStore()
@@ -262,6 +263,8 @@ useQueryAction(['new', 'for'], (q) => {
             Path previews use <span class="num">{{ preview.source }}</span> on
             <span class="num">{{ preview.node }}</span> at the current time. Every output records the same feed at once.
           </p>
+
+          <PresetCapacity :outputs="draftLegs" :node-ids="presetNodes" />
         </div>
       </section>
     </div>

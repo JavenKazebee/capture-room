@@ -197,6 +197,40 @@ pub struct CapacityCheckRequest {
     pub channel: Option<ChannelConfig>,
 }
 
+/// What recording with `outputs` would cost on this node, per source, before
+/// any source is chosen: for the preset editor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct PresetEstimateRequest {
+    pub outputs: Vec<PresetOutputInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct PresetEstimateDto {
+    /// The node has a finished benchmark of any setup.
+    pub benchmarked: bool,
+    /// Share of the benchmarked capacity in use now (see
+    /// [`NodeCapacityDto::load`]).
+    pub load: f64,
+    /// One per format the node's sources produce, most common first; a single
+    /// one with no format when no source reports one.
+    pub formats: Vec<FormatEstimateDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct FormatEstimateDto {
+    pub format: Option<VideoFormat>,
+    /// The node's sources in this format.
+    pub sources: u32,
+    /// Feeds with these outputs the node sustains alone (fractional when
+    /// scaled); none without a benchmark of these outputs.
+    pub feeds: Option<f64>,
+    /// Scaled from a benchmark of another format, or the format is unknown.
+    pub estimated: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
