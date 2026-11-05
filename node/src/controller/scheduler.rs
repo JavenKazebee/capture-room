@@ -24,9 +24,9 @@ use tracing::{info, warn};
 
 use super::forward::call_node;
 use crate::api::types::{
-    ChromaSubsampling, ClockTimeDto, Container, PresetDto, PresetOutputInput, RecordingSessionDto,
-    ScheduleAction, ScheduleDto, ScheduleKind, ScheduleRunDto, ScheduleRunStatus,
-    ScheduleRunTarget, ScheduleTargetKind, StartRecordingRequest, VideoCodec, WsEvent,
+    ClockTimeDto, PresetDto, RecordingSessionDto, ScheduleAction, ScheduleDto, ScheduleKind,
+    ScheduleRunDto, ScheduleRunStatus, ScheduleRunTarget, ScheduleTargetKind,
+    StartRecordingRequest, WsEvent,
 };
 use crate::db;
 use crate::state::AppState;
@@ -185,8 +185,7 @@ async fn start_run(
 
     // Recordings first: they're set to begin on the scheduled frame of the
     // shared clock, so they need the lead.
-    let mut presets = db::presets_list(&state.db).await?;
-    presets.push(default_preset());
+    let presets = db::presets_list(&state.db).await?;
     let clock = state.clock.now();
     let lead_us = (start - now)
         .num_microseconds()
@@ -361,31 +360,6 @@ async fn stop_run(state: &AppState, mut run: ScheduleRunDto) -> anyhow::Result<(
         emit(state, &s, run);
     }
     Ok(())
-}
-
-/// The UI's built-in preset (`DEFAULT_PRESET` and `blankLeg` there): one
-/// H.264 leg, never stored.
-pub const DEFAULT_PRESET_ID: &str = "default";
-
-fn default_preset() -> PresetDto {
-    PresetDto {
-        id: DEFAULT_PRESET_ID.into(),
-        name: "H.264 (default)".into(),
-        outputs: vec![PresetOutputInput {
-            name: "Output".into(),
-            codec: VideoCodec::H264,
-            container: Container::Mov,
-            resolution: None,
-            framerate: None,
-            bitrate_kbps: None,
-            chroma: ChromaSubsampling::Yuv420,
-            path_template: "~/capture-room/{date}/{source}_{datetime}.{ext}".into(),
-            preview: false,
-            advanced: Default::default(),
-        }],
-        created_at: String::new(),
-        updated_at: String::new(),
-    }
 }
 
 fn emit(state: &AppState, s: &ScheduleDto, run: ScheduleRunDto) {

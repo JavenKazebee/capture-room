@@ -327,6 +327,9 @@ pub struct PresetDto {
     pub outputs: Vec<PresetOutputInput>,
     pub created_at: String,
     pub updated_at: String,
+    /// Used where nothing else names a preset; exactly one is.
+    #[serde(default)]
+    pub is_default: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

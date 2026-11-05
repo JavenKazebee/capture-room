@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { useEventListener } from '@vueuse/core'
 import { toast } from 'vue-sonner'
-import { Copy, Loader2, Plus, RotateCcw, Trash2 } from '@lucide/vue'
+import { Copy, Loader2, Plus, RotateCcw, Star, Trash2 } from '@lucide/vue'
 import { usePresetsStore, blankLeg } from '@/stores/presets'
 import { dateTime, plural } from '@/lib/format'
 import { useSourcesStore } from '@/stores/sources'
@@ -14,6 +14,7 @@ import { usePresetDraft } from '@/composables/usePresetDraft'
 import { useQueryAction } from '@/composables/useQueryAction'
 import { notifyError } from '@/lib/notify'
 import { shortcut } from '@/lib/keys'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import PageHeader from '@/components/common/PageHeader.vue'
@@ -43,7 +44,6 @@ const {
   serverError,
   pendingFor,
   selected,
-  isBuiltIn,
   dirty,
   confirmOpen: confirmSwitch,
   discard: discardAndSwitch,
@@ -123,9 +123,35 @@ async function destroy() {
 }
 
 function pickInitial() {
-  const first = sorted.value[0]
+  const first = store.defaultPreset ?? sorted.value[0]
   if (first) draft.loadPreset(first)
-  else draft.loadDefault()
+}
+
+const isDefault = computed(() => !!selected.value && selected.value.id === store.defaultId)
+/** Something must always be left to record with. */
+const isLast = computed(() => store.presets.length <= 1)
+
+const deleteDescription = computed(() => {
+  const p = selected.value
+  if (!p) return ''
+  const parts = ['Recordings already made are kept.']
+  // The node moves the default to the first remaining preset by name.
+  const next = isDefault.value ? sorted.value.find((o) => o.id !== p.id) : null
+  if (next) parts.push(`${next.name} becomes the default.`)
+  const feeds = usedBy(p.id)
+  if (feeds) parts.push(`${plural(feeds, 'feed')} using it will fall back to the default preset.`)
+  return parts.join(' ')
+})
+
+async function makeDefault() {
+  const p = selected.value
+  if (!p) return
+  try {
+    await store.setDefault(p.id)
+    toast.success(`${p.name} is now the default`)
+  } catch (e) {
+    notifyError(`Couldn't make ${p.name} the default`, e)
+  }
 }
 
 const ready = ref(false)
@@ -169,34 +195,40 @@ useQueryAction(['new', 'for'], (q) => {
             v-model="draftName"
             placeholder="Preset name"
             class="h-8 max-w-sm text-sm font-semibold"
-            :disabled="isBuiltIn"
-            :aria-invalid="!isBuiltIn && !draftName.trim()"
+            :aria-invalid="!draftName.trim()"
           />
+          <Badge v-if="isDefault" variant="secondary" title="Used when a feed has no preset chosen">Default</Badge>
           <span v-if="selected" class="text-[11px] text-muted-foreground">
             updated {{ dateTime(selected.updated_at, { year: true }) }}
           </span>
           <div class="flex-1" />
-          <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" @click="draft.duplicate">
-            <Copy class="size-3.5" /> {{ isBuiltIn ? 'Copy as new preset' : 'Duplicate' }}
+          <Button v-if="selected && !isDefault" variant="outline" size="sm" class="h-7 gap-1.5 text-xs" title="Use this preset where a feed has none chosen" @click="makeDefault">
+            <Star class="size-3.5" /> Set as default
           </Button>
-          <template v-if="!isBuiltIn">
-            <Button v-if="selected" variant="destructive" size="sm" class="h-7 gap-1.5 text-xs" @click="confirmDelete = true">
-              <Trash2 class="size-3.5" /> Delete
-            </Button>
-            <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" :disabled="!dirty" @click="draft.revert">
-              <RotateCcw class="size-3.5" /> Revert
-            </Button>
-            <span v-if="problemCount" class="text-xs text-destructive">{{ problems.join(' · ') }}</span>
-            <Button size="sm" class="h-7 gap-1.5 text-xs" :disabled="!dirty || !!problemCount || saving" :title="problemCount ? problems.join('\n') : `Save (${shortcut('S')})`" @click="save">
-              <Loader2 v-if="saving" class="size-3.5 animate-spin" /> Save
-            </Button>
-          </template>
+          <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" @click="draft.duplicate">
+            <Copy class="size-3.5" /> Duplicate
+          </Button>
+          <Button
+            v-if="selected"
+            variant="destructive"
+            size="sm"
+            class="h-7 gap-1.5 text-xs"
+            :disabled="isLast"
+            :title="isLast ? 'The last preset can\'t be deleted' : undefined"
+            @click="confirmDelete = true"
+          >
+            <Trash2 class="size-3.5" /> Delete
+          </Button>
+          <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" :disabled="!dirty" @click="draft.revert">
+            <RotateCcw class="size-3.5" /> Revert
+          </Button>
+          <span v-if="problemCount" class="text-xs text-destructive">{{ problems.join(' · ') }}</span>
+          <Button size="sm" class="h-7 gap-1.5 text-xs" :disabled="!dirty || !!problemCount || saving" :title="problemCount ? problems.join('\n') : `Save (${shortcut('S')})`" @click="save">
+            <Loader2 v-if="saving" class="size-3.5 animate-spin" /> Save
+          </Button>
         </div>
 
         <div class="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-3">
-          <p v-if="isBuiltIn" class="text-xs text-muted-foreground rounded-md border border-border bg-muted/30 px-3 py-2">
-            Used when a feed has no preset chosen. It can't be edited — copy it to make your own.
-          </p>
           <p v-if="serverError" class="text-xs text-destructive rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2">
             {{ serverError }}
           </p>
@@ -205,12 +237,12 @@ useQueryAction(['new', 'for'], (q) => {
             <h2 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               Outputs <span class="num font-normal">{{ draftLegs.length }}</span>
             </h2>
-            <Button v-if="!isBuiltIn" variant="outline" size="sm" class="h-7 gap-1.5 text-xs" @click="draft.addOutput">
+            <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" @click="draft.addOutput">
               <Plus class="size-3.5" /> Add output
             </Button>
           </div>
 
-          <fieldset :disabled="isBuiltIn" class="space-y-2" :class="isBuiltIn && 'opacity-80'">
+          <div class="space-y-2">
             <OutputCard
               v-for="(_, i) in draftLegs"
               :key="legKeys[i]"
@@ -225,7 +257,7 @@ useQueryAction(['new', 'for'], (q) => {
               @move="(d) => draft.moveOutput(i, d)"
               @preview="draft.setPreview(i)"
             />
-          </fieldset>
+          </div>
           <p class="text-[11px] text-muted-foreground">
             Path previews use <span class="num">{{ preview.source }}</span> on
             <span class="num">{{ preview.node }}</span> at the current time. Every output records the same feed at once.
@@ -237,7 +269,7 @@ useQueryAction(['new', 'for'], (q) => {
     <ConfirmDialog
       v-model:open="confirmDelete"
       :title="`Delete ${selected?.name}?`"
-      :description="`Recordings already made are kept.${selected && usedBy(selected.id) ? ` ${usedBy(selected.id)} feed(s) using it will fall back to the default preset.` : ''}`"
+      :description="deleteDescription"
       @confirm="destroy"
     />
     <ConfirmDialog
