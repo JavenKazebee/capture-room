@@ -26,9 +26,10 @@ use crate::api::types::{
     ConfiguredSourceRequest, CreateFolderRequest, DecklinkProfileRequest, DecklinkStatusDto,
     DeviceDto, DirListingDto, DisplayDto, FolderDto, FolderListingDto, NdiSubscriptionsDto,
     NdiSubscriptionsInput, NodeCapacityDto, NodeChecksDto, NodeSettingsDto, NodeStatus,
-    OutputConfig, RecordingSessionDto, RecordingStatus, RecordingsQuery, SourceCapabilitiesDto,
-    SourceConfig, SourceDto, StartRecordingRequest, StorageVolumeDto, ThumbnailVisibilityRequest,
-    UpdateNodeSettingsRequest, UpdateRequest, UpdateStatusDto, VolumeCheckDto, WsEvent,
+    OutputConfig, PresetEstimateDto, PresetEstimateRequest, RecordingSessionDto, RecordingStatus,
+    RecordingsQuery, SourceCapabilitiesDto, SourceConfig, SourceDto, StartRecordingRequest,
+    StorageVolumeDto, ThumbnailVisibilityRequest, UpdateNodeSettingsRequest, UpdateRequest,
+    UpdateStatusDto, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
 use crate::capacity::{Capacity, Load, Setup};
@@ -103,6 +104,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/benchmarks/{id}/cancel", post(post_cancel_benchmark))
         .route("/capacity", get(get_capacity))
         .route("/capacity/check", post(post_capacity_check))
+        .route("/capacity/estimate", post(post_capacity_estimate))
         .route("/thumbnails/{source_id}", get(get_thumbnail))
         .route("/ws", get(ws_handler))
         .route("/ws/thumbnails", get(thumbnails_ws_handler))
@@ -1208,6 +1210,32 @@ async fn post_capacity_check(
     .await?;
 
     Ok(Json(capacity_check(before, after, volumes)))
+}
+
+/// What one source recorded with these outputs would cost, for each format
+/// the node's sources produce. Playout channels aren't recorded, so they
+/// don't count as sources.
+async fn post_capacity_estimate(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<PresetEstimateRequest>,
+) -> ApiResult<Json<PresetEstimateDto>> {
+    let capacity = Capacity::from_runs(&db::benchmarks_list(&state.db).await?);
+    let key = Setup::Record(&req.outputs).key();
+    let (formats, running) = {
+        let mgr = state.source_manager.read().await;
+        let formats: Vec<SourceFormat> = mgr
+            .sources()
+            .iter()
+            .filter(|s| s.playout().is_none())
+            .map(|s| mgr.source_format(s.id()))
+            .collect();
+        (formats, mgr.running_load(&[], &[]))
+    };
+    Ok(Json(PresetEstimateDto {
+        benchmarked: !capacity.is_empty(),
+        load: capacity.load(running.iter()).load,
+        formats: capacity.per_format(&key, formats),
+    }))
 }
 
 /// Would running the playout `channel` (its setup's `key`) fit, on top of
