@@ -20,4 +20,8 @@ capabilities: SourceCapabilitiesDto | null,
 /**
  * Live sources only.
  */
-link: LinkState | null, };
+link: LinkState | null, 
+/**
+ * Its thumbnail isn't made, to save the work.
+ */
+thumbnail_hidden: boolean, };

@@ -59,6 +59,10 @@ impl<T: Clone> Latest<T> {
     pub fn get(&self) -> Option<T> {
         self.0.lock().unwrap().clone()
     }
+
+    pub fn clear(&self) {
+        *self.0.lock().unwrap() = None;
+    }
 }
 
 /// Latest per-channel audio levels from the `level` element.

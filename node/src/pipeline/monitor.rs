@@ -1,11 +1,14 @@
 //! The monitor: a source's always-on pipeline.
 //!
 //! ```text
-//! source bin ─┬─ vtee ─┬─ videorate → videoscale → jpegenc → ThumbnailStore
+//! source bin ─┬─ vtee ─┬─ valve → videorate → videoscale → jpegenc → ThumbnailStore
 //!             │        └─ appsink = video producer
 //!             └─ atee ─┬─ level → AudioMeter → audio.levels events
 //!                      └─ appsink = audio producer
 //! ```
+//!
+//! A source whose thumbnail is hidden closes the valve, so the branch drops
+//! frames before scaling and encoding them.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -43,6 +46,7 @@ pub struct MonitorPipeline {
     /// itself, since the stream keeps the bus alive.
     bus_task: tokio::task::JoinHandle<()>,
     // Live-reconfigurable elements.
+    thumb_valve: gst::Element,
     thumb_rate_caps: gst::Element,
     thumb_scale_caps: gst::Element,
     level_el: gst::Element,
@@ -102,7 +106,7 @@ impl MonitorPipeline {
                 .with_context(|| format!("link source {kind} → tee"))?;
         }
 
-        let (thumb_rate_caps, thumb_scale_caps) =
+        let (thumb_valve, thumb_rate_caps, thumb_scale_caps) =
             add_thumbnail_branch(&pipeline, &vtee, thumbnail.clone(), config)?;
         let level_el = add_level_branch(&pipeline, &atee, config)?;
         let video = add_producer_branch(&pipeline, &vtee, "video")?;
@@ -154,6 +158,7 @@ impl MonitorPipeline {
             video_frames,
             error,
             bus_task,
+            thumb_valve,
             thumb_rate_caps,
             thumb_scale_caps,
             level_el,
@@ -246,6 +251,15 @@ impl MonitorPipeline {
     }
 
     /// Apply a new config in place, without restarting the pipeline.
+    /// Make thumbnails or stop. Stopping forgets the last one, so it isn't
+    /// served as current.
+    pub fn set_thumbnails(&self, on: bool) {
+        self.thumb_valve.set_property("drop", !on);
+        if !on {
+            self.thumbnail.clear();
+        }
+    }
+
     pub fn reconfigure(&self, config: &MonitorSettingsDto) {
         self.level_el
             .set_property("interval", level_interval_ns(config));
@@ -263,16 +277,16 @@ impl Drop for MonitorPipeline {
     }
 }
 
-/// vtee → queue → videorate → capsfilter(fps) → videoscale
+/// vtee → queue → valve → videorate → capsfilter(fps) → videoscale
 ///       → capsfilter(WxH) → videoconvert → jpegenc → appsink
 ///
-/// Returns the two capsfilters for live reconfiguration.
+/// Returns the valve and the two capsfilters for live reconfiguration.
 fn add_thumbnail_branch(
     pipeline: &gst::Pipeline,
     vtee: &gst::Element,
     store: ThumbnailStore,
     config: &MonitorSettingsDto,
-) -> Result<(gst::Element, gst::Element)> {
+) -> Result<(gst::Element, gst::Element, gst::Element)> {
     let rate_caps = capsfilter("thumb-rate-caps", thumb_rate_caps(config))?;
     let scale_caps = capsfilter("thumb-scale-caps", thumb_scale_caps(config))?;
 
@@ -306,8 +320,10 @@ fn add_thumbnail_branch(
     let tq = make_el("queue", "tq")?;
     set_property(&tq, "leaky", "downstream")?;
     tq.set_property("max-size-buffers", 2u32);
+    let valve = make_el("valve", "thumb-valve")?;
     let chain = [
         tq,
+        valve.clone(),
         make_el("videorate", "thumb-rate")?,
         rate_caps.clone(),
         make_el("videoscale", "thumb-scale")?,
@@ -320,7 +336,7 @@ fn add_thumbnail_branch(
     gst::Element::link_many(&chain).context("link thumbnail branch")?;
     link_tee(vtee, &chain[0])?;
 
-    Ok((rate_caps, scale_caps))
+    Ok((valve, rate_caps, scale_caps))
 }
 
 /// atee → queue → audioconvert → level → fakesink
@@ -527,5 +543,54 @@ mod tests {
             s.get::<gst::Fraction>("pixel-aspect-ratio").unwrap(),
             gst::Fraction::new(1, 1)
         );
+    }
+
+    /// A hidden thumbnail stops being made, and starts again when shown.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hidden_thumbnails_stop_and_resume() {
+        gst::init().unwrap();
+        let source = TestSource::new(
+            "t".into(),
+            "t".into(),
+            TestSourceConfig {
+                pattern: VideoTestPattern::Smpte,
+                width: 320,
+                height: 240,
+                fps_num: 30,
+                fps_den: 1,
+                audio_signal: AudioTestSignal::Silence,
+                frequency: 440.0,
+                channels: 2,
+            },
+        );
+        let clock = gst::SystemClock::obtain();
+        let monitor =
+            MonitorPipeline::new(&source, &MonitorSettingsDto::default(), &clock).unwrap();
+        let first = async {
+            while monitor.thumbnail.get().is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), first)
+            .await
+            .expect("no thumbnail");
+
+        monitor.set_thumbnails(false);
+        // A frame already past the valve may still land.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        monitor.thumbnail.clear();
+        // Longer than a thumbnail period, so one would have come.
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        assert!(monitor.thumbnail.get().is_none(), "made while hidden");
+
+        monitor.set_thumbnails(true);
+        let resumed = async {
+            while monitor.thumbnail.get().is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), resumed)
+            .await
+            .expect("no thumbnail after showing it again");
     }
 }

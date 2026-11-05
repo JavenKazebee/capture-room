@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, toRef, watch } from 'vue'
-import { Check, Info } from '@lucide/vue'
-import type { Source } from '@/stores/sources'
+import { Check, Eye, EyeOff, Info } from '@lucide/vue'
+import { useSourcesStore, type Source } from '@/stores/sources'
 import { totalDropped, useRecordingsStore } from '@/stores/recordings'
 import { useRecordDeskStore } from '@/stores/recordDesk'
 import { useNodesStore } from '@/stores/nodes'
@@ -21,6 +21,7 @@ const props = defineProps<{ source: Source; tabStop?: boolean }>()
 const emit = defineEmits<{ expand: [] }>()
 
 const desk = useRecordDeskStore()
+const sources = useSourcesStore()
 const recordings = useRecordingsStore()
 const nodes = useNodesStore()
 const { overlays } = usePreferences()
@@ -106,6 +107,19 @@ watch(session, (now, prev) => {
               <span class="text-destructive font-medium">Source failed</span>
               <span class="text-zinc-400 line-clamp-3">{{ source.error }}</span>
             </div>
+            <div
+              v-else-if="source.thumbnail_hidden"
+              class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 text-zinc-500 text-xs"
+            >
+              <EyeOff class="size-4" />
+              Thumbnail hidden
+              <button
+                class="rounded px-2 py-0.5 text-zinc-300 hover:text-white hover:bg-white/10"
+                @click.stop="sources.setThumbnailHidden(source, false)"
+              >
+                Show
+              </button>
+            </div>
             <img
               v-else-if="thumb.src.value"
               :src="thumb.src.value"
@@ -181,6 +195,15 @@ watch(session, (now, prev) => {
               <span class="text-[10px] text-muted-foreground uppercase tracking-wide">
                 <template v-if="overlays.node && nodes.nodes.length > 1">{{ nodes.nameOf(source.node_id) }} · </template>{{ source.source_type }}
               </span>
+              <button
+                class="size-6 grid place-items-center rounded text-muted-foreground hover:text-foreground hover:bg-accent"
+                :aria-label="source.thumbnail_hidden ? 'Show thumbnail' : 'Hide thumbnail'"
+                :title="source.thumbnail_hidden ? 'Show thumbnail' : 'Hide thumbnail (saves the node making it)'"
+                @click.stop="sources.setThumbnailHidden(source, !source.thumbnail_hidden)"
+              >
+                <Eye v-if="source.thumbnail_hidden" class="size-3.5" />
+                <EyeOff v-else class="size-3.5" />
+              </button>
               <PopoverTrigger as-child>
                 <button
                   class="size-6 -mr-1 grid place-items-center rounded text-muted-foreground hover:text-foreground hover:bg-accent"

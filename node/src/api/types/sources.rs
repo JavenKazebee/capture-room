@@ -76,6 +76,16 @@ pub struct SourceDto {
     /// Live sources only.
     #[serde(default)]
     pub link: Option<LinkState>,
+    /// Its thumbnail isn't made, to save the work.
+    #[serde(default)]
+    pub thumbnail_hidden: bool,
+}
+
+/// Hide or show a source's thumbnail.
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct ThumbnailVisibilityRequest {
+    pub hidden: bool,
 }
 
 // Sources a node is told about, as opposed to discovered (NDI). Stored in

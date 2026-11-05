@@ -8,7 +8,7 @@ use sqlx::{
     types::Json,
     AssertSqlSafe, FromRow, Sqlite, SqlitePool, Transaction,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
@@ -682,6 +682,7 @@ pub async fn ndi_subscriptions_set(pool: &SqlitePool, subs: &NdiSubscriptionsInp
 const DECKLINK_PROFILES: &str = "decklink_profiles";
 const UPDATE_CHANNEL: &str = "update_channel";
 const SCREENCASTS: &str = "screencasts";
+const HIDDEN_THUMBNAILS: &str = "hidden_thumbnails";
 
 /// Each Decklink card's profile, by card key (cards left at the default
 /// aren't stored).
@@ -709,6 +710,18 @@ pub async fn screencasts_get(pool: &SqlitePool) -> Result<HashMap<String, Choice
 
 pub async fn screencasts_set(pool: &SqlitePool, choices: &HashMap<String, Choice>) -> Result<()> {
     config_set(pool, SCREENCASTS, &serde_json::to_string(choices)?).await
+}
+
+/// Sources whose thumbnails are hidden, by id.
+pub async fn hidden_thumbnails_get(pool: &SqlitePool) -> Result<HashSet<String>> {
+    Ok(config_get(pool, HIDDEN_THUMBNAILS)
+        .await?
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default())
+}
+
+pub async fn hidden_thumbnails_set(pool: &SqlitePool, ids: &HashSet<String>) -> Result<()> {
+    config_set(pool, HIDDEN_THUMBNAILS, &serde_json::to_string(ids)?).await
 }
 
 pub async fn update_channel_get(pool: &SqlitePool) -> Result<UpdateChannel> {
