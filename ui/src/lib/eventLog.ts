@@ -4,7 +4,7 @@ import { plural } from '@/lib/format'
 import { useEventsStore } from '@/stores/events'
 import { useNodesStore } from '@/stores/nodes'
 import { usePlayoutStore } from '@/stores/playout'
-import { DEFAULT_PRESET } from '@/stores/presets'
+import { UNNAMED_PRESET } from '@/stores/presets'
 import { totalDropped, useRecordingsStore } from '@/stores/recordings'
 import { useSourcesStore } from '@/stores/sources'
 import type { NodeEvent } from '@/types/generated/NodeEvent'
@@ -79,7 +79,7 @@ export function logEvent(event: NodeEvent) {
     case 'benchmark.updated': {
       // Only the start and the end; steps in between update the node card.
       const run = event.run
-      const name = run.preset_name ?? DEFAULT_PRESET.name
+      const name = run.preset_name ?? UNNAMED_PRESET
       if (run.status === 'running') {
         if (run.feeds_running === 0) log('info', `Benchmark started: ${name}`, { node_id })
       } else if (run.status === 'completed') {

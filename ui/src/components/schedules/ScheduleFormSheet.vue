@@ -95,7 +95,7 @@ const channelOptions = computed(() =>
 )
 
 function addRecord() {
-  rows.value.push({ kind: 'record', targets: [], preset_id: presets.options[0]?.value ?? 'default' })
+  rows.value.push({ kind: 'record', targets: [], preset_id: presets.defaultId ?? 'default' })
 }
 function addPlayout() {
   rows.value.push({ kind: 'playout', channel: channelOptions.value[0]?.value ?? '', item_id: CUED, stop_at_end: true })

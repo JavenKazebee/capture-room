@@ -9,7 +9,7 @@ import type { NodeCapacityDto } from '@/types/generated/NodeCapacityDto'
 import type { OutputConfig } from '@/types/generated/OutputConfig'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import type { ReplayCodec } from '@/types/generated/ReplayCodec'
-import { DEFAULT_PRESET } from '@/stores/presets'
+import { UNNAMED_PRESET } from '@/stores/presets'
 import { REPLAY_CODECS } from '@/lib/codecs'
 import { nodeLoadErrors } from '@/lib/loadState'
 import { onReconnect } from '@/lib/reconnect'
@@ -38,7 +38,7 @@ function channelOutputsLabel(outputs: OutputConfig[]) {
 export function setupLabel(s: { preset_name: string | null; replay: ReplayCodec | null; channel: OutputConfig[] | null }) {
   if (s.channel) return `Channel · ${channelOutputsLabel(s.channel)}`
   if (s.replay) return `Replay buffer · ${REPLAY_CODECS[s.replay].label}`
-  return s.preset_name ?? DEFAULT_PRESET.name
+  return s.preset_name ?? UNNAMED_PRESET
 }
 
 /** Benchmarks and capacity per node: what each setup sustains, current load, the running benchmark and past runs. */

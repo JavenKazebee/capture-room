@@ -46,6 +46,7 @@ pub fn router() -> Router<Arc<AppState>> {
             "/api/v1/presets/{id}",
             put(put_preset).delete(delete_preset),
         )
+        .route("/api/v1/presets/{id}/default", post(post_preset_default))
         .route("/api/v1/schedules", get(get_schedules).post(post_schedule))
         .route(
             "/api/v1/schedules/{id}",
@@ -278,6 +279,25 @@ async fn delete_node(
 // starting a recording sends the preset's outputs inline.
 
 const PRESET_NOT_FOUND: ApiError = ApiError::NotFound("preset not found");
+const PRESET_NAME_TAKEN: ApiError =
+    ApiError::Conflict("another preset already has that name (names ignore case)");
+
+/// A preset's name, trimmed; the database keeps them unique ignoring case.
+fn preset_name(name: &str) -> ApiResult<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(ApiError::bad("name the preset"));
+    }
+    Ok(name.to_string())
+}
+
+fn name_taken(e: anyhow::Error) -> ApiError {
+    if db::is_unique_violation(&e) {
+        PRESET_NAME_TAKEN
+    } else {
+        e.into()
+    }
+}
 
 async fn get_presets(State(state): State<Arc<AppState>>) -> ApiResult<Json<Vec<PresetDto>>> {
     Ok(Json(db::presets_list(&state.db).await?))
@@ -287,17 +307,21 @@ async fn post_preset(
     State(state): State<Arc<AppState>>,
     Json(req): Json<PresetCreateRequest>,
 ) -> ApiResult<(StatusCode, Json<PresetDto>)> {
+    let name = preset_name(&req.name)?;
     let outputs = validate_outputs(req.outputs)?;
     let now = chrono::Utc::now().to_rfc3339();
     let id = uuid::Uuid::new_v4().to_string();
     let preset = PresetDto {
         outputs,
         id,
-        name: req.name,
+        name,
         created_at: now.clone(),
         updated_at: now,
+        is_default: false,
     };
-    db::preset_insert(&state.db, &preset).await?;
+    db::preset_insert(&state.db, &preset)
+        .await
+        .map_err(name_taken)?;
     Ok((StatusCode::CREATED, Json(preset)))
 }
 
@@ -306,10 +330,12 @@ async fn put_preset(
     Path(id): Path<String>,
     Json(req): Json<PresetCreateRequest>,
 ) -> ApiResult<Json<PresetDto>> {
+    let name = preset_name(&req.name)?;
     let outputs = validate_outputs(req.outputs)?;
     let now = chrono::Utc::now().to_rfc3339();
-    let preset = db::preset_update(&state.db, &id, &req.name, &now, outputs)
-        .await?
+    let preset = db::preset_update(&state.db, &id, &name, &now, outputs)
+        .await
+        .map_err(name_taken)?
         .ok_or(PRESET_NOT_FOUND)?;
     Ok(Json(preset))
 }
@@ -318,10 +344,36 @@ async fn delete_preset(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    if !db::preset_delete(&state.db, &id).await? {
+    // A schedule names its preset and would fail when it next runs, out of
+    // sight: it has to be changed first.
+    let schedules = db::schedules_list(&state.db).await?;
+    if schedules.iter().any(|s| {
+        s.actions
+            .iter()
+            .any(|a| matches!(a, ScheduleAction::Record { preset_id, .. } if *preset_id == id))
+    }) {
+        return Err(ApiError::Conflict(
+            "a schedule records with this preset: pick another preset in it first",
+        ));
+    }
+    match db::preset_delete(&state.db, &id).await? {
+        db::PresetDelete::Deleted => Ok(StatusCode::NO_CONTENT),
+        db::PresetDelete::NotFound => Err(PRESET_NOT_FOUND),
+        db::PresetDelete::Last => Err(ApiError::Conflict(
+            "the last preset can't be deleted: there must be one to record with",
+        )),
+    }
+}
+
+/// Make a preset the default. Answers with every preset, since two changed.
+async fn post_preset_default(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Vec<PresetDto>>> {
+    if !db::preset_set_default(&state.db, &id).await? {
         return Err(PRESET_NOT_FOUND);
     }
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(db::presets_list(&state.db).await?))
 }
 
 /// Store blank resolution/framerate as `None` ("match the source") and reject
@@ -509,9 +561,7 @@ async fn validate_schedule(state: &AppState, req: &ScheduleInput) -> ApiResult<(
                 if targets.is_empty() {
                     return Err(ApiError::bad("pick the sources to record"));
                 }
-                if preset_id != super::scheduler::DEFAULT_PRESET_ID
-                    && !presets.iter().any(|p| p.id == *preset_id)
-                {
+                if !presets.iter().any(|p| p.id == *preset_id) {
                     return Err(ApiError::bad("pick a preset to record with"));
                 }
                 for t in targets {

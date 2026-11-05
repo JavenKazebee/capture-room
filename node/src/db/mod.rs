@@ -292,12 +292,26 @@ pub async fn session_get(pool: &SqlitePool, id: &str) -> Result<Option<Recording
     Ok(row)
 }
 
+/// The `node_config` key holding the default preset's id.
+const DEFAULT_PRESET_KEY: &str = "default_preset_id";
+
+/// `is_default` for a `presets` row, in a select or `RETURNING`.
+const IS_DEFAULT: &str = "coalesce(id = (SELECT value FROM node_config \
+     WHERE key = 'default_preset_id'), 0) AS is_default";
+
+/// Every preset by name. A database whose default is missing (written by
+/// hand) gets its first preset as the default rather than none.
 pub async fn presets_list(pool: &SqlitePool) -> Result<Vec<PresetDto>> {
-    let mut presets = sqlx::query_as::<_, PresetDto>(
-        "SELECT id, name, created_at, updated_at FROM presets ORDER BY name",
-    )
+    let mut presets = sqlx::query_as::<_, PresetDto>(AssertSqlSafe(format!(
+        "SELECT id, name, created_at, updated_at, {IS_DEFAULT} FROM presets ORDER BY name"
+    )))
     .fetch_all(pool)
     .await?;
+    if !presets.iter().any(|p| p.is_default) {
+        if let Some(first) = presets.first_mut() {
+            first.is_default = true;
+        }
+    }
     /// A row of `preset_outputs`; its id and order stay in the database.
     #[derive(FromRow)]
     struct Row {
@@ -347,10 +361,10 @@ pub async fn preset_update(
     outputs: Vec<PresetOutputInput>,
 ) -> Result<Option<PresetDto>> {
     let mut tx = pool.begin().await?;
-    let preset = sqlx::query_as::<_, PresetDto>(
+    let preset = sqlx::query_as::<_, PresetDto>(AssertSqlSafe(format!(
         "UPDATE presets SET name = ?, updated_at = ? WHERE id = ?
-         RETURNING id, name, created_at, updated_at",
-    )
+         RETURNING id, name, created_at, updated_at, {IS_DEFAULT}"
+    )))
     .bind(name)
     .bind(updated_at)
     .bind(id)
@@ -365,9 +379,76 @@ pub async fn preset_update(
     Ok(Some(preset))
 }
 
-/// Delete a preset; its outputs go with it (`ON DELETE CASCADE`).
-pub async fn preset_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
-    delete_one(pool, "DELETE FROM presets WHERE id = ?", id).await
+/// Whether `e` is a write refused by a unique index: for presets, a name
+/// another one has.
+pub fn is_unique_violation(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<sqlx::Error>()
+        .and_then(|e| e.as_database_error())
+        .is_some_and(|e| e.is_unique_violation())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum PresetDelete {
+    Deleted,
+    NotFound,
+    /// The only preset left: something must always be the default.
+    Last,
+}
+
+/// Delete a preset; its outputs go with it (`ON DELETE CASCADE`). Deleting
+/// the default makes the first remaining preset by name the default.
+pub async fn preset_delete(pool: &SqlitePool, id: &str) -> Result<PresetDelete> {
+    // IMMEDIATE: two deletes at once mustn't each see the other's preset left.
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM presets")
+        .fetch_one(&mut *tx)
+        .await?;
+    let exists: bool = sqlx::query_scalar("SELECT count(*) > 0 FROM presets WHERE id = ?")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if !exists {
+        return Ok(PresetDelete::NotFound);
+    }
+    if count <= 1 {
+        return Ok(PresetDelete::Last);
+    }
+    sqlx::query("DELETE FROM presets WHERE id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "UPDATE node_config
+         SET value = (SELECT id FROM presets ORDER BY name LIMIT 1)
+         WHERE key = ? AND value = ?",
+    )
+    .bind(DEFAULT_PRESET_KEY)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(PresetDelete::Deleted)
+}
+
+/// Make `id` the default preset; false if there's no such preset.
+pub async fn preset_set_default(pool: &SqlitePool, id: &str) -> Result<bool> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let exists: bool = sqlx::query_scalar("SELECT count(*) > 0 FROM presets WHERE id = ?")
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if exists {
+        sqlx::query(
+            "INSERT INTO node_config (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(DEFAULT_PRESET_KEY)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(exists)
 }
 
 async fn preset_outputs_replace(
@@ -1304,18 +1385,167 @@ mod tests {
             outputs: vec![leg("b"), leg("a")],
             created_at: String::new(),
             updated_at: String::new(),
+            is_default: false,
         };
+        let get = |list: Vec<PresetDto>| list.into_iter().find(|p| p.id == "p").unwrap();
         preset_insert(&pool, &preset).await.unwrap();
-        assert_eq!(names(&presets_list(&pool).await.unwrap()[0]), ["b", "a"]);
+        assert_eq!(names(&get(presets_list(&pool).await.unwrap())), ["b", "a"]);
         let updated = preset_update(&pool, "p", "P", "", vec![leg("c"), leg("b"), leg("a")])
             .await
             .unwrap()
             .unwrap();
         assert_eq!(names(&updated), ["c", "b", "a"]);
         assert_eq!(
-            names(&presets_list(&pool).await.unwrap()[0]),
+            names(&get(presets_list(&pool).await.unwrap())),
             ["c", "b", "a"]
         );
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn preset(id: &str, name: &str) -> PresetDto {
+        PresetDto {
+            id: id.into(),
+            name: name.into(),
+            outputs: vec![],
+            created_at: String::new(),
+            updated_at: String::new(),
+            is_default: false,
+        }
+    }
+
+    async fn fresh(name: &str) -> (SqlitePool, std::path::PathBuf) {
+        let path =
+            std::env::temp_dir().join(format!("capture-room-{name}-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        (init(&path).await.unwrap(), path)
+    }
+
+    fn default_of(list: &[PresetDto]) -> Vec<&str> {
+        list.iter()
+            .filter(|p| p.is_default)
+            .map(|p| p.id.as_str())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_new_database_has_the_default_preset() {
+        let (pool, path) = fresh("seed").await;
+        let list = presets_list(&pool).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "H.264");
+        assert_eq!(default_of(&list), ["default"]);
+        assert_eq!(
+            list[0].outputs[0].path_template,
+            "~/capture-room/{date}/{source_name}_{datetime}.{ext}"
+        );
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn preset_names_are_unique_ignoring_case() {
+        let (pool, path) = fresh("unique").await;
+        preset_insert(&pool, &preset("a", "Cam")).await.unwrap();
+        let err = preset_insert(&pool, &preset("b", "cAM")).await.unwrap_err();
+        assert!(is_unique_violation(&err), "{err:#}");
+        let err = preset_update(&pool, "default", "CAM", "", vec![])
+            .await
+            .unwrap_err();
+        assert!(is_unique_violation(&err), "{err:#}");
+        // Its own name, in another case, is fine.
+        preset_update(&pool, "a", "CAM", "", vec![]).await.unwrap();
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn the_last_preset_cant_be_deleted() {
+        let (pool, path) = fresh("last").await;
+        assert_eq!(
+            preset_delete(&pool, "nope").await.unwrap(),
+            PresetDelete::NotFound
+        );
+        assert_eq!(
+            preset_delete(&pool, "default").await.unwrap(),
+            PresetDelete::Last
+        );
+        preset_insert(&pool, &preset("a", "A")).await.unwrap();
+        assert_eq!(
+            preset_delete(&pool, "default").await.unwrap(),
+            PresetDelete::Deleted
+        );
+        assert_eq!(preset_delete(&pool, "a").await.unwrap(), PresetDelete::Last);
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn deleting_the_default_moves_it_to_the_first_by_name() {
+        let (pool, path) = fresh("default").await;
+        preset_insert(&pool, &preset("z", "Zed")).await.unwrap();
+        preset_insert(&pool, &preset("b", "Bee")).await.unwrap();
+        assert!(preset_set_default(&pool, "z").await.unwrap());
+        assert!(!preset_set_default(&pool, "nope").await.unwrap());
+        assert_eq!(default_of(&presets_list(&pool).await.unwrap()), ["z"]);
+        // Deleting another leaves the default alone.
+        preset_delete(&pool, "default").await.unwrap();
+        assert_eq!(default_of(&presets_list(&pool).await.unwrap()), ["z"]);
+        preset_delete(&pool, "z").await.unwrap();
+        assert_eq!(default_of(&presets_list(&pool).await.unwrap()), ["b"]);
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn migrating_renames_duplicate_preset_names() {
+        let path =
+            std::env::temp_dir().join(format!("capture-room-dupes-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        // A 0.2 database: migrations up to 0002, where names could repeat.
+        let pool = SqlitePool::connect_with(connect_options(&path).create_if_missing(true))
+            .await
+            .unwrap();
+        let mut old = sqlx::migrate!("./migrations");
+        old.migrations = old.iter().filter(|m| m.version <= 2).cloned().collect();
+        old.run(&pool).await.unwrap();
+        for (id, name, at) in [
+            ("a", "Cam", "2026-01-01"),
+            ("b", "cam", "2026-01-02"),
+            ("c", "CAM", "2026-01-03"),
+            ("d", "cam (2)", "2026-01-04"),
+            ("e", "h.264", "2026-01-05"),
+        ] {
+            sqlx::query(
+                "INSERT INTO presets (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(name)
+            .bind(at)
+            .bind(at)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        pool.close().await;
+
+        let pool = init(&path).await.unwrap();
+        let mut names: Vec<_> = presets_list(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|p| (p.id, p.name))
+            .collect();
+        names.sort();
+        let want = [
+            ("a", "Cam"),
+            ("b", "cam (b)"),
+            ("c", "CAM (3)"),
+            ("d", "cam (2)"),
+            ("default", "H.264 (2)"),
+            ("e", "h.264"),
+        ];
+        assert_eq!(names, want.map(|(a, b)| (a.to_string(), b.to_string())));
         pool.close().await;
         let _ = std::fs::remove_file(path);
     }

@@ -2,19 +2,18 @@ import { computed, ref, watch } from 'vue'
 import { useUnsavedGuard } from '@/composables/useUnsavedGuard'
 import { advancedProblems } from '@/lib/advanced'
 import { clashingLegs, legProblems } from '@/lib/codecs'
-import { blankLeg, DEFAULT_PRESET, usePresetsStore } from '@/stores/presets'
+import { blankLeg, usePresetsStore } from '@/stores/presets'
 import type { PresetDto } from '@/types/generated/PresetDto'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 
 /**
- * The preset being edited: a copy of a saved one, the built-in default (read-only) or a new
- * one, with what's blocking Save. Switching away from unsaved edits, or leaving the page,
+ * The preset being edited: a copy of a saved one or a new one, with what's blocking Save. Switching away from unsaved edits, or leaving the page,
  * goes through `guarded` and its confirm.
  */
 export function usePresetDraft() {
   const store = usePresetsStore()
 
-  /** A preset id, `default` (the built-in, read-only), or `new`. */
+  /** A preset id, or `new`. */
   const selectedId = ref<string | null>(null)
   const name = ref('')
   const legs = ref<PresetOutputInput[]>([])
@@ -27,9 +26,8 @@ export function usePresetDraft() {
   const pendingFor = ref<string[]>([])
 
   const selected = computed(() => store.presets.find((p) => p.id === selectedId.value) ?? null)
-  const isBuiltIn = computed(() => selectedId.value === DEFAULT_PRESET.id)
   const snapshot = () => JSON.stringify({ name: name.value, legs: legs.value })
-  const dirty = computed(() => !isBuiltIn.value && selectedId.value !== null && snapshot() !== original.value)
+  const dirty = computed(() => selectedId.value !== null && snapshot() !== original.value)
 
   const { confirmOpen, guarded, discard } = useUnsavedGuard(dirty)
 
@@ -48,18 +46,11 @@ export function usePresetDraft() {
     load(p.id, p.name, p.outputs.length ? p.outputs : [blankLeg()])
   }
 
-  function loadDefault() {
-    load(DEFAULT_PRESET.id, DEFAULT_PRESET.name, [blankLeg()])
-  }
-
   function select(id: string) {
     if (id === selectedId.value) return
     guarded(() => {
-      if (id === DEFAULT_PRESET.id) loadDefault()
-      else {
-        const p = store.presets.find((p) => p.id === id)
-        if (p) loadPreset(p)
-      }
+      const p = store.presets.find((p) => p.id === id)
+      if (p) loadPreset(p)
     })
   }
 
@@ -75,10 +66,11 @@ export function usePresetDraft() {
     else if (selectedId.value === 'new') load('new', '', [blankLeg()])
   }
 
+  /** A new output starts as a copy of the first, its files told apart by {output}. */
   function addOutput() {
     const n = legs.value.length + 1
-    // {output} keeps a second output from writing the first one's file.
-    legs.value.push({ ...blankLeg(), name: `Output ${n}`, path_template: '~/capture-room/{date}/{source}_{output}_{datetime}.{ext}' })
+    const first: PresetOutputInput = legs.value[0] ? JSON.parse(JSON.stringify(legs.value[0])) : blankLeg()
+    legs.value.push({ ...first, name: `Output ${n}`, preview: false, path_template: withOutputToken(first.path_template) })
     legKeys.value.push(nextKey++)
   }
 
@@ -130,14 +122,12 @@ export function usePresetDraft() {
     serverError,
     pendingFor,
     selected,
-    isBuiltIn,
     dirty,
     confirmOpen,
     guarded,
     discard,
     load,
     loadPreset,
-    loadDefault,
     select,
     duplicate,
     revert,
@@ -149,4 +139,11 @@ export function usePresetDraft() {
     clashes,
     problems,
   }
+}
+
+/** `template` with `{output}` at the start of its file name, so a second output doesn't write the first one's file. */
+export function withOutputToken(template: string) {
+  if (template.includes('{output}')) return template
+  const cut = Math.max(template.lastIndexOf('/'), template.lastIndexOf('\\')) + 1
+  return `${template.slice(0, cut)}{output}_${template.slice(cut)}`
 }

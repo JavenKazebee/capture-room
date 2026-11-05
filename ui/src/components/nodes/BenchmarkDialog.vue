@@ -5,7 +5,7 @@ import { Film, FolderOpen, Loader2 } from '@lucide/vue'
 import { errorMessage } from '@/composables/useApi'
 import { useCapacityStore } from '@/stores/capacity'
 import { useNodesStore } from '@/stores/nodes'
-import { blankLeg, DEFAULT_PRESET, usePresetsStore } from '@/stores/presets'
+import { blankLeg, usePresetsStore } from '@/stores/presets'
 import { REPLAY_CODECS } from '@/lib/codecs'
 import { useReplayStore } from '@/stores/replay'
 import { useSourcesStore } from '@/stores/sources'
@@ -74,7 +74,7 @@ const codecOptions = computed(() =>
   replay.codecsOf(props.nodeId).map((c) => ({ value: c, label: REPLAY_CODECS[c].label })),
 )
 
-const presetId = ref<string>(DEFAULT_PRESET.id)
+const presetId = ref<string>(presets.defaultId ?? 'default')
 
 const mediaPath = ref('')
 const browsing = ref(false)

@@ -8,8 +8,8 @@ import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import { loadState } from '@/lib/loadState'
 import { onReconnect } from '@/lib/reconnect'
 
-/** The built-in preset: one H.264 leg ([`blankLeg`]). Not stored; every node has it. */
-export const DEFAULT_PRESET = { id: 'default', name: 'H.264 (default)' } as const
+/** What history calls a recording or benchmark that carries no preset name: one made with the H.264 preset every database starts with. */
+export const UNNAMED_PRESET = 'H.264'
 
 export function blankLeg(): PresetOutputInput {
   return {
@@ -22,7 +22,7 @@ export function blankLeg(): PresetOutputInput {
     bitrate_kbps: null,
     chroma: '420',
     // `~` is the recording node's home directory, expanded on the node.
-    path_template: '~/capture-room/{date}/{source}_{datetime}.{ext}',
+    path_template: '~/capture-room/{date}/{source_name}_{datetime}.{ext}',
     advanced: defaultAdvanced(),
   }
 }
@@ -57,15 +57,23 @@ export const usePresetsStore = defineStore('presets', () => {
   }
 
   async function remove(id: string) {
+    const wasDefault = id === defaultId.value
     await api(`/presets/${id}`, { method: 'DELETE' })
     presets.value = presets.value.filter((p) => p.id !== id)
+    // The node moved the default to another preset.
+    if (wasDefault) await load()
   }
 
-  /** Every preset as select options, the built-in one first. */
-  const options = computed(() => [
-    { value: DEFAULT_PRESET.id, label: DEFAULT_PRESET.name },
-    ...presets.value.map((p) => ({ value: p.id, label: p.name })),
-  ])
+  async function setDefault(id: string) {
+    presets.value = await api<PresetDto[]>(`/presets/${id}/default`, { method: 'POST' })
+  }
 
-  return { presets, loaded, error, options, upsert, load, create, update, remove }
+  /** Used where nothing else names a preset, such as a feed with none chosen. */
+  const defaultPreset = computed(() => presets.value.find((p) => p.is_default) ?? presets.value[0] ?? null)
+  const defaultId = computed(() => defaultPreset.value?.id ?? null)
+
+  /** Every preset as select options. */
+  const options = computed(() => presets.value.map((p) => ({ value: p.id, label: p.name })))
+
+  return { presets, loaded, error, options, defaultPreset, defaultId, upsert, load, create, update, remove, setDefault }
 })

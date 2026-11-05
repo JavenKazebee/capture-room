@@ -8,7 +8,7 @@ import { formatTimeLeft, plural } from '@/lib/format'
 import { notifyError, notifyWarn } from '@/lib/notify'
 import { LOW_TIME_SECS, capacityWarningText, useCapacityStore } from '@/stores/capacity'
 import { useNodesStore } from '@/stores/nodes'
-import { blankLeg, DEFAULT_PRESET, usePresetsStore } from '@/stores/presets'
+import { blankLeg, usePresetsStore } from '@/stores/presets'
 import { useRecordingsStore } from '@/stores/recordings'
 import { useSourcesStore, type Source } from '@/stores/sources'
 import type { ClockTimeDto } from '@/types/generated/ClockTimeDto'
@@ -67,13 +67,13 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
 
   const selectedSources = computed(() => sources.sources.filter((s) => selected.value.has(s.key)))
 
-  /** Preset id per source key; `default` is the built-in H.264/MOV output. */
+  /** Preset id per source key; a feed with none records with the default preset. */
   const presetFor = useStorage<Record<string, string>>('cr.record.presets', {})
 
   function presetIdOf(key: string) {
-    const id = presetFor.value[key] ?? DEFAULT_PRESET.id
+    const id = presetFor.value[key]
     // A deleted preset falls back to the default visibly.
-    return id === DEFAULT_PRESET.id || presets.presets.some((p) => p.id === id) ? id : DEFAULT_PRESET.id
+    return id && presets.presets.some((p) => p.id === id) ? id : (presets.defaultId ?? 'default')
   }
 
   function setPreset(key: string, id: string) {
