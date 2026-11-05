@@ -108,6 +108,9 @@ pub enum WsEvent {
     /// staying unreachable.
     #[serde(rename = "node.removed")]
     NodeRemoved { peer_id: String },
+    /// The controller's Record layout changed: the sources' order or tags.
+    #[serde(rename = "layout.updated")]
+    RecordLayoutUpdated,
     /// A schedule was added, changed or removed, or one of its runs started
     /// or ended (`run`).
     #[serde(rename = "schedule.updated")]

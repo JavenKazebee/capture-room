@@ -19,8 +19,8 @@ use crate::sources::portal::Choice;
 use crate::api::types::{
     BenchmarkRunDto, BenchmarkStatus, ClipEnd, ConfiguredSourceDto, DecklinkProfile, MediaItemDto,
     MonitorSettingsDto, NdiConnect, NdiSubscriptionsInput, PresetDto, PresetOutputInput,
-    RecordingSessionDto, ReplayCodec, ReplayConfigInput, ScheduleDto, ScheduleRunDto,
-    ScheduleRunStatus, UpdateChannel,
+    RecordLayoutDto, RecordingSessionDto, ReplayCodec, ReplayConfigInput, ScheduleDto,
+    ScheduleRunDto, ScheduleRunStatus, SourceRef, SourceTagsDto, UpdateChannel,
 };
 
 fn connect_options(db_path: &Path) -> SqliteConnectOptions {
@@ -1067,6 +1067,92 @@ pub async fn benchmarks_running(pool: &SqlitePool) -> Result<Vec<BenchmarkRunDto
 const SCHEDULE_SELECT: &str = "SELECT id, name, enabled, kind, date, weekdays, month_day, \
      month_week, start_time, duration_s, actions, created_at, updated_at FROM schedules";
 
+pub async fn record_layout(pool: &SqlitePool) -> Result<RecordLayoutDto> {
+    let order = sqlx::query_as::<_, SourceRef>(
+        "SELECT node_id, source_id FROM source_order ORDER BY position",
+    )
+    .fetch_all(pool)
+    .await?;
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT node_id, source_id, tag FROM source_tags ORDER BY node_id, source_id, tag",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut tags: Vec<SourceTagsDto> = Vec::new();
+    for (node_id, source_id, tag) in rows {
+        match tags.last_mut() {
+            Some(t) if t.node_id == node_id && t.source_id == source_id => t.tags.push(tag),
+            _ => tags.push(SourceTagsDto {
+                node_id,
+                source_id,
+                tags: vec![tag],
+            }),
+        }
+    }
+    Ok(RecordLayoutDto { order, tags })
+}
+
+/// Replace the whole order. A source listed twice keeps its first place.
+pub async fn record_order_set(pool: &SqlitePool, order: &[SourceRef]) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM source_order")
+        .execute(&mut *tx)
+        .await?;
+    for (position, s) in order.iter().enumerate() {
+        sqlx::query(
+            "INSERT OR IGNORE INTO source_order (node_id, source_id, position) VALUES (?, ?, ?)",
+        )
+        .bind(&s.node_id)
+        .bind(&s.source_id)
+        .bind(position as i64)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Add then remove tags on each of `sources`. Tags compare ignoring case, and
+/// an added tag takes the spelling of one already in use.
+pub async fn source_tags_change(
+    pool: &SqlitePool,
+    sources: &[SourceRef],
+    add: &[String],
+    remove: &[String],
+) -> Result<()> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    for tag in add {
+        let spelled: Option<String> =
+            sqlx::query_scalar("SELECT tag FROM source_tags WHERE tag = ? LIMIT 1")
+                .bind(tag)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let tag = spelled.as_deref().unwrap_or(tag);
+        for s in sources {
+            sqlx::query(
+                "INSERT OR IGNORE INTO source_tags (node_id, source_id, tag) VALUES (?, ?, ?)",
+            )
+            .bind(&s.node_id)
+            .bind(&s.source_id)
+            .bind(tag)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+    for tag in remove {
+        for s in sources {
+            sqlx::query("DELETE FROM source_tags WHERE node_id = ? AND source_id = ? AND tag = ?")
+                .bind(&s.node_id)
+                .bind(&s.source_id)
+                .bind(tag)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 pub async fn schedules_list(pool: &SqlitePool) -> Result<Vec<ScheduleDto>> {
     Ok(
         sqlx::query_as::<_, ScheduleDto>(AssertSqlSafe(format!("{SCHEDULE_SELECT} ORDER BY name")))
@@ -1695,6 +1781,63 @@ mod tests {
                 .await
                 .unwrap()
         );
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn src(node: &str, id: &str) -> SourceRef {
+        SourceRef {
+            node_id: node.into(),
+            source_id: id.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn record_order_replaces_and_keeps_first_place() {
+        let (pool, path) = fresh("order").await;
+        record_order_set(&pool, &[src("n", "a"), src("n", "b")])
+            .await
+            .unwrap();
+        record_order_set(&pool, &[src("m", "c"), src("n", "a"), src("m", "c")])
+            .await
+            .unwrap();
+        let layout = record_layout(&pool).await.unwrap();
+        assert_eq!(layout.order, [src("m", "c"), src("n", "a")]);
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn source_tags_ignore_case_and_keep_the_first_spelling() {
+        let (pool, path) = fresh("tags").await;
+        let (a, b) = (src("n", "a"), src("m", "a"));
+        source_tags_change(
+            &pool,
+            std::slice::from_ref(&a),
+            &["Cameras".into(), "Wide".into()],
+            &[],
+        )
+        .await
+        .unwrap();
+        source_tags_change(&pool, &[a.clone(), b.clone()], &["cameras".into()], &[])
+            .await
+            .unwrap();
+        let tags = record_layout(&pool).await.unwrap().tags;
+        let of = |s: &SourceRef| {
+            tags.iter()
+                .find(|t| t.node_id == s.node_id && t.source_id == s.source_id)
+                .map(|t| t.tags.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(of(&a), ["Cameras", "Wide"]);
+        assert_eq!(of(&b), ["Cameras"]);
+
+        source_tags_change(&pool, &[a.clone(), b.clone()], &[], &["CAMERAS".into()])
+            .await
+            .unwrap();
+        let tags = record_layout(&pool).await.unwrap().tags;
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].tags, ["Wide"]);
         pool.close().await;
         let _ = std::fs::remove_file(path);
     }

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useStorage } from '@vueuse/core'
 import { toast } from 'vue-sonner'
 import { nodeApi } from '@/composables/useApi'
@@ -7,6 +7,7 @@ import { useSelection } from '@/composables/useSelection'
 import { formatTimeLeft, plural } from '@/lib/format'
 import { notifyError, notifyWarn } from '@/lib/notify'
 import { LOW_TIME_SECS, capacityWarningText, useCapacityStore } from '@/stores/capacity'
+import { useLayoutStore } from '@/stores/layout'
 import { useNodesStore } from '@/stores/nodes'
 import { blankLeg, usePresetsStore } from '@/stores/presets'
 import { useRecordingsStore } from '@/stores/recordings'
@@ -29,32 +30,53 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
   const presets = usePresetsStore()
   const capacity = useCapacityStore()
   const nodes = useNodesStore()
+  const layout = useLayoutStore()
 
   const query = ref('')
   const nodeFilter = ref<string>('all')
   const typeFilter = ref<string>('all')
   const stateFilter = ref<StateFilter>('all')
+  /** A tag name, or 'all'. */
+  const tagFilter = ref<string>('all')
 
   const isLive = (s: Source) => !!recordings.activeForSource(s.node_id, s.id)
 
+  /** Every source, in the layout's order. */
+  const ordered = computed(() => layout.sorted(sources.sources))
+
   const visible = computed(() => {
     const q = query.value.trim().toLowerCase()
-    return sources.sources.filter(
+    return ordered.value.filter(
       (s) =>
         (nodeFilter.value === 'all' || s.node_id === nodeFilter.value) &&
+        (tagFilter.value === 'all' || layout.hasTag(s.key, tagFilter.value)) &&
         (typeFilter.value === 'all' || s.source_type === typeFilter.value) &&
         (stateFilter.value === 'all' || (stateFilter.value === 'live') === isLive(s)) &&
         (!q || s.display_name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q)),
     )
   })
 
+  // A tag that's gone (removed from its last feed) stops filtering instead of hiding everything.
+  watch(
+    () => layout.allTags,
+    (tags) => {
+      const t = tagFilter.value.toLowerCase()
+      if (tagFilter.value !== 'all' && layout.loaded && !tags.some((x) => x.toLowerCase() === t)) tagFilter.value = 'all'
+    },
+  )
+
   const filtered = computed(
-    () => !!query.value.trim() || nodeFilter.value !== 'all' || typeFilter.value !== 'all' || stateFilter.value !== 'all',
+    () =>
+      !!query.value.trim() ||
+      nodeFilter.value !== 'all' ||
+      typeFilter.value !== 'all' ||
+      tagFilter.value !== 'all' ||
+      stateFilter.value !== 'all',
   )
 
   function clearFilters() {
     query.value = ''
-    nodeFilter.value = typeFilter.value = 'all'
+    nodeFilter.value = typeFilter.value = tagFilter.value = 'all'
     stateFilter.value = 'all'
   }
 
@@ -64,6 +86,18 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
   )
   /** The tile whose info popover is open, if any. */
   const infoKey = ref<string | null>(null)
+  /** The tile whose tags popover is open, if any. */
+  const tagsKey = ref<string | null>(null)
+
+  /** What a tile's tags popover edits: the selection when the tile is part of it, else the tile. */
+  function tagScope(key: string): string[] {
+    return selected.value.has(key) && selected.value.size > 1 ? [...selected.value] : [key]
+  }
+
+  /** Select every shown feed with this tag. */
+  function selectTag(tag: string) {
+    selectAll(visible.value.filter((s) => layout.hasTag(s.key, tag)).map((s) => s.key))
+  }
 
   const selectedSources = computed(() => sources.sources.filter((s) => selected.value.has(s.key)))
 
@@ -246,12 +280,17 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     nodeFilter,
     typeFilter,
     stateFilter,
+    tagFilter,
+    ordered,
     visible,
     filtered,
     clearFilters,
     selected,
     focusedKey,
     infoKey,
+    tagsKey,
+    tagScope,
+    selectTag,
     select,
     selectRange,
     selectAll,
