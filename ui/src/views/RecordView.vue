@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useViewKeys } from '@/composables/useViewKeys'
 import { Circle, Eye, FilterX, ListChecks, Plus, Square, X } from '@lucide/vue'
 import { registerCommands, type Command } from '@/composables/useCommands'
@@ -25,6 +25,7 @@ import PageHeader from '@/components/common/PageHeader.vue'
 import ToolbarField from '@/components/common/ToolbarField.vue'
 import ToolbarSearch from '@/components/common/ToolbarSearch.vue'
 import FeedTile from '@/components/record/FeedTile.vue'
+import ExpandedFeed from '@/components/record/ExpandedFeed.vue'
 import { useFitTiles } from '@/components/record/useFitTiles'
 import { gridColumns, gridNavTarget } from '@/components/record/gridNav'
 import SourceFormSheet from '@/components/sources/SourceFormSheet.vue'
@@ -83,6 +84,31 @@ function onGridKeyDown(e: KeyboardEvent) {
   }
 }
 
+/** The feed expanded to fill the view, by key. The grid stays mounted underneath, hidden. */
+const expandedKey = ref<string | null>(null)
+const expanded = computed(() => desk.visible.find((s) => s.key === expandedKey.value) ?? null)
+const expandedView = ref<InstanceType<typeof ExpandedFeed>>()
+
+function expand(key: string) {
+  desk.infoKey = null
+  desk.focusedKey = key
+  expandedKey.value = key
+}
+
+// Opening focuses the expanded feed, so Space records it; going back focuses its tile again.
+// A feed that's filtered out or removed while expanded drops back to the grid the same way.
+watch(
+  () => expanded.value?.key ?? null,
+  async (now, prev) => {
+    await nextTick()
+    if (now) expandedView.value?.focus()
+    else if (prev) {
+      expandedKey.value = null
+      if (desk.visible.some((s) => s.key === prev)) focusTile(prev)
+    }
+  },
+)
+
 const adding = ref(false)
 
 const nodeOptions = computed(() => [
@@ -118,7 +144,9 @@ const SHORTCUTS: [string[], string][] = [
   [['←', '→', '↑', '↓'], 'Move between feeds'],
   [['Space'], 'Record or stop the focused feed'],
   [['I'], 'Details for the focused feed'],
-  [['Esc'], 'Close details, then clear the selection'],
+  [['F'], 'Expand the focused feed, or go back'],
+  [['Double-click'], 'Expand a feed'],
+  [['Esc'], 'Go back, close details, then clear the selection'],
 ]
 // Record/Stop act on the scope: the selection, or every visible feed when nothing is selected.
 const scopeLive = computed(() => desk.scope.filter((s) => desk.isLive(s)))
@@ -143,17 +171,21 @@ registerCommands(() => {
 })
 
 useViewKeys((e) => {
-  // Esc closes an open info popover first, then clears the selection.
+  const plain = !e.ctrlKey && !e.metaKey && !e.altKey
+  // Esc leaves the expanded feed first, then closes an open info popover, then clears the selection.
   if (e.key === 'Escape') {
-    if (desk.infoKey) desk.infoKey = null
+    if (expandedKey.value) expandedKey.value = null
+    else if (desk.infoKey) desk.infoKey = null
     else desk.clearSelection()
-  }
-  else if (e.key.toLowerCase() === 'i' && !e.ctrlKey && !e.metaKey && !e.altKey && desk.focusedKey) {
+  } else if (e.key.toLowerCase() === 'f' && plain && !e.shiftKey) {
+    if (expandedKey.value) expandedKey.value = null
+    else if (tabStopKey.value) expand(tabStopKey.value)
+  } else if (e.key.toLowerCase() === 'i' && plain && desk.focusedKey && !expanded.value) {
     desk.infoKey = desk.infoKey === desk.focusedKey ? null : desk.focusedKey
   } else if (e.key.toLowerCase() === 'a' && (e.ctrlKey || e.metaKey)) {
     e.preventDefault()
     desk.selectAll()
-  } else if (e.target === document.body && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+  } else if (e.target === document.body && !expanded.value && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
     // Nothing has focus (page load, a click on the background): arrows pick up at the focused tile.
     if (e.key.startsWith('Arrow') && tabStopKey.value) {
       e.preventDefault()
@@ -242,7 +274,11 @@ useViewKeys((e) => {
       </template>
     </PageHeader>
 
+    <div v-if="expanded" class="flex-1 min-h-0 p-4">
+      <ExpandedFeed ref="expandedView" :source="expanded" @close="expandedKey = null" />
+    </div>
     <div
+      v-show="!expanded"
       ref="gridScroller"
       class="flex-1 min-h-0 overflow-y-auto p-4"
       :class="wsStatus !== 'connected' && 'opacity-60'"
@@ -264,7 +300,13 @@ useViewKeys((e) => {
         @click.self="desk.clearSelection()"
         @keydown="onGridKeyDown"
       >
-        <FeedTile v-for="source in desk.visible" :key="source.key" :source="source" :tab-stop="source.key === tabStopKey" />
+        <FeedTile
+          v-for="source in desk.visible"
+          :key="source.key"
+          :source="source"
+          :tab-stop="source.key === tabStopKey"
+          @expand="expand(source.key)"
+        />
         <!-- A tile's picture plus its measured caption, so it matches the feed tiles beside it. -->
         <button
           type="button"
