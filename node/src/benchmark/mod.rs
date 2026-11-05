@@ -193,6 +193,7 @@ async fn prepare(
             .unwrap_or(DEFAULT_DROP_THRESHOLD_PCT)
             .clamp(0.01, 10.0),
         feeds_running: 0,
+        next_feeds: None,
         steps: Vec::new(),
         sustainable_feeds: 0,
         encoders: Vec::new(),
@@ -316,6 +317,7 @@ pub async fn recover(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
         run.status = BenchmarkStatus::Error;
         run.finished_at = Some(chrono::Utc::now().to_rfc3339());
         run.feeds_running = 0;
+        run.next_feeds = None;
         run.message = Some("The node restarted during the benchmark.".into());
         db::benchmark_save(pool, &run).await?;
     }

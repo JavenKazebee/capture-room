@@ -113,6 +113,10 @@ pub struct BenchmarkRunDto {
     /// Feeds currently running (0 once finished). Goes down as well as up:
     /// the search narrows in on the answer.
     pub feeds_running: u32,
+    /// The feeds the search runs next if the running step keeps up (between
+    /// steps, the count it runs next). None once the search would end.
+    #[serde(default)]
+    pub next_feeds: Option<u32>,
     pub steps: Vec<BenchmarkStepDto>,
     /// The most feeds that kept up (while running, the most so far). 0 if
     /// even one feed couldn't.

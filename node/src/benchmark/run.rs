@@ -154,6 +154,7 @@ impl Run {
         let dto = &mut self.dto;
         dto.finished_at = Some(chrono::Utc::now().to_rfc3339());
         dto.feeds_running = 0;
+        dto.next_feeds = None;
         match outcome {
             Ok(message) => {
                 dto.status = BenchmarkStatus::Completed;
@@ -225,7 +226,7 @@ impl Run {
                 }
             }
 
-            match self.step(feeds, n, full, &mut system).await {
+            match self.step(feeds, n, full, &search, &mut system).await {
                 Ok(Some(full)) => {
                     search.passed(n, full);
                     if let Some(volume) = self.low_volume().await {
@@ -246,6 +247,7 @@ impl Run {
                 Err(e) => return Err(e),
             }
             self.dto.sustainable_feeds = search.best();
+            self.dto.next_feeds = search.next().feeds();
             self.publish().await;
         }
     }
@@ -256,14 +258,16 @@ impl Run {
         feeds: &mut Vec<Feed>,
         n: u32,
         full: bool,
+        search: &Search,
         system: &mut System,
     ) -> Result<Option<bool>, Stop> {
         let started = self.set_feeds(feeds, n).await?;
         self.dto.feeds_running = n;
+        self.dto.next_feeds = search.next_if_passed(n, full);
         self.publish().await;
         let warmup = WARMUP + Duration::from_secs(started.div_ceil(WARMUP_FEEDS_PER_SEC) as u64);
         self.pause(feeds, warmup).await?;
-        let result = self.check(feeds, n, full, system).await?;
+        let result = self.check(feeds, n, full, search, system).await?;
         self.memory.lock().unwrap().observe(n);
         Ok(result)
     }
@@ -276,6 +280,7 @@ impl Run {
         feeds: &[Feed],
         n: u32,
         full: bool,
+        search: &Search,
         system: &mut System,
     ) -> Result<Option<bool>, Stop> {
         if !full {
@@ -301,6 +306,8 @@ impl Run {
             {
                 return Ok(None);
             }
+            // Full steps follow at the same count.
+            self.dto.next_feeds = search.next_if_passed(n, true);
             self.publish().await;
         }
         for attempt in 1..=MEASURE_ATTEMPTS {

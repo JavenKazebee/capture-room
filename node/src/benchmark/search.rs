@@ -10,10 +10,21 @@ pub(super) enum Next {
     Done(u32),
 }
 
+impl Next {
+    /// The feeds this measures, or none if the search is over.
+    pub(super) fn feeds(&self) -> Option<u32> {
+        match *self {
+            Next::Measure { feeds, .. } => Some(feeds),
+            Next::Done(_) => None,
+        }
+    }
+}
+
 /// The search for the most feeds a node sustains: double (1, 2, 4, …) with
 /// quick checks until one fails or the limit, then bisect with full steps.
 /// The answer must pass a full step; if a quick-passed count fails one, the
 /// search continues below.
+#[derive(Clone)]
 pub(super) struct Search {
     limit: u32,
     /// Counts that passed, and whether a full step showed it.
@@ -58,6 +69,14 @@ impl Search {
                 full: true,
             }
         }
+    }
+
+    /// The feeds measured after `feeds` keep up in a step (full or quick), or
+    /// none if the search would then end.
+    pub(super) fn next_if_passed(&self, feeds: u32, full: bool) -> Option<u32> {
+        let mut after = self.clone();
+        after.passed(feeds, full);
+        after.next().feeds()
     }
 
     pub(super) fn passed(&mut self, feeds: u32, full: bool) {
@@ -152,6 +171,44 @@ mod tests {
         let (found, measured) = simulate(16, 100, 0);
         assert_eq!(found, 16);
         assert_eq!(measured.last(), Some(&(16, true)));
+    }
+
+    #[test]
+    fn next_if_passed_forecasts_the_next_step() {
+        let mut search = Search::new(64);
+        // Doubling: a quick pass at 8 goes on to 16.
+        for n in [1, 2, 4] {
+            search.passed(n, false);
+        }
+        assert_eq!(search.next_if_passed(8, false), Some(16));
+        // The forecast leaves the search as it was.
+        assert_eq!(
+            search.next(),
+            Next::Measure {
+                feeds: 8,
+                full: false
+            }
+        );
+
+        // Narrowing between 4 and 8: a pass at 6 tries 7.
+        search.failed(8);
+        assert_eq!(search.next().feeds(), Some(6));
+        assert_eq!(search.next_if_passed(6, true), Some(7));
+
+        // Between 6 and 8, a pass at 7 is the answer, once confirmed in full.
+        search.passed(6, true);
+        assert_eq!(search.next_if_passed(7, true), None);
+        assert_eq!(search.next_if_passed(7, false), Some(7));
+    }
+
+    #[test]
+    fn next_if_passed_at_the_limit() {
+        let mut search = Search::new(4);
+        search.passed(1, false);
+        search.passed(2, false);
+        // A quick pass at the limit is confirmed by a full step at it.
+        assert_eq!(search.next_if_passed(4, false), Some(4));
+        assert_eq!(search.next_if_passed(4, true), None);
     }
 
     #[test]

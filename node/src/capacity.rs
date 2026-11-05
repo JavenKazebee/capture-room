@@ -334,6 +334,7 @@ mod tests {
             step_secs: 20,
             drop_threshold_pct: 0.5,
             feeds_running: 0,
+            next_feeds: None,
             steps: passed
                 .iter()
                 .enumerate()

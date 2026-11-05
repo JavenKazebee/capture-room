@@ -26,7 +26,12 @@ channel: Array<OutputConfig> | null, media_path: string, media: MediaInfo, max_f
  * Feeds currently running (0 once finished). Goes down as well as up:
  * the search narrows in on the answer.
  */
-feeds_running: number, steps: Array<BenchmarkStepDto>, 
+feeds_running: number, 
+/**
+ * The feeds the search runs next if the running step keeps up (between
+ * steps, the count it runs next). None once the search would end.
+ */
+next_feeds: number | null, steps: Array<BenchmarkStepDto>, 
 /**
  * The most feeds that kept up (while running, the most so far). 0 if
  * even one feed couldn't.

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Gauge, Loader2 } from '@lucide/vue'
+import { Check, Gauge, Loader2, X } from '@lucide/vue'
 import { formatRate, plural } from '@/lib/format'
 import { notifyError } from '@/lib/notify'
 import { setupLabel, useCapacityStore } from '@/stores/capacity'
 import { formatLabel } from '@/lib/sourceFormat'
+import type { BenchmarkStepDto } from '@/types/generated/BenchmarkStepDto'
 import type { NodeDto } from '@/types/generated/NodeDto'
 import type { ProfileCapacityDto } from '@/types/generated/ProfileCapacityDto'
 import { Button } from '@/components/ui/button'
@@ -70,7 +71,17 @@ const activeLabel = computed(() => {
     .join(' · ')
 })
 
-const lastStep = computed(() => running.value?.steps.at(-1) ?? null)
+/** The latest measurement of the feeds running now, if one has finished. */
+const reading = computed(() => {
+  const run = running.value
+  const step = run?.steps.at(-1)
+  return step && step.feeds === run!.feeds_running ? step : null
+})
+
+function stepTitle(s: BenchmarkStepDto) {
+  return `${plural(s.feeds, 'feed')}, ${s.quick ? 'quick check' : 'full step'}: ${s.passed ? 'kept up' : 'fell behind'}
+${s.drop_pct.toFixed(2)}% dropped · CPU ${Math.round(s.cpu_pct)}%`
+}
 const cancelling = ref(false)
 
 async function cancel() {
@@ -138,30 +149,63 @@ const startBlocked = computed(() => {
       :retry="() => store.load(node.id)"
     />
     <template v-if="node.healthy && cap">
-      <div v-if="running" class="rounded-md border border-primary/30 bg-primary/5 p-2.5 space-y-1.5 text-xs">
+      <div v-if="running" class="rounded-md border border-primary/30 bg-primary/5 p-2.5 space-y-2 text-xs">
         <div class="flex items-center gap-2">
-          <Loader2 class="size-3.5 animate-spin text-primary" />
-          <span class="font-medium">
-            Benchmarking: <span class="num">{{ running.feeds_running }}</span>
-            feed{{ running.feeds_running === 1 ? '' : 's' }} running
-          </span>
+          <Loader2 class="size-3.5 shrink-0 animate-spin text-primary" />
+          <span class="font-medium truncate">Benchmarking {{ setupLabel(running) }}</span>
+          <span class="num text-muted-foreground shrink-0">{{ formatLabel(running.media) }}</span>
           <div class="flex-1" />
           <Button variant="ghost" size="sm" class="h-6 px-2 text-xs" :disabled="cancelling" @click="cancel">
             {{ cancelling ? 'Cancelling…' : 'Cancel' }}
           </Button>
         </div>
-        <p v-if="running.sustainable_feeds" class="text-muted-foreground">
-          Kept up with <span class="num text-foreground">{{ running.sustainable_feeds }}</span> so far · searching up
-          to <span class="num">{{ running.max_feeds }}</span>
-        </p>
-        <p class="text-muted-foreground">
-          {{ setupLabel(running) }} · <span class="num">{{ formatLabel(running.media) }}</span>
-          <template v-if="lastStep">
-            · last {{ lastStep.quick ? 'check' : 'step' }}: <span class="num">{{ lastStep.feeds }}</span> feeds,
-            <span class="num" :class="!lastStep.passed && 'text-warning'">{{ lastStep.drop_pct.toFixed(2) }}%</span> dropped,
-            CPU <span class="num">{{ Math.round(lastStep.cpu_pct) }}%</span>
+
+        <dl class="grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-1.5">
+          <dt class="text-muted-foreground">Result so far</dt>
+          <dd>
+            <span class="num text-base font-semibold leading-none">{{ running.sustainable_feeds }}</span>
+            {{ running.sustainable_feeds === 1 ? 'feed' : 'feeds' }} kept up
+            <span class="text-muted-foreground">· searching up to <span class="num">{{ running.max_feeds }}</span></span>
+          </dd>
+
+          <template v-if="running.steps.length">
+            <dt class="text-muted-foreground">Steps</dt>
+            <dd class="flex flex-wrap gap-1">
+              <span
+                v-for="(step, i) in running.steps"
+                :key="i"
+                class="num inline-flex items-center gap-0.5 rounded border px-1 leading-4"
+                :class="[
+                  step.passed ? 'border-success/40 text-success' : 'border-destructive/40 text-destructive',
+                  step.quick && 'border-dashed',
+                ]"
+                :title="stepTitle(step)"
+              >
+                {{ step.feeds }}<component :is="step.passed ? Check : X" class="size-3" />
+              </span>
+            </dd>
           </template>
-        </p>
+
+          <dt class="text-muted-foreground">Now</dt>
+          <dd>
+            <span class="num font-medium">{{ plural(running.feeds_running, 'feed') }}</span>
+            <span v-if="reading" class="text-muted-foreground">
+              · <span class="num" :class="!reading.passed && 'text-warning'">{{ reading.drop_pct.toFixed(2) }}%</span>
+              dropped · CPU <span class="num">{{ Math.round(reading.cpu_pct) }}%</span>
+              <span v-if="reading.quick">(quick check)</span>
+            </span>
+            <span v-else class="text-muted-foreground"> · measuring…</span>
+          </dd>
+
+          <dt class="text-muted-foreground">Next</dt>
+          <dd class="text-muted-foreground">
+            <template v-if="running.next_feeds == null">Done, if this keeps up</template>
+            <template v-else>
+              <span class="num text-foreground">{{ plural(running.next_feeds, 'feed') }}</span>
+              {{ running.next_feeds === running.feeds_running ? 'again, measured in full,' : '' }} if this keeps up
+            </template>
+          </dd>
+        </dl>
       </div>
 
       <div v-if="active" class="text-xs">
