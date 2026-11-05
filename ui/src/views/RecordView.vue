@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useViewKeys } from '@/composables/useViewKeys'
-import { Circle, Eye, FilterX, ListChecks, Plus, Square, X } from '@lucide/vue'
+import { Circle, Eye, FilterX, ListChecks, PanelRight, Plus, Square, X } from '@lucide/vue'
+import { useSessionStorage, useStorage } from '@vueuse/core'
 import { registerCommands, type Command } from '@/composables/useCommands'
 import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
@@ -26,6 +27,7 @@ import ToolbarField from '@/components/common/ToolbarField.vue'
 import ToolbarSearch from '@/components/common/ToolbarSearch.vue'
 import FeedTile from '@/components/record/FeedTile.vue'
 import ExpandedFeed from '@/components/record/ExpandedFeed.vue'
+import SessionRecordings from '@/components/record/SessionRecordings.vue'
 import { useFitTiles } from '@/components/record/useFitTiles'
 import { gridColumns, gridNavTarget } from '@/components/record/gridNav'
 import SourceFormSheet from '@/components/sources/SourceFormSheet.vue'
@@ -111,6 +113,11 @@ watch(
 
 const adding = ref(false)
 
+/** The pane of this session's recordings: closed until opened, then remembered. */
+const paneOpen = useStorage('cr.record.sessionPane', false)
+/** When this tab's session began: its first visit to Record, or the pane's last Clear. */
+const sessionSince = useSessionStorage('cr.record.since', new Date().toISOString())
+
 const nodeOptions = computed(() => [
   { value: 'all', label: 'All nodes' },
   ...nodes.nodes.map((n) => ({ value: n.id, label: nodes.nameOf(n.id) })),
@@ -163,6 +170,7 @@ registerCommands(() => {
     out.push({ id: 'record:scope-stop', title: `Stop ${scope}`, detail: `${scopeLive.value.length} recording`, group: 'This page', icon: Square, iconClass: 'text-tally!', keywords: ['end', 'bulk'], run: () => desk.bulk('stop', scopeLive.value) })
   }
   out.push({ id: 'record:add-source', title: 'Add source', group: 'This page', icon: Plus, keywords: ['new', 'create', 'feed'], run: () => (adding.value = true) })
+  out.push({ id: 'record:session-pane', title: paneOpen.value ? "Hide this session's recordings" : "Show this session's recordings", group: 'This page', icon: PanelRight, keywords: ['recordings', 'takes', 'pane', 'sidebar'], run: () => (paneOpen.value = !paneOpen.value) })
   out.push({ id: 'record:select-all', title: 'Select all visible feeds', group: 'This page', icon: ListChecks, shortcut: shortcut('A'), keywords: ['selection'], run: () => desk.selectAll() })
   if (desk.filtered) {
     out.push({ id: 'record:clear-filters', title: 'Clear filters', group: 'This page', icon: FilterX, keywords: ['reset', 'show all'], run: () => desk.clearFilters() })
@@ -271,56 +279,73 @@ useViewKeys((e) => {
         <ToolbarField label="Fit" title="Size tiles so every feed fits without scrolling">
           <Switch v-model="tileFit" />
         </ToolbarField>
+        <Button
+          variant="outline"
+          size="sm"
+          class="h-7 gap-1.5 text-xs"
+          :class="paneOpen && 'bg-accent'"
+          :aria-pressed="paneOpen"
+          title="Recordings made this session"
+          @click="paneOpen = !paneOpen"
+        >
+          <PanelRight class="size-3.5" /> Recordings
+        </Button>
       </template>
     </PageHeader>
 
-    <div v-if="expanded" class="flex-1 min-h-0 p-4">
-      <ExpandedFeed ref="expandedView" :source="expanded" @close="expandedKey = null" />
-    </div>
-    <div
-      v-show="!expanded"
-      ref="gridScroller"
-      class="flex-1 min-h-0 overflow-y-auto p-4"
-      :class="wsStatus !== 'connected' && 'opacity-60'"
-      @click.self="desk.clearSelection()"
-    >
-      <div v-if="sources.sources.length === 0" class="flex flex-col items-center gap-3 text-center text-muted-foreground py-24">
-        <p class="text-sm font-medium text-foreground">No feeds yet</p>
-        <Button size="sm" class="gap-1.5" @click="adding = true"><Plus class="size-3.5" /> Add source</Button>
-      </div>
-      <div v-else-if="desk.visible.length === 0" class="text-center text-muted-foreground py-24 text-xs">
-        No feeds match the filters.
-        <button class="text-primary hover:underline ml-1" @click="desk.clearFilters()">Clear filters</button>
-      </div>
-      <div
-        v-else
-        ref="gridEl"
-        class="grid gap-4"
-        :style="{ gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${tileWidth}px), ${tileWidth}px))` }"
-        @click.self="desk.clearSelection()"
-        @keydown="onGridKeyDown"
-      >
-        <FeedTile
-          v-for="source in desk.visible"
-          :key="source.key"
-          :source="source"
-          :tab-stop="source.key === tabStopKey"
-          @expand="expand(source.key)"
-        />
-        <!-- A tile's picture plus its measured caption, so it matches the feed tiles beside it. -->
-        <button
-          type="button"
-          class="relative self-start rounded-lg border border-dashed border-border flex flex-col text-xs text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
-          @click="adding = true"
+    <!-- The pane takes its width from the grid, whose fitting measures what's left. -->
+    <div class="flex-1 min-h-0 flex">
+      <div class="flex-1 min-w-0 flex flex-col">
+        <div v-if="expanded" class="flex-1 min-h-0 p-4">
+          <ExpandedFeed ref="expandedView" :source="expanded" @close="expandedKey = null" />
+        </div>
+        <div
+          v-show="!expanded"
+          ref="gridScroller"
+          class="flex-1 min-h-0 overflow-y-auto p-4"
+          :class="wsStatus !== 'connected' && 'opacity-60'"
+          @click.self="desk.clearSelection()"
         >
-          <span class="aspect-video" />
-          <span :style="{ height: `${fit.caption.value}px` }" />
-          <span class="absolute inset-0 flex flex-col items-center justify-center gap-1.5">
-            <Plus class="size-5" />
-            Add source
-          </span>
-        </button>
+          <div v-if="sources.sources.length === 0" class="flex flex-col items-center gap-3 text-center text-muted-foreground py-24">
+            <p class="text-sm font-medium text-foreground">No feeds yet</p>
+            <Button size="sm" class="gap-1.5" @click="adding = true"><Plus class="size-3.5" /> Add source</Button>
+          </div>
+          <div v-else-if="desk.visible.length === 0" class="text-center text-muted-foreground py-24 text-xs">
+            No feeds match the filters.
+            <button class="text-primary hover:underline ml-1" @click="desk.clearFilters()">Clear filters</button>
+          </div>
+          <div
+            v-else
+            ref="gridEl"
+            class="grid gap-4"
+            :style="{ gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, ${tileWidth}px), ${tileWidth}px))` }"
+            @click.self="desk.clearSelection()"
+            @keydown="onGridKeyDown"
+          >
+            <FeedTile
+              v-for="source in desk.visible"
+              :key="source.key"
+              :source="source"
+              :tab-stop="source.key === tabStopKey"
+              @expand="expand(source.key)"
+            />
+            <!-- A tile's picture plus its measured caption, so it matches the feed tiles beside it. -->
+            <button
+              type="button"
+              class="relative self-start rounded-lg border border-dashed border-border flex flex-col text-xs text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
+              @click="adding = true"
+            >
+              <span class="aspect-video" />
+              <span :style="{ height: `${fit.caption.value}px` }" />
+              <span class="absolute inset-0 flex flex-col items-center justify-center gap-1.5">
+                <Plus class="size-5" />
+                Add source
+              </span>
+            </button>
+          </div>
+        </div>
       </div>
+      <SessionRecordings v-if="paneOpen" v-model:since="sessionSince" @close="paneOpen = false" />
     </div>
     <SourceFormSheet v-if="adding" :source="null" @close="adding = false" />
   

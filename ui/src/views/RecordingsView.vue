@@ -14,7 +14,7 @@ import { downloadUrl, errorMessage, recordingFileUrl } from '@/composables/useAp
 import { useSelection } from '@/composables/useSelection'
 import { BulkSkip, bulkToast, runBulk } from '@/lib/bulk'
 import { clockTime, dayKey, dayLabel, elapsedMs, formatDuration, plural } from '@/lib/format'
-import { CODECS } from '@/lib/codecs'
+import { RECORDING_STATUS as STATUS, recordingFormats as formats } from '@/lib/recordingStatus'
 import { shortcut } from '@/lib/keys'
 import { notifyError } from '@/lib/notify'
 import { useNodesStore } from '@/stores/nodes'
@@ -128,22 +128,10 @@ useViewKeys((e) => {
   }
 }, { alsoIgnore: 'video, button, a, [role="button"], [role="listbox"]' })
 
-const STATUS = {
-  active: { label: 'Recording', dot: 'tally', order: 0 },
-  error: { label: 'Failed', dot: 'error', order: 1 },
-  stopped: { label: 'Finished', dot: 'off', order: 2 },
-} as const
-
 function durationMs(s: RecordingSession) {
   return elapsedMs(s.started_at, s.stopped_at, now.value)
 }
 
-
-/** The codecs a session recorded, e.g. "ProRes 422 HQ + H.264". */
-function formats(s: RecordingSession) {
-  if (!s.outputs.length) return plural(s.output_paths.length, 'output')
-  return s.outputs.map((o) => CODECS[o.codec]).join(' + ')
-}
 
 const columns = computed<Column<RecordingSession>[]>(() => [
   { id: 'status', label: 'Status', value: (s) => STATUS[s.status].order, class: 'w-px whitespace-nowrap' },
