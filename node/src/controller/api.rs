@@ -1,5 +1,6 @@
-//! Controller-facing routes: the node list, promotion toggle, presets, request
-//! forwarding and the merged event stream. Mounted on every instance — on a
+//! Controller-facing routes: the node list, promotion toggle, presets, the
+//! Record layout (source order and tags), request forwarding and the merged
+//! event stream. Mounted on every instance — on a
 //! plain node `/nodes` simply lists itself, so the UI works the same either way.
 
 use std::sync::Arc;
@@ -18,7 +19,8 @@ use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     AddNodeRequest, CheckDto, ClockMode, ControllerClockDto, ControllerToggleRequest, FoundNodeDto,
     NodeChecksDto, NodeDto, PairingCodeRequest, PresetCreateRequest, PresetDto, PresetOutputInput,
-    ScheduleAction, ScheduleDto, ScheduleInput, ScheduleKind, ScheduleRunDto, WsEvent,
+    RecordLayoutDto, RecordOrderRequest, ScheduleAction, ScheduleDto, ScheduleInput, ScheduleKind,
+    ScheduleRunDto, SourceTagsRequest, WsEvent,
 };
 use crate::db;
 use crate::pipeline::profile::{plan_legs, unknown_token};
@@ -47,6 +49,9 @@ pub fn router() -> Router<Arc<AppState>> {
             put(put_preset).delete(delete_preset),
         )
         .route("/api/v1/presets/{id}/default", post(post_preset_default))
+        .route("/api/v1/record-layout", get(get_record_layout))
+        .route("/api/v1/record-layout/order", put(put_record_order))
+        .route("/api/v1/record-layout/tags", post(post_source_tags))
         .route("/api/v1/schedules", get(get_schedules).post(post_schedule))
         .route(
             "/api/v1/schedules/{id}",
@@ -374,6 +379,54 @@ async fn post_preset_default(
         return Err(PRESET_NOT_FOUND);
     }
     Ok(Json(db::presets_list(&state.db).await?))
+}
+
+async fn get_record_layout(State(state): State<Arc<AppState>>) -> ApiResult<Json<RecordLayoutDto>> {
+    Ok(Json(db::record_layout(&state.db).await?))
+}
+
+async fn put_record_order(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RecordOrderRequest>,
+) -> ApiResult<Json<RecordLayoutDto>> {
+    db::record_order_set(&state.db, &req.order).await?;
+    record_layout_changed(&state).await
+}
+
+async fn post_source_tags(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SourceTagsRequest>,
+) -> ApiResult<Json<RecordLayoutDto>> {
+    let add = tag_names(req.add)?;
+    let remove = tag_names(req.remove)?;
+    db::source_tags_change(&state.db, &req.sources, &add, &remove).await?;
+    record_layout_changed(&state).await
+}
+
+/// Tell every client, so other operators' grids follow, and answer with the
+/// new layout.
+async fn record_layout_changed(state: &AppState) -> ApiResult<Json<RecordLayoutDto>> {
+    state.emit_controller(&WsEvent::RecordLayoutUpdated);
+    Ok(Json(db::record_layout(&state.db).await?))
+}
+
+const TAG_MAX_CHARS: usize = 40;
+
+fn tag_names(tags: Vec<String>) -> ApiResult<Vec<String>> {
+    tags.into_iter()
+        .map(|t| {
+            let t = t.trim();
+            if t.is_empty() {
+                Err(ApiError::bad("a tag needs a name"))
+            } else if t.chars().count() > TAG_MAX_CHARS {
+                Err(ApiError::bad(format!(
+                    "a tag can be at most {TAG_MAX_CHARS} characters"
+                )))
+            } else {
+                Ok(t.to_string())
+            }
+        })
+        .collect()
 }
 
 /// Store blank resolution/framerate as `None` ("match the source") and reject

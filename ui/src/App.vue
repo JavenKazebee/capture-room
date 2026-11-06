@@ -5,6 +5,7 @@ import { useDocumentVisibility, useEventListener, useIntervalFn } from '@vueuse/
 import { startWebSocket } from '@/composables/useWebSocket'
 import { usePreferences } from '@/composables/usePreferences'
 import { usePresetsStore } from '@/stores/presets'
+import { useLayoutStore } from '@/stores/layout'
 import { useRecordingsStore } from '@/stores/recordings'
 import { useSourcesStore } from '@/stores/sources'
 import { useStorageStore } from '@/stores/storage'
@@ -27,6 +28,7 @@ onMounted(async () => {
   if (needsSignIn.value) return
   startWebSocket()
   usePresetsStore().load()
+  useLayoutStore().load()
   // Shared with a page that asked first (its onMounted runs before this).
   await useSourcesStore().ensureLoaded()
   useRecordingsStore().load()

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, toRef, watch } from 'vue'
-import { Check, Eye, EyeOff, Info } from '@lucide/vue'
+import { Check, Eye, EyeOff, Info, Tag } from '@lucide/vue'
 import { useSourcesStore, type Source } from '@/stores/sources'
 import { totalDropped, useRecordingsStore } from '@/stores/recordings'
 import { useRecordDeskStore } from '@/stores/recordDesk'
 import { useNodesStore } from '@/stores/nodes'
+import { useLayoutStore } from '@/stores/layout'
 import { useEventsStore } from '@/stores/events'
 import { usePreferences } from '@/composables/usePreferences'
 import { useThumbnail } from '@/composables/useThumbnail'
@@ -14,16 +15,22 @@ import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '@/compon
 import AudioMeter from '@/components/AudioMeter.vue'
 import PresetSelect from './PresetSelect.vue'
 import FeedInfo from './FeedInfo.vue'
+import TagEditor from './TagEditor.vue'
 import TallyBadge from '@/components/common/TallyBadge.vue'
 
-/** `tabStop`: the one tile Tab lands on (roving tabindex). */
-const props = defineProps<{ source: Source; tabStop?: boolean }>()
+/**
+ * `tabStop`: the one tile Tab lands on (roving tabindex). `dragging`: this tile is being moved.
+ * `dropSide`: a dragged tile would land here, before or after this one.
+ */
+const props = defineProps<{ source: Source; tabStop?: boolean; dragging?: boolean; dropSide?: 'before' | 'after' | null }>()
 const emit = defineEmits<{ expand: [] }>()
 
 const desk = useRecordDeskStore()
 const sources = useSourcesStore()
 const recordings = useRecordingsStore()
 const nodes = useNodesStore()
+const layout = useLayoutStore()
+const tags = computed(() => layout.tagsOf(props.source.key))
 const { overlays } = usePreferences()
 
 const { session, busy, channels, preset, duration, noSignal, format } = useFeedState(toRef(props, 'source'))
@@ -54,6 +61,25 @@ function onDblClick(e: MouseEvent) {
 // Tabbing onto a tile focuses it, as arrowing does; focus on its own controls doesn't.
 function onFocusIn(e: FocusEvent) {
   if (e.target === e.currentTarget) desk.focusedKey = props.source.key
+}
+
+const tagsOpen = computed({
+  get: () => desk.tagsKey === props.source.key,
+  set: (open: boolean) => {
+    if (open) {
+      desk.infoKey = null
+      desk.tagsKey = props.source.key
+    } else if (desk.tagsKey === props.source.key) desk.tagsKey = null
+  },
+})
+// Kept while it's open, so a click that changes the selection doesn't retarget it.
+const tagKeys = ref<string[]>([])
+watch(tagsOpen, (open) => open && (tagKeys.value = desk.tagScope(props.source.key)), { immediate: true })
+
+// Opening tags goes straight to the new-tag field.
+function onTagsOpened(e: Event) {
+  e.preventDefault()
+  ;(e.target as HTMLElement | null)?.querySelector<HTMLInputElement>('input')?.focus()
 }
 
 // Closing the info popover hands focus back to the tile, not its Info button, so Space still records.
@@ -89,8 +115,10 @@ watch(session, (now, prev) => {
         :tabindex="tabStop ? 0 : -1"
         :aria-label="source.display_name"
         class="group relative rounded-lg border bg-card overflow-hidden flex flex-col cursor-pointer select-none transition-shadow focus-visible:shadow-[0_0_0_6px_var(--background),0_0_0_8px_var(--foreground)]"
+        draggable="true"
         :class="[
           session ? 'border-tally ring-1 ring-tally' : 'border-border hover:border-foreground/20',
+          dragging && 'opacity-40',
           // Selection owns the outline; focus is the wider ring drawn outside it.
           selected ? 'outline-2 outline-offset-2 outline-primary' : 'outline-none',
         ]"
@@ -98,6 +126,11 @@ watch(session, (now, prev) => {
         @click="onClick"
         @dblclick="onDblClick"
       >
+        <span
+          v-if="dropSide"
+          class="pointer-events-none absolute inset-y-0 z-10 w-1 bg-primary"
+          :class="dropSide === 'before' ? 'left-0' : 'right-0'"
+        />
         <div ref="picture" class="relative flex bg-black aspect-video">
           <div class="flex-1 relative overflow-hidden">
             <div
@@ -195,6 +228,30 @@ watch(session, (now, prev) => {
               <span class="text-[10px] text-muted-foreground uppercase tracking-wide">
                 <template v-if="overlays.node && nodes.nodes.length > 1">{{ nodes.nameOf(source.node_id) }} · </template>{{ source.source_type }}
               </span>
+              <Popover v-model:open="tagsOpen">
+                <PopoverTrigger as-child>
+                  <button
+                    class="h-6 min-w-6 px-1 flex items-center justify-center gap-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent"
+                    :class="[tags.length && 'text-primary', tagsOpen && 'text-primary bg-accent']"
+                    :aria-label="`Tags for ${source.display_name}`"
+                    :title="tags.length ? `Tags: ${tags.join(', ')} (T)` : 'Tags (T)'"
+                    @click.stop
+                  >
+                    <Tag class="size-3.5" />
+                    <span v-if="tags.length" class="text-[10px] num">{{ tags.length }}</span>
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  side="bottom"
+                  align="end"
+                  :collision-padding="12"
+                  class="w-72 p-3"
+                  @open-auto-focus="onTagsOpened"
+                  @close-auto-focus="onInfoClosed"
+                >
+                  <TagEditor :keys="tagKeys" />
+                </PopoverContent>
+              </Popover>
               <button
                 class="size-6 grid place-items-center rounded text-muted-foreground hover:text-foreground hover:bg-accent"
                 :aria-label="source.thumbnail_hidden ? 'Show thumbnail' : 'Hide thumbnail'"

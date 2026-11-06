@@ -8,6 +8,7 @@ import { useCapacityStore } from '@/stores/capacity'
 import { usePlayoutStore } from '@/stores/playout'
 import { useReplayStore } from '@/stores/replay'
 import { useSchedulesStore } from '@/stores/schedules'
+import { useLayoutStore } from '@/stores/layout'
 import { runReconnectReloads } from '@/lib/reconnect'
 import { checkAuth, needsSignIn } from '@/composables/useAuth'
 import { reconnectingSocket } from '@/lib/reconnectingSocket'
@@ -153,6 +154,10 @@ function handleEvent(event: NodeEvent) {
 
     case 'schedule.updated':
       useSchedulesStore().refresh(event.schedule_id)
+      break
+
+    case 'layout.updated':
+      useLayoutStore().load()
       break
   }
 }
