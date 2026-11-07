@@ -24,8 +24,8 @@ pub struct NodeStatus {
     /// is missing for each.
     #[serde(default)]
     pub source_types: Vec<SourceTypeSupport>,
-    /// It can read LTC timecode from a source's audio (`timecodestamper`
-    /// built with libltc).
+    /// It can read LTC timecode from a source's audio: never on Windows,
+    /// whose GStreamer misreads it (see `sources::ltc::available`).
     #[serde(default)]
     pub ltc: bool,
     /// What the node's pipelines run on. `None` from nodes that predate

@@ -37,12 +37,20 @@ use crate::pipeline::{capsfilter, make_el, set_mix_matrix, set_property};
 /// an LTC frame, so a steady signal never trips it.
 const LTC_TIMEOUT: Duration = Duration::from_millis(250);
 
-/// Whether this node's `timecodestamper` was built with libltc. Its
-/// `ltc_sink` template is there either way (Homebrew's has none); only
-/// asking for the pad tells.
+/// Whether this node's `timecodestamper` reads LTC. Its `ltc_sink`
+/// template is there even without libltc (Homebrew's has none); only asking
+/// for the pad tells.
+///
+/// Never on Windows: the official build compiles libltc with
+/// `-D__BIG_ENDIAN__` (cerbero's meson patch, for lack of `endian.h`), so
+/// `ltc.h` picks its big-endian `LTCFrame` and reads the user bits as the
+/// timecode.
 pub fn available() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
+        if cfg!(windows) {
+            return false;
+        }
         let Ok(el) = gst::ElementFactory::make("timecodestamper").build() else {
             return false;
         };
@@ -71,7 +79,10 @@ fn validate_with(
         return Ok(());
     };
     if !available {
-        return Err("this node's GStreamer can't read LTC (timecodestamper without libltc)".into());
+        return Err(
+            "this node can't read LTC: its GStreamer has no libltc, or (on Windows) misreads it"
+                .into(),
+        );
     }
     let channels = channels.ok_or("LTC needs audio: pick the source's or a device's")?;
     if channel == 0 || channel > channels {
@@ -297,13 +308,13 @@ pub(crate) mod tests {
         assert_eq!(pick_row(16, 16)[15], 1.0);
     }
 
-    /// CI's GStreamer on each platform (the one releases ship) reads LTC;
+    /// CI's GStreamer (the one releases ship) reads LTC on macOS and Linux;
     /// a developer's may not (Homebrew's has no libltc).
     #[test]
     fn timecodestamper_reads_ltc() {
         gst::init().unwrap();
         if std::env::var_os("CI").is_some() {
-            assert!(available(), "timecodestamper was built without libltc");
+            assert_eq!(available(), !cfg!(windows), "timecodestamper with libltc");
         } else if !available() {
             println!("this GStreamer's timecodestamper can't read LTC (no libltc)");
         }

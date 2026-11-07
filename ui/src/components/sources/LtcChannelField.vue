@@ -9,7 +9,7 @@ import { ltcChannelOptions } from '@/lib/ltc'
 const props = defineProps<{
   /** The feed's audio channels; `null` when it's silent. */
   channels: number | null
-  /** The node can read LTC (its GStreamer has libltc). */
+  /** The node can read LTC (its GStreamer has a working libltc). */
   available: boolean
 }>()
 
@@ -22,7 +22,7 @@ const picked = computed({
   set: (v: number) => (channel.value = v || null),
 })
 const hint = computed(() => {
-  if (!props.available) return "This node's GStreamer can't read LTC (it was built without libltc)."
+  if (!props.available) return "This node can't read LTC: its GStreamer has no libltc, or (on Windows) misreads it."
   if (props.channels === null) return 'Give the feed audio to read LTC from it.'
   return null
 })

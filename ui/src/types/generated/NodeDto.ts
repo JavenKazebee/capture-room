@@ -30,8 +30,8 @@ encoders: Array<string>,
  */
 source_types: Array<SourceTypeSupport>, 
 /**
- * It can read LTC timecode from a source's audio (`timecodestamper`
- * built with libltc).
+ * It can read LTC timecode from a source's audio: never on Windows,
+ * whose GStreamer misreads it (see `sources::ltc::available`).
  */
 ltc: boolean, 
 /**
