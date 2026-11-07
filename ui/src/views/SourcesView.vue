@@ -15,6 +15,7 @@ import { reloadAll } from '@/composables/useWebSocket'
 import { useSelection } from '@/composables/useSelection'
 import { BulkSkip, bulkToast, runBulk } from '@/lib/bulk'
 import { plural } from '@/lib/format'
+import { ltcWarning } from '@/lib/ltc'
 import { fpsLabel, resolutionLabel } from '@/lib/sourceFormat'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -245,7 +246,12 @@ onMounted(() => store.ensureLoaded())
       </template>
       <template #cell-fps="{ row }">{{ row.capabilities ? fpsLabel([row.capabilities.fps_num, row.capabilities.fps_den]) : '—' }}</template>
       <template #cell-audio="{ row }">{{ row.capabilities ? `${row.capabilities.audio_channels} ch` : '—' }}</template>
-      <template #cell-timecode="{ row }">{{ row.timecode ?? '—' }}</template>
+      <template #cell-timecode="{ row }">
+        {{ row.timecode ?? '—' }}
+        <span v-if="ltcWarning(row.ltc)" class="ml-1 font-sans text-warning" :title="ltcWarning(row.ltc)?.title">
+          {{ ltcWarning(row.ltc)?.short }}
+        </span>
+      </template>
       <template #cell-id="{ row }">
         <span class="flex items-center gap-1 text-muted-foreground">
           <span class="truncate max-w-28" :title="row.id">{{ row.id }}</span>

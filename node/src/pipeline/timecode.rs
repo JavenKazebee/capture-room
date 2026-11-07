@@ -1,7 +1,8 @@
 //! SMPTE timecode on video frames, as a `VideoTimeCodeMeta` that qtmux
 //! writes into a .mov's timecode track. Recordings and replay exports stamp
 //! the time of day ([`stamp_time_of_day`]); a live source carries its own
-//! (a Decklink's RP188) through its compositor.
+//! (a Decklink's RP188) through its compositor, or else LTC read from one of
+//! its audio channels ([`crate::sources::ltc`]), and those win.
 
 use gstreamer::{self as gst, glib, prelude::*};
 use gstreamer_video as gst_video;

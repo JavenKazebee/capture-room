@@ -6,9 +6,10 @@ use tracing::warn;
 
 use super::device::{self, LocalDevices};
 use super::live::{self, LinkTracker, LiveInput};
+use super::ltc::LtcTracker;
 use super::InputSource;
 use crate::api::types::{
-    LinkState, RtspTransport, SourceCapabilitiesDto, SourceType, StreamSourceConfig,
+    LinkState, LtcState, RtspTransport, SourceCapabilitiesDto, SourceType, StreamSourceConfig,
 };
 use crate::pipeline::{make_el, set_property};
 
@@ -30,6 +31,7 @@ pub struct StreamSource {
     config: StreamSourceConfig,
     devices: Arc<LocalDevices>,
     tracker: Arc<LinkTracker>,
+    ltc: Arc<LtcTracker>,
 }
 
 impl StreamSource {
@@ -45,6 +47,7 @@ impl StreamSource {
             config,
             devices,
             tracker: Arc::default(),
+            ltc: Arc::default(),
         }
     }
 }
@@ -100,12 +103,21 @@ impl InputSource for StreamSource {
             tracker: &self.tracker,
             direct: false,
             latency: None,
+            ltc: cfg.ltc_channel.map(|c| (c, &self.ltc)),
         })?;
         Ok(bin.upcast())
     }
 
     fn link(&self) -> Option<LinkState> {
         Some(self.tracker.state(listen_port(&self.config).is_some()))
+    }
+
+    fn ltc(&self) -> Option<LtcState> {
+        self.config.ltc_channel.map(|_| self.ltc.state())
+    }
+
+    fn timecode(&self) -> Option<String> {
+        self.ltc.timecode()
     }
 }
 
@@ -223,7 +235,8 @@ pub fn validate(
         return Err("the URL needs a port".into());
     }
     live::validate_format(cfg.format.as_ref())?;
-    device::validate_audio(&cfg.audio, devices)
+    device::validate_audio(&cfg.audio, devices)?;
+    super::ltc::validate(cfg.ltc_channel, device::audio_channels(&cfg.audio))
 }
 
 #[cfg(test)]
@@ -238,6 +251,7 @@ mod tests {
             rtsp_transport: RtspTransport::Auto,
             audio: AudioPlan::default(),
             format: None,
+            ltc_channel: None,
         }
     }
 
@@ -320,6 +334,7 @@ mod monitor_tests {
                 rtsp_transport: RtspTransport::Auto,
                 audio: AudioPlan::default(),
                 format: None,
+                ltc_channel: None,
             },
             Arc::new(LocalDevices::start()),
         );
@@ -403,6 +418,7 @@ mod monitor_tests {
                     channels: vec![2, 1],
                 },
                 format: None,
+                ltc_channel: None,
             },
             devices,
         );

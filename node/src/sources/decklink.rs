@@ -19,10 +19,11 @@ use tracing::warn;
 
 use super::device::LocalDevices;
 use super::live::{self, LinkTracker, LiveAudio, LiveInput};
+use super::ltc::LtcTracker;
 use super::{ghost_pad, InputSource};
 use crate::api::types::{
     ConfiguredSourceDto, DecklinkCardDto, DecklinkConnection, DecklinkDeviceDto, DecklinkModeDto,
-    DecklinkProfile, DecklinkSourceConfig, DecklinkStatusDto, DecklinkUseDto, LinkState,
+    DecklinkProfile, DecklinkSourceConfig, DecklinkStatusDto, DecklinkUseDto, LinkState, LtcState,
     OutputConfig, SourceCapabilitiesDto, SourceConfig, SourceType, VideoFormat,
 };
 use crate::pipeline::monitor::MonitorPipeline;
@@ -530,7 +531,8 @@ pub fn validate(
     if !AUDIO_CHANNELS.contains(&cfg.channels) {
         return Err("SDI audio has 2, 8 or 16 channels".into());
     }
-    live::validate_format(cfg.format.as_ref())
+    live::validate_format(cfg.format.as_ref())?;
+    super::ltc::validate(cfg.ltc_channel, Some(cfg.channels))
 }
 
 /// Check a channel's Decklink outputs against the node's sub-devices.
@@ -564,6 +566,7 @@ pub struct DecklinkSource {
     config: DecklinkSourceConfig,
     devices: Arc<LocalDevices>,
     tracker: Arc<LinkTracker>,
+    ltc: Arc<LtcTracker>,
     timecode: Arc<Mutex<Option<String>>>,
 }
 
@@ -580,6 +583,7 @@ impl DecklinkSource {
             config,
             devices,
             tracker: Arc::default(),
+            ltc: Arc::default(),
             timecode: Arc::default(),
         }
     }
@@ -710,6 +714,7 @@ impl InputSource for DecklinkSource {
             tracker: &self.tracker,
             direct: true,
             latency: Some(LATENCY),
+            ltc: cfg.ltc_channel.map(|c| (c, &self.ltc)),
         })?;
         // Added now that the live bin is watching for them.
         for pad in pads {
@@ -718,12 +723,18 @@ impl InputSource for DecklinkSource {
         Ok(bin.upcast())
     }
 
+    /// The signal's own (RP188), else what LTC gave.
     fn timecode(&self) -> Option<String> {
-        self.timecode.lock().unwrap().clone()
+        let own = self.timecode.lock().unwrap().clone();
+        own.or_else(|| self.ltc.timecode())
     }
 
     fn link(&self) -> Option<LinkState> {
         Some(self.tracker.state(false))
+    }
+
+    fn ltc(&self) -> Option<LtcState> {
+        self.config.ltc_channel.map(|_| self.ltc.state())
     }
 }
 

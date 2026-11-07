@@ -1406,6 +1406,7 @@ fn source_to_dto(mgr: &SourceManager, s: &dyn InputSource) -> SourceDto {
         timecode: s.timecode(),
         capabilities: capabilities(mgr, s),
         link: mgr.link(s),
+        ltc: s.ltc(),
         thumbnail_hidden: mgr.thumbnail_hidden(s.id()),
     }
 }

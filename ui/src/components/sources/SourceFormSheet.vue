@@ -29,6 +29,7 @@ import StreamFields from './StreamFields.vue'
 import DeviceFields, { PORTAL_SCREEN } from './DeviceFields.vue'
 import DecklinkFields from './DecklinkFields.vue'
 import WhipFields from './WhipFields.vue'
+import LtcChannelField from './LtcChannelField.vue'
 
 /** Add or edit (`source`) a configured source. Mount with `v-if`; an edit opens once its config arrives. Channels are set up in Playback. */
 const props = defineProps<{ source: Source | null }>()
@@ -94,10 +95,10 @@ const test = ref<TestSourceConfig>({
 })
 const filePath = ref('')
 const fileMedia = ref<MediaInfo | null>(null)
-const stream = ref<StreamSourceConfig>({ url: '', latency_ms: 200, rtsp_transport: 'auto', audio: { from: 'source', channels: 2 }, format: null })
-const device = ref<DeviceSourceConfig>({ video_device: '', video_device_name: '', audio: { from: 'silence', channels: 2 }, format: null })
-const decklink = ref<DecklinkSourceConfig>({ device: '', device_name: '', connection: 'auto', mode: null, channels: 2, format: null })
-const whip = ref<WhipSourceConfig>({ port: 8890, token: generateToken(), audio: { from: 'source', channels: 2 }, format: null })
+const stream = ref<StreamSourceConfig>({ url: '', latency_ms: 200, rtsp_transport: 'auto', audio: { from: 'source', channels: 2 }, format: null, ltc_channel: null })
+const device = ref<DeviceSourceConfig>({ video_device: '', video_device_name: '', audio: { from: 'silence', channels: 2 }, format: null, ltc_channel: null })
+const decklink = ref<DecklinkSourceConfig>({ device: '', device_name: '', connection: 'auto', mode: null, channels: 2, format: null, ltc_channel: null })
+const whip = ref<WhipSourceConfig>({ port: 8890, token: generateToken(), audio: { from: 'source', channels: 2 }, format: null, ltc_channel: null })
 
 const node = computed(() => nodesStore.nodes.find((n) => n.id === nodeId.value))
 /** The node's address as senders on the network see it. */
@@ -114,6 +115,36 @@ const unavailable = computed(() => {
     }
   }
   return out
+})
+/** The live source's config being edited, which can read LTC. */
+const live = computed(() => {
+  switch (kind.value) {
+    case 'stream':
+      return stream.value
+    case 'device':
+      return device.value
+    case 'decklink':
+      return decklink.value
+    case 'whip':
+      return whip.value
+    default:
+      return null
+  }
+})
+/** The feed's audio channels, `null` when silent. */
+const liveChannels = computed(() => {
+  const cfg = live.value
+  if (!cfg) return null
+  if (!('audio' in cfg)) return cfg.channels
+  const audio = cfg.audio
+  if (audio.from === 'silence') return null
+  return audio.from === 'device' ? audio.channels.length : audio.channels
+})
+const ltcChannel = computed({
+  get: () => live.value?.ltc_channel ?? null,
+  set: (v: number | null) => {
+    if (live.value) live.value.ltc_channel = v
+  },
 })
 const nodeDevices = useNodeDevices(nodeId)
 const nodeDecklink = useNodeDecklink(nodeId)
@@ -358,6 +389,11 @@ async function save() {
       <WhipFields v-else-if="kind === 'whip'" v-model="whip" :host="host" :devices="nodeDevices.devices.value" />
       <FileFields v-else-if="kind === 'file'" v-model:path="filePath" v-model:media="fileMedia" :node-id="nodeId" />
       <TestFields v-else-if="kind === 'test'" v-model="test" />
+      <LtcChannelField
+        v-if="live && (kind !== 'decklink' || decklink.device)"
+        v-model="ltcChannel"
+        :channels="liveChannels"
+      />
     </div>
   </EditSheet>
 </template>
