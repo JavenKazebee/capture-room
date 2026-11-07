@@ -5,6 +5,7 @@ import { toast } from 'vue-sonner'
 import { nodeApi } from '@/composables/useApi'
 import { useSelection } from '@/composables/useSelection'
 import { formatTimeLeft, plural } from '@/lib/format'
+import { pressTime } from '@/lib/markers'
 import { notifyError, notifyWarn } from '@/lib/notify'
 import { LOW_TIME_SECS, capacityWarningText, useCapacityStore } from '@/stores/capacity'
 import { useLayoutStore } from '@/stores/layout'
@@ -162,6 +163,60 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     return now && { ...now, time_us: now.time_us + SYNC_LEAD_US }
   }
 
+  /** Feeds whose tiles show they were just marked. */
+  const flashed = ref(new Set<string>())
+  /** The press whose note is being edited, from the toast's Add note. */
+  const notePress = ref<string | null>(null)
+
+  /**
+   * Mark the recordings of `list` (those recording) at a keypress, `pressedAt`
+   * from `performance.now()`, all with one press id. The shared clock is read
+   * from the controller this UI talks to and stepped back to the keypress.
+   */
+  async function mark(list: Source[], pressedAt: number) {
+    const targets = list.flatMap((s) => {
+      const session = recordings.activeForSource(s.node_id, s.id)
+      return session ? [{ source: s, session }] : []
+    })
+    if (!targets.length) {
+      toast.error('Nothing to mark', { description: 'Markers go on recordings in progress.' })
+      return
+    }
+    const selfId = nodes.self?.node_id
+    let at: ClockTimeDto | null = null
+    if (selfId) {
+      const sent = performance.now()
+      const now = await nodeApi(selfId)<ClockTimeDto>('/clock/now').catch(() => null)
+      if (now) at = pressTime(now, pressedAt, sent, performance.now())
+    }
+    const pressId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+    const results = await recordings.mark(
+      targets.map((t) => t.session),
+      { press_id: pressId, at },
+    )
+    const marked = targets.filter((_, i) => results[i]!.status === 'fulfilled')
+    const failed = results.flatMap((r, i) => (r.status === 'rejected' ? [{ target: targets[i]!, reason: r.reason }] : []))
+    for (const f of failed) {
+      notifyError(`Couldn't mark ${f.target.source.display_name}`, f.reason, f.target.source.node_id)
+    }
+    if (!marked.length) return
+
+    flashed.value = new Set([...flashed.value, ...marked.map((t) => t.source.key)])
+    setTimeout(() => {
+      const next = new Set(flashed.value)
+      for (const t of marked) next.delete(t.source.key)
+      flashed.value = next
+    }, 1200)
+
+    const timecode = recordings.pressMarkers(pressId).find((m) => m.marker.timecode)?.marker.timecode
+    toast.success(marked.length === 1 ? `Marked ${marked[0]!.source.display_name}` : `Marked ${plural(marked.length, 'recording')}`, {
+      description: timecode ?? undefined,
+      // Long enough to reach for Add note mid-shoot.
+      duration: 8000,
+      action: { label: 'Add note', onClick: () => (notePress.value = pressId) },
+    })
+  }
+
   async function stop(s: Source) {
     const session = recordings.activeForSource(s.node_id, s.id)
     if (session) await recordings.stop(s.node_id, session.id)
@@ -307,5 +362,8 @@ export const useRecordDeskStore = defineStore('recordDesk', () => {
     isLive,
     toggle,
     bulk,
+    mark,
+    flashed,
+    notePress,
   }
 })

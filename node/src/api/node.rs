@@ -24,12 +24,12 @@ use crate::api::types::{
     BenchmarkRequest, BenchmarkRunDto, CapacityCheckDto, CapacityCheckRequest, ChannelConfig,
     CheckRequest, ClockClaim, ClockStatusDto, ClockTimeDto, ConfiguredSourceDto,
     ConfiguredSourceRequest, CreateFolderRequest, DecklinkProfileRequest, DecklinkStatusDto,
-    DeviceDto, DirListingDto, DisplayDto, FolderDto, FolderListingDto, NdiSubscriptionsDto,
-    NdiSubscriptionsInput, NodeCapacityDto, NodeChecksDto, NodeSettingsDto, NodeStatus,
-    OutputConfig, PresetEstimateDto, PresetEstimateRequest, RecordingSessionDto, RecordingStatus,
-    RecordingsQuery, SourceCapabilitiesDto, SourceConfig, SourceDto, StartRecordingRequest,
-    StorageVolumeDto, ThumbnailVisibilityRequest, UpdateNodeSettingsRequest, UpdateRequest,
-    UpdateStatusDto, VolumeCheckDto, WsEvent,
+    DeviceDto, DirListingDto, DisplayDto, FolderDto, FolderListingDto, MarkRequest, MarkerUpdate,
+    NdiSubscriptionsDto, NdiSubscriptionsInput, NodeCapacityDto, NodeChecksDto, NodeSettingsDto,
+    NodeStatus, OutputConfig, PresetEstimateDto, PresetEstimateRequest, RecordingSessionDto,
+    RecordingStatus, RecordingsQuery, SourceCapabilitiesDto, SourceConfig, SourceDto,
+    StartRecordingRequest, StorageVolumeDto, ThumbnailVisibilityRequest, UpdateNodeSettingsRequest,
+    UpdateRequest, UpdateStatusDto, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
 use crate::capacity::{Capacity, Load, Setup};
@@ -39,7 +39,9 @@ use crate::pipeline::profile::{
     available_encoders, missing_encoder, plan_legs, PathVars, RecordingProfile,
 };
 use crate::session;
-use crate::sources::manager::{SourceManager, StopOutcome, StopResult};
+use crate::sources::manager::{
+    apply_marker_update, MarkError, SourceManager, StopOutcome, StopResult,
+};
 use crate::sources::portal;
 use crate::sources::InputSource;
 use crate::state::AppState;
@@ -96,6 +98,11 @@ pub fn router() -> Router<Arc<AppState>> {
             get(get_recording_file).delete(delete_recording_file),
         )
         .route("/recordings/{id}/stop", post(post_stop_recording))
+        .route("/recordings/{id}/markers", post(post_marker))
+        .route(
+            "/recordings/{id}/markers/{marker_id}",
+            axum::routing::patch(patch_marker).delete(delete_marker),
+        )
         .route("/benchmarks", get(get_benchmarks).post(post_benchmark))
         .route(
             "/benchmarks/{id}",
@@ -1038,6 +1045,89 @@ async fn post_stop_recording(
         .ok_or(ApiError::NotFound("session not found"))
 }
 
+const MARKER_NOT_FOUND: ApiError = ApiError::NotFound("marker not found");
+
+/// Mark an active recording. A press marking several recordings sends one
+/// of these to each, with the same `press_id` and `at`.
+async fn post_marker(
+    State(state): State<Arc<AppState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(req): Json<MarkRequest>,
+) -> ApiResult<Json<RecordingSessionDto>> {
+    let marked = state.source_manager.write().await.mark_session(&id, &req);
+    let (session, marker) = marked.map_err(|e| match e {
+        MarkError::NotActive => ApiError::Conflict("only a recording in progress can be marked"),
+        MarkError::NotYet => ApiError::Conflict("the recording hasn't recorded a frame yet"),
+        MarkError::OutOfRange => ApiError::BadRequest("that time is outside this recording".into()),
+    })?;
+    db::marker_insert(&state.db, &id, &marker).await?;
+    state.emit(&WsEvent::RecordingUpdated {
+        session: Box::new(session.clone()),
+    });
+    Ok(Json(session))
+}
+
+/// Change a marker's note or colour, while recording or after.
+async fn patch_marker(
+    State(state): State<Arc<AppState>>,
+    AxumPath((id, marker_id)): AxumPath<(String, String)>,
+    Json(update): Json<MarkerUpdate>,
+) -> ApiResult<Json<RecordingSessionDto>> {
+    let active = state
+        .source_manager
+        .write()
+        .await
+        .update_active_marker(&id, &marker_id, &update);
+    let session = match active {
+        Some((session, marker)) => {
+            db::marker_update(&state.db, &id, &marker).await?;
+            session
+        }
+        None => {
+            let mut session = db::session_get(&state.db, &id)
+                .await?
+                .ok_or(SESSION_NOT_FOUND)?;
+            let marker = session
+                .markers
+                .iter_mut()
+                .find(|m| m.id == marker_id)
+                .ok_or(MARKER_NOT_FOUND)?;
+            apply_marker_update(marker, &update);
+            if !db::marker_update(&state.db, &id, marker).await? {
+                return Err(MARKER_NOT_FOUND);
+            }
+            session
+        }
+    };
+    state.emit(&WsEvent::RecordingUpdated {
+        session: Box::new(session.clone()),
+    });
+    Ok(Json(session))
+}
+
+async fn delete_marker(
+    State(state): State<Arc<AppState>>,
+    AxumPath((id, marker_id)): AxumPath<(String, String)>,
+) -> ApiResult<Json<RecordingSessionDto>> {
+    let active = state
+        .source_manager
+        .write()
+        .await
+        .delete_active_marker(&id, &marker_id);
+    let deleted = db::marker_delete(&state.db, &id, &marker_id).await?;
+    let session = match active {
+        Some(session) => session,
+        None if deleted => db::session_get(&state.db, &id)
+            .await?
+            .ok_or(SESSION_NOT_FOUND)?,
+        None => return Err(MARKER_NOT_FOUND),
+    };
+    state.emit(&WsEvent::RecordingUpdated {
+        session: Box::new(session.clone()),
+    });
+    Ok(Json(session))
+}
+
 /// A session with no in-memory record (e.g. left `active` by a crash): mark it
 /// stopped, unless it already is, so a stray retry doesn't stomp `stopped_at`.
 async fn stop_orphaned(state: &AppState, id: &str) -> anyhow::Result<Option<RecordingSessionDto>> {
@@ -1435,6 +1525,7 @@ mod tests {
             status: RecordingStatus::Stopped,
             error_message: None,
             clock: None,
+            markers: Vec::new(),
         }
     }
 

@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowRight, X } from '@lucide/vue'
+import { ArrowRight, Flag, X } from '@lucide/vue'
 import { useSecondClock } from '@/composables/useSecondClock'
 import { clockTime, elapsedMs, formatDuration, plural } from '@/lib/format'
 import { RECORDING_STATUS, recordingFormats } from '@/lib/recordingStatus'
 import { useNodesStore } from '@/stores/nodes'
 import { outputFiles, totalDropped, useRecordingsStore, type RecordingSession } from '@/stores/recordings'
 import StatusDot from '@/components/common/StatusDot.vue'
+import { useMarkerExport } from '@/composables/useMarkerExport'
 
 /**
  * Recordings started since `since` (when this tab first opened the Record page,
@@ -33,6 +34,9 @@ const rows = computed(() => {
 })
 
 const key = (s: RecordingSession) => `${s.node_id}/${s.id}`
+
+const { exportMarkers } = useMarkerExport()
+const markerCount = computed(() => new Set(rows.value.flatMap((s) => s.markers.map((m) => m.press_id))).size)
 
 function fileCount(s: RecordingSession) {
   return s.output_paths.reduce((n, _, i) => n + outputFiles(s, i).length, 0)
@@ -99,6 +103,9 @@ function clear() {
             </template>
           </span>
           <span v-if="nodes.nodes.length > 1" class="text-xs text-muted-foreground truncate">{{ nodes.nameOf(s.node_id) }}</span>
+          <span v-if="s.markers.length" class="flex items-center gap-1 text-xs text-muted-foreground num">
+            <Flag class="size-3" /> {{ plural(s.markers.length, 'marker') }}
+          </span>
           <span v-if="totalDropped(s)" class="text-xs text-warning num">{{ totalDropped(s).toLocaleString() }} frames dropped</span>
           <span v-if="s.error_message" class="text-xs text-destructive line-clamp-2">{{ s.error_message }}</span>
         </button>
@@ -108,6 +115,14 @@ function clear() {
       Recordings started from here on appear as they start.
     </p>
 
+    <button
+      v-if="markerCount"
+      class="flex items-center justify-center gap-1.5 h-9 shrink-0 border-t border-border text-xs font-medium hover:bg-accent"
+      title="Download these recordings' markers as an EDL for Resolve (Timeline Markers from EDL)"
+      @click="exportMarkers(rows)"
+    >
+      <Flag class="size-3.5" /> Export {{ plural(markerCount, 'marker') }} for Resolve
+    </button>
     <RouterLink
       to="/recordings"
       class="flex items-center justify-center gap-1 h-9 shrink-0 border-t border-border text-xs text-muted-foreground hover:text-foreground"

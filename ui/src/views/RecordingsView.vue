@@ -7,12 +7,13 @@ import { useTableSelectionCommands } from '@/composables/useTableSelectionComman
 import { reloadAll } from '@/composables/useWebSocket'
 import { useSecondClock } from '@/composables/useSecondClock'
 import { useViewKeys } from '@/composables/useViewKeys'
-import { Download, History, Play, Trash2 } from '@lucide/vue'
+import { Download, Flag, History, Play, Trash2 } from '@lucide/vue'
 import { FetchError } from 'ofetch'
 import { toast } from 'vue-sonner'
 import { downloadUrl, errorMessage, recordingFileUrl } from '@/composables/useApi'
 import { useSelection } from '@/composables/useSelection'
 import { BulkSkip, bulkToast, runBulk } from '@/lib/bulk'
+import { useMarkerExport } from '@/composables/useMarkerExport'
 import { clockTime, dayKey, dayLabel, elapsedMs, formatDuration, plural } from '@/lib/format'
 import { RECORDING_STATUS as STATUS, recordingFormats as formats } from '@/lib/recordingStatus'
 import { shortcut } from '@/lib/keys'
@@ -196,6 +197,9 @@ async function bulkDownload() {
   }
 }
 
+const { exportMarkers } = useMarkerExport()
+const checkedMarkers = computed(() => checkedSessions.value.some((s) => s.markers.length))
+
 /** Files "Delete files" would delete: those of checked sessions that aren't recording. */
 const checkedFileCount = computed(() =>
   checkedSessions.value
@@ -297,6 +301,16 @@ async function loadOlder() {
           <BulkActionBar :count="checked.count.value" @clear="checked.clearSelection()">
             <Button variant="outline" size="sm" class="h-7 gap-1.5 text-xs" @click="bulkDownload">
               <Download class="size-3.5" /> Download
+            </Button>
+            <Button
+              v-if="checkedMarkers"
+              variant="outline"
+              size="sm"
+              class="h-7 gap-1.5 text-xs"
+              title="One EDL with these recordings' markers, for Resolve: Timelines → Import → Timeline Markers from EDL"
+              @click="exportMarkers(checkedSessions)"
+            >
+              <Flag class="size-3.5" /> Export markers
             </Button>
             <Button
               variant="outline"
