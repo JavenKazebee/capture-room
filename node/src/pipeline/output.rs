@@ -486,6 +486,7 @@ pub const SRT_ELEMENTS: &[&str] = &["srtsink", "mpegtsmux", "h264parse", "avenc_
 /// H.264 encoders for a live stream, best first.
 pub const LIVE_H264: &[&str] = &[
     "vtenc_h264",
+    "nvh264enc",
     "vah264enc",
     "amfh264enc",
     "mfh264enc",
@@ -517,7 +518,12 @@ pub(crate) fn live_h264(
             ("b-frames", "0".to_string()),
             ("key-int-max", keyint.to_string()),
         ]),
-        // B-frames are off by default in both.
+        // B-frames are off by default in NVENC and AMF.
+        "nvh264enc" => props.extend([
+            ("rc-mode", "cbr".to_string()),
+            ("zerolatency", "true".to_string()),
+            ("gop-size", keyint.to_string()),
+        ]),
         "amfh264enc" => props.extend([
             ("usage", "low-latency".to_string()),
             ("rate-control", "cbr".to_string()),

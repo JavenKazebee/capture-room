@@ -62,6 +62,7 @@ function node(name: string, encoders: string[]): NodeDto {
 const mac = node('mac', ['vtenc_h264', 'vtenc_h265', 'vtenc_prores', 'x264enc'])
 const linux = node('linux', ['x264enc', 'x265enc', 'vp9enc', 'avenc_prores_ks'])
 const windows = node('windows', ['amfh264enc', 'mfh264enc', 'x264enc'])
+const nvidia = node('nvidia', ['nvh264enc', 'nvh265enc', 'mfh264enc', 'x264enc'])
 const bare = node('bare', ['vp9enc'])
 const old = node('old', [])
 
@@ -69,6 +70,7 @@ describe('legEncoders', () => {
   it('lists hardware first for 4:2:0 H.264 and H.265', () => {
     expect(legEncoders(leg())).toEqual([
       'vtenc_h264',
+      'nvh264enc',
       'vah264enc',
       'amfh264enc',
       'mfh264enc',
@@ -76,6 +78,7 @@ describe('legEncoders', () => {
     ])
     expect(legEncoders(leg({ codec: 'h265' }))).toEqual([
       'vtenc_h265',
+      'nvh265enc',
       'vah265enc',
       'amfh265enc',
       'x265enc',
@@ -93,6 +96,7 @@ describe('legEncoders', () => {
   it('filters by the Encoder choice', () => {
     expect(legEncoders(leg({}, { encoder: 'hardware' }))).toEqual([
       'vtenc_h264',
+      'nvh264enc',
       'vah264enc',
       'amfh264enc',
       'mfh264enc',
@@ -120,6 +124,10 @@ describe('encoders by kind', () => {
       hardware: ['VideoToolbox H.264', 'VideoToolbox H.265'],
       software: ['x264 H.264', 'FFmpeg ProRes'],
     })
+    expect(encodersByKind(['nvh264enc', 'nvh265enc'])).toEqual({
+      hardware: ['NVIDIA NVENC H.264', 'NVIDIA NVENC H.265'],
+      software: [],
+    })
   })
 })
 
@@ -132,6 +140,8 @@ describe('encoders on nodes', () => {
     ])
     expect(encoderOnNodes(leg(), [windows])).toEqual([{ node: 'windows', encoder: 'AMD AMF (hardware)' }])
     expect(encoderOnNodes(leg({ codec: 'h265' }), [windows])).toEqual([{ node: 'windows', encoder: 'unavailable' }])
+    expect(encoderOnNodes(leg(), [nvidia])).toEqual([{ node: 'nvidia', encoder: 'NVIDIA NVENC (hardware)' }])
+    expect(encoderOnNodes(leg({ codec: 'h265' }), [nvidia])).toEqual([{ node: 'nvidia', encoder: 'NVIDIA NVENC (hardware)' }])
     expect(encoderOnNodes(leg({ codec: 'prores_422' }), [linux])).toEqual([{ node: 'linux', encoder: 'FFmpeg ProRes (software)' }])
   })
   it('needs no encoder for uncompressed', () => {

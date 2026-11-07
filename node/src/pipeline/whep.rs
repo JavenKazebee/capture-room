@@ -29,11 +29,13 @@ pub fn port(path: &str) -> Option<u16> {
 /// others create them by name. VideoToolbox fails its negotiation;
 /// `webrtcsink` can't set AMF's or Media Foundation's bitrate per viewer,
 /// and amfh264enc would otherwise beat x264enc (same rank, sorted by name).
-/// VA-API encoders register at NONE, but `webrtcsink` drives them (bitrate
-/// per viewer included), so they're ranked above x264enc. Call before
+/// It drives `nvh264enc`/`nvh265enc` (PRIMARY + 1) by name, but not the
+/// `nvh26*device<N>enc` a second NVIDIA GPU registers. VA-API encoders
+/// register at NONE, but `webrtcsink` drives them (bitrate per viewer
+/// included), so they're ranked above x264enc. Call before
 /// registering the WebRTC plugin, which lists encoders once.
 pub fn hide_unsupported_encoders() {
-    let unsupported = ["vtenc_", "amfh26", "mfh26"];
+    let unsupported = ["vtenc_", "amfh26", "mfh26", "nvh264device", "nvh265device"];
     for factory in gst::ElementFactory::factories_with_type(
         gst::ElementFactoryType::VIDEO_ENCODER,
         gst::Rank::NONE,
