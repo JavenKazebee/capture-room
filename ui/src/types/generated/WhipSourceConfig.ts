@@ -11,4 +11,8 @@ export type WhipSourceConfig = { port: number,
 /**
  * Publishers' bearer token. Blank in a request: the node makes one.
  */
-token: string, audio: AudioPlan, format: VideoFormat | null, };
+token: string, audio: AudioPlan, format: VideoFormat | null, 
+/**
+ * The 1-based audio channel (of the feed's) carrying LTC timecode.
+ */
+ltc_channel: number | null, };

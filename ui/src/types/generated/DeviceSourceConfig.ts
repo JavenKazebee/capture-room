@@ -20,4 +20,8 @@ video_device_name: string, audio: AudioPlan,
 /**
  * Capture at this size and rate (the device's default otherwise).
  */
-format: VideoFormat | null, };
+format: VideoFormat | null, 
+/**
+ * The 1-based audio channel (of the feed's) carrying LTC timecode.
+ */
+ltc_channel: number | null, };

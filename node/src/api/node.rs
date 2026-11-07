@@ -137,6 +137,7 @@ pub async fn local_status(state: &AppState) -> NodeStatus {
         source_types: crate::plugins::source_types(
             state.source_manager.read().await.displays().available(),
         ),
+        ltc: crate::sources::ltc::available(),
         clock: Some(state.clock_status().await),
         replay_codecs: crate::api::types::ReplayCodec::usable(),
         busy: crate::update::own_work(state).await,
@@ -1316,6 +1317,7 @@ fn source_to_dto(mgr: &SourceManager, s: &dyn InputSource) -> SourceDto {
         timecode: s.timecode(),
         capabilities: capabilities(mgr, s),
         link: mgr.link(s),
+        ltc: s.ltc(),
         thumbnail_hidden: mgr.thumbnail_hidden(s.id()),
     }
 }

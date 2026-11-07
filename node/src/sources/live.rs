@@ -4,6 +4,9 @@
 //! recordings. Both streams are normalized after it (video held to the first
 //! live format or a configured one, audio to 48 kHz at a fixed channel count)
 //! so a recording never sees the format change.
+//!
+//! A source with an LTC channel has its frames stamped from it in the bin
+//! ([`super::ltc`]), so its recordings need nothing of their own.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -16,6 +19,7 @@ use gstreamer_video as gst_video;
 use tracing::{info, warn};
 
 use super::add_chain;
+use super::ltc::LtcTracker;
 use crate::api::types::{LinkState, VideoFormat};
 use crate::pipeline::timecode::{drop_frame_flags, running_time};
 use crate::pipeline::{capsfilter, make_el, numbered_channels, set_mix_matrix, set_property};
@@ -112,6 +116,8 @@ pub struct LiveInput<'a> {
     /// Extra time the compositor and mixer wait for late input, beyond what
     /// the source reports (a `fallbacksrc` reports [`MIN_LATENCY`] already).
     pub latency: Option<Duration>,
+    /// Read LTC from this audio channel (1-based, of the bin's output).
+    pub ltc: Option<(u32, &'a Arc<LtcTracker>)>,
 }
 
 /// Build a source bin (`"video"` / `"audio"` ghost pads) around `input`.
@@ -135,6 +141,7 @@ pub fn build_bin(input: LiveInput) -> Result<gst::Bin> {
         tracker,
         direct,
         latency,
+        ltc,
     } = input;
     tracker.reset();
     let bin = gst::Bin::with_name(&format!("live-bin-{id}"));
@@ -148,7 +155,19 @@ pub fn build_bin(input: LiveInput) -> Result<gst::Bin> {
     };
     bin.add(&main).context("add live source")?;
 
-    let (video, video_format) = video_output(&bin, id, initial_video_caps(format))?;
+    let ltc = match ltc {
+        Some(_) if !super::ltc::available() => {
+            warn!(
+                source = id,
+                "LTC is set, but timecodestamper can't read it here"
+            );
+            None
+        }
+        ltc => ltc,
+    };
+    let stamper = ltc.map(|_| super::ltc::stamper(id)).transpose()?;
+    let (video, video_format) =
+        video_output(&bin, id, initial_video_caps(format), stamper.as_ref())?;
     let compositor = video.aggregator.upgrade().context("compositor")?;
     let channels = match &audio {
         LiveAudio::Source { channels } | LiveAudio::Silence { channels } => *channels,
@@ -157,6 +176,9 @@ pub fn build_bin(input: LiveInput) -> Result<gst::Bin> {
     // Picked device channels are numbered; a source's own are laid out.
     let numbered = matches!(audio, LiveAudio::Element { .. });
     let audio_inputs = audio_output(&bin, id, channels, numbered)?;
+    if let (Some((channel, tracker)), Some(stamper)) = (ltc, &stamper) {
+        super::ltc::attach(&bin, id, stamper, channel, channels, tracker.clone())?;
+    }
     if let Some(latency) = latency {
         let mixer = audio_inputs.aggregator().context("audio mixer")?;
         for agg in [&compositor, &mixer] {
@@ -213,6 +235,7 @@ pub(crate) fn video_output(
     bin: &gst::Bin,
     id: &str,
     caps: gst::Caps,
+    ltc: Option<&gst::Element>,
 ) -> Result<(Inputs, Arc<Mutex<InputCaps>>)> {
     let compositor = make_el("compositor", &format!("live-vsync-{id}"))?;
     set_property(&compositor, "background", "black")?;
@@ -222,7 +245,10 @@ pub(crate) fn video_output(
         timecode.clone(),
     );
     let out_vcaps = capsfilter(&format!("live-outvcaps-{id}"), caps.clone())?;
-    add_chain(bin, &[&compositor, &out_vcaps], "video")?;
+    match ltc {
+        Some(stamper) => add_chain(bin, &[&compositor, stamper, &out_vcaps], "video")?,
+        None => add_chain(bin, &[&compositor, &out_vcaps], "video")?,
+    }
     let format = Arc::new(Mutex::new(InputCaps {
         pre: pre_compositor_caps(&caps),
         inputs: Vec::new(),
@@ -543,13 +569,25 @@ fn timecode_at(
     rt: gst::ClockTime,
     fps: gst::Fraction,
 ) -> Option<gst_video::ValidVideoTimeCode> {
-    if fps.numer() <= 0 || fps.denom() <= 0 {
-        return None;
-    }
     let since = rt.nseconds() as i128 - at.nseconds() as i128;
     if since.unsigned_abs() > TIMECODE_HOLD.as_nanos() {
         return None;
     }
+    count_on(tc, at, rt, fps)
+}
+
+/// `tc` (a frame at running time `at`) counted on to a frame at `rt` and
+/// `fps`, however far; `None` if it can't be had at `fps`.
+pub(crate) fn count_on(
+    tc: &gst_video::ValidVideoTimeCode,
+    at: gst::ClockTime,
+    rt: gst::ClockTime,
+    fps: gst::Fraction,
+) -> Option<gst_video::ValidVideoTimeCode> {
+    if fps.numer() <= 0 || fps.denom() <= 0 {
+        return None;
+    }
+    let since = rt.nseconds() as i128 - at.nseconds() as i128;
     let mut tc = if tc.fps() == fps {
         tc.clone()
     } else {
@@ -986,6 +1024,7 @@ mod tests {
             tracker: &tracker,
             direct: true,
             latency: None,
+            ltc: None,
         })
         .unwrap();
         let tc_src = capture.by_name("tc").unwrap().static_pad("src").unwrap();
@@ -1091,6 +1130,7 @@ mod tests {
             tracker: &tracker,
             direct: true,
             latency: None,
+            ltc: None,
         })
         .unwrap();
         let ghost = gst::GhostPad::builder_with_target(&cf_src)
@@ -1279,6 +1319,7 @@ mod tests {
             tracker: &tracker,
             direct: false,
             latency: None,
+            ltc: None,
         })
         .unwrap();
         let recv = gst::Pipeline::new();

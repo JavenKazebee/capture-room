@@ -34,7 +34,7 @@ export type ConfiguredKind = Exclude<SourceType, 'ndi'>
 export const CONFIGURED_TYPES: readonly SourceType[] = ['test', 'file', 'stream', 'device', 'decklink', 'whip', 'channel']
 
 /** The parts of a source that `feed.status` repeats every second. */
-type FeedStatus = Pick<SourceDto, 'timecode' | 'error' | 'link' | 'capabilities'>
+type FeedStatus = Pick<SourceDto, 'timecode' | 'error' | 'link' | 'ltc' | 'capabilities'>
 
 export const useSourcesStore = defineStore('sources', () => {
   const nodes = useNodesStore()
@@ -44,7 +44,7 @@ export const useSourcesStore = defineStore('sources', () => {
     return list.map((s) => ({ ...s, node_id: nodeId, key: sourceKey(nodeId, s.id) }))
   }
 
-  /** Apply a `feed.status` event: the current timecode, monitor error, link state and format. */
+  /** Apply a `feed.status` event: the current timecode, monitor error, link and LTC state, and format. */
   function updateStatus(nodeId: string, sourceId: string, status: FeedStatus) {
     const key = sourceKey(nodeId, sourceId)
     const s = sources.value.find((s) => s.key === key)
@@ -52,6 +52,7 @@ export const useSourcesStore = defineStore('sources', () => {
     s.timecode = status.timecode
     s.error = status.error
     s.link = status.link
+    s.ltc = status.ltc
     if (status.capabilities) s.capabilities = status.capabilities
   }
 

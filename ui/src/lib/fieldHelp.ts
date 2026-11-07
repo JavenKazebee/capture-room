@@ -7,6 +7,11 @@ export type FieldHelp = {
 }
 
 export const FIELD_HELP = {
+  ltc: {
+    title: 'LTC timecode',
+    body: "The audio channel carrying LTC from the site's timecode generator. Recordings take their timecode from it, so files from every machine on that clock line up. A frame's own timecode (SDI RP188) still wins. If the LTC stops, timecode counts on from the last LTC read; with no LTC since the feed started, recordings use the node's clock.",
+    default: 'Off: timecode comes from the frames, or the node clock.',
+  },
   outputName: {
     title: 'Output name',
     body: 'A label for this output. It shows in the editor and the Recordings tab, and fills {output} in the path template, so it can tell outputs apart, e.g. "Master" and "Proxy".',

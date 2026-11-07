@@ -49,6 +49,21 @@ pub enum LinkState {
     Reconnecting,
 }
 
+/// A source's LTC input, when it has one set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum LtcState {
+    /// Frames are stamped with the LTC being read.
+    Locked,
+    /// LTC stopped: timecode counts on from the last LTC read.
+    Lost,
+    /// No LTC read since the feed started: recordings use the node's clock.
+    Missing,
+    /// The frames carry their own timecode (SDI RP188), which wins over LTC.
+    SourceTimecode,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "export-types", derive(TS), ts(export))]
 pub struct SourceCapabilitiesDto {
@@ -76,6 +91,9 @@ pub struct SourceDto {
     /// Live sources only.
     #[serde(default)]
     pub link: Option<LinkState>,
+    /// Sources with an LTC channel only.
+    #[serde(default)]
+    pub ltc: Option<LtcState>,
     /// Its thumbnail isn't made, to save the work.
     #[serde(default)]
     pub thumbnail_hidden: bool,
@@ -187,6 +205,9 @@ pub struct StreamSourceConfig {
     /// stream's first format.
     #[serde(default)]
     pub format: Option<VideoFormat>,
+    /// The 1-based audio channel (of the feed's) carrying LTC timecode.
+    #[serde(default)]
+    pub ltc_channel: Option<u32>,
 }
 
 fn default_stream_latency() -> u32 {
@@ -246,6 +267,9 @@ pub struct DeviceSourceConfig {
     /// Capture at this size and rate (the device's default otherwise).
     #[serde(default)]
     pub format: Option<VideoFormat>,
+    /// The 1-based audio channel (of the feed's) carrying LTC timecode.
+    #[serde(default)]
+    pub ltc_channel: Option<u32>,
 }
 
 /// SDI (or HDMI) on a Blackmagic Decklink card: one sub-device's video and
@@ -272,6 +296,9 @@ pub struct DecklinkSourceConfig {
     /// signal's first format.
     #[serde(default)]
     pub format: Option<VideoFormat>,
+    /// The 1-based audio channel (of the feed's) carrying LTC timecode.
+    #[serde(default)]
+    pub ltc_channel: Option<u32>,
 }
 
 fn default_decklink_channels() -> u32 {
@@ -387,6 +414,9 @@ pub struct WhipSourceConfig {
     pub audio: AudioPlan,
     #[serde(default)]
     pub format: Option<VideoFormat>,
+    /// The 1-based audio channel (of the feed's) carrying LTC timecode.
+    #[serde(default)]
+    pub ltc_channel: Option<u32>,
 }
 
 /// Which NDI senders a node connects to.

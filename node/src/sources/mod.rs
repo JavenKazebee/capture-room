@@ -19,6 +19,7 @@ pub mod decklink;
 pub mod device;
 pub mod file;
 pub mod live;
+pub mod ltc;
 pub mod manager;
 pub mod ndi;
 mod player;
@@ -31,7 +32,8 @@ pub mod whip;
 pub mod x11;
 
 use crate::api::types::{
-    ConfiguredSourceDto, LinkState, OutputConfig, SourceCapabilitiesDto, SourceConfig, SourceType,
+    ConfiguredSourceDto, LinkState, LtcState, OutputConfig, SourceCapabilitiesDto, SourceConfig,
+    SourceType,
 };
 
 /// Every input source. A source is a cheap description a rescan can rebuild;
@@ -62,6 +64,12 @@ pub trait InputSource: Send + Sync {
     /// Whether a live source is delivering frames (`None` for other
     /// sources). Only meaningful while its monitor runs.
     fn link(&self) -> Option<LinkState> {
+        None
+    }
+
+    /// How its LTC input is doing (`None` without one set). Only meaningful
+    /// while its monitor runs.
+    fn ltc(&self) -> Option<LtcState> {
         None
     }
 

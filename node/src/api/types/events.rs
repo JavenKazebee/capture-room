@@ -82,6 +82,7 @@ pub enum WsEvent {
         timecode: Option<String>,
         error: Option<String>,
         link: Option<LinkState>,
+        ltc: Option<LtcState>,
         capabilities: Option<SourceCapabilitiesDto>,
     },
     #[serde(rename = "audio.levels")]

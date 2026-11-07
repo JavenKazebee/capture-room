@@ -10,8 +10,9 @@ use gstreamer::{self as gst, glib, prelude::*};
 
 use super::device::{self, LocalDevices};
 use super::live::{self, LinkTracker, LiveInput};
+use super::ltc::LtcTracker;
 use super::InputSource;
-use crate::api::types::{LinkState, SourceCapabilitiesDto, SourceType, WhipSourceConfig};
+use crate::api::types::{LinkState, LtcState, SourceCapabilitiesDto, SourceType, WhipSourceConfig};
 use crate::pipeline::{loopback_http, loopback_port, make_el};
 
 /// A WHIP ingest at `http://<node>:<port>/whip/endpoint`. `whipserversrc`
@@ -23,6 +24,7 @@ pub struct WhipSource {
     config: WhipSourceConfig,
     devices: Arc<LocalDevices>,
     tracker: Arc<LinkTracker>,
+    ltc: Arc<LtcTracker>,
     gate: OnceLock<Gate>,
 }
 
@@ -39,6 +41,7 @@ impl WhipSource {
             config,
             devices,
             tracker: Arc::default(),
+            ltc: Arc::default(),
             gate: OnceLock::new(),
         }
     }
@@ -92,12 +95,21 @@ impl InputSource for WhipSource {
             tracker: &self.tracker,
             direct: true,
             latency: None,
+            ltc: cfg.ltc_channel.map(|c| (c, &self.ltc)),
         })?;
         Ok(bin.upcast())
     }
 
     fn link(&self) -> Option<LinkState> {
         Some(self.tracker.state(true))
+    }
+
+    fn ltc(&self) -> Option<LtcState> {
+        self.config.ltc_channel.map(|_| self.ltc.state())
+    }
+
+    fn timecode(&self) -> Option<String> {
+        self.ltc.timecode()
     }
 }
 
@@ -229,7 +241,8 @@ pub fn validate(cfg: &mut WhipSourceConfig, devices: &LocalDevices) -> Result<()
         return Err("the token needs 16 to 128 letters, digits or -._~+/=".into());
     }
     live::validate_format(cfg.format.as_ref())?;
-    device::validate_audio(&cfg.audio, devices)
+    device::validate_audio(&cfg.audio, devices)?;
+    super::ltc::validate(cfg.ltc_channel, device::audio_channels(&cfg.audio))
 }
 
 #[cfg(test)]
@@ -252,6 +265,7 @@ mod tests {
                 fps_num: 30,
                 fps_den,
             }),
+            ltc_channel: None,
         };
         gst::init().unwrap();
         let devices = LocalDevices::none();
@@ -294,6 +308,7 @@ mod tests {
                 token: token.clone(),
                 audio: AudioPlan::default(),
                 format: None,
+                ltc_channel: None,
             },
             Arc::new(LocalDevices::start()),
         );

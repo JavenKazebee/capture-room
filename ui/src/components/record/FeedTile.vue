@@ -10,6 +10,7 @@ import { useEventsStore } from '@/stores/events'
 import { usePreferences } from '@/composables/usePreferences'
 import { useThumbnail } from '@/composables/useThumbnail'
 import { useFeedState } from './useFeedState'
+import { ltcWarning } from '@/lib/ltc'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import AudioMeter from '@/components/AudioMeter.vue'
@@ -34,6 +35,7 @@ const tags = computed(() => layout.tagsOf(props.source.key))
 const { overlays } = usePreferences()
 
 const { session, busy, channels, preset, duration, noSignal, format } = useFeedState(toRef(props, 'source'))
+const ltc = computed(() => ltcWarning(props.source.ltc))
 const selected = computed(() => desk.selected.has(props.source.key))
 const tile = ref<HTMLElement | null>(null)
 const picture = ref<HTMLElement | null>(null)
@@ -183,7 +185,7 @@ watch(session, (now, prev) => {
               <Check class="size-3.5" />
             </button>
 
-            <div v-if="session || noSignal" class="absolute top-1.5 right-1.5 flex flex-col items-end gap-1">
+            <div v-if="session || noSignal || ltc" class="absolute top-1.5 right-1.5 flex flex-col items-end gap-1">
               <TallyBadge v-if="session" :duration="duration" />
               <span
                 v-if="noSignal"
@@ -191,6 +193,13 @@ watch(session, (now, prev) => {
                 :class="noSignal.dot === 'warn' ? 'bg-warning text-black' : 'bg-black/70 text-zinc-300'"
               >
                 {{ noSignal.short }}
+              </span>
+              <span
+                v-if="ltc"
+                class="rounded-sm bg-warning px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-black"
+                :title="ltc.title"
+              >
+                {{ ltc.short }}
               </span>
               <span
                 v-if="session && totalDropped(session)"

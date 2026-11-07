@@ -7,10 +7,11 @@ use tracing::warn;
 
 use super::decklink::{is_decklink, Profiles};
 use super::live::{self, LinkTracker, LiveAudio, LiveInput};
+use super::ltc::LtcTracker;
 use super::portal::{self, Screencasts};
 use super::{add_ghost_pad, InputSource};
 use crate::api::types::{
-    AudioPlan, DeviceDto, DeviceKind, DeviceMode, DeviceSourceConfig, LinkState,
+    AudioPlan, DeviceDto, DeviceKind, DeviceMode, DeviceSourceConfig, LinkState, LtcState,
     SourceCapabilitiesDto, SourceType, VideoFormat,
 };
 use crate::pipeline::{capsfilter, make_el};
@@ -543,6 +544,7 @@ pub struct DeviceSource {
     config: DeviceSourceConfig,
     devices: Arc<LocalDevices>,
     tracker: Arc<LinkTracker>,
+    ltc: Arc<LtcTracker>,
     /// A portal screen's session, kept while its bin plays.
     screencast: std::sync::Mutex<Option<portal::Stream>>,
 }
@@ -560,6 +562,7 @@ impl DeviceSource {
             config,
             devices,
             tracker: Arc::default(),
+            ltc: Arc::default(),
             screencast: std::sync::Mutex::default(),
         }
     }
@@ -617,6 +620,7 @@ impl InputSource for DeviceSource {
                 tracker: &self.tracker,
                 direct: false,
                 latency: None,
+                ltc: cfg.ltc_channel.map(|c| (c, &self.ltc)),
             })?;
             return Ok(bin.upcast());
         }
@@ -637,12 +641,21 @@ impl InputSource for DeviceSource {
             tracker: &self.tracker,
             direct: false,
             latency: None,
+            ltc: cfg.ltc_channel.map(|c| (c, &self.ltc)),
         })?;
         Ok(bin.upcast())
     }
 
     fn link(&self) -> Option<LinkState> {
         Some(self.tracker.state(false))
+    }
+
+    fn ltc(&self) -> Option<LtcState> {
+        self.config.ltc_channel.map(|_| self.ltc.state())
+    }
+
+    fn timecode(&self) -> Option<String> {
+        self.ltc.timecode()
     }
 }
 
@@ -658,7 +671,17 @@ pub fn validate(cfg: &mut DeviceSourceConfig, devices: &LocalDevices) -> Result<
     }
     cfg.video_device_name = device.name;
     live::validate_format(cfg.format.as_ref())?;
-    validate_audio(&cfg.audio, devices)
+    validate_audio(&cfg.audio, devices)?;
+    super::ltc::validate(cfg.ltc_channel, audio_channels(&cfg.audio))
+}
+
+/// How many channels `plan` gives a feed, `None` for silence.
+pub(super) fn audio_channels(plan: &AudioPlan) -> Option<u32> {
+    match plan {
+        AudioPlan::Source { channels } => Some(*channels),
+        AudioPlan::Device { channels, .. } => Some(channels.len() as u32),
+        AudioPlan::Silence { .. } => None,
+    }
 }
 
 /// Check an audio plan against the node's devices.
@@ -763,6 +786,7 @@ mod mac_tests {
             tracker: &tracker,
             direct: false,
             latency: None,
+            ltc: None,
         })
         .unwrap();
 

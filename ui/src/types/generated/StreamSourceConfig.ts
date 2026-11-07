@@ -18,4 +18,8 @@ latency_ms: number, rtsp_transport: RtspTransport, audio: AudioPlan,
  * Hold the feed to this size and rate; by default it takes the
  * stream's first format.
  */
-format: VideoFormat | null, };
+format: VideoFormat | null, 
+/**
+ * The 1-based audio channel (of the feed's) carrying LTC timecode.
+ */
+ltc_channel: number | null, };
