@@ -36,6 +36,8 @@ Axum, GStreamer, SQLite) serves a Vue 3 UI (`ui/`). Setup and dev workflow are i
 - Never bundle the NDI Runtime (`libndi`); the node finds it at run time.
 - New Rust dependencies must have a license `about.toml` accepts (GPL-compatible). Don't
   widen the list to make CI pass.
+- Schema changes for the next release go in its one migration, edited until the release
+  ships; released migrations never change.
 - `ui/src/lib/advanced.ts` mirrors `check_advanced` in `pipeline/profile.rs`: change
   both sides.
 

@@ -54,6 +54,76 @@ pub struct RecordingSessionDto {
     #[serde(default)]
     #[sqlx(json(nullable))]
     pub clock: Option<SessionClockDto>,
+    /// Markers dropped while it recorded, in time order.
+    #[serde(default)]
+    #[sqlx(skip)]
+    pub markers: Vec<MarkerDto>,
+}
+
+/// A moment marked while recording, for the edit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, sqlx::FromRow)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct MarkerDto {
+    pub id: String,
+    /// Shared by the markers one keypress put on several recordings.
+    pub press_id: String,
+    /// When, on the session's clock (µs), like `SessionClockDto::first_frame_us`.
+    #[cfg_attr(feature = "export-types", ts(type = "number"))]
+    pub at_us: i64,
+    /// The timecode the session's files carry at that moment (the source's
+    /// own, or the time of day): `14:32:07:12`, with `;` before the frames
+    /// when drop-frame. `None` without a MOV output.
+    pub timecode: Option<String>,
+    /// That timecode's frame rate, as `num/den`.
+    pub fps: Option<String>,
+    pub note: String,
+    pub color: MarkerColor,
+    pub created_at: String,
+}
+
+/// A marker's colour: the ones Resolve's marker EDL names.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "lowercase")]
+#[sqlx(rename_all = "lowercase")]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum MarkerColor {
+    #[default]
+    Blue,
+    Cyan,
+    Green,
+    Yellow,
+    Red,
+    Pink,
+    Purple,
+}
+
+/// Mark an active recording.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct MarkRequest {
+    pub press_id: String,
+    /// When the key was pressed, on the shared clock. A node on another
+    /// clock (or none given) marks now.
+    #[serde(default)]
+    pub at: Option<ClockTimeDto>,
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(optional))]
+    pub note: Option<String>,
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(optional))]
+    pub color: Option<MarkerColor>,
+}
+
+/// Change a marker's note or colour; what's left out stays.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct MarkerUpdate {
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(optional))]
+    pub note: Option<String>,
+    #[serde(default)]
+    #[cfg_attr(feature = "export-types", ts(optional))]
+    pub color: Option<MarkerColor>,
 }
 
 /// Where a recording sits on its clock.

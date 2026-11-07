@@ -37,16 +37,17 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::api::types::{
-    ChannelLevelDto, ConfiguredSourceDto, LinkState, MonitorSettingsDto, NdiConnect, NdiSenderDto,
-    NdiSubscriptionsDto, NdiSubscriptionsInput, OutputConfig, OutputStatusDto, RecordingSessionDto,
-    RecordingStatus, ReplayBufferDto, ReplayCodec, ReplayConfigInput, SessionClockDto,
-    StartRecordingRequest, TransportState,
+    ChannelLevelDto, ConfiguredSourceDto, LinkState, MarkRequest, MarkerDto, MarkerUpdate,
+    MonitorSettingsDto, NdiConnect, NdiSenderDto, NdiSubscriptionsDto, NdiSubscriptionsInput,
+    OutputConfig, OutputStatusDto, RecordingSessionDto, RecordingStatus, ReplayBufferDto,
+    ReplayCodec, ReplayConfigInput, SessionClockDto, StartRecordingRequest, TransportState,
 };
 use crate::pipeline::monitor::{MonitorPipeline, SourceFormat};
 use crate::pipeline::output::{self, OutputLeg, Program};
 use crate::pipeline::profile::RecordingProfile;
 use crate::pipeline::recording::{self, OnLegError, OnLegFile, RecordingLeg};
 use crate::pipeline::replay::{Index, ReplayIndex, ReplayLeg};
+use crate::pipeline::timecode::fps_text;
 
 use super::channel::ReplayClip;
 use super::device::LocalDevices;
@@ -89,6 +90,31 @@ impl ActiveSession {
                 .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
             ..c
         })
+    }
+}
+
+/// How far past now a marker's press time may be: the clocks of the browser's
+/// controller and this node agree only to within a little.
+const MARK_LEEWAY: gst::ClockTime = gst::ClockTime::from_mseconds(500);
+
+/// Why a session couldn't be marked.
+#[derive(Debug)]
+pub enum MarkError {
+    /// It isn't recording here.
+    NotActive,
+    /// It hasn't recorded a frame yet.
+    NotYet,
+    /// The time is outside what it has recorded.
+    OutOfRange,
+}
+
+/// Set what `update` gives of a marker's note and colour.
+pub fn apply_marker_update(marker: &mut MarkerDto, update: &MarkerUpdate) {
+    if let Some(note) = &update.note {
+        marker.note = note.clone();
+    }
+    if let Some(color) = update.color {
+        marker.color = color;
     }
 }
 
@@ -1322,6 +1348,7 @@ impl SourceManager {
             status: RecordingStatus::Active,
             error_message: None,
             clock: session_clock,
+            markers: Vec::new(),
         };
         self.reserved.insert(
             dto.id.clone(),
@@ -1386,13 +1413,8 @@ impl SourceManager {
     /// Active sessions, with their live dropped-frame counts.
     pub fn active_sessions(&self) -> Vec<RecordingSessionDto> {
         self.sessions
-            .values()
-            .map(|s| RecordingSessionDto {
-                dropped_frames: s.dropped_frames(),
-                files: s.files(),
-                clock: s.clock(),
-                ..s.dto.clone()
-            })
+            .keys()
+            .filter_map(|id| self.active_session(id))
             .collect()
     }
 
@@ -1444,6 +1466,96 @@ impl SourceManager {
             buffers,
             channels,
         }
+    }
+
+    /// Mark an active session at `at` (its clock's time) when that's on the
+    /// session's clock, otherwise now on its monitor's clock. The marker
+    /// carries the timecode the session's files have at that moment.
+    pub fn mark_session(
+        &mut self,
+        session_id: &str,
+        req: &MarkRequest,
+    ) -> std::result::Result<(RecordingSessionDto, MarkerDto), MarkError> {
+        let session = self.sessions.get(session_id).ok_or(MarkError::NotActive)?;
+        let monitor_clock = self
+            .monitors
+            .get(&session.dto.source_id)
+            .map(|m| m.clock().clone())
+            .ok_or(MarkError::NotActive)?;
+        let domain = session.dto.clock.as_ref().map(|c| c.domain.as_str());
+        let now = monitor_clock.time().ok_or(MarkError::NotYet)?;
+        let at = match &req.at {
+            Some(at) if Some(at.domain.as_str()) == domain => {
+                gst::ClockTime::from_useconds(at.time_us)
+            }
+            _ => now,
+        };
+        let first = session
+            .legs
+            .iter()
+            .filter_map(RecordingLeg::first_frame)
+            .min()
+            .ok_or(MarkError::NotYet)?;
+        // A press is at most a round trip old; one from the future or from
+        // before the recording is for another take.
+        if at < first || at > now + MARK_LEEWAY {
+            return Err(MarkError::OutOfRange);
+        }
+        let tc = session.legs.iter().find_map(|leg| leg.timecode_at(at));
+        let marker = MarkerDto {
+            id: Uuid::new_v4().to_string(),
+            press_id: req.press_id.clone(),
+            at_us: at.useconds() as i64,
+            fps: tc.as_ref().map(|tc| fps_text(tc.fps())),
+            timecode: tc.map(|tc| tc.to_string()),
+            note: req.note.clone().unwrap_or_default(),
+            color: req.color.unwrap_or_default(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+        let session = self.sessions.get_mut(session_id).expect("looked up above");
+        let markers = &mut session.dto.markers;
+        let i = markers.partition_point(|m| m.at_us <= marker.at_us);
+        markers.insert(i, marker.clone());
+        Ok((
+            self.active_session(session_id).expect("still active"),
+            marker,
+        ))
+    }
+
+    /// Change an active session's marker; `None` if it has no such marker.
+    pub fn update_active_marker(
+        &mut self,
+        session_id: &str,
+        marker_id: &str,
+        update: &MarkerUpdate,
+    ) -> Option<(RecordingSessionDto, MarkerDto)> {
+        let session = self.sessions.get_mut(session_id)?;
+        let marker = session.dto.markers.iter_mut().find(|m| m.id == marker_id)?;
+        apply_marker_update(marker, update);
+        let marker = marker.clone();
+        Some((self.active_session(session_id)?, marker))
+    }
+
+    /// Remove an active session's marker; `None` if it has no such marker.
+    pub fn delete_active_marker(
+        &mut self,
+        session_id: &str,
+        marker_id: &str,
+    ) -> Option<RecordingSessionDto> {
+        let markers = &mut self.sessions.get_mut(session_id)?.dto.markers;
+        let i = markers.iter().position(|m| m.id == marker_id)?;
+        markers.remove(i);
+        self.active_session(session_id)
+    }
+
+    fn active_session(&self, session_id: &str) -> Option<RecordingSessionDto> {
+        let s = self.sessions.get(session_id)?;
+        Some(RecordingSessionDto {
+            dropped_frames: s.dropped_frames(),
+            files: s.files(),
+            clock: s.clock(),
+            ..s.dto.clone()
+        })
     }
 
     /// Take a session out of the active set and hand back the detach work.

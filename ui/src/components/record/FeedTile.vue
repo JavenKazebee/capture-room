@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, toRef, watch } from 'vue'
-import { Check, Eye, EyeOff, Info, Tag } from '@lucide/vue'
+import { Check, Eye, EyeOff, Flag, Info, Tag } from '@lucide/vue'
 import { useSourcesStore, type Source } from '@/stores/sources'
 import { totalDropped, useRecordingsStore } from '@/stores/recordings'
 import { useRecordDeskStore } from '@/stores/recordDesk'
@@ -37,6 +37,7 @@ const { overlays } = usePreferences()
 const { session, busy, channels, preset, duration, noSignal, format } = useFeedState(toRef(props, 'source'))
 const ltc = computed(() => ltcWarning(props.source.ltc))
 const selected = computed(() => desk.selected.has(props.source.key))
+const justMarked = computed(() => desk.flashed.has(props.source.key))
 const tile = ref<HTMLElement | null>(null)
 const picture = ref<HTMLElement | null>(null)
 const thumb = useThumbnail(toRef(props, 'source'), picture)
@@ -187,6 +188,14 @@ watch(session, (now, prev) => {
 
             <div v-if="session || noSignal || ltc" class="absolute top-1.5 right-1.5 flex flex-col items-end gap-1">
               <TallyBadge v-if="session" :duration="duration" />
+              <span
+                v-if="session?.markers.length"
+                class="flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-semibold num transition-colors duration-500"
+                :class="justMarked ? 'bg-primary text-primary-foreground' : 'bg-black/70 text-white'"
+                :title="`${session.markers.length} marker${session.markers.length === 1 ? '' : 's'}: M marks every recording, Shift+M this one`"
+              >
+                <Flag class="size-2.5" />{{ session.markers.length }}
+              </span>
               <span
                 v-if="noSignal"
                 class="rounded-sm px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"

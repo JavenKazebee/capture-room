@@ -68,6 +68,31 @@ pub(crate) fn stamp_time_of_day(
     });
 }
 
+/// The timecode of the frame showing `ns` after the frame stamped `tc`
+/// (before it, if negative): whole frames at `tc`'s rate, so a moment between
+/// two frames belongs to the earlier one. Timestamps are rounded down to the
+/// nanosecond, so one a hair before a frame's exact time counts as that frame.
+pub(crate) fn timecode_after(
+    tc: &gst_video::ValidVideoTimeCode,
+    ns: i64,
+) -> Option<gst_video::ValidVideoTimeCode> {
+    let fps = tc.fps();
+    let (num, den) = (i128::from(fps.numer()), i128::from(fps.denom()));
+    if num <= 0 || den <= 0 {
+        return None;
+    }
+    const SLACK_NS: i128 = 1_000;
+    let frames = ((i128::from(ns) + SLACK_NS) * num).div_euclid(den * 1_000_000_000);
+    let mut tc = tc.clone();
+    tc.add_frames(i64::try_from(frames).ok()?);
+    Some(tc)
+}
+
+/// `fps` as `num/den`, e.g. `30000/1001`.
+pub(crate) fn fps_text(fps: gst::Fraction) -> String {
+    format!("{}/{}", fps.numer(), fps.denom())
+}
+
 /// The timecode at `utc_us` (µs since the Unix epoch) in local time, at `fps`.
 pub(crate) fn time_of_day(
     utc_us: i64,
@@ -103,6 +128,58 @@ mod tests {
         assert!(!a
             .flags()
             .contains(gst_video::VideoTimeCodeFlags::DROP_FRAME));
+    }
+
+    fn tc(fps: gst::Fraction, h: u32, m: u32, s: u32, f: u32) -> gst_video::ValidVideoTimeCode {
+        gst_video::ValidVideoTimeCode::new(fps, None, drop_frame_flags(fps), h, m, s, f, 0).unwrap()
+    }
+
+    #[test]
+    fn timecode_after_counts_whole_frames() {
+        gst::init().unwrap();
+        let fps = gst::Fraction::new(25, 1);
+        let at = tc(fps, 10, 0, 0, 0);
+        let frame = 40_000_000; // 1/25 s
+        assert_eq!(timecode_after(&at, 0).unwrap().to_string(), "10:00:00:00");
+        assert_eq!(
+            timecode_after(&at, frame - 2_000).unwrap().to_string(),
+            "10:00:00:00"
+        );
+        assert_eq!(
+            timecode_after(&at, frame - 1).unwrap().to_string(),
+            "10:00:00:01"
+        );
+        assert_eq!(
+            timecode_after(&at, 3 * frame).unwrap().to_string(),
+            "10:00:00:03"
+        );
+        assert_eq!(
+            timecode_after(&at, 26 * frame).unwrap().to_string(),
+            "10:00:01:01"
+        );
+        // A moment just before the frame belongs to the one before it.
+        assert_eq!(
+            timecode_after(&at, -2_000).unwrap().to_string(),
+            "09:59:59:24"
+        );
+    }
+
+    /// 29.97 drop-frame skips frames 0 and 1 at each minute but every tenth.
+    #[test]
+    fn timecode_after_drops_frames_at_the_minute() {
+        gst::init().unwrap();
+        let fps = gst::Fraction::new(30000, 1001);
+        let at = tc(fps, 10, 0, 59, 29);
+        let frame = 1_001_000_000_000 / 30_000 + 1;
+        assert_eq!(
+            timecode_after(&at, frame).unwrap().to_string(),
+            "10:01:00;02"
+        );
+        let at = tc(fps, 10, 9, 59, 29);
+        assert_eq!(
+            timecode_after(&at, frame).unwrap().to_string(),
+            "10:10:00;00"
+        );
     }
 
     #[test]

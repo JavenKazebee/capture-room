@@ -18,6 +18,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import KeyValueList from '@/components/common/KeyValueList.vue'
 import StatusDot from '@/components/common/StatusDot.vue'
 import RecordingOutputs from './RecordingOutputs.vue'
+import RecordingMarkers from './RecordingMarkers.vue'
 
 const props = defineProps<{ session: RecordingSession }>()
 defineEmits<{ close: [] }>()
@@ -219,6 +220,8 @@ async function deleteAll() {
           :is-playing="isPlaying"
           @play="play"
         />
+
+        <RecordingMarkers :session="s" />
 
         <Collapsible v-model:open="detailsOpen">
           <CollapsibleTrigger class="flex items-center gap-1 section-title hover:text-foreground">

@@ -18,6 +18,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use gstreamer::{self as gst, prelude::*};
 use gstreamer_app as gst_app;
+use gstreamer_video as gst_video;
 use tracing::{info, warn};
 
 use super::monitor::MonitorPipeline;
@@ -25,7 +26,7 @@ use super::profile::{
     available_encoders, has_encoder, segment_number, AudioFormat, RecordingProfile, VideoEncoder,
     PCM_MAX_FILE,
 };
-use super::timecode::{running_time, stamp_time_of_day};
+use super::timecode::{running_time, stamp_time_of_day, timecode_after};
 use super::{
     audio_hold_queue, capsfilter, describe_error, first_that_builds, make_el,
     mark_prores_keyframes, numbered_channels, pcm_tail, remove_quietly, set_mix_matrix,
@@ -63,6 +64,8 @@ pub struct RecordingLeg {
     base_time: Option<gst::ClockTime>,
     /// The encoder's src pad, stamped with timecode for MOV.
     timecode_pad: Option<gst::Pad>,
+    /// The newest frame written with timecode: its running time and timecode.
+    last_timecode: Arc<Mutex<Option<(gst::ClockTime, gst_video::ValidVideoTimeCode)>>>,
 }
 
 /// Called when a splitting leg opens a new file. Runs on a GStreamer
@@ -225,6 +228,7 @@ impl RecordingLeg {
             first_frame: Arc::new(AtomicU64::new(u64::MAX)),
             base_time: None,
             timecode_pad: video.timecode_pad,
+            last_timecode: Arc::default(),
         })
     }
 
@@ -252,6 +256,9 @@ impl RecordingLeg {
                 Some((base + rt).useconds() as i64 + offset)
             });
         }
+        if let Some(pad) = &self.timecode_pad {
+            keep_last_timecode(pad, Arc::clone(&self.last_timecode));
+        }
 
         // The bus handler keeps the reason (e.g. "Could not open file … for writing").
         let ConsumerPipeline {
@@ -270,6 +277,17 @@ impl RecordingLeg {
         let rt = self.first_frame.load(Ordering::Acquire);
         let base = self.base_time?;
         (rt != u64::MAX).then(|| gst::ClockTime::from_nseconds(rt) + base)
+    }
+
+    /// The timecode this leg's file carries at `at` on the monitor's clock:
+    /// the newest frame's plus the frames since. `None` without a timecode
+    /// track (not MOV) or before a frame has been written.
+    pub fn timecode_at(&self, at: gst::ClockTime) -> Option<gst_video::ValidVideoTimeCode> {
+        let base = self.base_time?;
+        let (rt, tc) = self.last_timecode.lock().unwrap().clone()?;
+        let at_rt = at.checked_sub(base)?;
+        let ns = at_rt.nseconds() as i64 - rt.nseconds() as i64;
+        timecode_after(&tc, ns)
     }
 
     pub fn dropped_frames(&self) -> u64 {
@@ -369,6 +387,27 @@ fn drop_until(
     })
     .context("add start gate")?;
     Ok(())
+}
+
+/// Keep the running time and timecode of the newest frame leaving `pad`.
+/// Added after [`stamp_time_of_day`], so it sees that timecode too.
+fn keep_last_timecode(
+    pad: &gst::Pad,
+    last: Arc<Mutex<Option<(gst::ClockTime, gst_video::ValidVideoTimeCode)>>>,
+) {
+    pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
+        let Some(buffer) = info.buffer() else {
+            return gst::PadProbeReturn::Ok;
+        };
+        let tc = buffer
+            .meta::<gst_video::VideoTimeCodeMeta>()
+            .map(|m| m.tc());
+        let rt = buffer.pts().and_then(|pts| running_time(pad, pts));
+        if let (Some(tc), Some(rt)) = (tc, rt) {
+            *last.lock().unwrap() = Some((rt, tc));
+        }
+        gst::PadProbeReturn::Ok
+    });
 }
 
 /// Drop `src`'s buffers due before the first video frame [`drop_until`] let
@@ -994,6 +1033,24 @@ mod tests {
         .unwrap();
         tokio::time::sleep(Duration::from_millis(1000)).await;
         let first = legs[0].first_frame().expect("nothing recorded");
+        // A marker gets the timecode written on the frame at its moment.
+        // Within a frame: under load a live source's timestamps jitter, and
+        // each frame is stamped from its own.
+        let fps = gst::Fraction::new(30000, 1001);
+        let marked = |frame: u64| {
+            let at = first + gst::ClockTime::from_nseconds(frame * 1_001_000_000 / 30);
+            let got = legs[0].timecode_at(at).expect("no timecode");
+            let want = time_of_day(at.useconds() as i64 + offset, fps).unwrap();
+            let apart = got
+                .frames_since_daily_jam()
+                .abs_diff(want.frames_since_daily_jam());
+            assert!(
+                apart <= 1,
+                "marker at frame {frame}: {got}, file has {want}"
+            );
+        };
+        marked(0);
+        marked(20);
         for leg in legs {
             leg.stop(Duration::from_secs(5)).await.unwrap();
         }
