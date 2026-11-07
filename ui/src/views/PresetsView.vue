@@ -22,6 +22,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import OutputCard from '@/components/presets/OutputCard.vue'
 import PresetList from '@/components/presets/PresetList.vue'
 import PresetCapacity from '@/components/presets/PresetCapacity.vue'
+import SlateSection from '@/components/presets/SlateSection.vue'
 
 const store = usePresetsStore()
 const sources = useSourcesStore()
@@ -41,6 +42,7 @@ const {
   selectedId,
   name: draftName,
   legs: draftLegs,
+  slate: draftSlate,
   legKeys,
   serverError,
   pendingFor,
@@ -86,7 +88,7 @@ async function save() {
   saving.value = true
   serverError.value = null
   try {
-    const payload = { name: draftName.value.trim(), outputs: draftLegs.value }
+    const payload = { name: draftName.value.trim(), outputs: draftLegs.value, slate: draftSlate.value }
     const p = selectedId.value === 'new' ? await store.create(payload) : await store.update(selectedId.value!, payload)
     // Settle the editor on the saved preset first: a failure after this
     // must not leave the draft open, where saving again would duplicate it.
@@ -263,6 +265,8 @@ useQueryAction(['new', 'for'], (q) => {
             Path previews use <span class="num">{{ preview.source }}</span> on
             <span class="num">{{ preview.node }}</span> at the current time. Every output records the same feed at once.
           </p>
+
+          <SlateSection v-model="draftSlate" :leg="draftLegs[0]" :preview="preview" />
 
           <PresetCapacity :outputs="draftLegs" :node-ids="presetNodes" />
         </div>

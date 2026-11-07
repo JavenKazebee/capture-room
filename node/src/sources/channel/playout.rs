@@ -12,8 +12,9 @@ use tracing::warn;
 use super::lanes::{Lanes, PlayedProgress};
 use super::player::{build_player, Marks};
 use super::{LOAD_TIMEOUT, STEP_TIMEOUT};
-use crate::api::types::{ClipEnd, TransportState};
+use crate::api::types::{ClipEnd, SlateLength, TransportState};
 use crate::pipeline::replay::ReplaySpan;
+use crate::pipeline::slate::{self, Card};
 
 /// A clip to play, as resolved from the media library.
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +33,15 @@ pub struct ClipRequest {
     pub rate: f64,
     /// Part of a replay buffer, played instead of `path` (its folder).
     pub replay: Option<ReplayClip>,
+    /// Shown before it plays from its in point.
+    pub slate: Option<ClipSlate>,
+}
+
+/// A slate before a clip: its card, and how long it shows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipSlate {
+    pub card: Card,
+    pub length: SlateLength,
 }
 
 /// A replay buffer's span as a clip source; positions count from its first file's start.
@@ -176,6 +186,8 @@ struct Clip {
     /// An open buffer replay that ran out of footage: its player ended at the
     /// buffer's newest frame and holds it until more comes. A seek clears it.
     at_edge: bool,
+    /// Its slate, drawn at the program's size.
+    slate: Option<(gst::Sample, gst::ClockTime)>,
 }
 
 impl Clip {
@@ -537,6 +549,7 @@ impl Playout {
             serial,
         ));
         guard.0 = None;
+        let slate = self.draw_slate(request).await;
         Ok(Clip {
             player,
             bus_task,
@@ -548,7 +561,32 @@ impl Playout {
             has_audio,
             rate: request.rate,
             at_edge: false,
+            slate,
         })
+    }
+
+    /// Draw a clip's slate, if it has one, at the program's size. One that
+    /// can't be drawn is left out: the clip still plays.
+    async fn draw_slate(&self, request: &ClipRequest) -> Option<(gst::Sample, gst::ClockTime)> {
+        let ClipSlate { card, length } = request.slate.clone()?;
+        let duration = slate::duration(length)?;
+        let caps = self.lanes.program_caps()?;
+        let drawn = tokio::task::spawn_blocking(move || {
+            let frame = slate::render(&card, &caps)?;
+            anyhow::Ok(gst::Sample::builder().buffer(&frame).caps(&caps).build())
+        })
+        .await;
+        match drawn {
+            Ok(Ok(sample)) => Some((sample, duration)),
+            Ok(Err(e)) => {
+                warn!(path = %request.path, error = %e, "playing without its slate");
+                None
+            }
+            Err(e) => {
+                warn!(path = %request.path, error = %e, "playing without its slate");
+                None
+            }
+        }
     }
 
     /// Put a standby clip on air in place of the current one: playing from the
@@ -589,8 +627,11 @@ impl Playout {
     }
 
     /// Play a prerolled clip from its first frame, following on from what the
-    /// program has queued.
+    /// program has queued: after its slate, if it has one.
     fn start(&self, clip: &Clip) -> Result<()> {
+        if let Some((frame, duration)) = &clip.slate {
+            self.lanes.push_still(frame, *duration);
+        }
         let rt = gst::ClockTime::from_nseconds(clip.marks.first_rt.load(Ordering::SeqCst));
         let base = self.lanes.follow_on_base(rt);
         if let Some(base) = base {

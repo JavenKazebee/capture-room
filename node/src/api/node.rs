@@ -26,10 +26,10 @@ use crate::api::types::{
     ConfiguredSourceRequest, CreateFolderRequest, DecklinkProfileRequest, DecklinkStatusDto,
     DeviceDto, DirListingDto, DisplayDto, FolderDto, FolderListingDto, MarkRequest, MarkerUpdate,
     NdiSubscriptionsDto, NdiSubscriptionsInput, NodeCapacityDto, NodeChecksDto, NodeSettingsDto,
-    NodeStatus, OutputConfig, PresetEstimateDto, PresetEstimateRequest, RecordingSessionDto,
-    RecordingStatus, RecordingsQuery, SourceCapabilitiesDto, SourceConfig, SourceDto,
-    StartRecordingRequest, StorageVolumeDto, ThumbnailVisibilityRequest, UpdateNodeSettingsRequest,
-    UpdateRequest, UpdateStatusDto, VolumeCheckDto, WsEvent,
+    NodeStatus, OutputConfig, PresetEstimateDto, PresetEstimateRequest, PresetOutputInput,
+    RecordingSessionDto, RecordingStatus, RecordingsQuery, SlateSettings, SourceCapabilitiesDto,
+    SourceConfig, SourceDto, StartRecordingRequest, StorageVolumeDto, ThumbnailVisibilityRequest,
+    UpdateNodeSettingsRequest, UpdateRequest, UpdateStatusDto, VolumeCheckDto, WsEvent,
 };
 use crate::benchmark;
 use crate::capacity::{Capacity, Load, Setup};
@@ -38,6 +38,7 @@ use crate::pipeline::monitor::SourceFormat;
 use crate::pipeline::profile::{
     available_encoders, missing_encoder, plan_legs, PathVars, RecordingProfile,
 };
+use crate::pipeline::slate::{self, LegSlate};
 use crate::session;
 use crate::sources::manager::{
     apply_marker_update, MarkError, SourceManager, StopOutcome, StopResult,
@@ -1260,6 +1261,7 @@ async fn post_capacity_check(
             preset_name: None,
             outputs: req.outputs.clone(),
             start_at: None,
+            slate: None,
         };
         let legs = build_legs(&state, &start).await?;
         let measured = capacity
@@ -1470,9 +1472,19 @@ async fn build_legs(
     };
     // Each step changes the path that exists (its take, or every file's
     // suffix), so this ends once it runs past the files on disk.
+    if req.slate.is_some() && !slate::available() {
+        return Err(ApiError::bad(
+            "slates need GStreamer's pango plugin (textoverlay), which this node lacks",
+        ));
+    }
     loop {
-        let legs = plan_legs(&req.outputs, Some(&vars)).map_err(ApiError::bad)?;
+        let mut legs = plan_legs(&req.outputs, Some(&vars)).map_err(ApiError::bad)?;
         let Some(i) = legs.iter().position(|(path, _)| path.exists()) else {
+            if let Some(settings) = &req.slate {
+                for ((path, profile), output) in legs.iter_mut().zip(&req.outputs) {
+                    profile.slate = Some(leg_slate(settings, &vars, output, path, profile));
+                }
+            }
             return Ok(legs);
         };
         let counter = if req.outputs[i].path_template.contains("{take}") {
@@ -1486,9 +1498,100 @@ async fn build_legs(
     }
 }
 
+/// A leg's slate: its title from the template (or its file's name), then
+/// its take (if its path counts them), when it started, and the source.
+fn leg_slate(
+    settings: &SlateSettings,
+    vars: &PathVars,
+    output: &PresetOutputInput,
+    path: &std::path::Path,
+    profile: &RecordingProfile,
+) -> LegSlate {
+    let title = if settings.title.is_empty() {
+        path.file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    } else {
+        vars.slate_title(&settings.title, &output.name, profile)
+    };
+    let take = if output.path_template.contains("{take}") {
+        format!("Take {:02}", vars.take)
+    } else {
+        String::new()
+    };
+    LegSlate {
+        card: slate::Card {
+            title,
+            lines: vec![
+                take,
+                vars.at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                vars.source_name.clone(),
+            ],
+            background: slate::parse_colour(&settings.background).unwrap_or(0xff1a1a1a),
+            text: slate::parse_colour(&settings.text).unwrap_or(0xffffffff),
+        },
+        length: settings.length,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_leg_slate_titles_from_its_template_or_its_file() {
+        use crate::api::types::{
+            ChromaSubsampling, Container, OutputAdvanced, SlateLength, VideoCodec,
+        };
+        let output = PresetOutputInput {
+            name: "Main".into(),
+            codec: VideoCodec::H264,
+            container: Container::Mov,
+            resolution: None,
+            framerate: None,
+            bitrate_kbps: None,
+            chroma: ChromaSubsampling::Yuv420,
+            path_template: "~/r/{source_name}_{take}.{ext}".into(),
+            preview: false,
+            advanced: OutputAdvanced::default(),
+        };
+        let profile = RecordingProfile::from_output(&output).unwrap();
+        let vars = PathVars {
+            source: "s1".into(),
+            source_name: "Cam/1".into(),
+            node: "n".into(),
+            preset: "ProRes".into(),
+            at: chrono::Local::now(),
+            take: 3,
+            suffix: 1,
+            source_resolution: None,
+            source_framerate: None,
+            source_audio: None,
+        };
+        let mut settings = SlateSettings {
+            length: SlateLength::Seconds5,
+            title: String::new(),
+            background: "#000000".into(),
+            text: "#ffcc00".into(),
+        };
+        let path = std::path::Path::new("/r/Cam-1_03.mov");
+        let slate = leg_slate(&settings, &vars, &output, path, &profile);
+        assert_eq!(slate.card.title, "Cam-1_03");
+        assert_eq!(slate.card.lines[0], "Take 03");
+        assert_eq!(slate.card.lines[2], "Cam/1");
+        assert_eq!(slate.card.text, 0xffffcc00);
+
+        settings.title = "{preset}: {source_name} ({output})".into();
+        let slate = leg_slate(&settings, &vars, &output, path, &profile);
+        assert_eq!(slate.card.title, "ProRes: Cam/1 (Main)");
+
+        let output = PresetOutputInput {
+            path_template: "~/r/{datetime}.{ext}".into(),
+            ..output
+        };
+        let slate = leg_slate(&settings, &vars, &output, path, &profile);
+        assert_eq!(slate.card.lines[0], "", "no take without {{take}}");
+    }
 
     #[test]
     fn a_blank_name_defaults_to_what_is_captured() {

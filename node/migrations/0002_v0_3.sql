@@ -85,3 +85,8 @@ CREATE TABLE recording_markers (
 );
 
 CREATE INDEX recording_markers_session ON recording_markers (session_id, at_us);
+
+-- Slates: a preset's (JSON, see `SlateSettings`) and a playlist item's
+-- length before it plays.
+ALTER TABLE presets ADD COLUMN slate TEXT;
+ALTER TABLE playlist_items ADD COLUMN slate TEXT;

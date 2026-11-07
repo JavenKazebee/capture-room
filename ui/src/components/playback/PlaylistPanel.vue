@@ -40,7 +40,7 @@ const total = computed(() => {
 })
 
 function input(i: PlaylistItemDto): PlaylistItemInput {
-  return { id: i.id, media_id: i.media_id, in_ms: i.in_ms, out_ms: i.out_ms, end: i.end }
+  return { id: i.id, media_id: i.media_id, in_ms: i.in_ms, out_ms: i.out_ms, end: i.end, slate: i.slate }
 }
 
 async function save(list: PlaylistItemInput[], loopPlaylist = playlist.value?.loop_playlist ?? false) {
@@ -54,7 +54,7 @@ async function save(list: PlaylistItemInput[], loopPlaylist = playlist.value?.lo
 /** Add a library entry at `index` (the end by default), and select it. */
 async function add(mediaId: string, index = items.value.length) {
   const list = items.value.map(input)
-  list.splice(index, 0, { id: null, media_id: mediaId, in_ms: 0, out_ms: null, end: 'next' })
+  list.splice(index, 0, { id: null, media_id: mediaId, in_ms: 0, out_ms: null, end: 'next', slate: null })
   const p = await save(list)
   if (p) selected.value = p.items[index]?.id ?? selected.value
 }

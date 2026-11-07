@@ -1,23 +1,30 @@
+<script lang="ts">
+import type { ClipEnd } from '@/types/generated/ClipEnd'
+import type { SlateLength } from '@/types/generated/SlateLength'
+
+/** What Apply saves into a playlist item. */
+export type ItemSetupValues = { in_ms: number; out_ms: number | null; end: ClipEnd; slate: SlateLength | null }
+</script>
+
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { ArrowDownToLine, Play } from '@lucide/vue'
 import { formatClock, parseClock } from '@/lib/format'
 import type { ChannelStatusDto } from '@/types/generated/ChannelStatusDto'
-import type { ClipEnd } from '@/types/generated/ClipEnd'
 import type { PlaylistItemDto } from '@/types/generated/PlaylistItemDto'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import FormField from '@/components/FormField.vue'
 
-/** A playlist item's in/out points and end action, applied to the playlist; and cueing or playing it. */
+/** A playlist item's in/out points, end action and slate, applied to the playlist; and cueing or playing it. */
 const props = defineProps<{
   item: PlaylistItemDto
   status: ChannelStatusDto | undefined
   busy: boolean
 }>()
 const emit = defineEmits<{
-  apply: [setup: { in_ms: number; out_ms: number | null; end: ClipEnd }]
+  apply: [setup: ItemSetupValues]
   cue: []
   play: []
 }>()
@@ -25,6 +32,8 @@ const emit = defineEmits<{
 const inText = ref('')
 const outText = ref('')
 const end = ref<ClipEnd>('next')
+/** `off` for none: a toggle group's value is a string. */
+const slate = ref<SlateLength | 'off'>('off')
 
 /** The item changing (another picked, or saved) resets the setup to it. */
 watch(
@@ -33,6 +42,7 @@ watch(
     inText.value = i.in_ms ? formatClock(i.in_ms) : ''
     outText.value = i.out_ms != null ? formatClock(i.out_ms) : ''
     end.value = i.end
+    slate.value = i.slate ?? 'off'
   },
   { immediate: true },
 )
@@ -50,8 +60,13 @@ const error = computed(() => {
 })
 
 /** The setup differs from the saved item. */
+const slateValue = computed(() => (slate.value === 'off' ? null : slate.value))
 const changed = computed(
-  () => props.item.in_ms !== inMs.value || props.item.out_ms !== outMs.value || props.item.end !== end.value,
+  () =>
+    props.item.in_ms !== inMs.value ||
+    props.item.out_ms !== outMs.value ||
+    props.item.end !== end.value ||
+    (props.item.slate ?? null) !== slateValue.value,
 )
 /** On air, new in and out points only apply once it's played or cued again. */
 const onAirStale = computed(() => {
@@ -61,7 +76,7 @@ const onAirStale = computed(() => {
 
 function apply() {
   if (error.value || !changed.value || inMs.value === null) return
-  emit('apply', { in_ms: inMs.value, out_ms: outMs.value, end: end.value })
+  emit('apply', { in_ms: inMs.value, out_ms: outMs.value, end: end.value, slate: slateValue.value })
 }
 
 /** Set the in or out point at the playhead, while this item is on air (I / O). */
@@ -123,6 +138,19 @@ defineExpose({ setAtPlayhead })
           <ToggleGroupItem value="hold" class="h-8 px-3 text-xs">Hold</ToggleGroupItem>
           <ToggleGroupItem value="black" class="h-8 px-3 text-xs">Black</ToggleGroupItem>
           <ToggleGroupItem value="loop" class="h-8 px-3 text-xs">Loop</ToggleGroupItem>
+        </ToggleGroup>
+      </FormField>
+      <FormField label="Slate before it">
+        <ToggleGroup
+          v-model="slate"
+          type="single"
+          variant="segmented"
+          title="A card with its name, source and date, shown before it plays from its in point"
+        >
+          <ToggleGroupItem value="off" class="h-8 px-3 text-xs">Off</ToggleGroupItem>
+          <ToggleGroupItem value="3s" class="h-8 px-3 text-xs">3 s</ToggleGroupItem>
+          <ToggleGroupItem value="5s" class="h-8 px-3 text-xs">5 s</ToggleGroupItem>
+          <ToggleGroupItem value="10s" class="h-8 px-3 text-xs">10 s</ToggleGroupItem>
         </ToggleGroup>
       </FormField>
       <div class="flex-1" />

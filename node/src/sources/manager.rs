@@ -1851,6 +1851,7 @@ mod tests {
             preset_name: None,
             outputs: vec![output],
             start_at: None,
+            slate: None,
         };
         let start = mgr
             .begin_start_recording(&req, &[(dir.join("a.mkv"), profile.clone())], None)

@@ -20,11 +20,11 @@ use crate::api::types::{
     AddNodeRequest, CheckDto, ClockMode, ControllerClockDto, ControllerToggleRequest, FoundNodeDto,
     NodeChecksDto, NodeDto, PairingCodeRequest, PresetCreateRequest, PresetDto, PresetOutputInput,
     RecordLayoutDto, RecordOrderRequest, ScheduleAction, ScheduleDto, ScheduleInput, ScheduleKind,
-    ScheduleRunDto, SourceTagsRequest, WsEvent,
+    ScheduleRunDto, SlateSettings, SourceTagsRequest, WsEvent,
 };
 use crate::db;
 use crate::pipeline::profile::{plan_legs, unknown_token};
-use crate::pipeline::recording;
+use crate::pipeline::{recording, slate};
 use crate::state::AppState;
 use crate::ws;
 
@@ -314,6 +314,7 @@ async fn post_preset(
 ) -> ApiResult<(StatusCode, Json<PresetDto>)> {
     let name = preset_name(&req.name)?;
     let outputs = validate_outputs(req.outputs)?;
+    let slate = validate_slate(req.slate)?;
     let now = chrono::Utc::now().to_rfc3339();
     let id = uuid::Uuid::new_v4().to_string();
     let preset = PresetDto {
@@ -323,6 +324,7 @@ async fn post_preset(
         created_at: now.clone(),
         updated_at: now,
         is_default: false,
+        slate,
     };
     db::preset_insert(&state.db, &preset)
         .await
@@ -337,8 +339,9 @@ async fn put_preset(
 ) -> ApiResult<Json<PresetDto>> {
     let name = preset_name(&req.name)?;
     let outputs = validate_outputs(req.outputs)?;
+    let slate = validate_slate(req.slate)?;
     let now = chrono::Utc::now().to_rfc3339();
-    let preset = db::preset_update(&state.db, &id, &name, &now, outputs)
+    let preset = db::preset_update(&state.db, &id, &name, &now, outputs, slate.as_ref())
         .await
         .map_err(name_taken)?
         .ok_or(PRESET_NOT_FOUND)?;
@@ -448,6 +451,15 @@ fn validate_outputs(mut outputs: Vec<PresetOutputInput>) -> ApiResult<Vec<Preset
     let legs = plan_legs(&outputs, None).map_err(ApiError::bad)?;
     recording::check_legs(&legs).map_err(ApiError::bad)?;
     Ok(outputs)
+}
+
+fn validate_slate(slate: Option<SlateSettings>) -> ApiResult<Option<SlateSettings>> {
+    let Some(mut slate) = slate else {
+        return Ok(None);
+    };
+    slate.title = slate.title.trim().to_string();
+    slate::check(&slate).map_err(ApiError::bad)?;
+    Ok(Some(slate))
 }
 
 // Schedules live on the controller, which runs them (see `scheduler`).

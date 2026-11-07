@@ -197,6 +197,7 @@ fn clip(path: &std::path::Path, in_s: f64, out_s: Option<f64>, end: ClipEnd) -> 
         start: None,
         end,
         rate: 1.0,
+        slate: None,
         replay: None,
     }
 }
@@ -500,6 +501,101 @@ async fn playlist_hands_over_without_a_gap() {
         let gap = w[1].program.saturating_sub(w[0].program).mseconds();
         assert!((30..=40).contains(&gap), "gap {gap} ms at a cut");
     }
+
+    mon.stop().unwrap();
+    assert_eq!(
+        *program.stalls.lock().unwrap(),
+        Vec::<std::time::Duration>::new(),
+        "program stalls"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An item with a slate shows it for its length, then plays from its in
+/// point: the slate follows on from the item before, and the item from it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "real-time (~8 s); run with --ignored"]
+async fn slate_plays_before_its_item() {
+    gst::init().unwrap();
+    if !crate::pipeline::slate::available() {
+        eprintln!("no textoverlay: skipped");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("cr-slate-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("clip.mp4");
+    make_clip(&file);
+
+    let src = channel();
+    let playout = src.playout().unwrap().clone();
+    let mon = MonitorPipeline::new(
+        &src,
+        &MonitorSettingsDto::default(),
+        &gst::SystemClock::obtain(),
+    )
+    .unwrap();
+    let program = watch_program(&mon);
+    let sleep = |ms| tokio::time::sleep(Duration::from_millis(ms));
+    sleep(500).await;
+
+    let slated = |clip: ClipRequest| ClipRequest {
+        slate: Some(ClipSlate {
+            card: crate::pipeline::slate::Card::plain("b".into(), vec![]),
+            length: crate::api::types::SlateLength::Seconds3,
+        }),
+        ..clip
+    };
+    playout
+        .set_playlist(
+            vec![
+                item("a", clip(&file, 0.0, Some(1.0), ClipEnd::Next)),
+                item("b", slated(clip(&file, 0.5, Some(1.5), ClipEnd::Hold))),
+            ],
+            false,
+        )
+        .await;
+    playout.cue_item("a").await.unwrap();
+    sleep(500).await;
+    take_pushed(&playout);
+    playout.play().await.unwrap();
+    sleep(5600).await;
+
+    assert_eq!(playout.status().item_id.as_deref(), Some("b"));
+    let stills = std::mem::take(&mut playout.lanes.inner.lock().unwrap().stills);
+    assert_eq!(stills.len(), 1, "one slate: {stills:?}");
+    let (slate_at, slate_end) = stills[0];
+    let video = played(&take_pushed(&playout), Kind::Video);
+    let last_a = video
+        .iter()
+        .rfind(|p| p.program < slate_at)
+        .expect("a played");
+    let first_b = video
+        .iter()
+        .find(|p| p.program >= slate_at)
+        .expect("b played");
+    let gap = slate_at.saturating_sub(last_a.program).mseconds();
+    assert!(
+        (30..=40).contains(&gap),
+        "slate {gap} ms after a's last frame"
+    );
+    assert!(
+        (500..534).contains(&first_b.clip.mseconds()),
+        "b starts at its in point: {}",
+        first_b.clip
+    );
+    let late = first_b.program.saturating_sub(slate_end).mseconds();
+    assert!(
+        first_b.program >= slate_end && late < 34,
+        "b follows the slate: {} vs {slate_end}",
+        first_b.program
+    );
+
+    // Cued and played on its own, it slates again.
+    playout.cue_item("b").await.unwrap();
+    playout.play().await.unwrap();
+    sleep(300).await;
+    let stills = &playout.lanes.inner.lock().unwrap().stills;
+    assert_eq!(stills.len(), 1, "slated when played from its cue");
 
     mon.stop().unwrap();
     assert_eq!(
@@ -815,6 +911,7 @@ async fn replay_plays_at_any_speed() {
         start: None,
         end: ClipEnd::Hold,
         rate: 1.0,
+        slate: None,
         replay: Some(ReplayClip {
             source_id: "cam".into(),
             clip_id: None,
@@ -1007,6 +1104,7 @@ async fn open_replay_plays_on_into_new_footage() {
         start: None,
         end: ClipEnd::Hold,
         rate,
+        slate: None,
         replay: Some(ReplayClip {
             source_id: "cam".into(),
             clip_id: None,

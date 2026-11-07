@@ -298,14 +298,40 @@ export function expandPath(
   vars: { source: string; sourceName: string; node: string; preset: string },
   at = new Date(),
 ) {
+  return expandTokens(segmentedTemplate(leg), leg, vars, at, sanitize)
+}
+
+/** A slate title template as the node expands it for `leg`: names as they read, not made safe for a path. */
+export function expandSlateTitle(
+  template: string,
+  leg: PresetOutputInput,
+  vars: { source: string; sourceName: string; node: string; preset: string },
+  at = new Date(),
+) {
+  return expandTokens(
+    template.replaceAll('{output}', leg.name).replaceAll('{codec}', leg.codec),
+    leg,
+    vars,
+    at,
+    (v) => v,
+  )
+}
+
+function expandTokens(
+  template: string,
+  leg: PresetOutputInput,
+  vars: { source: string; sourceName: string; node: string; preset: string },
+  at: Date,
+  clean: (v: string) => string,
+) {
   const [y, mo, d] = [String(at.getFullYear()), pad(at.getMonth() + 1), pad(at.getDate())]
   const time = `${pad(at.getHours())}${pad(at.getMinutes())}${pad(at.getSeconds())}`
-  return expand(segmentedTemplate(leg), [
+  return expand(template, [
     ...legTokens(leg),
-    ['{source}', sanitize(vars.source)],
-    ['{source_name}', sanitize(vars.sourceName)],
-    ['{node}', sanitize(vars.node)],
-    ['{preset}', sanitize(vars.preset || 'preset')],
+    ['{source}', clean(vars.source)],
+    ['{source_name}', clean(vars.sourceName)],
+    ['{node}', clean(vars.node)],
+    ['{preset}', clean(vars.preset || 'preset')],
     ['{date}', `${y}-${mo}-${d}`],
     ['{time}', time],
     ['{datetime}', `${y}${mo}${d}_${time}`],

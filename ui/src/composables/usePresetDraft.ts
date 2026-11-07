@@ -5,6 +5,8 @@ import { clashingLegs, legProblems } from '@/lib/codecs'
 import { blankLeg, usePresetsStore } from '@/stores/presets'
 import type { PresetDto } from '@/types/generated/PresetDto'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
+import type { SlateSettings } from '@/types/generated/SlateSettings'
+import { slateProblem } from '@/lib/slate'
 
 /**
  * The preset being edited: a copy of a saved one or a new one, with what's blocking Save. Switching away from unsaved edits, or leaving the page,
@@ -17,6 +19,7 @@ export function usePresetDraft() {
   const selectedId = ref<string | null>(null)
   const name = ref('')
   const legs = ref<PresetOutputInput[]>([])
+  const slate = ref<SlateSettings | null>(null)
   /** Stable keys for the output cards, moved and spliced alongside `legs`. */
   const legKeys = ref<number[]>([])
   let nextKey = 0
@@ -26,24 +29,25 @@ export function usePresetDraft() {
   const pendingFor = ref<string[]>([])
 
   const selected = computed(() => store.presets.find((p) => p.id === selectedId.value) ?? null)
-  const snapshot = () => JSON.stringify({ name: name.value, legs: legs.value })
+  const snapshot = () => JSON.stringify({ name: name.value, legs: legs.value, slate: slate.value })
   const dirty = computed(() => selectedId.value !== null && snapshot() !== original.value)
 
   const { confirmOpen, guarded, discard } = useUnsavedGuard(dirty)
 
-  function load(id: string, draftName: string, draftLegs: PresetOutputInput[]) {
+  function load(id: string, draftName: string, draftLegs: PresetOutputInput[], draftSlate: SlateSettings | null = null) {
     // Leaving the draft for another preset drops the request.
     if (id !== 'new') pendingFor.value = []
     selectedId.value = id
     name.value = draftName
     legs.value = draftLegs.map((l) => ({ ...l }))
     legKeys.value = draftLegs.map(() => nextKey++)
+    slate.value = draftSlate ? { ...draftSlate } : null
     original.value = id === 'new' ? '' : snapshot()
     serverError.value = null
   }
 
   function loadPreset(p: PresetDto) {
-    load(p.id, p.name, p.outputs.length ? p.outputs : [blankLeg()])
+    load(p.id, p.name, p.outputs.length ? p.outputs : [blankLeg()], p.slate)
   }
 
   function select(id: string) {
@@ -57,7 +61,8 @@ export function usePresetDraft() {
   function duplicate() {
     const copyName = `${name.value || 'Preset'} copy`
     const copyLegs = legs.value
-    guarded(() => load('new', copyName, copyLegs))
+    const copySlate = slate.value
+    guarded(() => load('new', copyName, copyLegs, copySlate))
     name.value = copyName
   }
 
@@ -108,6 +113,7 @@ export function usePresetDraft() {
         list.push(`Fix ${l.name || `output ${i + 1}`}`)
       }
     })
+    if (slateProblem(slate.value)) list.push('Fix the slate')
     return list
   })
 
@@ -118,6 +124,7 @@ export function usePresetDraft() {
     selectedId,
     name,
     legs,
+    slate,
     legKeys,
     serverError,
     pendingFor,

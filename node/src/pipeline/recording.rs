@@ -8,7 +8,8 @@
 //! ```
 //!
 //! A failure (a codec the container rejects at runtime, a full disk) fails
-//! only that leg, reported at once through [`OnLegError`].
+//! only that leg, reported at once through [`OnLegError`]. A leg with a slate
+//! covers its first frames with it at the convert ([`slate::cover_start`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,6 +27,7 @@ use super::profile::{
     available_encoders, has_encoder, segment_number, AudioFormat, RecordingProfile, VideoEncoder,
     PCM_MAX_FILE,
 };
+use super::slate;
 use super::timecode::{running_time, stamp_time_of_day, timecode_after};
 use super::{
     audio_hold_queue, capsfilter, describe_error, first_that_builds, make_el,
@@ -206,6 +208,20 @@ impl RecordingLeg {
             pipeline.add(&muxer).context("add muxer")?;
         }
         let video_out = consumer.video_chain(&refs(&video.before), &refs(&video.after))?;
+        if let Some(slate) = &profile.slate {
+            let convert = pipeline.by_name("vconv").context("videoconvert")?;
+            slate::cover_start(
+                &convert.static_pad("sink").context("videoconvert sink")?,
+                slate.clone(),
+            );
+        }
+        if let Some(slate) = &profile.slate {
+            let convert = pipeline.by_name("vconv").context("videoconvert")?;
+            slate::cover_start(
+                &convert.static_pad("sink").context("videoconvert sink")?,
+                slate.clone(),
+            );
+        }
         let audio_out = consumer.audio_chain(&refs(&audio[..1]), &refs(&audio[1..]))?;
         if let Some(rows) = profile.audio_mix().as_ref().and_then(|m| m.matrix.as_ref()) {
             set_mix_matrix(&pipeline.by_name("aconv").context("audioconvert")?, rows);

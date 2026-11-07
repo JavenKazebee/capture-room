@@ -539,6 +539,7 @@ impl Run {
             start: None,
             end: ClipEnd::Loop,
             rate: 1.0,
+            slate: None,
             replay: None,
         };
         if let Err(e) = playout.load(clip, true).await {

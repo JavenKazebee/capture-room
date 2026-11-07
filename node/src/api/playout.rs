@@ -16,10 +16,11 @@ use gstreamer as gst;
 use crate::api::error::{ApiError, ApiResult};
 use crate::api::types::{
     ChannelStatusDto, CueRequest, LoadedClipDto, MediaItemDto, OutputStatusDto, PlaylistDto,
-    PlaylistInput, PlaylistItemDto, TransportAction, TransportRequest, WsEvent,
+    PlaylistInput, PlaylistItemDto, SlateLength, TransportAction, TransportRequest, WsEvent,
 };
 use crate::db;
-use crate::sources::channel::{ClipRequest, PlaylistItem, Playout, PlayoutStatus};
+use crate::pipeline::slate;
+use crate::sources::channel::{ClipRequest, ClipSlate, PlaylistItem, Playout, PlayoutStatus};
 use crate::state::AppState;
 
 pub fn router() -> Router<Arc<AppState>> {
@@ -63,7 +64,7 @@ pub(super) async fn reload_playlist(
             id: r.id,
             clip: ClipRequest {
                 media_id: r.media_id,
-                name: r.name,
+                name: r.name.clone(),
                 path: r.path,
                 in_point: gst::ClockTime::from_mseconds(r.in_ms as u64),
                 out_point: r.out_ms.map(|v| gst::ClockTime::from_mseconds(v as u64)),
@@ -71,11 +72,32 @@ pub(super) async fn reload_playlist(
                 end: r.end_action,
                 rate: 1.0,
                 replay: None,
+                slate: r.slate.map(|length| ClipSlate {
+                    card: slate::Card::plain(
+                        r.name.clone(),
+                        vec![
+                            r.source_name.clone().unwrap_or_default(),
+                            local_time(&r.started_at),
+                        ],
+                    ),
+                    length,
+                }),
             },
         })
         .collect();
     playout.set_playlist(items, loop_playlist).await;
     Ok(())
+}
+
+/// An RFC 3339 time as the node's local date and time, for a slate.
+fn local_time(at: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(at)
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_default()
 }
 
 fn playlist_dto(playout: &Playout, durations: &HashMap<String, Option<u64>>) -> PlaylistDto {
@@ -92,6 +114,7 @@ fn playlist_dto(playout: &Playout, durations: &HashMap<String, Option<u64>>) -> 
                 in_ms: i.clip.in_point.mseconds(),
                 out_ms: i.clip.out_point.map(|t| t.mseconds()),
                 end: i.clip.end,
+                slate: i.clip.slate.as_ref().map(|s| s.length),
             })
             .collect(),
         loop_playlist,
@@ -207,11 +230,23 @@ async fn put_playlist(
                 "item {n}: the out point must be after the in point"
             )));
         }
+        if item.slate == Some(SlateLength::Frame) {
+            return Err(ApiError::bad(format!(
+                "item {n}: a slate on air runs 3, 5 or 10 seconds"
+            )));
+        }
         let id = item
             .id
-            .filter(|i| !i.is_empty() && !rows.iter().any(|r: &(String, _, _, _, _)| &r.0 == i))
+            .filter(|i| !i.is_empty() && !rows.iter().any(|r: &db::PlaylistItemRow| &r.id == i))
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        rows.push((id, item.media_id, item.in_ms, item.out_ms, item.end));
+        rows.push(db::PlaylistItemRow {
+            id,
+            media_id: item.media_id,
+            in_ms: item.in_ms,
+            out_ms: item.out_ms,
+            end: item.end,
+            slate: item.slate,
+        });
     }
     db::playlist_set(&state.db, &id, &rows, req.loop_playlist).await?;
     reload_playlist(&state, &id, &playout).await?;
