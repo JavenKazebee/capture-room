@@ -6,6 +6,8 @@ import { nodeLoadErrors } from '@/lib/loadState'
 import { blankLeg, UNNAMED_PRESET, usePresetsStore } from '@/stores/presets'
 import { useSourcesStore } from '@/stores/sources'
 import type { ClockTimeDto } from '@/types/generated/ClockTimeDto'
+import type { MarkRequest } from '@/types/generated/MarkRequest'
+import type { MarkerUpdate } from '@/types/generated/MarkerUpdate'
 import type { PresetDto } from '@/types/generated/PresetDto'
 import type { PresetOutputInput } from '@/types/generated/PresetOutputInput'
 import type { RecordingSessionDto } from '@/types/generated/RecordingSessionDto'
@@ -237,6 +239,52 @@ export const useRecordingsStore = defineStore('recordings', () => {
     return dto
   }
 
+  /**
+   * Mark each session at one keypress (`at` on the shared clock). Every node is
+   * asked at once; the result says which marked.
+   */
+  async function mark(list: RecordingSession[], req: MarkRequest) {
+    const results = await Promise.allSettled(
+      list.map(async (s) => {
+        const dto = await nodeApi(s.node_id)<RecordingSessionDto>(`/recordings/${encodeURIComponent(s.id)}/markers`, {
+          method: 'POST',
+          body: req,
+        })
+        upsert(s.node_id, dto)
+        return dto
+      }),
+    )
+    return results
+  }
+
+  async function updateMarker(nodeId: string, sessionId: string, markerId: string, update: MarkerUpdate) {
+    const dto = await nodeApi(nodeId)<RecordingSessionDto>(
+      `/recordings/${encodeURIComponent(sessionId)}/markers/${encodeURIComponent(markerId)}`,
+      { method: 'PATCH', body: update },
+    )
+    upsert(nodeId, dto)
+  }
+
+  async function deleteMarker(nodeId: string, sessionId: string, markerId: string) {
+    const dto = await nodeApi(nodeId)<RecordingSessionDto>(
+      `/recordings/${encodeURIComponent(sessionId)}/markers/${encodeURIComponent(markerId)}`,
+      { method: 'DELETE' },
+    )
+    upsert(nodeId, dto)
+  }
+
+  /** Every marker one keypress made, wherever it is. */
+  function pressMarkers(pressId: string) {
+    return sessions.value.flatMap((s) =>
+      s.markers.filter((m) => m.press_id === pressId).map((m) => ({ session: s, marker: m })),
+    )
+  }
+
+  /** Give every marker of one keypress the same note or colour. */
+  async function updatePress(pressId: string, update: MarkerUpdate) {
+    await Promise.all(pressMarkers(pressId).map(({ session, marker }) => updateMarker(session.node_id, session.id, marker.id, update)))
+  }
+
   function activeForSource(nodeId: string, sourceId: string): RecordingSession | null {
     return (
       activeSessions.value.find((s) => s.node_id === nodeId && s.source_id === sourceId) ?? null
@@ -266,6 +314,11 @@ export const useRecordingsStore = defineStore('recordings', () => {
     loadForNode,
     start,
     stop,
+    mark,
+    updateMarker,
+    deleteMarker,
+    pressMarkers,
+    updatePress,
     activeForSource,
   }
 })

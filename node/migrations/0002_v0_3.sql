@@ -1,3 +1,10 @@
+-- Everything 0.3 changes in the schema. Until 0.3 ships this file is edited,
+-- not added to: a development database must then be deleted (see
+-- `db::refuse_changed_migrations`).
+
+-- Presets have no version.
+ALTER TABLE presets DROP COLUMN version;
+
 -- The default preset becomes a stored row that can be edited, deleted or
 -- replaced as the default. It keeps the id the built-in one had, so
 -- schedules and recording sessions that named it still find it.
@@ -43,3 +50,38 @@ WHERE (SELECT n FROM preset_rank WHERE preset_rank.id = presets.id) > 1
 DROP TABLE preset_rank;
 
 CREATE UNIQUE INDEX presets_name ON presets (lower(name));
+
+-- The Record page's layout, kept by the controller for every node it has:
+-- the order sources show in, and their tags. Rows outlive the source, so a
+-- node that's offline for a while keeps its place.
+CREATE TABLE source_order (
+    node_id   TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    position  INTEGER NOT NULL,
+    PRIMARY KEY (node_id, source_id)
+);
+
+CREATE TABLE source_tags (
+    node_id   TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    tag       TEXT NOT NULL COLLATE NOCASE,
+    PRIMARY KEY (node_id, source_id, tag)
+);
+
+-- Markers dropped while recording, for the edit. `at_us` is on the session's
+-- clock (like its `first_frame_us`); `timecode` and `fps` are what the
+-- session's MOV files carry at that moment. One keypress marking several
+-- recordings gives each the same `press_id`.
+CREATE TABLE recording_markers (
+    id         TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    press_id   TEXT NOT NULL,
+    at_us      INTEGER NOT NULL,
+    timecode   TEXT,
+    fps        TEXT,
+    note       TEXT NOT NULL DEFAULT '',
+    color      TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX recording_markers_session ON recording_markers (session_id, at_us);

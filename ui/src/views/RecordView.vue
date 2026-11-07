@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useViewKeys } from '@/composables/useViewKeys'
-import { Circle, Eye, FilterX, ListChecks, PanelRight, Plus, Square, Tag, X } from '@lucide/vue'
+import { Circle, Eye, FilterX, Flag, ListChecks, PanelRight, Plus, Square, Tag, X } from '@lucide/vue'
 import { useSessionStorage, useStorage } from '@vueuse/core'
 import { registerCommands, type Command } from '@/composables/useCommands'
 import { useSourcesStore } from '@/stores/sources'
@@ -29,11 +29,14 @@ import ToolbarSearch from '@/components/common/ToolbarSearch.vue'
 import FeedTile from '@/components/record/FeedTile.vue'
 import ExpandedFeed from '@/components/record/ExpandedFeed.vue'
 import SessionRecordings from '@/components/record/SessionRecordings.vue'
+import MarkerNoteDialog from '@/components/record/MarkerNoteDialog.vue'
+import { useRecordingsStore } from '@/stores/recordings'
 import { useFitTiles } from '@/components/record/useFitTiles'
 import { gridColumns, gridNavTarget } from '@/components/record/gridNav'
 import SourceFormSheet from '@/components/sources/SourceFormSheet.vue'
 
 const sources = useSourcesStore()
+const recordings = useRecordingsStore()
 const nodes = useNodesStore()
 const desk = useRecordDeskStore()
 const layout = useLayoutStore()
@@ -221,6 +224,8 @@ const SHORTCUTS: [string[], string][] = [
   [[shortcut('A')], 'Select all visible feeds'],
   [['←', '→', '↑', '↓'], 'Move between feeds'],
   [['Space'], 'Record or stop the focused feed'],
+  [['M'], 'Mark every recording here, for the edit'],
+  [['Shift', 'M'], 'Mark only the focused feed'],
   [['Alt', '←', '→', '↑', '↓'], 'Move the focused feed (or drag it)'],
   [['I'], 'Details for the focused feed'],
   [['T'], 'Tags for the focused feed, or the selection'],
@@ -242,6 +247,9 @@ registerCommands(() => {
   if (scopeLive.value.length) {
     out.push({ id: 'record:scope-stop', title: `Stop ${scope}`, detail: `${scopeLive.value.length} recording`, group: 'This page', icon: Square, iconClass: 'text-tally!', keywords: ['end', 'bulk'], run: () => desk.bulk('stop', scopeLive.value) })
   }
+  if (recordings.activeSessions.length) {
+    out.push({ id: 'record:mark', title: 'Mark every recording', detail: `${recordings.activeSessions.length} recording`, group: 'This page', icon: Flag, shortcut: 'M', keywords: ['marker', 'edit point', 'flag'], run: () => markAll(performance.now()) })
+  }
   out.push({ id: 'record:add-source', title: 'Add source', group: 'This page', icon: Plus, keywords: ['new', 'create', 'feed'], run: () => (adding.value = true) })
   out.push({ id: 'record:session-pane', title: paneOpen.value ? "Hide this session's recordings" : "Show this session's recordings", group: 'This page', icon: PanelRight, keywords: ['recordings', 'takes', 'pane', 'sidebar'], run: () => (paneOpen.value = !paneOpen.value) })
   out.push({ id: 'record:select-all', title: 'Select all visible feeds', group: 'This page', icon: ListChecks, shortcut: shortcut('A'), keywords: ['selection'], run: () => desk.selectAll() })
@@ -257,6 +265,17 @@ registerCommands(() => {
   }
   return out
 })
+
+/** Every feed recording here, on any node, filtered out or not. */
+function markAll(pressedAt: number) {
+  void desk.mark(sources.sources.filter((s) => desk.isLive(s)), pressedAt)
+}
+
+function markFocused(pressedAt: number) {
+  const key = expandedKey.value ?? tabStopKey.value
+  const source = sources.sources.find((s) => s.key === key)
+  if (source) void desk.mark([source], pressedAt)
+}
 
 function openTags(key: string) {
   desk.infoKey = null
@@ -280,6 +299,10 @@ useViewKeys((e) => {
     openTags(tabStopKey.value)
   } else if (e.key.toLowerCase() === 'i' && plain && desk.focusedKey && !expanded.value) {
     desk.infoKey = desk.infoKey === desk.focusedKey ? null : desk.focusedKey
+  } else if (e.key.toLowerCase() === 'm' && plain) {
+    // Timed at the keydown: the mark is where the operator pressed, however
+    // long the request takes. Holding the key would mark again and again.
+    if (!e.repeat) (e.shiftKey ? markFocused : markAll)(e.timeStamp)
   } else if (e.key.toLowerCase() === 'a' && (e.ctrlKey || e.metaKey)) {
     e.preventDefault()
     desk.selectAll()
@@ -445,6 +468,7 @@ useViewKeys((e) => {
       <SessionRecordings v-if="paneOpen" v-model:since="sessionSince" @close="paneOpen = false" />
     </div>
     <SourceFormSheet v-if="adding" :source="null" @close="adding = false" />
+    <MarkerNoteDialog />
   
 
   </div>

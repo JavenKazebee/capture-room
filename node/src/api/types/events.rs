@@ -55,7 +55,8 @@ pub enum WsEvent {
     /// A finished session was removed from history, with or without its files.
     #[serde(rename = "recording.removed")]
     RecordingRemoved { session_id: String },
-    /// A finished session changed after it stopped: some of its files were deleted.
+    /// A session changed outside its start and stop: a marker was added,
+    /// edited or removed, or (once stopped) some of its files were deleted.
     #[serde(rename = "recording.updated")]
     RecordingUpdated { session: Box<RecordingSessionDto> },
     /// A channel's transport: on every change, and ~10 Hz while playing.

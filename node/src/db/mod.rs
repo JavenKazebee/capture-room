@@ -17,10 +17,10 @@ use tracing::info;
 use crate::sources::portal::Choice;
 
 use crate::api::types::{
-    BenchmarkRunDto, BenchmarkStatus, ClipEnd, ConfiguredSourceDto, DecklinkProfile, MediaItemDto,
-    MonitorSettingsDto, NdiConnect, NdiSubscriptionsInput, PresetDto, PresetOutputInput,
-    RecordLayoutDto, RecordingSessionDto, ReplayCodec, ReplayConfigInput, ScheduleDto,
-    ScheduleRunDto, ScheduleRunStatus, SourceRef, SourceTagsDto, UpdateChannel,
+    BenchmarkRunDto, BenchmarkStatus, ClipEnd, ConfiguredSourceDto, DecklinkProfile, MarkerDto,
+    MediaItemDto, MonitorSettingsDto, NdiConnect, NdiSubscriptionsInput, PresetDto,
+    PresetOutputInput, RecordLayoutDto, RecordingSessionDto, ReplayCodec, ReplayConfigInput,
+    ScheduleDto, ScheduleRunDto, ScheduleRunStatus, SourceRef, SourceTagsDto, UpdateChannel,
 };
 
 fn connect_options(db_path: &Path) -> SqliteConnectOptions {
@@ -43,7 +43,7 @@ pub async fn init(db_path: &Path) -> Result<SqlitePool> {
         .context("open sqlite")?;
 
     let migrator = sqlx::migrate!("./migrations");
-    refuse_pre_baseline(&pool, &migrator, db_path).await?;
+    refuse_changed_migrations(&pool, &migrator, db_path).await?;
     migrator.run(&pool).await.context("run migrations")?;
 
     info!(path = %db_path.display(), "database ready");
@@ -60,37 +60,45 @@ pub async fn open_existing(db_path: &Path) -> Result<SqlitePool> {
         .with_context(|| format!("open {}", db_path.display()))
 }
 
-/// `0001_schema.sql` was rewritten for 0.2, so a database from 0.1 or an
-/// earlier development build has a migration 1 with another checksum. sqlx
-/// would refuse it with "previously applied but has been modified"; say what
-/// it is and what to do instead.
-async fn refuse_pre_baseline(
+/// sqlx refuses a database with an applied migration that has since changed
+/// or gone, with "previously applied but has been modified" (or "is
+/// missing"); say what it is and what to do instead. `0001_schema.sql` was
+/// rewritten for 0.2, so 0.1 databases have another migration 1. The next
+/// release's migration is edited until it ships, so a development build's
+/// database can have another (or older, since folded) one.
+async fn refuse_changed_migrations(
     pool: &SqlitePool,
     migrator: &sqlx::migrate::Migrator,
     db_path: &Path,
 ) -> Result<()> {
-    let applied: Option<Vec<u8>> =
-        match sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = 1")
-            .fetch_optional(pool)
+    let applied: Vec<(i64, Vec<u8>)> =
+        match sqlx::query_as("SELECT version, checksum FROM _sqlx_migrations")
+            .fetch_all(pool)
             .await
         {
-            Ok(checksum) => checksum,
+            Ok(rows) => rows,
             // A new database: no migrations table yet.
             Err(_) => return Ok(()),
         };
-    let baseline = migrator
-        .iter()
-        .find(|m| m.version == 1)
-        .context("no 0001 migration")?;
-    match applied {
-        Some(checksum) if checksum != *baseline.checksum => anyhow::bail!(
-            "{} is from Capture Room 0.1 or a development build before 0.2, \
-             which this version can't upgrade: move it aside or delete it, and the node \
-             starts with a new database",
+    for (version, checksum) in applied {
+        let same = migrator
+            .iter()
+            .any(|m| m.version == version && *m.checksum == checksum);
+        if same {
+            continue;
+        }
+        let from = if version == 1 {
+            "Capture Room 0.1 or a development build before 0.2"
+        } else {
+            "a development build"
+        };
+        anyhow::bail!(
+            "{} is from {from}, which this version can't upgrade: move it aside or \
+             delete it, and the node starts with a new database",
             db_path.display()
-        ),
-        _ => Ok(()),
+        );
     }
+    Ok(())
 }
 
 /// Run a `DELETE ... WHERE <key> = ?` for `id`: whether it removed a row.
@@ -273,13 +281,94 @@ pub async fn sessions_list(
     .bind(limit)
     .fetch_all(pool)
     .await?;
-    Ok(rows)
+    with_markers(pool, rows).await
+}
+
+/// Fill each session's `markers`, with one query for all of them.
+async fn with_markers(
+    pool: &SqlitePool,
+    mut sessions: Vec<RecordingSessionDto>,
+) -> Result<Vec<RecordingSessionDto>> {
+    if sessions.is_empty() {
+        return Ok(sessions);
+    }
+    let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+    let rows = sqlx::query_as::<_, (String, Json<MarkerDto>)>(
+        "SELECT session_id, json_object(
+                    'id', id, 'press_id', press_id, 'at_us', at_us, 'timecode', timecode,
+                    'fps', fps, 'note', note, 'color', color, 'created_at', created_at)
+         FROM recording_markers
+         WHERE session_id IN (SELECT value FROM json_each(?))
+         ORDER BY at_us, created_at",
+    )
+    .bind(Json(&ids))
+    .fetch_all(pool)
+    .await?;
+    for (session_id, Json(marker)) in rows {
+        if let Some(s) = sessions.iter_mut().find(|s| s.id == session_id) {
+            s.markers.push(marker);
+        }
+    }
+    Ok(sessions)
+}
+
+pub async fn marker_insert(pool: &SqlitePool, session_id: &str, m: &MarkerDto) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO recording_markers
+         (id, session_id, press_id, at_us, timecode, fps, note, color, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&m.id)
+    .bind(session_id)
+    .bind(&m.press_id)
+    .bind(m.at_us)
+    .bind(&m.timecode)
+    .bind(&m.fps)
+    .bind(&m.note)
+    .bind(m.color)
+    .bind(&m.created_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Save a marker's note and colour. Whether it was there.
+pub async fn marker_update(pool: &SqlitePool, session_id: &str, m: &MarkerDto) -> Result<bool> {
+    let res = sqlx::query(
+        "UPDATE recording_markers SET note = ?, color = ? WHERE id = ? AND session_id = ?",
+    )
+    .bind(&m.note)
+    .bind(m.color)
+    .bind(&m.id)
+    .bind(session_id)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+pub async fn marker_delete(pool: &SqlitePool, session_id: &str, id: &str) -> Result<bool> {
+    let res = sqlx::query("DELETE FROM recording_markers WHERE id = ? AND session_id = ?")
+        .bind(id)
+        .bind(session_id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected() > 0)
 }
 
 /// Remove a session from history. Its files are left alone; the API deletes
 /// them first when asked to.
 pub async fn session_delete(pool: &SqlitePool, id: &str) -> Result<bool> {
-    delete_one(pool, "DELETE FROM recording_sessions WHERE id = ?", id).await
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM recording_markers WHERE session_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    let res = sqlx::query("DELETE FROM recording_sessions WHERE id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(res.rows_affected() > 0)
 }
 
 pub async fn session_get(pool: &SqlitePool, id: &str) -> Result<Option<RecordingSessionDto>> {
@@ -289,7 +378,8 @@ pub async fn session_get(pool: &SqlitePool, id: &str) -> Result<Option<Recording
     .bind(id)
     .fetch_optional(pool)
     .await?;
-    Ok(row)
+    let Some(row) = row else { return Ok(None) };
+    Ok(with_markers(pool, vec![row]).await?.pop())
 }
 
 /// The `node_config` key holding the default preset's id.
@@ -1339,6 +1429,27 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// The next release's migration is edited until it ships, and older ones
+    /// were folded into it: a development build's database has a migration
+    /// this build doesn't.
+    #[tokio::test]
+    async fn refuses_a_development_database() {
+        let path = std::env::temp_dir().join(format!("capture-room-dev-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let pool = init(&path).await.unwrap();
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) \
+             VALUES (99, 'folded', TRUE, x'00', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+        let err = init(&path).await.unwrap_err().to_string();
+        assert!(err.contains("a development build"), "{err}");
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[tokio::test]
     async fn open_existing_neither_creates_nor_migrates() {
         let path =
@@ -1601,12 +1712,12 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("capture-room-dupes-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
-        // A 0.2 database: migrations up to 0002, where names could repeat.
+        // A 0.2 database, where names could repeat.
         let pool = SqlitePool::connect_with(connect_options(&path).create_if_missing(true))
             .await
             .unwrap();
         let mut old = sqlx::migrate!("./migrations");
-        old.migrations = old.iter().filter(|m| m.version <= 2).cloned().collect();
+        old.migrations = old.iter().filter(|m| m.version <= 1).cloned().collect();
         old.run(&pool).await.unwrap();
         for (id, name, at) in [
             ("a", "Cam", "2026-01-01"),
@@ -1838,6 +1949,86 @@ mod tests {
         let tags = record_layout(&pool).await.unwrap().tags;
         assert_eq!(tags.len(), 1);
         assert_eq!(tags[0].tags, ["Wide"]);
+        pool.close().await;
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn markers_come_with_their_session_and_go_with_it() {
+        use crate::api::types::{MarkerColor, RecordingStatus};
+        let (pool, path) = fresh("markers").await;
+        let session = |id: &str, started: &str| RecordingSessionDto {
+            id: id.into(),
+            source_id: "src".into(),
+            preset_id: String::new(),
+            source_name: None,
+            preset_name: None,
+            started_at: started.into(),
+            stopped_at: None,
+            outputs: Vec::new(),
+            output_paths: Vec::new(),
+            dropped_frames: Vec::new(),
+            files: Vec::new(),
+            status: RecordingStatus::Stopped,
+            error_message: None,
+            clock: None,
+            markers: Vec::new(),
+        };
+        let marker = |id: &str, at_us| MarkerDto {
+            id: id.into(),
+            press_id: format!("press-{id}"),
+            at_us,
+            timecode: Some("10:00:00;02".into()),
+            fps: Some("30000/1001".into()),
+            note: String::new(),
+            color: MarkerColor::Blue,
+            created_at: "2026-11-06T10:00:00Z".into(),
+        };
+        session_insert(&pool, &session("a", "2026-11-06T10:00:00Z"))
+            .await
+            .unwrap();
+        session_insert(&pool, &session("b", "2026-11-06T11:00:00Z"))
+            .await
+            .unwrap();
+        marker_insert(&pool, "a", &marker("late", 2_000))
+            .await
+            .unwrap();
+        marker_insert(&pool, "a", &marker("early", 1_000))
+            .await
+            .unwrap();
+        marker_insert(&pool, "b", &marker("other", 5))
+            .await
+            .unwrap();
+
+        let a = session_get(&pool, "a").await.unwrap().unwrap();
+        let ids: Vec<_> = a.markers.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["early", "late"], "in time order");
+        assert_eq!(a.markers[0], marker("early", 1_000));
+        let listed = sessions_list(&pool, None, 10).await.unwrap();
+        assert_eq!(
+            listed.iter().map(|s| s.markers.len()).collect::<Vec<_>>(),
+            [1, 2]
+        );
+
+        let mut edited = marker("early", 1_000);
+        edited.note = "Cut to wide".into();
+        edited.color = MarkerColor::Red;
+        assert!(marker_update(&pool, "a", &edited).await.unwrap());
+        assert!(
+            !marker_update(&pool, "b", &edited).await.unwrap(),
+            "another session's"
+        );
+        let a = session_get(&pool, "a").await.unwrap().unwrap();
+        assert_eq!(a.markers[0], edited);
+
+        assert!(marker_delete(&pool, "a", "late").await.unwrap());
+        assert!(!marker_delete(&pool, "a", "late").await.unwrap());
+        assert!(session_delete(&pool, "a").await.unwrap());
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM recording_markers")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(left, 1, "only the other session's marker is left");
         pool.close().await;
         let _ = std::fs::remove_file(path);
     }
