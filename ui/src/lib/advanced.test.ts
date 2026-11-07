@@ -62,6 +62,7 @@ function node(name: string, encoders: string[]): NodeDto {
 const mac = node('mac', ['vtenc_h264', 'vtenc_h265', 'vtenc_prores', 'x264enc'])
 const linux = node('linux', ['x264enc', 'x265enc', 'vp9enc', 'avenc_prores_ks'])
 const windows = node('windows', ['amfh264enc', 'mfh264enc', 'x264enc'])
+const intel = node('intel', ['qsvh264enc', 'qsvh265enc', 'mfh264enc', 'x264enc'])
 const nvidia = node('nvidia', ['nvh264enc', 'nvh265enc', 'mfh264enc', 'x264enc'])
 const bare = node('bare', ['vp9enc'])
 const old = node('old', [])
@@ -73,6 +74,7 @@ describe('legEncoders', () => {
       'nvh264enc',
       'vah264enc',
       'amfh264enc',
+      'qsvh264enc',
       'mfh264enc',
       'x264enc',
     ])
@@ -81,6 +83,7 @@ describe('legEncoders', () => {
       'nvh265enc',
       'vah265enc',
       'amfh265enc',
+      'qsvh265enc',
       'x265enc',
     ])
   })
@@ -99,6 +102,7 @@ describe('legEncoders', () => {
       'nvh264enc',
       'vah264enc',
       'amfh264enc',
+      'qsvh264enc',
       'mfh264enc',
     ])
     expect(legEncoders(leg({}, { encoder: 'software' }))).toEqual(['x264enc'])
@@ -142,6 +146,8 @@ describe('encoders on nodes', () => {
     expect(encoderOnNodes(leg({ codec: 'h265' }), [windows])).toEqual([{ node: 'windows', encoder: 'unavailable' }])
     expect(encoderOnNodes(leg(), [nvidia])).toEqual([{ node: 'nvidia', encoder: 'NVIDIA NVENC (hardware)' }])
     expect(encoderOnNodes(leg({ codec: 'h265' }), [nvidia])).toEqual([{ node: 'nvidia', encoder: 'NVIDIA NVENC (hardware)' }])
+    expect(encoderOnNodes(leg(), [intel])).toEqual([{ node: 'intel', encoder: 'Intel Quick Sync (hardware)' }])
+    expect(encoderOnNodes(leg({ codec: 'h265' }), [intel])).toEqual([{ node: 'intel', encoder: 'Intel Quick Sync (hardware)' }])
     expect(encoderOnNodes(leg({ codec: 'prores_422' }), [linux])).toEqual([{ node: 'linux', encoder: 'FFmpeg ProRes (software)' }])
   })
   it('needs no encoder for uncompressed', () => {

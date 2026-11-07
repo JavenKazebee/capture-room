@@ -714,8 +714,8 @@ fn link_to_muxer(
 }
 
 /// Create `encoder` with the output's rate control, keyframe interval and
-/// speed preset. Quality 1–100 maps to x264/x265 CRF and VA-API, NVENC, AMF
-/// and Media Foundation QP 41→11 (16 at best for Media Foundation), VP9
+/// speed preset. Quality 1–100 maps to x264/x265 CRF and VA-API, NVENC, AMF,
+/// Quick Sync and Media Foundation QP 41→11 (16 at best for Media Foundation), VP9
 /// `cq-level` 63→13, VideoToolbox `quality` 0.01→1. A rate control or
 /// property the driver lacks fails the build, so the leg falls back to the
 /// next encoder.
@@ -838,6 +838,26 @@ fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Res
                 }
             }
         }
+        VideoEncoder::QsvH264 | VideoEncoder::QsvH265 => {
+            // Quick Sync caps the GOP at 65535 frames.
+            set(
+                "gop-size",
+                &profile.keyframe_interval().min(65535).to_string(),
+            )?;
+            match rc {
+                // Quick Sync's `vbr` averages `bitrate` under the `max-bitrate` peak.
+                RateControl::Average => set("rate-control", "vbr")?,
+                RateControl::Constant => set("rate-control", "cbr")?,
+                RateControl::Quality => {
+                    set("rate-control", "cqp")?;
+                    // 0 means "the driver's default" here.
+                    let qp = crf.max(1.0).to_string();
+                    for frame in ["qp-i", "qp-p", "qp-b"] {
+                        set(frame, &qp)?;
+                    }
+                }
+            }
+        }
         VideoEncoder::MfH264 => {
             // Most of mfh264enc's properties exist only if the GPU's MFT
             // supports them.
@@ -878,7 +898,9 @@ fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Res
                 VideoEncoder::NvH264
                 | VideoEncoder::NvH265
                 | VideoEncoder::AmfH264
-                | VideoEncoder::AmfH265,
+                | VideoEncoder::AmfH265
+                | VideoEncoder::QsvH264
+                | VideoEncoder::QsvH265,
                 RateControl::Average,
             ) => {
                 set("bitrate", &kbps.to_string())?;
@@ -895,6 +917,8 @@ fn build_video_encoder(profile: &RecordingProfile, encoder: VideoEncoder) -> Res
                 | VideoEncoder::NvH265
                 | VideoEncoder::AmfH264
                 | VideoEncoder::AmfH265
+                | VideoEncoder::QsvH264
+                | VideoEncoder::QsvH265
                 | VideoEncoder::MfH264,
                 _,
             ) => set("bitrate", &kbps.to_string())?,
