@@ -488,9 +488,10 @@ pub(crate) mod tests {
                 std::thread::sleep(wait);
             }
         }
+        // While audio still flows: once it stops, so does the LTC.
+        let state = ltc.state();
         // The stamper holds frames back a little.
         std::thread::sleep(Duration::from_millis(500));
-        let state = ltc.state();
         pipeline.set_state(gst::State::Null).unwrap();
         let frames = frames.lock().unwrap().clone();
         println!("{} frames: {:?}", frames.len(), frames);
