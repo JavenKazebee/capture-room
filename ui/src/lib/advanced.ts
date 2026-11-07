@@ -38,8 +38,12 @@ const ENCODER_NAMES: Record<string, string> = {
   vtenc_prores: 'VideoToolbox',
   vah264enc: 'VA-API',
   vah265enc: 'VA-API',
+  nvh264enc: 'NVIDIA NVENC',
+  nvh265enc: 'NVIDIA NVENC',
   amfh264enc: 'AMD AMF',
   amfh265enc: 'AMD AMF',
+  qsvh264enc: 'Intel Quick Sync',
+  qsvh265enc: 'Intel Quick Sync',
   mfh264enc: 'Media Foundation',
   x264enc: 'x264',
   x265enc: 'x265',
@@ -53,8 +57,12 @@ const HARDWARE = new Set([
   'vtenc_prores',
   'vah264enc',
   'vah265enc',
+  'nvh264enc',
+  'nvh265enc',
   'amfh264enc',
   'amfh265enc',
+  'qsvh264enc',
+  'qsvh265enc',
   'mfh264enc',
 ])
 
@@ -64,8 +72,12 @@ const CODEC_NAMES: Record<string, string> = {
   vtenc_prores: 'ProRes',
   vah264enc: 'H.264',
   vah265enc: 'H.265',
+  nvh264enc: 'H.264',
+  nvh265enc: 'H.265',
   amfh264enc: 'H.264',
   amfh265enc: 'H.265',
+  qsvh264enc: 'H.264',
+  qsvh265enc: 'H.265',
   mfh264enc: 'H.264',
   x264enc: 'H.264',
   x265enc: 'H.265',
@@ -94,10 +106,12 @@ function codecEncoders(leg: Pick<PresetOutputInput, 'codec' | 'chroma'>): string
   switch (leg.codec) {
     case 'h264':
       return yuv420
-        ? ['vtenc_h264', 'vah264enc', 'amfh264enc', 'mfh264enc', 'x264enc']
+        ? ['vtenc_h264', 'nvh264enc', 'vah264enc', 'amfh264enc', 'qsvh264enc', 'mfh264enc', 'x264enc']
         : ['x264enc']
     case 'h265':
-      return yuv420 ? ['vtenc_h265', 'vah265enc', 'amfh265enc', 'x265enc'] : ['x265enc']
+      return yuv420
+        ? ['vtenc_h265', 'nvh265enc', 'vah265enc', 'amfh265enc', 'qsvh265enc', 'x265enc']
+        : ['x265enc']
     case 'vp9':
       return ['vp9enc']
     case 'uncompressed':

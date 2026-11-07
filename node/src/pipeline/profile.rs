@@ -333,9 +333,15 @@ pub enum VideoEncoder {
     /// VA-API (Linux, AMD and Intel GPUs through Mesa or iHD).
     VaH264,
     VaH265,
+    /// NVIDIA NVENC (Windows and Linux).
+    NvH264,
+    NvH265,
     /// AMD AMF (Windows).
     AmfH264,
     AmfH265,
+    /// Intel Quick Sync (Windows and Linux).
+    QsvH264,
+    QsvH265,
     /// Media Foundation (Windows): the GPU vendor's encoder, whichever GPU.
     MfH264,
     Uncompressed,
@@ -359,8 +365,12 @@ impl VideoEncoder {
             Self::VtProRes => "vtenc_prores",
             Self::VaH264 => "vah264enc",
             Self::VaH265 => "vah265enc",
+            Self::NvH264 => "nvh264enc",
+            Self::NvH265 => "nvh265enc",
             Self::AmfH264 => "amfh264enc",
             Self::AmfH265 => "amfh265enc",
+            Self::QsvH264 => "qsvh264enc",
+            Self::QsvH265 => "qsvh265enc",
             Self::MfH264 => "mfh264enc",
             Self::Uncompressed => "identity",
         }
@@ -374,8 +384,12 @@ impl VideoEncoder {
                 | Self::VtProRes
                 | Self::VaH264
                 | Self::VaH265
+                | Self::NvH264
+                | Self::NvH265
                 | Self::AmfH264
                 | Self::AmfH265
+                | Self::QsvH264
+                | Self::QsvH265
                 | Self::MfH264
         )
     }
@@ -416,8 +430,8 @@ pub const DEFAULT_QUALITY: u8 = 70;
 pub fn available_encoders() -> Vec<String> {
     use VideoEncoder::*;
     [
-        VtH264, VtH265, VtProRes, VaH264, VaH265, AmfH264, AmfH265, MfH264, X264, X265, Vp9,
-        ProResKs,
+        VtH264, VtH265, VtProRes, NvH264, NvH265, VaH264, VaH265, AmfH264, AmfH265, QsvH264,
+        QsvH265, MfH264, X264, X265, Vp9, ProResKs,
     ]
     .into_iter()
     .map(VideoEncoder::element)
@@ -563,9 +577,11 @@ impl RecordingProfile {
         use VideoEncoder::*;
         let yuv420 = self.chroma == ChromaSubsampling::Yuv420;
         match self.video_codec {
-            VideoCodec::H264 if yuv420 => &[VtH264, VaH264, AmfH264, MfH264, X264],
+            // NVENC and AMF before Quick Sync: on a machine with both, the
+            // Intel GPU is the integrated one. VA-API covers Intel on Linux.
+            VideoCodec::H264 if yuv420 => &[VtH264, NvH264, VaH264, AmfH264, QsvH264, MfH264, X264],
             VideoCodec::H264 => &[X264],
-            VideoCodec::H265 if yuv420 => &[VtH265, VaH265, AmfH265, X265],
+            VideoCodec::H265 if yuv420 => &[VtH265, NvH265, VaH265, AmfH265, QsvH265, X265],
             VideoCodec::H265 => &[X265],
             VideoCodec::Vp9 => &[Vp9],
             VideoCodec::ProRes4444
@@ -591,11 +607,16 @@ impl RecordingProfile {
                 ChromaSubsampling::Yuv444 => "Y444",
             }),
             // Every VA-API driver encodes from NV12; not all take I420.
-            // AMF and Media Foundation take only NV12.
+            // AMF and Media Foundation take only NV12; NVENC's and Quick
+            // Sync's native format.
             VideoEncoder::VaH264
             | VideoEncoder::VaH265
+            | VideoEncoder::NvH264
+            | VideoEncoder::NvH265
             | VideoEncoder::AmfH264
             | VideoEncoder::AmfH265
+            | VideoEncoder::QsvH264
+            | VideoEncoder::QsvH265
             | VideoEncoder::MfH264 => Some("NV12"),
             // Profile 0 (4:2:0) is the VP9 everything plays; an RGB source
             // would give 4:4:4 Profile 1.
@@ -1171,14 +1192,23 @@ mod tests {
     fn picks_encoders_and_audio() {
         let mut p = RecordingProfile::from_output(&leg("a", Container::Mov, "x")).unwrap();
         use VideoEncoder::*;
-        assert_eq!(p.encoders(), [VtH264, VaH264, AmfH264, MfH264, X264]);
+        assert_eq!(
+            p.encoders(),
+            [VtH264, NvH264, VaH264, AmfH264, QsvH264, MfH264, X264]
+        );
         p.advanced.encoder = EncoderChoice::Hardware;
-        assert_eq!(p.encoders(), [VtH264, VaH264, AmfH264, MfH264]);
+        assert_eq!(
+            p.encoders(),
+            [VtH264, NvH264, VaH264, AmfH264, QsvH264, MfH264]
+        );
         p.advanced.encoder = EncoderChoice::Software;
         assert_eq!(p.encoders(), [X264]);
         p.advanced.encoder = EncoderChoice::Auto;
         p.video_codec = VideoCodec::H265;
-        assert_eq!(p.encoders(), [VtH265, VaH265, AmfH265, X265]);
+        assert_eq!(
+            p.encoders(),
+            [VtH265, NvH265, VaH265, AmfH265, QsvH265, X265]
+        );
         p.video_codec = VideoCodec::H264;
         assert_eq!(p.audio_format(), AudioFormat::Aac { bitrate: 256_000 });
         p.chroma = ChromaSubsampling::Yuv422;
@@ -1203,13 +1233,17 @@ mod tests {
             missing_encoder(&outputs, &legs, &software, "studio-pc").as_deref(),
             Some(
                 "output \"hw\": no hardware encoder on studio-pc \
-                 (needs vtenc_h264 or vah264enc or amfh264enc or mfh264enc)"
+                 (needs vtenc_h264 or nvh264enc or vah264enc or amfh264enc or qsvh264enc or mfh264enc)"
             )
         );
         let all = ["vtenc_h264".to_string(), "x264enc".to_string()];
         assert_eq!(missing_encoder(&outputs, &legs, &all, "mac"), None);
         let linux = ["vah264enc".to_string(), "x264enc".to_string()];
         assert_eq!(missing_encoder(&outputs, &legs, &linux, "linux"), None);
+        let nvidia = ["nvh264enc".to_string(), "x264enc".to_string()];
+        assert_eq!(missing_encoder(&outputs, &legs, &nvidia, "nvidia"), None);
+        let intel = ["qsvh264enc".to_string(), "x264enc".to_string()];
+        assert_eq!(missing_encoder(&outputs, &legs, &intel, "intel"), None);
         let amd = ["amfh264enc".to_string(), "x264enc".to_string()];
         assert_eq!(missing_encoder(&outputs, &legs, &amd, "windows-amd"), None);
         let windows = ["mfh264enc".to_string(), "x264enc".to_string()];
@@ -1218,7 +1252,7 @@ mod tests {
             missing_encoder(&outputs[..1], &legs[..1], &[], "bare").as_deref(),
             Some(
                 "output \"sw\": no encoder on bare \
-                 (needs vtenc_h264 or vah264enc or amfh264enc or mfh264enc or x264enc)"
+                 (needs vtenc_h264 or nvh264enc or vah264enc or amfh264enc or qsvh264enc or mfh264enc or x264enc)"
             )
         );
     }
