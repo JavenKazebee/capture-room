@@ -393,7 +393,6 @@ async function save() {
         v-if="live && (kind !== 'decklink' || decklink.device)"
         v-model="ltcChannel"
         :channels="liveChannels"
-        :available="node?.ltc ?? false"
       />
     </div>
   </EditSheet>

@@ -95,7 +95,7 @@ impl InputSource for ChannelSource {
     fn build_bin(&self) -> Result<gst::Element> {
         let id = &self.id;
         let bin = gst::Bin::with_name(&format!("channel-bin-{id}"));
-        let (video, _) = live::video_output(&bin, id, program_caps(&self.config.format), None)?;
+        let (video, _) = live::video_output(&bin, id, program_caps(&self.config.format))?;
         let compositor = video.aggregator().context("compositor")?;
         live::add_background(&bin, id, &compositor)?;
         let audio = live::audio_output(&bin, id, self.config.audio_channels, false)?;

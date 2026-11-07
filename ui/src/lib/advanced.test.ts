@@ -53,7 +53,6 @@ function node(name: string, encoders: string[]): NodeDto {
     is_controller: false,
     encoders,
     source_types: [],
-    ltc: false,
     clock: null,
     replay_codecs: [],
     busy: null,

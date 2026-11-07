@@ -15,11 +15,6 @@ encoders: Array<string>,
  */
 source_types: Array<SourceTypeSupport>, 
 /**
- * It can read LTC timecode from a source's audio: never on Windows,
- * whose GStreamer misreads it (see `sources::ltc::available`).
- */
-ltc: boolean, 
-/**
  * What the node's pipelines run on. `None` from nodes that predate
  * clock sync.
  */

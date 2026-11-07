@@ -9,8 +9,6 @@ import { ltcChannelOptions } from '@/lib/ltc'
 const props = defineProps<{
   /** The feed's audio channels; `null` when it's silent. */
   channels: number | null
-  /** The node can read LTC (its GStreamer has a working libltc). */
-  available: boolean
 }>()
 
 const channel = defineModel<number | null>({ required: true })
@@ -22,7 +20,6 @@ const picked = computed({
   set: (v: number) => (channel.value = v || null),
 })
 const hint = computed(() => {
-  if (!props.available) return "This node can't read LTC: its GStreamer has no libltc, or (on Windows) misreads it."
   if (props.channels === null) return 'Give the feed audio to read LTC from it.'
   return null
 })
@@ -30,7 +27,7 @@ const hint = computed(() => {
 
 <template>
   <FormField label="LTC timecode" :help="FIELD_HELP.ltc" class="col-span-2">
-    <OptionSelect v-model="picked" :options="options" :disabled="!available || (channels === null && !channel)" />
+    <OptionSelect v-model="picked" :options="options" :disabled="channels === null && !channel" />
   </FormField>
   <p v-if="hint" class="col-span-2 -mt-1.5 text-xs text-muted-foreground">{{ hint }}</p>
 </template>

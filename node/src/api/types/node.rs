@@ -24,10 +24,6 @@ pub struct NodeStatus {
     /// is missing for each.
     #[serde(default)]
     pub source_types: Vec<SourceTypeSupport>,
-    /// It can read LTC timecode from a source's audio: never on Windows,
-    /// whose GStreamer misreads it (see `sources::ltc::available`).
-    #[serde(default)]
-    pub ltc: bool,
     /// What the node's pipelines run on. `None` from nodes that predate
     /// clock sync.
     #[serde(default)]
@@ -52,7 +48,6 @@ impl NodeStatus {
             is_controller: false,
             encoders: Vec::new(),
             source_types: Vec::new(),
-            ltc: false,
             clock: None,
             replay_codecs: Vec::new(),
             busy: None,

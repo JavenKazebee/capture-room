@@ -155,19 +155,7 @@ pub fn build_bin(input: LiveInput) -> Result<gst::Bin> {
     };
     bin.add(&main).context("add live source")?;
 
-    let ltc = match ltc {
-        Some(_) if !super::ltc::available() => {
-            warn!(
-                source = id,
-                "LTC is set, but timecodestamper can't read it here"
-            );
-            None
-        }
-        ltc => ltc,
-    };
-    let stamper = ltc.map(|_| super::ltc::stamper(id)).transpose()?;
-    let (video, video_format) =
-        video_output(&bin, id, initial_video_caps(format), stamper.as_ref())?;
+    let (video, video_format) = video_output(&bin, id, initial_video_caps(format))?;
     let compositor = video.aggregator.upgrade().context("compositor")?;
     let channels = match &audio {
         LiveAudio::Source { channels } | LiveAudio::Silence { channels } => *channels,
@@ -176,8 +164,9 @@ pub fn build_bin(input: LiveInput) -> Result<gst::Bin> {
     // Picked device channels are numbered; a source's own are laid out.
     let numbered = matches!(audio, LiveAudio::Element { .. });
     let audio_inputs = audio_output(&bin, id, channels, numbered)?;
-    if let (Some((channel, tracker)), Some(stamper)) = (ltc, &stamper) {
-        super::ltc::attach(&bin, id, stamper, channel, channels, tracker.clone())?;
+    if let Some((channel, tracker)) = ltc {
+        let pad = compositor.static_pad("src").context("compositor src pad")?;
+        super::ltc::attach(&bin, id, &pad, channel, tracker.clone())?;
     }
     if let Some(latency) = latency {
         let mixer = audio_inputs.aggregator().context("audio mixer")?;
@@ -235,7 +224,6 @@ pub(crate) fn video_output(
     bin: &gst::Bin,
     id: &str,
     caps: gst::Caps,
-    ltc: Option<&gst::Element>,
 ) -> Result<(Inputs, Arc<Mutex<InputCaps>>)> {
     let compositor = make_el("compositor", &format!("live-vsync-{id}"))?;
     set_property(&compositor, "background", "black")?;
@@ -245,10 +233,7 @@ pub(crate) fn video_output(
         timecode.clone(),
     );
     let out_vcaps = capsfilter(&format!("live-outvcaps-{id}"), caps.clone())?;
-    match ltc {
-        Some(stamper) => add_chain(bin, &[&compositor, stamper, &out_vcaps], "video")?,
-        None => add_chain(bin, &[&compositor, &out_vcaps], "video")?,
-    }
+    add_chain(bin, &[&compositor, &out_vcaps], "video")?;
     let format = Arc::new(Mutex::new(InputCaps {
         pre: pre_compositor_caps(&caps),
         inputs: Vec::new(),
