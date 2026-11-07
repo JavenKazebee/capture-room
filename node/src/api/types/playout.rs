@@ -242,6 +242,8 @@ pub struct PlaylistItemDto {
     pub duration_ms: Option<u64>,
     /// The file is no longer on disk.
     pub missing: bool,
+    /// A slate shown before it plays from its in point.
+    pub slate: Option<SlateLength>,
 }
 
 /// Body replacing a channel's playlist: the whole list, in order.
@@ -268,6 +270,9 @@ pub struct PlaylistItemInput {
     pub out_ms: Option<u64>,
     #[serde(default = "default_item_end")]
     pub end: ClipEnd,
+    /// Not `frame`: a single frame on air is a flash.
+    #[serde(default)]
+    pub slate: Option<SlateLength>,
 }
 
 fn default_item_end() -> ClipEnd {

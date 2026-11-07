@@ -225,6 +225,7 @@ export const useRecordingsStore = defineStore('recordings', () => {
       preset_name: preset?.name ?? null,
       outputs,
       start_at: startAt,
+      slate: preset?.slate ?? null,
     }
     const dto = await nodeApi(nodeId)<RecordingSessionDto>('/recordings', { method: 'POST', body })
     upsert(nodeId, dto)

@@ -202,6 +202,54 @@ pub struct StartRecordingRequest {
     /// on another clock starts now (its `clock.start_at_us` is then `null`).
     #[serde(default)]
     pub start_at: Option<ClockTimeDto>,
+    /// A slate over the start of each leg's picture, from the preset.
+    #[serde(default)]
+    pub slate: Option<SlateSettings>,
+}
+
+/// How long a slate shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub enum SlateLength {
+    /// The first frame only: enough for an editor's thumbnail. Recordings only.
+    #[serde(rename = "frame")]
+    #[sqlx(rename = "frame")]
+    Frame,
+    #[serde(rename = "3s")]
+    #[sqlx(rename = "3s")]
+    Seconds3,
+    #[serde(rename = "5s")]
+    #[sqlx(rename = "5s")]
+    Seconds5,
+    #[serde(rename = "10s")]
+    #[sqlx(rename = "10s")]
+    Seconds10,
+}
+
+/// A preset's slate: a still card (title, take, date and time, source) that
+/// covers the start of each take's picture. Its sound runs under it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "export-types", derive(TS), ts(export))]
+pub struct SlateSettings {
+    pub length: SlateLength,
+    /// A template with a path template's tokens (not `{ext}` or
+    /// `{segment}`); empty for the file's name.
+    #[serde(default)]
+    pub title: String,
+    /// `#rrggbb`.
+    #[serde(default = "default_slate_background")]
+    pub background: String,
+    /// `#rrggbb`.
+    #[serde(default = "default_slate_text")]
+    pub text: String,
+}
+
+pub fn default_slate_background() -> String {
+    "#1a1a1a".into()
+}
+
+pub fn default_slate_text() -> String {
+    "#ffffff".into()
 }
 
 /// Video codec of an output leg. Stored as text in `preset_outputs`; the serde
@@ -400,6 +448,10 @@ pub struct PresetDto {
     /// Used where nothing else names a preset; exactly one is.
     #[serde(default)]
     pub is_default: bool,
+    /// Slates every take recorded with it, however it's started.
+    #[serde(default)]
+    #[sqlx(json(nullable))]
+    pub slate: Option<SlateSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -407,4 +459,6 @@ pub struct PresetDto {
 pub struct PresetCreateRequest {
     pub name: String,
     pub outputs: Vec<PresetOutputInput>,
+    #[serde(default)]
+    pub slate: Option<SlateSettings>,
 }

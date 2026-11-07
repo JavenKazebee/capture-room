@@ -20,7 +20,8 @@ use crate::api::types::{
     BenchmarkRunDto, BenchmarkStatus, ClipEnd, ConfiguredSourceDto, DecklinkProfile, MarkerDto,
     MediaItemDto, MonitorSettingsDto, NdiConnect, NdiSubscriptionsInput, PresetDto,
     PresetOutputInput, RecordLayoutDto, RecordingSessionDto, ReplayCodec, ReplayConfigInput,
-    ScheduleDto, ScheduleRunDto, ScheduleRunStatus, SourceRef, SourceTagsDto, UpdateChannel,
+    ScheduleDto, ScheduleRunDto, ScheduleRunStatus, SlateLength, SlateSettings, SourceRef,
+    SourceTagsDto, UpdateChannel,
 };
 
 fn connect_options(db_path: &Path) -> SqliteConnectOptions {
@@ -393,7 +394,7 @@ const IS_DEFAULT: &str = "coalesce(id = (SELECT value FROM node_config \
 /// hand) gets its first preset as the default rather than none.
 pub async fn presets_list(pool: &SqlitePool) -> Result<Vec<PresetDto>> {
     let mut presets = sqlx::query_as::<_, PresetDto>(AssertSqlSafe(format!(
-        "SELECT id, name, created_at, updated_at, {IS_DEFAULT} FROM presets ORDER BY name"
+        "SELECT id, name, created_at, updated_at, slate, {IS_DEFAULT} FROM presets ORDER BY name"
     )))
     .fetch_all(pool)
     .await?;
@@ -427,13 +428,14 @@ pub async fn presets_list(pool: &SqlitePool) -> Result<Vec<PresetDto>> {
 pub async fn preset_insert(pool: &SqlitePool, p: &PresetDto) -> Result<()> {
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO presets (id, name, created_at, updated_at)
-         VALUES (?, ?, ?, ?)",
+        "INSERT INTO presets (id, name, created_at, updated_at, slate)
+         VALUES (?, ?, ?, ?, ?)",
     )
     .bind(&p.id)
     .bind(&p.name)
     .bind(&p.created_at)
     .bind(&p.updated_at)
+    .bind(p.slate.as_ref().map(sqlx::types::Json))
     .execute(&mut *tx)
     .await?;
     preset_outputs_replace(&mut tx, &p.id, &p.outputs).await?;
@@ -441,22 +443,24 @@ pub async fn preset_insert(pool: &SqlitePool, p: &PresetDto) -> Result<()> {
     Ok(())
 }
 
-/// Rename a preset and replace its output legs atomically. Returns the
-/// updated preset, or `None` if it doesn't exist.
+/// Rename a preset and replace its output legs and slate atomically.
+/// Returns the updated preset, or `None` if it doesn't exist.
 pub async fn preset_update(
     pool: &SqlitePool,
     id: &str,
     name: &str,
     updated_at: &str,
     outputs: Vec<PresetOutputInput>,
+    slate: Option<&SlateSettings>,
 ) -> Result<Option<PresetDto>> {
     let mut tx = pool.begin().await?;
     let preset = sqlx::query_as::<_, PresetDto>(AssertSqlSafe(format!(
-        "UPDATE presets SET name = ?, updated_at = ? WHERE id = ?
-         RETURNING id, name, created_at, updated_at, {IS_DEFAULT}"
+        "UPDATE presets SET name = ?, updated_at = ?, slate = ? WHERE id = ?
+         RETURNING id, name, created_at, updated_at, slate, {IS_DEFAULT}"
     )))
     .bind(name)
     .bind(updated_at)
+    .bind(slate.map(sqlx::types::Json))
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
@@ -1035,13 +1039,19 @@ pub struct PlaylistRow {
     pub end_action: ClipEnd,
     pub name: String,
     pub path: String,
+    pub slate: Option<SlateLength>,
+    /// For its slate: the recording it's from, or when it was added.
+    pub source_name: Option<String>,
+    pub started_at: String,
 }
 
 /// A channel's items in order, and whether the playlist loops.
 pub async fn playlist_get(pool: &SqlitePool, channel_id: &str) -> Result<(Vec<PlaylistRow>, bool)> {
     let rows = sqlx::query_as::<_, PlaylistRow>(
-        "SELECT i.id, i.media_id, i.in_ms, i.out_ms, i.end_action, m.name, m.path
+        "SELECT i.id, i.media_id, i.in_ms, i.out_ms, i.end_action, m.name, m.path, i.slate,
+                s.source_name, coalesce(s.started_at, m.added_at) AS started_at
          FROM playlist_items i JOIN media m ON m.id = i.media_id
+         LEFT JOIN recording_sessions s ON s.id = m.session_id
          WHERE i.channel_id = ? ORDER BY i.position",
     )
     .bind(channel_id)
@@ -1056,11 +1066,21 @@ pub async fn playlist_get(pool: &SqlitePool, channel_id: &str) -> Result<(Vec<Pl
     Ok((rows, looped))
 }
 
-/// Replace a channel's playlist. `items` are (id, media id, in, out, end).
+/// A playlist item to store, in [`playlist_set`].
+pub struct PlaylistItemRow {
+    pub id: String,
+    pub media_id: String,
+    pub in_ms: u64,
+    pub out_ms: Option<u64>,
+    pub end: ClipEnd,
+    pub slate: Option<SlateLength>,
+}
+
+/// Replace a channel's playlist.
 pub async fn playlist_set(
     pool: &SqlitePool,
     channel_id: &str,
-    items: &[(String, String, u64, Option<u64>, ClipEnd)],
+    items: &[PlaylistItemRow],
     loop_playlist: bool,
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
@@ -1068,18 +1088,20 @@ pub async fn playlist_set(
         .bind(channel_id)
         .execute(&mut *tx)
         .await?;
-    for (position, (id, media_id, in_ms, out_ms, end)) in items.iter().enumerate() {
+    for (position, item) in items.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO playlist_items (id, channel_id, position, media_id, in_ms, out_ms, end_action)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO playlist_items
+             (id, channel_id, position, media_id, in_ms, out_ms, end_action, slate)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(id)
+        .bind(&item.id)
         .bind(channel_id)
         .bind(position as i64)
-        .bind(media_id)
-        .bind(*in_ms as i64)
-        .bind(out_ms.map(|v| v as i64))
-        .bind(end)
+        .bind(&item.media_id)
+        .bind(item.in_ms as i64)
+        .bind(item.out_ms.map(|v| v as i64))
+        .bind(item.end)
+        .bind(item.slate)
         .execute(&mut *tx)
         .await?;
     }
@@ -1596,19 +1618,34 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
             is_default: false,
+            slate: Some(SlateSettings {
+                length: SlateLength::Seconds5,
+                title: "{source_name} take {take}".into(),
+                background: "#000000".into(),
+                text: "#ffcc00".into(),
+            }),
         };
         let get = |list: Vec<PresetDto>| list.into_iter().find(|p| p.id == "p").unwrap();
         preset_insert(&pool, &preset).await.unwrap();
-        assert_eq!(names(&get(presets_list(&pool).await.unwrap())), ["b", "a"]);
-        let updated = preset_update(&pool, "p", "P", "", vec![leg("c"), leg("b"), leg("a")])
-            .await
-            .unwrap()
-            .unwrap();
+        let stored = get(presets_list(&pool).await.unwrap());
+        assert_eq!(names(&stored), ["b", "a"]);
+        assert_eq!(stored.slate, preset.slate);
+        let updated = preset_update(
+            &pool,
+            "p",
+            "P",
+            "",
+            vec![leg("c"), leg("b"), leg("a")],
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(names(&updated), ["c", "b", "a"]);
-        assert_eq!(
-            names(&get(presets_list(&pool).await.unwrap())),
-            ["c", "b", "a"]
-        );
+        assert_eq!(updated.slate, None);
+        let stored = get(presets_list(&pool).await.unwrap());
+        assert_eq!(names(&stored), ["c", "b", "a"]);
+        assert_eq!(stored.slate, None);
         pool.close().await;
         let _ = std::fs::remove_file(path);
     }
@@ -1621,6 +1658,7 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
             is_default: false,
+            slate: None,
         }
     }
 
@@ -1659,12 +1697,14 @@ mod tests {
         preset_insert(&pool, &preset("a", "Cam")).await.unwrap();
         let err = preset_insert(&pool, &preset("b", "cAM")).await.unwrap_err();
         assert!(is_unique_violation(&err), "{err:#}");
-        let err = preset_update(&pool, "default", "CAM", "", vec![])
+        let err = preset_update(&pool, "default", "CAM", "", vec![], None)
             .await
             .unwrap_err();
         assert!(is_unique_violation(&err), "{err:#}");
         // Its own name, in another case, is fine.
-        preset_update(&pool, "a", "CAM", "", vec![]).await.unwrap();
+        preset_update(&pool, "a", "CAM", "", vec![], None)
+            .await
+            .unwrap();
         pool.close().await;
         let _ = std::fs::remove_file(path);
     }

@@ -28,7 +28,9 @@ mod tests;
 mod validate;
 
 pub use lanes::PlayedProgress;
-pub use playout::{check_rate, ClipRequest, PlaylistItem, Playout, PlayoutStatus, ReplayClip};
+pub use playout::{
+    check_rate, ClipRequest, ClipSlate, PlaylistItem, Playout, PlayoutStatus, ReplayClip,
+};
 pub use validate::{listen_ports, validate, validate_devices};
 
 /// How far ahead of its slot a clip's buffer is stamped, covering program-side
@@ -99,7 +101,9 @@ impl InputSource for ChannelSource {
         let compositor = video.aggregator().context("compositor")?;
         live::add_background(&bin, id, &compositor)?;
         let audio = live::audio_output(&bin, id, self.config.audio_channels, false)?;
-        self.playout.lanes.attach(video, audio);
+        self.playout
+            .lanes
+            .attach(video, audio, program_caps(&self.config.format));
         Ok(bin.upcast())
     }
 

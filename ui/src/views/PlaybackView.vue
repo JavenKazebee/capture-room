@@ -8,7 +8,6 @@ import { useSourcesStore } from '@/stores/sources'
 import { useNodesStore } from '@/stores/nodes'
 import { usePlayoutStore } from '@/stores/playout'
 import { notifyError } from '@/lib/notify'
-import type { ClipEnd } from '@/types/generated/ClipEnd'
 import type { MediaItemDto } from '@/types/generated/MediaItemDto'
 import type { PlaylistItemDto } from '@/types/generated/PlaylistItemDto'
 import type { TransportAction } from '@/types/generated/TransportAction'
@@ -20,7 +19,7 @@ import TransportBar from '@/components/playback/TransportBar.vue'
 import MediaLibrary from '@/components/playback/MediaLibrary.vue'
 import PlaylistPanel from '@/components/playback/PlaylistPanel.vue'
 import ChannelSheet from '@/components/playback/ChannelSheet.vue'
-import ItemSetup from '@/components/playback/ItemSetup.vue'
+import ItemSetup, { type ItemSetupValues } from '@/components/playback/ItemSetup.vue'
 import { useChannelChoice } from '@/composables/useChannelChoice'
 import { TRANSPORT } from '@/components/playback/transport'
 
@@ -118,14 +117,14 @@ async function run(what: string, fn: () => Promise<unknown>) {
 }
 
 /** Save the selected item's new in, out and end into the playlist. */
-function applySetup(setup: { in_ms: number; out_ms: number | null; end: ClipEnd }) {
+function applySetup(setup: ItemSetupValues) {
   const c = channel.value
   const i = selected.value
   if (!c || !i) return
   const list = items.value.map((x) => ({
     id: x.id,
     media_id: x.media_id,
-    ...(x.id === i.id ? setup : { in_ms: x.in_ms, out_ms: x.out_ms, end: x.end }),
+    ...(x.id === i.id ? setup : { in_ms: x.in_ms, out_ms: x.out_ms, end: x.end, slate: x.slate }),
   }))
   run(`Saving ${i.name}`, () => playout.savePlaylist(c.node_id, c.id, list, playlist.value?.loop_playlist ?? false))
 }

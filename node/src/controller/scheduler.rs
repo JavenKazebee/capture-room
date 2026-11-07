@@ -279,6 +279,7 @@ async fn start_recording(
         preset_name: Some(preset.name.clone()),
         outputs: preset.outputs.clone(),
         start_at: Some(start_at.clone()),
+        slate: preset.slate.clone(),
     };
     let body = serde_json::to_value(&req).expect("a request serializes");
     let result = call_node(

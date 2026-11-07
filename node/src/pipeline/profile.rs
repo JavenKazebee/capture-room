@@ -40,6 +40,24 @@ pub struct PathVars {
 
 impl PathVars {
     fn expand(&self, template: &str, profile: &RecordingProfile) -> String {
+        self.expand_with(template, profile, sanitize)
+    }
+
+    /// A slate title from its template: the path tokens as they read, not
+    /// made safe for a file name.
+    pub fn slate_title(&self, template: &str, output: &str, profile: &RecordingProfile) -> String {
+        let title = template
+            .replace("{output}", output)
+            .replace("{codec}", profile.codec_slug());
+        self.expand_with(&title, profile, str::to_string)
+    }
+
+    fn expand_with(
+        &self,
+        template: &str,
+        profile: &RecordingProfile,
+        clean: fn(&str) -> String,
+    ) -> String {
         let at = &self.at;
         let resolution = profile
             .resolution
@@ -50,10 +68,10 @@ impl PathVars {
             .or(self.source_framerate)
             .map_or("source".into(), format_framerate);
         [
-            ("{source}", sanitize(&self.source)),
-            ("{source_name}", sanitize(&self.source_name)),
-            ("{node}", sanitize(&self.node)),
-            ("{preset}", sanitize(&self.preset)),
+            ("{source}", clean(&self.source)),
+            ("{source_name}", clean(&self.source_name)),
+            ("{node}", clean(&self.node)),
+            ("{preset}", clean(&self.preset)),
             ("{date}", at.format("%Y-%m-%d").to_string()),
             ("{time}", at.format("%H%M%S").to_string()),
             ("{datetime}", at.format("%Y%m%d_%H%M%S").to_string()),
@@ -95,6 +113,20 @@ const PATH_TOKENS: &[&str] = &[
 /// The first `{...}` in a template that isn't a token, which would otherwise
 /// end up in the file name as typed.
 pub fn unknown_token(template: &str) -> Option<&str> {
+    unknown_token_of(template, PATH_TOKENS)
+}
+
+/// Like [`unknown_token`], for a slate title: no file name parts.
+pub fn unknown_title_token(template: &str) -> Option<&str> {
+    let tokens: Vec<&str> = PATH_TOKENS
+        .iter()
+        .copied()
+        .filter(|t| !matches!(*t, "{ext}" | "{segment}"))
+        .collect();
+    unknown_token_of(template, &tokens)
+}
+
+fn unknown_token_of<'a>(template: &'a str, tokens: &[&str]) -> Option<&'a str> {
     let mut rest = template;
     while let Some(open) = rest.find('{') {
         let close = open + rest[open..].find('}')?;
@@ -104,7 +136,7 @@ pub fn unknown_token(template: &str) -> Option<&str> {
             rest = &rest[open + 1 + inner..];
             continue;
         }
-        if !PATH_TOKENS.contains(&candidate) {
+        if !tokens.contains(&candidate) {
             return Some(candidate);
         }
         rest = &rest[close + 1..];
@@ -280,6 +312,9 @@ pub struct RecordingProfile {
     /// The path with `{segment}` unexpanded, for legs with several files.
     /// Set by [`plan_legs`].
     pub segment_template: Option<String>,
+    /// The slate over the start of the leg's picture. Set when a recording
+    /// starts, from its request.
+    pub slate: Option<super::slate::LegSlate>,
 }
 
 /// A video encoder element. A leg uses the first of
@@ -447,6 +482,7 @@ impl RecordingProfile {
             source_audio: None,
             advanced: o.advanced.clone(),
             segment_template: None,
+            slate: None,
         })
         .and_then(|p| p.check_advanced().map(|()| p))
     }

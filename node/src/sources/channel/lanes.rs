@@ -41,6 +41,8 @@ pub struct PlayedProgress {
 #[derive(Default)]
 pub(super) struct LanesInner {
     video_in: Option<Inputs>,
+    /// The program's video format, for drawing slates.
+    caps: Option<gst::Caps>,
     audio_in: Option<Inputs>,
     serial: u32,
     /// Whether a clip wants lanes, and an audio one.
@@ -49,6 +51,9 @@ pub(super) struct LanesInner {
     audio: Lane,
     #[cfg(test)]
     pub(super) pushed: Vec<Pushed>,
+    /// Stills pushed: their start and end in program time.
+    #[cfg(test)]
+    pub(super) stills: Vec<(gst::ClockTime, gst::ClockTime)>,
 }
 
 #[derive(Default)]
@@ -80,8 +85,9 @@ impl Lanes {
 
     /// A new program bin was built: its inputs replace the old bin's, and a
     /// loaded clip gets lanes in it.
-    pub(super) fn attach(&self, video: Inputs, audio: Inputs) {
+    pub(super) fn attach(&self, video: Inputs, audio: Inputs, caps: gst::Caps) {
         let mut inner = self.inner.lock().unwrap();
+        inner.caps = Some(caps);
         inner.video_in = Some(video);
         inner.audio_in = Some(audio);
         inner.video = Lane::default();
@@ -103,6 +109,37 @@ impl Lanes {
             .and_then(Inputs::bin)
             .and_then(|bin| bin.clock())
             .unwrap_or_else(gst::SystemClock::obtain)
+    }
+
+    /// The program's video caps, once it has a bin.
+    pub(super) fn program_caps(&self) -> Option<gst::Caps> {
+        self.inner.lock().unwrap().caps.clone()
+    }
+
+    /// Show `still` for `duration` after what the video lane has queued (or
+    /// now), so a clip started next follows on after it. The compositor holds
+    /// it until the clip's first frame.
+    pub(super) fn push_still(&self, still: &gst::Sample, duration: gst::ClockTime) {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(src) = inner.video.src.clone() else {
+            return;
+        };
+        let Some(now) = src.current_running_time() else {
+            return;
+        };
+        let at = inner
+            .video
+            .last
+            .map_or(now + LEAD, |(_, end)| end.max(now + LEAD));
+        let Some(mut buffer) = player::restamp(still, &src, at, true) else {
+            return;
+        };
+        buffer.make_mut().set_duration(duration);
+        inner.video.last = Some((at, at + duration));
+        #[cfg(test)]
+        inner.stills.push((at, at + duration));
+        drop(inner);
+        let _ = src.push_buffer(buffer);
     }
 
     /// Add lanes for a clip (replacing any).

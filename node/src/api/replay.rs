@@ -183,6 +183,7 @@ async fn post_replay(
         start: None,
         end: ClipEnd::Hold,
         rate,
+        slate: None,
         replay: Some(replay),
     };
     let result = playout.load(request, req.play).await;
@@ -597,6 +598,7 @@ async fn post_replay_clip(
         start,
         end: ClipEnd::Hold,
         rate,
+        slate: None,
         replay: Some(replay),
     };
     let result = playout.load(request, req.play).await;
